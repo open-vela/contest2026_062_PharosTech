@@ -1,11 +1,9 @@
 #
-# Contest 2026 team 000 board placeholder
+# KICKPI-K7 (RK3576) board (out-of-tree vendor board)
 #
+config ARCH_BOARD_KICKPI_K7
+	bool
+	default y
 
-if ARCH_BOARD_CONTEST2026_000_BOARD
-
-config ARCH_BOARD_CONTEST2026_000_BOARD_TAG
-	string "Board tag"
-	default "contest2026_000_board"
-
-endif
+if ARCH_BOARD_KICKPI_K7
+endif # ARCH_BOARD_KICKPI_K7

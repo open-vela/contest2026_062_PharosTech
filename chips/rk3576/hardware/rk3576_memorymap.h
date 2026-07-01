@@ -1,0 +1,22 @@
+/* arch/arm64/src/rk3576/hardware/rk3576_memorymap.h - RK3576 peripherals */
+#ifndef __ARCH_ARM64_SRC_RK3576_HARDWARE_RK3576_MEMORYMAP_H
+#define __ARCH_ARM64_SRC_RK3576_HARDWARE_RK3576_MEMORYMAP_H
+
+#include <nuttx/config.h>
+
+/* GPIO banks (TRM) */
+#define RK3576_GPIO0_ADDR      0x27320000
+#define RK3576_GPIO1_ADDR      0x2AE10000
+#define RK3576_GPIO2_ADDR      0x2AE20000
+#define RK3576_GPIO3_ADDR      0x2AE30000
+#define RK3576_GPIO4_ADDR      0x2AE40000
+#define RK3576_PIO_ADDR        RK3576_GPIO0_ADDR
+
+/* DesignWare 16550 UARTs (TRM). UART0 = debug console (vendor DTS earlycon). */
+#define RK3576_UART0_ADDR      0x2AD40000
+#define RK3576_UART1_ADDR      0x27310000
+#define RK3576_UART2_ADDR      0x2AD50000
+#define RK3576_UART3_ADDR      0x2AD60000
+#define RK3576_UART4_ADDR      0x2AD70000
+
+#endif /* __ARCH_ARM64_SRC_RK3576_HARDWARE_RK3576_MEMORYMAP_H */

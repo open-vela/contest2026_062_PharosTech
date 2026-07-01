@@ -10,5 +10,6 @@
 
   <project path="contest2026_062_PharosTech" name="contest2026_062_PharosTech">
     <linkfile src="boards" dest="vendor/rockchip/boards"/>
+    <linkfile src="chips" dest="vendor/rockchip/chips"/>
   </project>
 </manifest>
