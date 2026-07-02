@@ -57,6 +57,14 @@ config RK3576_UART4
 	---help---
 		Select to enable support for UART4.
 
+config RK3576_GPIO
+	bool "GPIO"
+	default n
+	select ARCH_HAVE_GPIO_IRQ
+	---help---
+		Select to enable support for the RK3576 GPIO controller.
+		The RK3576 has 5 GPIO banks (GPIO0-GPIO4) with 32 pins each.
+
 endmenu # Rockchip RK3576 Peripheral Selection
 
 endif # ARCH_CHIP_RK3576

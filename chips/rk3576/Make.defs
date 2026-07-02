@@ -23,6 +23,10 @@ include common/Make.defs
 # Rockchip RK3576 specific C source files
 CHIP_CSRCS  = rk3576_boot.c rk3576_serial.c
 
+ifeq ($(CONFIG_RK3576_GPIO),y)
+CHIP_CSRCS += rk3576_gpio.c
+endif
+
 ifeq ($(CONFIG_ARCH_EARLY_PRINT),y)
 CHIP_ASRCS  = rk3576_lowputc.S
 endif
