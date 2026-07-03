@@ -50,13 +50,13 @@
 
 #ifdef CONFIG_ARCH_CHIP_RK3576
 
-/* IRQ for RK3576 UART Rockchip_RK3576TRM_V1.4_Part1-20170408 page 17 */
+/* IRQ for RK3576 UART - see include/rk3576/irq.h (TRM Part1 V1.2 Table 1-3) */
 
-#define RK3576_UART0_IRQ       108         /* RK3576 UART0 IRQ */
-#define RK3576_UART1_IRQ       109         /* RK3576 UART1 IRQ */
-#define RK3576_UART2_IRQ       110         /* RK3576 UART2 IRQ */
-#define RK3576_UART3_IRQ       111         /* RK3576 UART3 IRQ */
-#define RK3576_UART4_IRQ       112         /* RK3576 UART4 IRQ */
+#define RK3576_UART0_IRQ       RK3576_IRQ_UART0
+#define RK3576_UART1_IRQ       RK3576_IRQ_UART1
+#define RK3576_UART2_IRQ       RK3576_IRQ_UART2
+#define RK3576_UART3_IRQ       RK3576_IRQ_UART3
+#define RK3576_UART4_IRQ       RK3576_IRQ_UART4
 
 #endif /* CONFIG_ARCH_CHIP_RK3576 */
 
