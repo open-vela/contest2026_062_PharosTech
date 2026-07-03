@@ -4,6 +4,10 @@
 
 #include <nuttx/config.h>
 
+/* Fixed crystal oscillator, source of the ARM generic timer */
+
+#define RK3576_OSC_FREQ        24000000
+
 /* GPIO banks (TRM) */
 #define RK3576_GPIO0_ADDR      0x27320000
 #define RK3576_GPIO1_ADDR      0x2AE10000

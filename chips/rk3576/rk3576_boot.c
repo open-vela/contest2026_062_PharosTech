@@ -42,6 +42,7 @@
 #include "arm64_arch.h"
 #include "arm64_internal.h"
 #include "arm64_mmu.h"
+#include "hardware/rk3576_memorymap.h"
 #include "rk3576_boot.h"
 #include "rk3576_serial.h"
 
@@ -85,7 +86,20 @@ const struct arm_mmu_config g_mmu_config =
 
 void arm64_el_init(void)
 {
-  /* TODO: RK3576 set init sys clock */
+  uint64_t el = arm64_current_el();
+
+  /* If we are entered at EL3 (boot chain without BL31), cntfrq_el0 is
+   * uninitialized and it is only writable at EL3.  The Rockchip generic
+   * timer counts from the fixed 24 MHz oscillator.  With BL31 in the
+   * chain (EL2/EL1 entry) the firmware has already programmed it and
+   * this is a no-op.
+   */
+
+  if (el == 3)
+    {
+      write_sysreg(RK3576_OSC_FREQ, cntfrq_el0);
+      UP_ISB();
+    }
 }
 
 /****************************************************************************
