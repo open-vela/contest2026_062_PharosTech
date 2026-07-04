@@ -92,13 +92,13 @@
 #  define CONFIG_UART0_TXBUFSIZE 256
 #endif
 
-/* UART2 is console and ttys0, follows U-Boot Bootloader */
+/* UART0 is console and ttyS0, follows U-Boot Bootloader */
 
-#define CONSOLE_DEV     g_uart0port         /* UART2 is console */
-#define TTYS0_DEV       g_uart0port         /* UART2 is ttyS0 */
+#define CONSOLE_DEV     g_uart0port         /* UART0 is console */
+#define TTYS0_DEV       g_uart0port         /* UART0 is ttyS0 */
 #define UART0_ASSIGNED  1
 
-/* A64 UART SCLK is the UART Input Clock.  Through experimentation, it has
+/* UART SCLK is the UART Input Clock.  Through experimentation, it has
  * been found that the serial clock is OSC24M
  */
 
@@ -108,39 +108,20 @@
 
 #define UART_TIMEOUT_MS 100
 
-/* A64 UART I/O Pins *******************************************************/
+/* UART pin mux and clock gating are configured by the bootloader (U-Boot).
+ * RK3576 UART1-4 will get pinctrl/CRU setup here once those drivers land;
+ * UART0 (console) needs neither -- the loader leaves it fully configured.
+ */
 
-/* UART1: PG6 and PG7 (Peripheral 2) */
+/* UART Registers and Bit Definitions *************************************/
 
-#ifdef CONFIG_A64_UART1
-#  define PIO_UART1_TX (PIO_PERIPH2 | PIO_PORT_PIOG | PIO_PIN6)
-#  define PIO_UART1_RX (PIO_PERIPH2 | PIO_PORT_PIOG | PIO_PIN7)
-#endif
+/* The RK3576 UART is a Synopsys DesignWare 16550 (the same IP Allwinner
+ * licensed as the "A64 UART"), so the register layout below -- including the
+ * DesignWare-specific USR at 0x7c -- is identical. Page numbers refer to the
+ * Allwinner A64 User Manual, which documents this DW UART clearly.
+ */
 
-/* UART2: PB0 and PB1 (Peripheral 2) */
-
-#ifdef CONFIG_A64_UART2
-#  define PIO_UART2_TX (PIO_PERIPH2 | PIO_PORT_PIOB | PIO_PIN0)
-#  define PIO_UART2_RX (PIO_PERIPH2 | PIO_PORT_PIOB | PIO_PIN1)
-#endif
-
-/* UART3: PD0 and PD1 (Peripheral 3) */
-
-#ifdef CONFIG_A64_UART3
-#  define PIO_UART3_TX (PIO_PERIPH3 | PIO_PORT_PIOD | PIO_PIN0)
-#  define PIO_UART3_RX (PIO_PERIPH3 | PIO_PORT_PIOD | PIO_PIN1)
-#endif
-
-/* UART4: PD2 and PD3 (Peripheral 3) */
-
-#ifdef CONFIG_A64_UART4
-#  define PIO_UART4_TX (PIO_PERIPH3 | PIO_PORT_PIOD | PIO_PIN2)
-#  define PIO_UART4_RX (PIO_PERIPH3 | PIO_PORT_PIOD | PIO_PIN3)
-#endif
-
-/* A64 UART Registers and Bit Definitions **********************************/
-
-/* A64 UART Registers (A64 Page 562) */
+/* UART Registers */
 
 #define UART_THR(uart_addr) (uart_addr + 0x00)  /* Tx Holding */
 #define UART_RBR(uart_addr) (uart_addr + 0x00)  /* Rx Buffer */
@@ -154,7 +135,7 @@
 #define UART_MSR(uart_addr) (uart_addr + 0x18)  /* Modem Status */
 #define UART_USR(uart_addr) (uart_addr + 0x7c)  /* UART Status */
 
-/* A64 UART Register Bit Definitions (A64 Page 565) */
+/* UART Register Bit Definitions (DW UART) */
 
 #define UART_IER_ERBFI (1 << 0)  /* Enable Rx Data Interrupt */
 #define UART_IER_ETBEI (1 << 1)  /* Enable Tx Empty Interrupt */
@@ -162,7 +143,7 @@
 #define UART_LSR_THRE  (1 << 5)  /* Tx Empty */
 #define UART_USR_BUSY  (1 << 0)  /* UART Busy */
 
-/* A64 UART Interrupt Identity Register (A64 Page 565) */
+/* UART Interrupt Identity Register (DW UART) */
 
 #define UART_IIR_IID_SHIFT        (0) /* Bits: 0-3: Interrupt ID */
 #define UART_IIR_IID_MASK         (15 << UART_IIR_IID_SHIFT)
@@ -179,7 +160,7 @@
 #  define UART_IIR_FEFLAG_DISABLE (0 << UART_IIR_FEFLAG_SHIFT)
 #  define UART_IIR_FEFLAG_ENABLE  (3 << UART_IIR_FEFLAG_SHIFT)
 
-/* A64 UART FIFO Control Register (A64 Page 567) */
+/* UART FIFO Control Register (DW UART) */
 
 #define UART_FCR_FIFOE            (1 << 0)  /* Bit 0:  Enable FIFOs */
 #define UART_FCR_RFIFOR           (1 << 1)  /* Bit 1:  RCVR FIFO Reset */
@@ -199,7 +180,7 @@
 #  define UART_FCR_RT_HALF        (2 << UART_FCR_RT_SHIFT) /* FIFO 1/2 full */
 #  define UART_FCR_RT_MINUS2      (3 << UART_FCR_RT_SHIFT) /* FIFO-2 less than full */
 
-/* A64 UART Line Control Register (A64 Page 568) */
+/* UART Line Control Register (DW UART) */
 
 #define UART_LCR_DLS_SHIFT        (0)       /* Bits 0-1: Data Length Select */
 #define UART_LCR_DLS_MASK         (3 << UART_LCR_DLS_SHIFT)
@@ -214,40 +195,25 @@
 #define UART_LCR_BC               (1 << 6)  /* Bit 6:  Break Control Bit */
 #define UART_LCR_DLAB             (1 << 7)  /* Bit 7:  Divisor Latch Access Bit */
 
-/* A64 CCU Registers and Bit Definitions ***********************************/
-
-/* Bus Clock Gating Register 3 (A64 Page 104) */
-
-#define BUS_CLK_GATING_REG3 (A64_CCU_ADDR + 0x006C)
-#define UART0_GATING        (1 << 16)
-#define UART1_GATING        (1 << 17)
-#define UART2_GATING        (1 << 18)
-#define UART3_GATING        (1 << 19)
-#define UART4_GATING        (1 << 20)
-
-/* Bus Software Reset Register 4 (A64 Page 142) */
-
-#define BUS_SOFT_RST_REG4 (A64_CCU_ADDR + 0x02D8)
-#define UART0_RST         (1 << 16)
-#define UART1_RST         (1 << 17)
-#define UART2_RST         (1 << 18)
-#define UART3_RST         (1 << 19)
-#define UART4_RST         (1 << 20)
+/* NOTE: Clock gating / software reset live in the RK3576 CRU, not here.
+ * The bootloader enables the UART0 clock; a dedicated CRU driver will handle
+ * UART1-4 gating/reset when they are brought up.
+ */
 
 /***************************************************************************
  * Private Types
  ***************************************************************************/
 
-/* A64 UART Configuration */
+/* UART Configuration */
 
-struct a64_uart_config
+struct rk3576_uart_config
 {
   unsigned long uart;  /* UART Base Address */
 };
 
-/* A64 UART Device Data */
+/* UART Device Data */
 
-struct a64_uart_data
+struct rk3576_uart_data
 {
   uint32_t baud_rate;  /* UART Baud Rate */
   uint32_t ier;        /* Saved IER value */
@@ -256,12 +222,12 @@ struct a64_uart_data
   bool     stopbits2;  /* true: Configure with 2 stop bits instead of 1 */
 };
 
-/* A64 UART Port */
+/* UART Port */
 
-struct a64_uart_port_s
+struct rk3576_uart_port_s
 {
-  struct a64_uart_data data;     /* UART Device Data */
-  struct a64_uart_config config; /* UART Configuration */
+  struct rk3576_uart_data data;     /* UART Device Data */
+  struct rk3576_uart_config config; /* UART Configuration */
   unsigned int irq_num;          /* UART IRQ Number */
   bool is_console;               /* 1 if this UART is console */
 };
@@ -270,15 +236,15 @@ struct a64_uart_port_s
  * Private Function Prototypes
  ***************************************************************************/
 
-static void a64_uart_rxint(struct uart_dev_s *dev, bool enable);
-static void a64_uart_txint(struct uart_dev_s *dev, bool enable);
+static void rk3576_uart_rxint(struct uart_dev_s *dev, bool enable);
+static void rk3576_uart_txint(struct uart_dev_s *dev, bool enable);
 
 /***************************************************************************
  * Private Functions
  ***************************************************************************/
 
 /***************************************************************************
- * Name: a64_uart_divisor
+ * Name: rk3576_uart_divisor
  *
  * Description:
  *   Select a divisor to produce the BAUD from the UART SCLK.
@@ -291,14 +257,14 @@ static void a64_uart_txint(struct uart_dev_s *dev, bool enable);
  *
  ***************************************************************************/
 
-static uint32_t a64_uart_divisor(uint32_t baud)
+static uint32_t rk3576_uart_divisor(uint32_t baud)
 {
   DEBUGASSERT(baud != 0);
   return UART_SCLK / (baud << 4);
 }
 
 /***************************************************************************
- * Name: a64_uart_irq_handler
+ * Name: rk3576_uart_irq_handler
  *
  * Description:
  *   This is the common UART interrupt handler.  It should call
@@ -315,11 +281,11 @@ static uint32_t a64_uart_divisor(uint32_t baud)
  *
  ***************************************************************************/
 
-static int a64_uart_irq_handler(int irq, void *context, void *arg)
+static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
 {
   struct uart_dev_s *dev = (struct uart_dev_s *)arg;
-  const struct a64_uart_port_s *port = (struct a64_uart_port_s *)dev->priv;
-  const struct a64_uart_config *config = &port->config;
+  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_config *config = &port->config;
   uint32_t status;
   int passes;
 
@@ -414,7 +380,7 @@ static int a64_uart_irq_handler(int irq, void *context, void *arg)
 }
 
 /***************************************************************************
- * Name: a64_uart_wait
+ * Name: rk3576_uart_wait
  *
  * Description:
  *   Wait for UART to be non-busy.
@@ -427,10 +393,10 @@ static int a64_uart_irq_handler(int irq, void *context, void *arg)
  *
  ***************************************************************************/
 
-static int a64_uart_wait(struct uart_dev_s *dev)
+static int rk3576_uart_wait(struct uart_dev_s *dev)
 {
-  struct a64_uart_port_s *port = (struct a64_uart_port_s *)dev->priv;
-  const struct a64_uart_config *config = &port->config;
+  struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_config *config = &port->config;
   int i;
 
   for (i = 0; i < UART_TIMEOUT_MS; i++)
@@ -450,7 +416,7 @@ static int a64_uart_wait(struct uart_dev_s *dev)
 }
 
 /***************************************************************************
- * Name: a64_uart_setup
+ * Name: rk3576_uart_setup
  *
  * Description:
  *   Configure the UART baud, bits, parity, fifos, etc. This method is
@@ -464,12 +430,12 @@ static int a64_uart_wait(struct uart_dev_s *dev)
  *
  ***************************************************************************/
 
-static int a64_uart_setup(struct uart_dev_s *dev)
+static int rk3576_uart_setup(struct uart_dev_s *dev)
 {
 #ifndef CONFIG_SUPPRESS_UART_CONFIG
-  struct a64_uart_port_s *port = (struct a64_uart_port_s *)dev->priv;
-  const struct a64_uart_config *config = &port->config;
-  struct a64_uart_data *data = &port->data;
+  struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_config *config = &port->config;
+  struct rk3576_uart_data *data = &port->data;
   uint16_t dl;
   uint32_t lcr;
   int ret;
@@ -528,7 +494,7 @@ static int a64_uart_setup(struct uart_dev_s *dev)
 
   /* Set DLAB when UART is not busy */
 
-  ret = a64_uart_wait(dev);
+  ret = rk3576_uart_wait(dev);
 
   if (ret < 0)
     {
@@ -538,7 +504,7 @@ static int a64_uart_setup(struct uart_dev_s *dev)
 
   putreg32(lcr | UART_LCR_DLAB, UART_LCR(config->uart));
 
-  ret = a64_uart_wait(dev);
+  ret = rk3576_uart_wait(dev);
 
   if (ret < 0)
     {
@@ -548,7 +514,7 @@ static int a64_uart_setup(struct uart_dev_s *dev)
 
   /* Set the BAUD divisor */
 
-  dl = a64_uart_divisor(data->baud_rate);
+  dl = rk3576_uart_divisor(data->baud_rate);
   putreg8(dl >> 8,   UART_DLH(config->uart));
   putreg8(dl & 0xff, UART_DLL(config->uart));
 
@@ -581,7 +547,7 @@ static int a64_uart_setup(struct uart_dev_s *dev)
 }
 
 /***************************************************************************
- * Name: a64_uart_shutdown
+ * Name: rk3576_uart_shutdown
  *
  * Description:
  *   Disable the UART Port.  This method is called when the serial
@@ -595,16 +561,16 @@ static int a64_uart_setup(struct uart_dev_s *dev)
  *
  ***************************************************************************/
 
-static void a64_uart_shutdown(struct uart_dev_s *dev)
+static void rk3576_uart_shutdown(struct uart_dev_s *dev)
 {
   /* Disable the Receive and Transmit Interrupts */
 
-  a64_uart_rxint(dev, false);
-  a64_uart_txint(dev, false);
+  rk3576_uart_rxint(dev, false);
+  rk3576_uart_txint(dev, false);
 }
 
 /***************************************************************************
- * Name: a64_uart_attach
+ * Name: rk3576_uart_attach
  *
  * Description:
  *   Configure the UART to operation in interrupt driven mode.
@@ -626,16 +592,16 @@ static void a64_uart_shutdown(struct uart_dev_s *dev)
  *
  ***************************************************************************/
 
-static int a64_uart_attach(struct uart_dev_s *dev)
+static int rk3576_uart_attach(struct uart_dev_s *dev)
 {
   int ret;
-  const struct a64_uart_port_s *port = (struct a64_uart_port_s *)dev->priv;
+  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
 
   DEBUGASSERT(port != NULL);
 
   /* Attach UART Interrupt Handler */
 
-  ret = irq_attach(port->irq_num, a64_uart_irq_handler, dev);
+  ret = irq_attach(port->irq_num, rk3576_uart_irq_handler, dev);
 
   /* Set Interrupt Priority in Generic Interrupt Controller v2 */
 
@@ -657,7 +623,7 @@ static int a64_uart_attach(struct uart_dev_s *dev)
 }
 
 /***************************************************************************
- * Name: a64_uart_detach
+ * Name: rk3576_uart_detach
  *
  * Description:
  *   Detach UART interrupts.  This method is called when the serial port is
@@ -672,9 +638,9 @@ static int a64_uart_attach(struct uart_dev_s *dev)
  *
  ***************************************************************************/
 
-static void a64_uart_detach(struct uart_dev_s *dev)
+static void rk3576_uart_detach(struct uart_dev_s *dev)
 {
-  const struct a64_uart_port_s *port = (struct a64_uart_port_s *)dev->priv;
+  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
 
   DEBUGASSERT(port != NULL);
 
@@ -688,7 +654,7 @@ static void a64_uart_detach(struct uart_dev_s *dev)
 }
 
 /***************************************************************************
- * Name: a64_uart_ioctl
+ * Name: rk3576_uart_ioctl
  *
  * Description:
  *   All ioctl calls will be routed through this method.
@@ -703,7 +669,7 @@ static void a64_uart_detach(struct uart_dev_s *dev)
  *
  ***************************************************************************/
 
-static int a64_uart_ioctl(struct file *filep, int cmd, unsigned long arg)
+static int rk3576_uart_ioctl(struct file *filep, int cmd, unsigned long arg)
 {
   int ret = OK;
 
@@ -725,7 +691,7 @@ static int a64_uart_ioctl(struct file *filep, int cmd, unsigned long arg)
 }
 
 /***************************************************************************
- * Name: a64_uart_receive
+ * Name: rk3576_uart_receive
  *
  * Description:
  *   Called (usually) from the interrupt level to receive one
@@ -741,10 +707,10 @@ static int a64_uart_ioctl(struct file *filep, int cmd, unsigned long arg)
  *
  ***************************************************************************/
 
-static int a64_uart_receive(struct uart_dev_s *dev, unsigned int *status)
+static int rk3576_uart_receive(struct uart_dev_s *dev, unsigned int *status)
 {
-  struct a64_uart_port_s *port = (struct a64_uart_port_s *)dev->priv;
-  const struct a64_uart_config *config = &port->config;
+  struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_config *config = &port->config;
   uint32_t rbr;
 
   *status = getreg8(UART_LSR(config->uart));
@@ -753,7 +719,7 @@ static int a64_uart_receive(struct uart_dev_s *dev, unsigned int *status)
 }
 
 /***************************************************************************
- * Name: a64_uart_rxint
+ * Name: rk3576_uart_rxint
  *
  * Description:
  *   Call to enable or disable RX interrupts
@@ -767,10 +733,10 @@ static int a64_uart_receive(struct uart_dev_s *dev, unsigned int *status)
  *
  ***************************************************************************/
 
-static void a64_uart_rxint(struct uart_dev_s *dev, bool enable)
+static void rk3576_uart_rxint(struct uart_dev_s *dev, bool enable)
 {
-  const struct a64_uart_port_s *port = (struct a64_uart_port_s *)dev->priv;
-  const struct a64_uart_config *config = &port->config;
+  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_config *config = &port->config;
 
   /* Write to Interrupt Enable Register (UART_IER) */
 
@@ -789,7 +755,7 @@ static void a64_uart_rxint(struct uart_dev_s *dev, bool enable)
 }
 
 /***************************************************************************
- * Name: a64_uart_rxavailable
+ * Name: rk3576_uart_rxavailable
  *
  * Description:
  *   Return true if the Receive FIFO is not empty
@@ -802,10 +768,10 @@ static void a64_uart_rxint(struct uart_dev_s *dev, bool enable)
  *
  ***************************************************************************/
 
-static bool a64_uart_rxavailable(struct uart_dev_s *dev)
+static bool rk3576_uart_rxavailable(struct uart_dev_s *dev)
 {
-  const struct a64_uart_port_s *port = (struct a64_uart_port_s *)dev->priv;
-  const struct a64_uart_config *config = &port->config;
+  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_config *config = &port->config;
 
   /* Data Ready Bit (Line Status Register) is 1 if Rx Data is ready */
 
@@ -813,7 +779,7 @@ static bool a64_uart_rxavailable(struct uart_dev_s *dev)
 }
 
 /***************************************************************************
- * Name: a64_uart_send
+ * Name: rk3576_uart_send
  *
  * Description:
  *   This method will send one byte on the UART
@@ -827,10 +793,10 @@ static bool a64_uart_rxavailable(struct uart_dev_s *dev)
  *
  ***************************************************************************/
 
-static void a64_uart_send(struct uart_dev_s *dev, int ch)
+static void rk3576_uart_send(struct uart_dev_s *dev, int ch)
 {
-  const struct a64_uart_port_s *port = (struct a64_uart_port_s *)dev->priv;
-  const struct a64_uart_config *config = &port->config;
+  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_config *config = &port->config;
 
   /* Write char to Transmit Holding Register (UART_THR) */
 
@@ -838,7 +804,7 @@ static void a64_uart_send(struct uart_dev_s *dev, int ch)
 }
 
 /***************************************************************************
- * Name: a64_uart_txint
+ * Name: rk3576_uart_txint
  *
  * Description:
  *   Call to enable or disable TX interrupts
@@ -852,10 +818,10 @@ static void a64_uart_send(struct uart_dev_s *dev, int ch)
  *
  ***************************************************************************/
 
-static void a64_uart_txint(struct uart_dev_s *dev, bool enable)
+static void rk3576_uart_txint(struct uart_dev_s *dev, bool enable)
 {
-  const struct a64_uart_port_s *port = (struct a64_uart_port_s *)dev->priv;
-  const struct a64_uart_config *config = &port->config;
+  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_config *config = &port->config;
 
   /* Write to Interrupt Enable Register (UART_IER) */
 
@@ -874,7 +840,7 @@ static void a64_uart_txint(struct uart_dev_s *dev, bool enable)
 }
 
 /***************************************************************************
- * Name: a64_uart_txready
+ * Name: rk3576_uart_txready
  *
  * Description:
  *   Return true if the Transmit FIFO is not full
@@ -887,10 +853,10 @@ static void a64_uart_txint(struct uart_dev_s *dev, bool enable)
  *
  ***************************************************************************/
 
-static bool a64_uart_txready(struct uart_dev_s *dev)
+static bool rk3576_uart_txready(struct uart_dev_s *dev)
 {
-  const struct a64_uart_port_s *port = (struct a64_uart_port_s *)dev->priv;
-  const struct a64_uart_config *config = &port->config;
+  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_config *config = &port->config;
 
   /* Tx FIFO is ready if THRE Bit is 1 (Tx Holding Register Empty) */
 
@@ -898,7 +864,7 @@ static bool a64_uart_txready(struct uart_dev_s *dev)
 }
 
 /***************************************************************************
- * Name: a64_uart_txempty
+ * Name: rk3576_uart_txempty
  *
  * Description:
  *   Return true if the Transmit FIFO is empty
@@ -911,15 +877,15 @@ static bool a64_uart_txready(struct uart_dev_s *dev)
  *
  ***************************************************************************/
 
-static bool a64_uart_txempty(struct uart_dev_s *dev)
+static bool rk3576_uart_txempty(struct uart_dev_s *dev)
 {
   /* Tx FIFO is empty if Tx FIFO is not full (for now) */
 
-  return a64_uart_txready(dev);
+  return rk3576_uart_txready(dev);
 }
 
 /***************************************************************************
- * Name: a64_uart_wait_send
+ * Name: rk3576_uart_wait_send
  *
  * Description:
  *   Wait for Transmit FIFO until it is not full, then transmit the
@@ -934,11 +900,11 @@ static bool a64_uart_txempty(struct uart_dev_s *dev)
  *
  ***************************************************************************/
 
-static void a64_uart_wait_send(struct uart_dev_s *dev, int ch)
+static void rk3576_uart_wait_send(struct uart_dev_s *dev, int ch)
 {
   DEBUGASSERT(dev != NULL);
-  while (!a64_uart_txready(dev));
-  a64_uart_send(dev, ch);
+  while (!rk3576_uart_txready(dev));
+  rk3576_uart_send(dev, ch);
 }
 
 /***************************************************************************
@@ -949,27 +915,27 @@ static void a64_uart_wait_send(struct uart_dev_s *dev, int ch)
 
 static const struct uart_ops_s g_uart_ops =
 {
-  .setup    = a64_uart_setup,
-  .shutdown = a64_uart_shutdown,
-  .attach   = a64_uart_attach,
-  .detach   = a64_uart_detach,
-  .ioctl    = a64_uart_ioctl,
-  .receive  = a64_uart_receive,
-  .rxint    = a64_uart_rxint,
-  .rxavailable = a64_uart_rxavailable,
+  .setup    = rk3576_uart_setup,
+  .shutdown = rk3576_uart_shutdown,
+  .attach   = rk3576_uart_attach,
+  .detach   = rk3576_uart_detach,
+  .ioctl    = rk3576_uart_ioctl,
+  .receive  = rk3576_uart_receive,
+  .rxint    = rk3576_uart_rxint,
+  .rxavailable = rk3576_uart_rxavailable,
 #ifdef CONFIG_SERIAL_IFLOWCONTROL
   .rxflowcontrol    = NULL,
 #endif
-  .send     = a64_uart_send,
-  .txint    = a64_uart_txint,
-  .txready  = a64_uart_txready,
-  .txempty  = a64_uart_txempty,
+  .send     = rk3576_uart_send,
+  .txint    = rk3576_uart_txint,
+  .txready  = rk3576_uart_txready,
+  .txempty  = rk3576_uart_txempty,
 };
 
 /* UART0 Port State (Console) */
 
 #ifdef CONFIG_RK3576_UART
-static struct a64_uart_port_s g_uart0priv =
+static struct rk3576_uart_port_s g_uart0priv =
 {
   .data   =
     {
@@ -1013,13 +979,13 @@ static struct uart_dev_s g_uart0port =
   .priv  = &g_uart0priv,
 };
 
-#endif /* CONFIG_A64_UART */
+#endif /* CONFIG_RK3576_UART */
 
 #ifdef CONFIG_RK3576_UART1
 
 /* UART1 Port State */
 
-static struct a64_uart_port_s g_uart1priv =
+static struct rk3576_uart_port_s g_uart1priv =
 {
   .data   =
     {
@@ -1031,7 +997,7 @@ static struct a64_uart_port_s g_uart1priv =
 
   .config =
     {
-      .uart       = A64_UART1_ADDR
+      .uart       = RK3576_UART1_ADDR
     },
 
     .irq_num      = RK3576_UART1_IRQ,
@@ -1063,13 +1029,13 @@ static struct uart_dev_s g_uart1port =
   .priv  = &g_uart1priv,
 };
 
-#endif /* CONFIG_A64_UART1 */
+#endif /* CONFIG_RK3576_UART1 */
 
 #ifdef CONFIG_RK3576_UART2
 
 /* UART2 Port State */
 
-static struct a64_uart_port_s g_uart2priv =
+static struct rk3576_uart_port_s g_uart2priv =
 {
   .data   =
     {
@@ -1113,13 +1079,13 @@ static struct uart_dev_s g_uart2port =
   .priv  = &g_uart2priv,
 };
 
-#endif /* CONFIG_A64_UART2 */
+#endif /* CONFIG_RK3576_UART2 */
 
 #ifdef CONFIG_RK3576_UART3
 
 /* UART3 Port State */
 
-static struct a64_uart_port_s g_uart3priv =
+static struct rk3576_uart_port_s g_uart3priv =
 {
   .data   =
     {
@@ -1131,10 +1097,10 @@ static struct a64_uart_port_s g_uart3priv =
 
   .config =
     {
-      .uart       = A64_UART3_ADDR
+      .uart       = RK3576_UART3_ADDR
     },
 
-    .irq_num      = A64_UART3_IRQ,
+    .irq_num      = RK3576_UART3_IRQ,
     .is_console   = 0
 };
 
@@ -1163,13 +1129,13 @@ static struct uart_dev_s g_uart3port =
   .priv  = &g_uart3priv,
 };
 
-#endif /* CONFIG_A64_UART3 */
+#endif /* CONFIG_RK3576_UART3 */
 
 #ifdef CONFIG_RK3576_UART4
 
 /* UART4 Port State */
 
-static struct a64_uart_port_s g_uart4priv =
+static struct rk3576_uart_port_s g_uart4priv =
 {
   .data   =
     {
@@ -1181,10 +1147,10 @@ static struct a64_uart_port_s g_uart4priv =
 
   .config =
     {
-      .uart       = A64_UART4_ADDR
+      .uart       = RK3576_UART4_ADDR
     },
 
-    .irq_num      = A64_UART4_IRQ,
+    .irq_num      = RK3576_UART4_IRQ,
     .is_console   = 0
 };
 
@@ -1213,7 +1179,7 @@ static struct uart_dev_s g_uart4port =
   .priv  = &g_uart4priv,
 };
 
-#endif /* CONFIG_A64_UART4 */
+#endif /* CONFIG_RK3576_UART4 */
 
 /* Pick ttys1.  This could be any of UART1-4. */
 
@@ -1280,65 +1246,22 @@ static struct uart_dev_s g_uart4port =
 
 void arm64_earlyserialinit(void)
 {
-  int ret;
-
   /* NOTE: This function assumes that UART0 low level hardware configuration
    * -- including all clocking and pin configuration -- was performed
    * earlier by U-Boot Bootloader.
    */
 
-#ifdef CONFIG_A64_UART1
-  /* Configure UART1 */
-
-  ret = a64_uart_init(UART1_GATING, UART1_RST, PIO_UART1_TX, PIO_UART1_RX);
-
-  if (ret < 0)
-    {
-      _err("UART1 config failed, ret=%d\n", ret);
-    }
-#endif /* CONFIG_A64_UART1 */
-
-#ifdef CONFIG_A64_UART2
-  /* Configure UART2 */
-
-  ret = a64_uart_init(UART2_GATING, UART2_RST, PIO_UART2_TX, PIO_UART2_RX);
-
-  if (ret < 0)
-    {
-      _err("UART2 config failed, ret=%d\n", ret);
-    }
-#endif /* CONFIG_A64_UART2 */
-
-#ifdef CONFIG_A64_UART3
-  /* Configure UART3 */
-
-  ret = a64_uart_init(UART3_GATING, UART3_RST, PIO_UART3_TX, PIO_UART3_RX);
-
-  if (ret < 0)
-    {
-      _err("UART3 config failed, ret=%d\n", ret);
-    }
-#endif /* CONFIG_A64_UART3 */
-
-#ifdef CONFIG_A64_UART4
-  /* Configure UART4 */
-
-  ret = a64_uart_init(UART4_GATING, UART4_RST, PIO_UART4_TX, PIO_UART4_RX);
-
-  if (ret < 0)
-    {
-      _err("UART4 config failed, ret=%d\n", ret);
-    }
-#endif /* CONFIG_A64_UART4 */
+  /* UART1-4 need CRU clock + pinctrl setup here once those drivers exist.
+   * Until then only the console (UART0, configured by the bootloader) is
+   * brought up below.
+   */
 
 #ifdef CONSOLE_DEV
   /* Enable the console at UART0 */
 
   CONSOLE_DEV.isconsole = true;
-  a64_uart_setup(&CONSOLE_DEV);
+  rk3576_uart_setup(&CONSOLE_DEV);
 #endif
-
-  UNUSED(ret);
 }
 
 /***************************************************************************
@@ -1361,7 +1284,7 @@ void up_putc(int ch)
 #ifdef CONSOLE_DEV
   struct uart_dev_s *dev = &CONSOLE_DEV;
 
-  a64_uart_wait_send(dev, ch);
+  rk3576_uart_wait_send(dev, ch);
 #endif
 }
 
@@ -1370,7 +1293,7 @@ void up_putc(int ch)
  *
  * Description:
  *   Register serial console and serial ports.  This assumes
- *   that a64_earlyserialinit was called previously.
+ *   that arm64_earlyserialinit was called previously.
  *
  * Returned Value:
  *   None
