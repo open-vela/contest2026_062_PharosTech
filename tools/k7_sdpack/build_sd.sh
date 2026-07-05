@@ -48,9 +48,12 @@ cat > fit.its <<'ITS'
     description = "NuttX BL33 + rkbin ATF/OP-TEE for RK3576 (KICKPI-K7)";
     #address-cells = <1>;
     images {
-        uboot { description = "NuttX (BL33)"; data = /incbin/("nuttx.bin");
-            type = "standalone"; arch = "arm64"; compression = "none";
-            load = <0x40200000>; entry = <0x40200000>; hash { algo = "sha256"; }; };
+        /* ★ 顺序敏感:atf-1/2/3/optee/fdt(小、定长)排在前,offset 固定;
+         * uboot(=nuttx,大、变长)排【最后】。否则 nuttx 变大会把 atf-3 的
+         * data-position 往后推,SPL 加载 atf-3 到 0x3fe70000(SRAM)时落点与
+         * SPL 缓冲重叠自覆盖 → atf-3 校验/加载失败 → BL31 起不来无限重启。
+         */
+
         atf-1 { description = "ARM Trusted Firmware"; data = /incbin/("atf-1.bin");
             type = "firmware"; arch = "arm64"; os = "arm-trusted-firmware"; compression = "none";
             load = <0x40060000>; entry = <0x40060000>; hash { algo = "sha256"; }; };
@@ -65,15 +68,28 @@ cat > fit.its <<'ITS'
             load = <0x48400000>; entry = <0x48400000>; hash { algo = "sha256"; }; };
         fdt { description = "dummy fdt"; data = /incbin/("dummy.dtb");
             type = "flat_dt"; arch = "arm64"; compression = "none"; hash { algo = "sha256"; }; };
+        uboot { description = "NuttX (BL33)"; data = /incbin/("nuttx.bin");
+            type = "standalone"; arch = "arm64"; compression = "none";
+            load = <0x40200000>; entry = <0x40200000>; hash { algo = "sha256"; }; };
     };
     configurations {
         default = "conf";
         conf { description = "rk3576 nuttx"; firmware = "atf-1";
-            loadables = "uboot", "atf-2", "atf-3", "optee"; fdt = "fdt"; };
+            /* ★ 加载顺序敏感:SPL 按 loadables 顺序逐个加载。uboot(=nuttx,大)
+             * 必须排【最后】——否则大 nuttx 先加载会越界覆盖 SPL 后续读 fdt/
+             * 加载 atf-3 的工作内存,导致 "No matching DT" + 漏加载 atf-3/optee
+             * → BL31 缺参数无限重启。小 nuttx 侥幸不越界,大 nuttx 暴露。
+             */
+            loadables = "atf-2", "atf-3", "optee", "uboot"; fdt = "fdt"; };
     };
 };
 ITS
-"$MKIMAGE" -f fit.its uboot_nuttx.img >/dev/null
+# -E: 外部数据(FIT 只留小 header,各段 data 附在 header 之后按 offset 单独读)。
+# 关键:大 nuttx 时,内嵌 FIT 会让整个大 uboot data 进 SPL 的 SRAM 处理区 → 加载
+# atf-3(0x3fe70000 SRAM)时越界覆盖 SPL 工作内存 → "No matching DT" → 崩。-E 让 SPL
+# 只读小 header,不把大 data 塞进 SRAM,避免越界(vendor/手术法就是 -E 才能带大镜像)。
+# -p 0x1000: 各段 data 4KB 对齐,布局稳定(避免 M2 当年 -E 无对齐导致 atf-3 落点漂移)。
+"$MKIMAGE" -E -p 0x1000 -f fit.its uboot_nuttx.img >/dev/null
 echo "FIT: uboot_nuttx.img $(stat -c%s uboot_nuttx.img) bytes"
 
 # --- 4. idbloader + trust from rkbin (mergers read ini paths relative to root) -
