@@ -1,0 +1,32 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config EXAMPLES_K7FLASH
+	tristate "KICKPI-K7 固件热更新落盘工具"
+	default n
+	depends on BOARDCTL_RESET
+	---help---
+		把新固件(build_sd 产出的 FIT)写入 SD 卡 uboot 槽并校验后重启。
+
+if EXAMPLES_K7FLASH
+
+config EXAMPLES_K7FLASH_PROGNAME
+	string "Program name"
+	default "k7flash"
+
+config EXAMPLES_K7FLASH_PRIORITY
+	int "k7flash task priority"
+	default 100
+
+config EXAMPLES_K7FLASH_STACKSIZE
+	int "k7flash stack size"
+	default 4096
+
+config EXAMPLES_K7FLASH_HEAPSIZE
+	int "k7flash heap size"
+	depends on MM_TASK_HEAP
+	default MM_TASK_HEAP_DEFAULT_SIZE
+
+endif

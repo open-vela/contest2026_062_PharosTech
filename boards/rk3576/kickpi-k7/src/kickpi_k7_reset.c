@@ -1,5 +1,5 @@
 /****************************************************************************
- * boards/rk3576/kickpi-k7/src/kickpi_k7_appinit.c
+ * boards/arm64/rk3576/kickpi-k7/src/kickpi_k7_reset.c
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -25,39 +25,36 @@
  ****************************************************************************/
 
 #include <nuttx/config.h>
-#include <sys/types.h>
-#include <syslog.h>
+
+#include <nuttx/arch.h>
 #include <nuttx/board.h>
-#include "kickpi_k7.h"
 
-#ifdef CONFIG_FS_TMPFS
-#  include <sys/mount.h>
-#endif
+#ifdef CONFIG_BOARDCTL_RESET
 
 /****************************************************************************
- * Public Functions
+ * Public functions
  ****************************************************************************/
 
 /****************************************************************************
- * Name: board_app_initialize
+ * Name: board_reset
+ *
+ * Description:
+ *   复位开发板。CONFIG_BOARDCTL_RESET 打开时由板级逻辑提供。
+ *   RK3576 走 PSCI(up_systemreset 在 arch/arm64 的 arm64_cpu_psci.c 实现),
+ *   触发系统热重启,重新从 MiniLoader/BL33 引导,使新固件生效。
+ *
+ * Input Parameters:
+ *   status - 复位事件携带的状态信息,板级自定义,未用时传 0。
+ *
+ * Returned Value:
+ *   若函数返回,说明未能复位;返回值为板级特定的失败原因。
+ *
  ****************************************************************************/
 
-int board_app_initialize(uintptr_t arg)
+int board_reset(int status)
 {
-  /* SDMMC and the GPT partitions are set up in board_late_initialize
-   * (boardinit.c).
-   */
-
-#ifdef CONFIG_FS_TMPFS
-  /* Mount tmpfs at /tmp for firmware hot-update: ymodem (rb) writes the
-   * received image to /tmp and k7flash reads it back from there.
-   */
-
-  if (mount(NULL, "/tmp", "tmpfs", 0, NULL) < 0)
-    {
-      syslog(LOG_ERR, "ERROR: mount /tmp (tmpfs) failed\n");
-    }
-#endif
-
-  return OK;
+  up_systemreset();
+  return 0;
 }
+
+#endif /* CONFIG_BOARDCTL_RESET */

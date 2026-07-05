@@ -1,5 +1,5 @@
 ############################################################################
-# boards/arm64/rk3576/kickpi_k7/src/Makefile
+# apps/examples/k7flash/Make.defs
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -20,14 +20,6 @@
 #
 ############################################################################
 
-include $(TOPDIR)/Make.defs
-
-CSRCS = kickpi_k7_boardinit.c
-CSRCS += kickpi_k7_appinit.c
-CSRCS += kickpi_k7_reset.c
-
-ifeq ($(CONFIG_ETC_ROMFS),y)
-  RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS
+ifneq ($(CONFIG_EXAMPLES_K7FLASH),)
+CONFIGURED_APPS += $(APPDIR)/examples/k7flash
 endif
-
-include $(TOPDIR)/boards/Board.mk
