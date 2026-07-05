@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <stdint.h>
 #include <string.h>
 #include <fcntl.h>
@@ -90,8 +91,13 @@ int main(int argc, char *argv[])
     }
 
   nsectors = (nbytes + K7_SECTOR_SIZE - 1) / K7_SECTOR_SIZE;
-  buf  = malloc(nsectors * K7_SECTOR_SIZE);
-  vbuf = malloc(K7_SECTOR_SIZE);
+
+  /* buffer 按 cache line(64B)对齐:满足 SDMMC IDMAC 的 dmapreflight,走多块 DMA;
+   * 否则驱动会自动回退单块 PIO(仍能工作,只是慢)。
+   */
+
+  buf  = memalign(64, nsectors * K7_SECTOR_SIZE);
+  vbuf = memalign(64, nsectors * K7_SECTOR_SIZE);
   if (buf == NULL || vbuf == NULL)
     {
       fprintf(stderr, "错误: 内存不足\n");
@@ -137,32 +143,24 @@ int main(int argc, char *argv[])
   printf("k7flash: 写 %zu 字节(%zu 扇区)到 %s @sector %d ...\n",
          nbytes, nsectors, K7_TARGET_DEV, K7_UBOOT_SECTOR);
 
-  /* 4) 逐扇区写(单块传输,DW-MSHC 多块 PIO 会 underrun,单块可靠) */
+  /* 4) 多块写(buffer 已 cache-line 对齐 → SDMMC IDMAC 一次搬多扇区;
+   * 不对齐时驱动自动回退单块 PIO)。
+   */
 
-  for (size_t s = 0; s < nsectors; s++)
+  rn = bnode->u.i_bops->write(bnode, buf, K7_UBOOT_SECTOR, nsectors);
+  if (rn != (ssize_t)nsectors)
     {
-      rn = bnode->u.i_bops->write(bnode, buf + s * K7_SECTOR_SIZE,
-                                  K7_UBOOT_SECTOR + s, 1);
-      if (rn != 1)
-        {
-          fprintf(stderr, "错误: 写失败 @扇区 %zu (rn=%zd)\n",
-                  K7_UBOOT_SECTOR + s, rn);
-          goto errout;
-        }
+      fprintf(stderr, "错误: 写失败(rn=%zd,期望 %zu)\n", rn, nsectors);
+      goto errout;
     }
 
-  /* 5) 逐扇区读回校验 */
+  /* 5) 多块读回校验 */
 
-  for (size_t s = 0; s < nsectors; s++)
+  rn = bnode->u.i_bops->read(bnode, vbuf, K7_UBOOT_SECTOR, nsectors);
+  if (rn != (ssize_t)nsectors || memcmp(buf, vbuf, nbytes) != 0)
     {
-      rn = bnode->u.i_bops->read(bnode, vbuf, K7_UBOOT_SECTOR + s, 1);
-      if (rn != 1 ||
-          memcmp(vbuf, buf + s * K7_SECTOR_SIZE, K7_SECTOR_SIZE) != 0)
-        {
-          fprintf(stderr, "错误: 校验失败 @扇区 %zu —— 不重启,请重试\n",
-                  K7_UBOOT_SECTOR + s);
-          goto errout;
-        }
+      fprintf(stderr, "错误: 校验失败(rn=%zd) —— 不重启,请重试\n", rn);
+      goto errout;
     }
 
   free(buf);
