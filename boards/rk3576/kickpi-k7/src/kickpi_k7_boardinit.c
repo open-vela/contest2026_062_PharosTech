@@ -27,6 +27,7 @@
 #include <nuttx/config.h>
 #include <stdint.h>
 #include <nuttx/board.h>
+#include "rk3576_gpio.h"
 #include "kickpi_k7.h"
 
 /****************************************************************************
@@ -102,5 +103,16 @@ void rk3576_board_initialize(void)
 void board_late_initialize(void)
 {
   /* Perform board initialization */
+
+#ifdef CONFIG_DEV_GPIO
+  /* setup gpio driver */
+  rk3576_gpio_init();
+#endif
+
+#ifdef CONFIG_DEV_GPIO
+  /* register LED GPIO pin */
+  rk3576_gpio_register_output(GPIO_PORT0 | GPIO_PIN_B4 | GPIO_OUTPUT);
+#endif
+
 }
 #endif /* CONFIG_BOARD_LATE_INITIALIZE */
