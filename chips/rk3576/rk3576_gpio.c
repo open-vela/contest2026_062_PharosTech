@@ -870,18 +870,22 @@ static int rk3576_gpio_setpintype(FAR struct gpio_dev_s *dev,
     {
       case GPIO_INPUT_PIN:
         pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT;
+        dev->gp_ops = &g_gpin_ops;
         break;
 
       case GPIO_INPUT_PIN_PULLUP:
         pinset |= GPIO_INPUT | GPIO_PULLUP | GPIO_SCHMITT;
+        dev->gp_ops = &g_gpin_ops;
         break;
 
       case GPIO_INPUT_PIN_PULLDOWN:
         pinset |= GPIO_INPUT | GPIO_PULLDOWN | GPIO_SCHMITT;
+        dev->gp_ops = &g_gpin_ops;
         break;
 
       case GPIO_OUTPUT_PIN:
         pinset |= GPIO_OUTPUT;
+        dev->gp_ops = &g_gpout_ops;
         break;
 
       /* Level-triggered interrupts */
@@ -890,12 +894,14 @@ static int rk3576_gpio_setpintype(FAR struct gpio_dev_s *dev,
       case GPIO_INTERRUPT_HIGH_PIN_WAKEUP:
         pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
                |  GPIO_INT_LEVEL | GPIO_INT_HIGH_RISING;
+        dev->gp_ops = &g_gpint_ops;
         break;
 
       case GPIO_INTERRUPT_LOW_PIN:
       case GPIO_INTERRUPT_LOW_PIN_WAKEUP:
         pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
                |  GPIO_INT_LEVEL | GPIO_INT_LOW_FALLING;
+        dev->gp_ops = &g_gpint_ops;
         break;
 
       /* Edge-triggered interrupts */
@@ -904,18 +910,21 @@ static int rk3576_gpio_setpintype(FAR struct gpio_dev_s *dev,
       case GPIO_INTERRUPT_RISING_PIN_WAKEUP:
         pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
                |  GPIO_INT_EDGE | GPIO_INT_HIGH_RISING;
+        dev->gp_ops = &g_gpint_ops;
         break;
 
       case GPIO_INTERRUPT_FALLING_PIN:
       case GPIO_INTERRUPT_FALLING_PIN_WAKEUP:
         pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
                |  GPIO_INT_EDGE | GPIO_INT_LOW_FALLING;
+        dev->gp_ops = &g_gpint_ops;
         break;
 
       case GPIO_INTERRUPT_BOTH_PIN:
       case GPIO_INTERRUPT_BOTH_PIN_WAKEUP:
         pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
                |  GPIO_INT_EDGE | GPIO_INT_BOTHEDGE;
+        dev->gp_ops = &g_gpint_ops;
         break;
 
       /* Default interrupt: edge-triggered, rising */
@@ -924,6 +933,7 @@ static int rk3576_gpio_setpintype(FAR struct gpio_dev_s *dev,
       case GPIO_INTERRUPT_PIN_WAKEUP:
         pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
                |  GPIO_INT_EDGE | GPIO_INT_HIGH_RISING;
+        dev->gp_ops = &g_gpint_ops;
         break;
 
       default:
