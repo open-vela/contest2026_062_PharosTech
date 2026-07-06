@@ -484,7 +484,7 @@ static void rk3576_schmitt_set(uint32_t ioc_base, unsigned int port,
  *
  *   The pinset encoding is defined in rk3576_gpio.h and includes:
  *   - Port and pin number
- *   - Mode (input/output/alternate/analog)
+ *   - Mode (input/output/alternate)
  *   - Pull-up/pull-down
  *   - Speed (for output/AF pins)
  *   - Output type (push-pull/open-drain)
@@ -654,27 +654,6 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
           /* Configure drive strength */
 
           rk3576_drive_set(g_ioc_base, port, pin, drive_level);
-        }
-        break;
-
-      case GPIO_ANALOG:
-        {
-          /* Analog mode: configure pin as input (high-impedance).
-           * The IOMUX should be set to the analog function.
-           */
-
-          rk3576_gpio_dirin(port, pin);
-
-          rk3576_iomux_set(g_ioc_base, port, pin, RK3576_IOMUX_FUNC_GPIO);
-
-          /* Disable pull-up/pull-down for analog */
-
-          rk3576_pull_set(g_ioc_base, port, pin,
-                          RK3576_PULL_DISABLE);
-
-          /* Disable schmitt trigger for analog input */
-
-          rk3576_schmitt_set(g_ioc_base, port, pin, false);
         }
         break;
 

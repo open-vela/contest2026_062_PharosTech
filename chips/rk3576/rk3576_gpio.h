@@ -38,7 +38,7 @@
  *
  *  Bit [4:0]   - Pin number within port (0-31)
  *  Bit [7:5]   - Port number (0-4, same as Linux GPIO0-GPIO4)
- *  Bit [9:8]   - Mode (Input/Output/AF/Analog)
+ *  Bit [9:8]   - Mode (Input/Output/AF)
  *  Bit [10]    - (reserved — was GPIO_OPENDRAIN, RK3576 unsupported)
  *  Bit [12:11] - Pull-up/Pull-down
  *  Bit [14:13] - Drive strength (0=12mA .. 3=2mA, see GPIO_SPEED_*)
@@ -113,7 +113,6 @@
 #  define GPIO_INPUT           (0 << GPIO_MODE_SHIFT)  /* Input mode */
 #  define GPIO_OUTPUT          (1 << GPIO_MODE_SHIFT)  /* Output mode */
 #  define GPIO_ALT             (2 << GPIO_MODE_SHIFT)  /* Alternate function */
-#  define GPIO_ANALOG          (3 << GPIO_MODE_SHIFT)  /* Analog mode */
 
 /* Pull-up/Pull-down **********************************************************/
 
