@@ -55,7 +55,7 @@
 #define RK3576_GPIO_INT_STATUS_OFFSET      0x0050  /* int_status: Interrupt status (masked) */
 #define RK3576_GPIO_INT_RAWSTATUS_OFFSET   0x0058  /* int_rawstatus: Raw interrupt status */
 #define RK3576_GPIO_PORTA_EOI_OFFSET       0x0060  /* port_eoi: End-of-interrupt (write-1-clear) */
-#define RK3576_GPIO_EXT_PORTA_OFFSET       0x0070  /* ext_port: External port data (actual pin level) */
+#define RK3576_GPIO_EXT_PORT_OFFSET        0x0070  /* ext_port: External port data (actual pin level) */
 #define RK3576_GPIO_VERSION_ID_OFFSET      0x0078  /* version_id: Controller version */
 
 
@@ -78,7 +78,7 @@ extern const uint32_t g_gpio_base[RK3576_GPIO_NPORTS];
 #define RK3576_GPIO_INT_STATUS(port)       (g_gpio_base[port] + RK3576_GPIO_INT_STATUS_OFFSET)
 #define RK3576_GPIO_INT_RAWSTATUS(port)    (g_gpio_base[port] + RK3576_GPIO_INT_RAWSTATUS_OFFSET)
 #define RK3576_GPIO_PORTA_EOI(port)        (g_gpio_base[port] + RK3576_GPIO_PORTA_EOI_OFFSET)
-#define RK3576_GPIO_EXT_PORTA(port)        (g_gpio_base[port] + RK3576_GPIO_EXT_PORTA_OFFSET)
+#define RK3576_GPIO_EXT_PORT(port)         (g_gpio_base[port] + RK3576_GPIO_EXT_PORT_OFFSET)
 #define RK3576_GPIO_VERSION_ID(port)       (g_gpio_base[port] + RK3576_GPIO_VERSION_ID_OFFSET)
 
 /* Bit manipulation macros */

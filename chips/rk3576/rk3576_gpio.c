@@ -679,6 +679,7 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
         break;
 
       default:
+        gpioerr("ERROR: Invalid GPIO mode: %u\n", mode);
         spin_unlock_irqrestore(&g_gpio_lock, flags);
         return -EINVAL;
     }
@@ -771,7 +772,7 @@ bool rk3576_gpio_read(gpio_pinset_t pinset)
       return false;
     }
 
-  return (getreg32(RK3576_GPIO_EXT_PORTA(port)) & RK3576_GPIO_PIN_BIT(pin)) != 0;
+  return (getreg32(RK3576_GPIO_EXT_PORT(port)) & RK3576_GPIO_PIN_BIT(pin)) != 0;
 }
 
 #ifdef CONFIG_DEV_GPIO
@@ -942,10 +943,13 @@ static int rk3576_gpio_setpintype(FAR struct gpio_dev_s *dev,
 
       case GPIO_INTERRUPT_PIN:
       case GPIO_INTERRUPT_PIN_WAKEUP:
-      default:
         pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
                |  GPIO_INT_EDGE | GPIO_INT_HIGH_RISING;
         break;
+
+      default:
+        gpioerr("ERROR: Unsupported pintype: %d\n", pintype);
+        return -EINVAL;
     }
 
   rk3576_config_gpio(pinset);
@@ -1059,6 +1063,7 @@ static int rk3576_gpio_isr(int irq, void *context, void *arg)
 
   if (port >= RK3576_GPIO_NPORTS)
     {
+      gpioerr("Error: Invalid GPIO port: %u\n", port);
       return -EINVAL;
     }
 
@@ -1124,8 +1129,14 @@ int rk3576_gpio_register(gpio_pinset_t pinset)
   size_t alloc_size;
   int ret, minor;
 
-  if (port >= RK3576_GPIO_NPORTS || pin >= RK3576_GPIO_NPINS)
+  if (port >= RK3576_GPIO_NPORTS)
     {
+      gpioerr("ERROR: Invalid GPIO port: %u\n", port);
+      return -EINVAL;
+    }
+  if (pin >= RK3576_GPIO_NPINS)
+    {
+      gpioerr("ERROR: Invalid GPIO pin: %u\n", pin);
       return -EINVAL;
     }
 
@@ -1133,8 +1144,10 @@ int rk3576_gpio_register(gpio_pinset_t pinset)
 
   /* Interrupt shall not be set with non-input mode simultaneously */
 
-  if (is_interrupt && mode & (~GPIO_INPUT))
+  if (is_interrupt && (mode != GPIO_INPUT))
     {
+      gpioerr("ERROR: EXTI set with non-input mode: 0x%lx\n",
+              (unsigned long)pinset);
       return -EINVAL;
     }
 
@@ -1159,6 +1172,8 @@ int rk3576_gpio_register(gpio_pinset_t pinset)
     }
   else
     {
+      gpioerr("ERROR: Unsupported pin mode: 0x%lx\n",
+              (unsigned long)pinset);
       return -EINVAL;
     }
 
@@ -1209,6 +1224,7 @@ int rk3576_gpio_register(gpio_pinset_t pinset)
   if (ret < 0) 
     {
       gpio_pin_unregister(&dev->gpio, minor);
+      kmm_free(dev);
       return ret;
     }
 

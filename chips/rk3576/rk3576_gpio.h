@@ -30,9 +30,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "chip.h"
-#include "hardware/rk3576_gpio.h"
-
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
