@@ -103,6 +103,24 @@ extern const uint32_t g_gpio_base[RK3576_GPIO_NPORTS];
 #define RK3576_WRITE_BIT(bit, v) \
   ((1u << ((bit) + 16)) | ((v) << (bit)))
 
+/* GPIO v2 single-bit write with 16-bit split register handling.
+ *
+ * GPIO v2 32-bit registers are split into two 16-bit halves:
+ *   reg+0 covers pins 0-15, reg+4 covers pins 16-31.
+ * This macro handles the split transparently — callers just
+ * provide the full 0-31 pin number.
+ *
+ * IOC registers do NOT use this; they cover ≤8 pins per reg
+ * with bit offsets always < 16.  Use RK3576_WRITE_BIT directly.
+ */
+#define RK3576_GPIO_V2_WRITE_BIT(reg_base, pin, v) \
+  do { \
+    if ((pin) >= 16) \
+      putreg32(RK3576_WRITE_BIT((pin) - 16, (v)), (reg_base) + 4); \
+    else \
+      putreg32(RK3576_WRITE_BIT((pin), (v)), (reg_base)); \
+  } while (0)
+
 /* GPIO_SWPORTA_DDR: data direction register */
 
 #define RK3576_GPIO_DDR_INPUT              0

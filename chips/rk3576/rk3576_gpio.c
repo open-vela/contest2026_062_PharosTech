@@ -175,8 +175,7 @@ static const uint32_t g_ioc_base = RK3576_IOC_BASE;
 
 static inline void rk3576_gpio_dirout(unsigned int port, unsigned int pin)
 {
-  putreg32(RK3576_WRITE_BIT(pin, 1),
-           RK3576_GPIO_SWPORTA_DDR(port));
+  RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_SWPORTA_DDR(port), pin, 1);
 }
 
 /****************************************************************************
@@ -189,8 +188,7 @@ static inline void rk3576_gpio_dirout(unsigned int port, unsigned int pin)
 
 static inline void rk3576_gpio_dirin(unsigned int port, unsigned int pin)
 {
-  putreg32(RK3576_WRITE_BIT(pin, 0),
-           RK3576_GPIO_SWPORTA_DDR(port));
+  RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_SWPORTA_DDR(port), pin, 0);
 }
 
 /****************************************************************************
@@ -676,28 +674,23 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
        * All GPIO registers use hiword-mask writes.
        */
 
-      putreg32(RK3576_WRITE_BIT(pin,
-               (pinset & GPIO_INTTYPE_MASK) == GPIO_INT_EDGE ? 1 : 0),
-               RK3576_GPIO_INTTYPE_LEVEL(port));
+      RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INTTYPE_LEVEL(port), pin,
+               (pinset & GPIO_INTTYPE_MASK) == GPIO_INT_EDGE ? 1 : 0);
 
       /* Set interrupt polarity */
 
-      putreg32(RK3576_WRITE_BIT(pin,
-               (pinset & GPIO_INTPOL_MASK) == GPIO_INT_HIGH_RISING ? 1 : 0),
-               RK3576_GPIO_INT_POLARITY(port));
+      RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INT_POLARITY(port), pin,
+               (pinset & GPIO_INTPOL_MASK) == GPIO_INT_HIGH_RISING ? 1 : 0);
 
       /* Clear any pending interrupt */
 
-      putreg32(RK3576_WRITE_BIT(pin, 1),
-               RK3576_GPIO_PORTA_EOI(port));
+      RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_PORTA_EOI(port), pin, 1);
 
       /* Unmask (clear mask bit = enable) and enable the interrupt */
 
-      putreg32(RK3576_WRITE_BIT(pin, 0),
-               RK3576_GPIO_INTMASK(port));
+      RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INTMASK(port), pin, 0);
 
-      putreg32(RK3576_WRITE_BIT(pin, 1),
-               RK3576_GPIO_INTEN(port));
+      RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INTEN(port), pin, 1);
 
       /* GIC interrupt handlers are installed by rk3576_gpio_init().
        * Each bank has 4 interrupt lines (one per 8-pin group).
@@ -720,8 +713,6 @@ void rk3576_gpio_write(gpio_pinset_t pinset, bool value)
 {
   unsigned int port;
   unsigned int pin;
-  uint32_t addr;
-  uint32_t data;
 
   port = (pinset & GPIO_PORT_MASK) >> GPIO_PORT_SHIFT;
   pin  = (pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
@@ -731,13 +722,7 @@ void rk3576_gpio_write(gpio_pinset_t pinset, bool value)
       return;
     }
 
-  addr = RK3576_GPIO_SWPORTA_DR(port);
-
-  /* Hiword-mask write: upper 16 bits = write mask, lower 16 = value */
-
-  data = RK3576_WRITE_BIT(pin, value);
-
-  putreg32(data, addr);
+  RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_SWPORTA_DR(port), pin, value);
 
 }
 
@@ -952,16 +937,13 @@ static int rk3576_gpio_enable(FAR struct gpio_dev_s *dev, bool enable)
 
   if (enable)
     {
-      putreg32(RK3576_WRITE_BIT(pin, 0),
-               RK3576_GPIO_INTMASK(port));
+      RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INTMASK(port), pin, 0);
 
-      putreg32(RK3576_WRITE_BIT(pin, 1),
-               RK3576_GPIO_INTEN(port));
+      RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INTEN(port), pin, 1);
     }
   else
     {
-      putreg32(RK3576_WRITE_BIT(pin, 1),
-               RK3576_GPIO_INTMASK(port));
+      RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INTMASK(port), pin, 1);
     }
 
   return OK;
