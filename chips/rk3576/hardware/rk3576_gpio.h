@@ -249,11 +249,10 @@ extern const struct rk3576_iomux_group
   ((((l) & 0x4) >> 2) | (((l) & 0x1) << 2) | ((l) & 0x2))
 
 /* Common drive strength levels */
-#define RK3576_DRIVE_LEVEL_2MA        0
-#define RK3576_DRIVE_LEVEL_4MA        1
-#define RK3576_DRIVE_LEVEL_8MA        2
-#define RK3576_DRIVE_LEVEL_12MA       3   /* Default */
-#define RK3576_DRIVE_LEVEL_DEFAULT    3
+#define RK3576_DRIVE_LEVEL_0        0
+#define RK3576_DRIVE_LEVEL_1        1
+#define RK3576_DRIVE_LEVEL_2        2
+#define RK3576_DRIVE_LEVEL_3        3
 
 /* =========================================================================
  * Schmitt-trigger register layout (1 bit/pin, 8 pins/reg)

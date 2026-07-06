@@ -44,7 +44,7 @@
  *  Bit [9:8]   - Mode (Input/Output/AF/Analog)
  *  Bit [10]    - (reserved — was GPIO_OPENDRAIN, RK3576 unsupported)
  *  Bit [12:11] - Pull-up/Pull-down
- *  Bit [14:13] - Output speed (reserved — IOC-controlled)
+ *  Bit [14:13] - Drive strength (0=12mA .. 3=2mA, see GPIO_SPEED_*)
  *  Bit [18:15] - Alternate function number (0-15)
  *  Bit [19]    - Initial output value (GPIO_OUTPUT_SET)
  *  Bit [20]    - EXTI interrupt enable
@@ -128,12 +128,12 @@
 
 /* Speed encoding (for output and AF pins) ************************************/
 
-#define GPIO_SPEED_SHIFT       (13)          /* Bits 13-14: Output speed */
+#define GPIO_SPEED_SHIFT       (13)          /* Bits 13-14: Drive strength */
 #define GPIO_SPEED_MASK        (0x3 << GPIO_SPEED_SHIFT)
-#  define GPIO_SPEED_LOW       (0 << GPIO_SPEED_SHIFT)  /* Low speed */
-#  define GPIO_SPEED_MED       (1 << GPIO_SPEED_SHIFT)  /* Medium speed */
-#  define GPIO_SPEED_HIGH      (2 << GPIO_SPEED_SHIFT)  /* High speed */
-#  define GPIO_SPEED_VHIGH     (3 << GPIO_SPEED_SHIFT)  /* Very high speed */
+#  define GPIO_SPEED_HIGH      (0 << GPIO_SPEED_SHIFT) /* default */
+#  define GPIO_SPEED_VERY_HIGH (1 << GPIO_SPEED_SHIFT)
+#  define GPIO_SPEED_MED       (2 << GPIO_SPEED_SHIFT)
+#  define GPIO_SPEED_LOW       (3 << GPIO_SPEED_SHIFT)
 
 /* Alternate function encoding ************************************************/
 

@@ -501,6 +501,7 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
   unsigned int port;
   unsigned int pin;
   unsigned int mode;
+  unsigned int drive_level;
   irqstate_t flags;
 
   /* Extract port and pin from the configuration */
@@ -508,6 +509,28 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
   port = (pinset & GPIO_PORT_MASK) >> GPIO_PORT_SHIFT;
   pin  = (pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
   mode = pinset & GPIO_MODE_MASK;
+
+  /* Map pinset speed bits to RK3576 drive level. */
+
+  switch (pinset & GPIO_SPEED_MASK)
+    {
+      case GPIO_SPEED_LOW:
+        drive_level = RK3576_DRIVE_LEVEL_0;
+        break;
+
+      case GPIO_SPEED_MED:
+        drive_level = RK3576_DRIVE_LEVEL_1;
+        break;
+
+      case GPIO_SPEED_HIGH:
+      default:
+        drive_level = RK3576_DRIVE_LEVEL_2;
+        break;
+
+      case GPIO_SPEED_VERY_HIGH:
+        drive_level = RK3576_DRIVE_LEVEL_3;
+        break;
+    }
 
   /* Verify that this hardware supports the selected GPIO port */
 
@@ -588,10 +611,9 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
 
           rk3576_schmitt_set(g_ioc_base, port, pin, false);
 
-          /* Configure drive strength (default level 3 = 12mA) */
+          /* Configure drive strength */
 
-          rk3576_drive_set(g_ioc_base, port, pin,
-                           RK3576_DRIVE_LEVEL_DEFAULT);
+          rk3576_drive_set(g_ioc_base, port, pin, drive_level);
 
           /* Configure pull-up/pull-down if specified */
 
@@ -629,10 +651,9 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
           rk3576_schmitt_set(g_ioc_base, port, pin,
                              (pinset & GPIO_SCHMITT) != 0);
 
-          /* Configure drive strength for the alternate function */
+          /* Configure drive strength */
 
-          rk3576_drive_set(g_ioc_base, port, pin,
-                           RK3576_DRIVE_LEVEL_DEFAULT);
+          rk3576_drive_set(g_ioc_base, port, pin, drive_level);
         }
         break;
 
