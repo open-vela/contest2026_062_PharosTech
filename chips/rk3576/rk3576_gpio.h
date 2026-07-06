@@ -48,9 +48,10 @@
  *  Bit [18:15] - Alternate function number (0-15)
  *  Bit [19]    - Initial output value (GPIO_OUTPUT_SET)
  *  Bit [20]    - EXTI interrupt enable
- *  Bit [21]    - Interrupt type
- *  Bit [22]    - Interrupt polarity
+ *  Bit [21]    - Interrupt type (0=level, 1=edge)
+ *  Bit [22]    - Interrupt polarity (0=low/falling, 1=high/rising)
  *  Bit [23]    - Schmitt trigger enable
+ *  Bit [24]    - Both-edge trigger (for edge interrupts)
  *
  * Pin naming follows Linux pinctrl-rockchip convention:
  *   RK_GPIO0_A0 = GPIO_PORT0 | GPIO_PIN_A0
@@ -171,6 +172,8 @@
 
 #define GPIO_SCHMITT           (1 << 23)     /* Bit 23: Enable schmitt trigger */
 
+#define GPIO_INT_BOTHEDGE      (1 << 24)     /* Bit 24: Both-edge trigger */
+
 /* Convenience macros for common pin configurations ***************************/
 
 #define GPIO_INPUT_PULLUP      (GPIO_INPUT | GPIO_PULLUP)
@@ -248,10 +251,8 @@ bool rk3576_gpio_read(gpio_pinset_t pinset);
  ****************************************************************************/
 
 int rk3576_gpio_init(void);
+int rk3576_gpio_register(gpio_pinset_t pinset);
 
-int rk3576_gpio_register_input(gpio_pinset_t pinset);
-int rk3576_gpio_register_output(gpio_pinset_t pinset);
-int rk3576_gpio_register_interrupt(gpio_pinset_t pinset);
 #endif
 
 #endif /* __VENDOR_ROCKCHIP_RK3576_GPIO_H */

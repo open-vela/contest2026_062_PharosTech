@@ -111,7 +111,7 @@ void board_late_initialize(void)
 
 #ifdef CONFIG_DEV_GPIO
   /* register LED GPIO pin */
-  rk3576_gpio_register_output(GPIO_PORT0 | GPIO_PIN_B4 | GPIO_OUTPUT);
+  rk3576_gpio_register(GPIO_PORT0 | GPIO_PIN_B4 | GPIO_OUTPUT);
 #endif
 
 }
