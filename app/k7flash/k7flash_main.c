@@ -1,16 +1,24 @@
 /****************************************************************************
  * app/k7flash/k7flash_main.c
  *
- * KICKPI-K7 板上固件热更新落盘工具。把一个新固件(Rockchip FIT,即
- * build_sd 产出的 uboot_nuttx.img)写进 SD 卡的 uboot 槽,读回校验,重启生效。
+ * KICKPI-K7 on-board firmware hot-update flasher. Writes a new firmware
+ * image (a Rockchip FIT, i.e. the uboot_nuttx.img produced by build_sd)
+ * into the SD card uboot slot, reads it back to verify, then reboots to
+ * take effect.
  *
- * ★ 安全护栏(硬性):
- *   1. 目标块设备写死 "/dev/mmcsd0"(SD 卡),起始扇区写死 16384(uboot 槽)。
- *      命令行只收 <file>,不接受设备/偏移参数 —— 无默认全盘、无通配。
- *   2. eMMC host 在本 BSP 从未实例化,代码物理够不到 eMMC(0x2A330000)。
- *   3. 写范围不越过 trust 槽(扇区 24576),绝不碰 idbloader(64)/GPT(0)。
- *   4. 写前校验是合法 FIT(magic 0xd00dfeed);写后逐扇区读回校验。
- *   5. 任一步失败:保持运行、告警、不重启(避免半写砖卡)。
+ * Safety guardrails (mandatory):
+ *   1. Target block device is hardcoded to "/dev/mmcsd0" (SD card) and the
+ *      start sector is hardcoded to 16384 (uboot slot). The command line
+ *      only accepts <file>; no device/offset argument is taken -- no
+ *      whole-disk default, no wildcard.
+ *   2. The eMMC host is never instantiated in this BSP, so the code cannot
+ *      physically reach the eMMC (0x2A330000).
+ *   3. The write range never crosses into the trust slot (sector 24576),
+ *      and never touches idbloader (sector 64) or the GPT (sector 0).
+ *   4. Before writing, verify it is a valid FIT (magic 0xd00dfeed); after
+ *      writing, read back and verify sector by sector.
+ *   5. On any failure: keep running, warn, and do NOT reboot (avoid a
+ *      half-written brick).
  *
  * SPDX-License-Identifier: Apache-2.0
  ****************************************************************************/
@@ -29,12 +37,13 @@
 #include <nuttx/fs/fs.h>
 
 /****************************************************************************
- * 护栏常量(写死,不可由命令行覆盖)
+ * Guardrail constants (hardcoded, not overridable from command line)
  ****************************************************************************/
 
-#define K7_TARGET_DEV   "/dev/mmcsd0"   /* 只写 SD 卡,永不 eMMC */
-#define K7_UBOOT_SECTOR 16384           /* uboot 槽起始扇区 */
-#define K7_TRUST_SECTOR 24576           /* trust 槽起始(写不可越过此) */
+#define K7_TARGET_DEV   "/dev/mmcsd0"   /* Write SD card only, never eMMC */
+#define K7_UBOOT_SECTOR 16384           /* uboot slot start sector */
+#define K7_TRUST_SECTOR 24576           /* trust slot start (write must
+                                         * not cross this) */
 #define K7_SECTOR_SIZE  512
 #define K7_FIT_MAGIC    0xd00dfeedu      /* Rockchip/U-Boot FIT(FDT) magic */
 #define K7_MAX_BYTES    ((K7_TRUST_SECTOR - K7_UBOOT_SECTOR) * K7_SECTOR_SIZE)
@@ -68,98 +77,113 @@ int main(int argc, char *argv[])
 
   if (argc != 2)
     {
-      fprintf(stderr, "用法: k7flash <fw.img>  (固件=build_sd 产出的 uboot_nuttx.img/FIT)\n");
+      fprintf(stderr,
+              "usage: k7flash <fw.img>  (firmware = uboot_nuttx.img/FIT "
+              "produced by build_sd)\n");
       return 1;
     }
 
   path = argv[1];
 
-  /* 1) 读固件到内存 */
+  /* 1) Read the firmware into memory */
 
   if (stat(path, &st) < 0)
     {
-      fprintf(stderr, "错误: 打不开 %s: %d\n", path, errno);
+      fprintf(stderr, "error: cannot open %s: %d\n", path, errno);
       return 1;
     }
 
   nbytes = (size_t)st.st_size;
   if (nbytes == 0 || nbytes > K7_MAX_BYTES)
     {
-      fprintf(stderr, "错误: 固件大小 %zu 非法(需 1..%d 字节,即不越过 trust 槽)\n",
+      fprintf(stderr,
+              "error: invalid firmware size %zu (must be 1..%d bytes, "
+              "i.e. must not cross the trust slot)\n",
               nbytes, K7_MAX_BYTES);
       return 1;
     }
 
   nsectors = (nbytes + K7_SECTOR_SIZE - 1) / K7_SECTOR_SIZE;
 
-  /* buffer 按 cache line(64B)对齐:满足 SDMMC IDMAC 的 dmapreflight,走多块 DMA;
-   * 否则驱动会自动回退单块 PIO(仍能工作,只是慢)。
+  /* Align the buffer to a cache line (64B) to satisfy the SDMMC IDMAC
+   * dmapreflight check and take the multi-block DMA path; otherwise the
+   * driver automatically falls back to single-block PIO (still works,
+   * just slower).
    */
 
   buf  = memalign(64, nsectors * K7_SECTOR_SIZE);
   vbuf = memalign(64, nsectors * K7_SECTOR_SIZE);
   if (buf == NULL || vbuf == NULL)
     {
-      fprintf(stderr, "错误: 内存不足\n");
+      fprintf(stderr, "error: out of memory\n");
       goto errout;
     }
 
-  memset(buf, 0, nsectors * K7_SECTOR_SIZE);   /* 末扇区补零 */
+  memset(buf, 0, nsectors * K7_SECTOR_SIZE);   /* zero-pad last sector */
   fd = open(path, O_RDONLY);
   if (fd < 0)
     {
-      fprintf(stderr, "错误: open %s: %d\n", path, errno);
+      fprintf(stderr, "error: open %s: %d\n", path, errno);
       goto errout;
     }
 
   if (read(fd, buf, nbytes) != (ssize_t)nbytes)
     {
-      fprintf(stderr, "错误: 读固件不完整\n");
+      fprintf(stderr, "error: incomplete firmware read\n");
       goto errout;
     }
 
   close(fd);
   fd = -1;
 
-  /* 2) 校验是合法 FIT(magic) */
+  /* 2) Verify it is a valid FIT (magic) */
 
   if (k7_be32(buf) != K7_FIT_MAGIC)
     {
-      fprintf(stderr, "错误: 不是合法 FIT(magic=%08x,期望 %08x),拒绝写入\n",
+      fprintf(stderr,
+              "error: not a valid FIT (magic=%08x, expected %08x), "
+              "refusing to write\n",
               k7_be32(buf), K7_FIT_MAGIC);
       goto errout;
     }
 
-  /* 3) 取块设备(写死 SD,不接受参数) */
+  /* 3) Get the block device (hardcoded SD, no argument accepted) */
 
   ret = find_blockdriver(K7_TARGET_DEV, 0, &bnode);
   if (ret < 0 || bnode->u.i_bops->write == NULL ||
       bnode->u.i_bops->read == NULL)
     {
-      fprintf(stderr, "错误: 找不到可读写块设备 %s\n", K7_TARGET_DEV);
+      fprintf(stderr,
+              "error: no readable/writable block device %s\n",
+              K7_TARGET_DEV);
       goto errout;
     }
 
-  printf("k7flash: 写 %zu 字节(%zu 扇区)到 %s @sector %d ...\n",
+  printf("k7flash: writing %zu bytes (%zu sectors) to %s @sector %d ...\n",
          nbytes, nsectors, K7_TARGET_DEV, K7_UBOOT_SECTOR);
 
-  /* 4) 多块写(buffer 已 cache-line 对齐 → SDMMC IDMAC 一次搬多扇区;
-   * 不对齐时驱动自动回退单块 PIO)。
+  /* 4) Multi-block write (buffer is cache-line aligned, so the SDMMC IDMAC
+   * moves multiple sectors at once; when unaligned the driver falls back
+   * to single-block PIO automatically).
    */
 
   rn = bnode->u.i_bops->write(bnode, buf, K7_UBOOT_SECTOR, nsectors);
   if (rn != (ssize_t)nsectors)
     {
-      fprintf(stderr, "错误: 写失败(rn=%zd,期望 %zu)\n", rn, nsectors);
+      fprintf(stderr,
+              "error: write failed (rn=%zd, expected %zu)\n",
+              rn, nsectors);
       goto errout;
     }
 
-  /* 5) 多块读回校验 */
+  /* 5) Multi-block read-back verification */
 
   rn = bnode->u.i_bops->read(bnode, vbuf, K7_UBOOT_SECTOR, nsectors);
   if (rn != (ssize_t)nsectors || memcmp(buf, vbuf, nbytes) != 0)
     {
-      fprintf(stderr, "错误: 校验失败(rn=%zd) —— 不重启,请重试\n", rn);
+      fprintf(stderr,
+              "error: verification failed (rn=%zd) -- not rebooting, "
+              "please retry\n", rn);
       goto errout;
     }
 
@@ -168,23 +192,25 @@ int main(int argc, char *argv[])
   buf = NULL;
   vbuf = NULL;
 
-  /* 6) 更新成功:删除临时固件,回收 tmpfs 空间(/tmp 是 RAM) */
+  /* 6) Update succeeded: remove the temporary firmware to reclaim tmpfs
+   * space (/tmp is RAM).
+   */
 
   if (unlink(path) == 0)
     {
-      printf("k7flash: 已清理 %s,回收空间\n", path);
+      printf("k7flash: cleaned up %s, space reclaimed\n", path);
     }
 
-  printf("k7flash: 写入+校验通过。3 秒后重启生效...\n");
+  printf("k7flash: write + verify passed. Rebooting in 3 seconds ...\n");
   fflush(stdout);
   sleep(3);
 
-  /* 6) 重启 → 新固件启动 */
+  /* 6) Reboot -> boot into the new firmware */
 
 #ifdef CONFIG_BOARDCTL_RESET
   boardctl(BOARDIOC_RESET, 0);
 #else
-  printf("k7flash: 未启用 BOARDCTL_RESET,请手动 reset 生效\n");
+  printf("k7flash: BOARDCTL_RESET not enabled, please reset manually\n");
 #endif
   return 0;
 

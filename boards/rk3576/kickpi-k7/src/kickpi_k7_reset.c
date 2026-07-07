@@ -39,15 +39,19 @@
  * Name: board_reset
  *
  * Description:
- *   复位开发板。CONFIG_BOARDCTL_RESET 打开时由板级逻辑提供。
- *   RK3576 走 PSCI(up_systemreset 在 arch/arm64 的 arm64_cpu_psci.c 实现),
- *   触发系统热重启,重新从 MiniLoader/BL33 引导,使新固件生效。
+ *   Reset the board.  Provided by the board logic when CONFIG_BOARDCTL_RESET
+ *   is enabled.  On the RK3576 this goes through PSCI (up_systemreset() is
+ *   implemented in arch/arm64 arm64_cpu_psci.c), triggering a warm system
+ *   restart that re-boots from the MiniLoader/BL33 so new firmware takes
+ *   effect.
  *
  * Input Parameters:
- *   status - 复位事件携带的状态信息,板级自定义,未用时传 0。
+ *   status - Status information carried by the reset event, board-defined;
+ *            pass 0 when unused.
  *
  * Returned Value:
- *   若函数返回,说明未能复位;返回值为板级特定的失败原因。
+ *   If this function returns, the reset failed; the return value is a
+ *   board-specific failure reason.
  *
  ****************************************************************************/
 
