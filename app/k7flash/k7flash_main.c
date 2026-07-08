@@ -36,6 +36,10 @@
 #include <errno.h>
 #include <nuttx/fs/fs.h>
 
+#ifdef CONFIG_FS_TMPFS
+#  include <sys/mount.h>
+#endif
+
 /****************************************************************************
  * Guardrail constants (hardcoded, not overridable from command line)
  ****************************************************************************/
@@ -82,6 +86,15 @@ int main(int argc, char *argv[])
               "produced by build_sd)\n");
       return 1;
     }
+
+  /* Mount tmpfs at /tmp so this tool is self-contained: the Ymodem receiver
+   * (rb) drops the firmware here and k7flash reads it back.  The mount is
+   * idempotent, so a re-run (or a board that already mounted it) is fine.
+   */
+
+#ifdef CONFIG_FS_TMPFS
+  mount(NULL, "/tmp", "tmpfs", 0, NULL);
+#endif
 
   path = argv[1];
 
@@ -218,6 +231,11 @@ errout:
   if (fd >= 0)
     {
       close(fd);
+    }
+
+  if (bnode != NULL)
+    {
+      inode_release(bnode);
     }
 
   free(buf);

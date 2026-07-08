@@ -36,17 +36,11 @@ import serial
 from serial.tools import list_ports
 
 
-def find_ch340():
-    for p in list_ports.comports():
-        d = (p.description or "").upper()
-        if "CH340" in d or "USB-SERIAL" in d:
-            return p.device
-    return None
-
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port")
+    ap.add_argument("--port", required=True,
+                    help="串口(如 COM3 / /dev/ttyUSB0);刷/发命令是危险操作,"
+                         "不自动猜端口")
     ap.add_argument("--baud", type=int, default=1500000)
     ap.add_argument("--cmd", help="连上后先发这条命令(如 reboot)")
     ap.add_argument("--duration", type=float,
@@ -54,12 +48,7 @@ def main():
     ap.add_argument("--log", help="日志文件路径(默认 串口日志/monitor_时间.log)")
     a = ap.parse_args()
 
-    port = a.port or find_ch340()
-    if not port:
-        print("未找到 CH340,用 --port 指定。现有端口:", file=sys.stderr)
-        for p in list_ports.comports():
-            print("  ", p.device, p.description, file=sys.stderr)
-        sys.exit(1)
+    port = a.port
 
     if a.log:
         logpath = a.log

@@ -1,5 +1,5 @@
 /****************************************************************************
- * boards/rk3576/kickpi-k7/src/kickpi_k7_appinit.c
+ * boards/arm64/rk3576/kickpi_k7/src/kickpi_k7_appinit.c
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -26,13 +26,8 @@
 
 #include <nuttx/config.h>
 #include <sys/types.h>
-#include <syslog.h>
 #include <nuttx/board.h>
 #include "kickpi_k7.h"
-
-#ifdef CONFIG_FS_TMPFS
-#  include <sys/mount.h>
-#endif
 
 /****************************************************************************
  * Public Functions
@@ -40,24 +35,32 @@
 
 /****************************************************************************
  * Name: board_app_initialize
+ *
+ * Description:
+ *   Perform application specific initialization.  This function is never
+ *   called directly from application code, but only indirectly via the
+ *   (non-standard) boardctl() interface using the command BOARDIOC_INIT.
+ *
+ * Input Parameters:
+ *   arg - The boardctl() argument is passed to the board_app_initialize()
+ *         implementation without modification.  The argument has no
+ *         meaning to NuttX; the meaning of the argument is a contract
+ *         between the board-specific initialization logic and the
+ *         matching application logic.  The value could be such things as a
+ *         mode enumeration value, a set of DIP switch switch settings, a
+ *         pointer to configuration data read from a file or serial FLASH,
+ *         or whatever you would like to do with it.  Every implementation
+ *         should accept zero/NULL as a default configuration.
+ *
+ * Returned Value:
+ *   Zero (OK) is returned on success; a negated errno value is returned on
+ *   any failure to indicate the nature of the failure.
+ *
  ****************************************************************************/
 
 int board_app_initialize(uintptr_t arg)
 {
-  /* SDMMC and the GPT partitions are set up in board_late_initialize
-   * (boardinit.c).
-   */
-
-#ifdef CONFIG_FS_TMPFS
-  /* Mount tmpfs at /tmp for firmware hot-update: ymodem (rb) writes the
-   * received image to /tmp and k7flash reads it back from there.
-   */
-
-  if (mount(NULL, "/tmp", "tmpfs", 0, NULL) < 0)
-    {
-      syslog(LOG_ERR, "ERROR: mount /tmp (tmpfs) failed\n");
-    }
-#endif
+  /* Perform board initialization */
 
   return OK;
 }

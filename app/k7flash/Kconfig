@@ -7,8 +7,10 @@ config EXAMPLES_K7FLASH
 	tristate "KICKPI-K7 固件热更新落盘工具"
 	default n
 	depends on BOARDCTL_RESET
+	select FS_TMPFS
 	---help---
 		把新固件(build_sd 产出的 FIT)写入 SD 卡 uboot 槽并校验后重启。
+		内部自挂 tmpfs 到 /tmp(供 rb 收固件),无需板级 appinit 配合。
 
 if EXAMPLES_K7FLASH
 
