@@ -78,6 +78,26 @@ config RK3576_GPIO
 		Select to enable support for the RK3576 GPIO controller.
 		The RK3576 has 5 GPIO banks (GPIO0-GPIO4) with 32 pins each.
 
+config RK3576_I2C
+	bool "I2C master"
+	default n
+	select I2C
+	---help---
+		Enable the RK3576 I2C master driver (Rockchip RK I2C block,
+		polled).  The controller clock is brought up via the CRU; SCL/SDA
+		pin muxing is the board's responsibility.
+
+if RK3576_I2C
+
+config RK3576_I2C2
+	bool "I2C2"
+	default n
+	---help---
+		Enable the I2C2 controller (mmc@... hym8563 RTC bus,
+		0x2AC50000).
+
+endif # RK3576_I2C
+
 endmenu # Rockchip RK3576 Peripheral Selection
 
 endif # ARCH_CHIP_RK3576
