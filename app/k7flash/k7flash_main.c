@@ -235,7 +235,7 @@ errout:
 
   if (bnode != NULL)
     {
-      inode_release(bnode);
+      close_blockdriver(bnode);
     }
 
   free(buf);
