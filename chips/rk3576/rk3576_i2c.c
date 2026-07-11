@@ -63,13 +63,12 @@
 #define RK3576_I2C_POLL_LIMIT   1000000       /* busy-wait iterations */
 #define RK3576_I2C_NUM           10            /* I2C0 .. I2C9 */
 
-/* Default functional clock into the divider (Hz).  The clk_i2c mux is left
- * at its reset default; re-muxing it here is unnecessary and risks selecting
- * a stopped parent.  This 100 MHz input matches the CLKDIV the bare-metal
- * bring-up code used successfully on hardware.
+/* Default functional clock into the divider (Hz).
+ * TODO: calculate clock frequency automatically
+ * after cru driver is ready
  */
 
-#define RK3576_I2C_CLKIN         100000000
+#define RK3576_I2C_CLKIN         200000000
 
 /* I2C controller base addresses (TRM §32.4.1). */
 
