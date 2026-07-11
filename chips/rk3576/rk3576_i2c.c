@@ -255,21 +255,6 @@ static int rk3576_i2c_write_msg(struct rk3576_i2c_priv_s *priv,
       return -EINVAL;
     }
 
-  /* Issue a (repeated) START and wait for it, then clear the START pending
-   * bit -- matches the register order proven on hardware by the bare-metal
-   * bring-up code.
-   */
-
-  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
-  i2c_putreg(priv, RK3576_I2C_CON, RK3576_I2C_CON_EN | RK3576_I2C_CON_START);
-  ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_START);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_START);
-
   fifo[0] = (uint32_t)(msg->addr << 1);          /* addr | W in byte 0 */
   for (i = 0; i < (uint32_t)msg->length; i++)
     {
@@ -281,11 +266,15 @@ static int rk3576_i2c_write_msg(struct rk3576_i2c_priv_s *priv,
       i2c_putreg(priv, RK3576_I2C_TXDATA0 + i * 4, fifo[i]);
     }
 
-  /* TX mode (no START bit here -- START was issued above), then trigger the
-   * transfer by loading MTXCNT.
+  /* Program TX mode + START in the same CON write, then trigger the
+   * transfer by loading MTXCNT.  Per TRM §32.6 Fig.32-6, MTXCNT is the
+   * final write that kicks off the transaction.
    */
 
-  i2c_putreg(priv, RK3576_I2C_CON, RK3576_I2C_CON_EN | RK3576_I2C_CON_MODE_TX);
+  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
+  i2c_putreg(priv, RK3576_I2C_CON,
+             RK3576_I2C_CON_EN | RK3576_I2C_CON_START |
+             RK3576_I2C_CON_MODE_TX);
   i2c_putreg(priv, RK3576_I2C_MTXCNT, total);
 
   ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_MBTF);
