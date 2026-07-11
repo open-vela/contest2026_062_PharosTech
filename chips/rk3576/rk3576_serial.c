@@ -908,27 +908,25 @@ static struct uart_dev_s g_uart0port =
  * actually register at runtime via rk3576_serial_register().
  */
 
-#define RK3576_UART_MAX_ID 11
-
 struct rk3576_uart_hwdesc_s
 {
   uintptr_t base;     /* Register base address */
   unsigned int irq;   /* IRQ number */
 };
 
-static const struct rk3576_uart_hwdesc_s g_uart_hwdesc[RK3576_UART_MAX_ID + 1] =
+static const struct rk3576_uart_hwdesc_s g_uart_hwdesc[UART_PORT_MAX + 1] =
 {
-  [1]  = { .base = RK3576_UART1_ADDR,  .irq = RK3576_IRQ_UART1  },
-  [2]  = { .base = RK3576_UART2_ADDR,  .irq = RK3576_IRQ_UART2  },
-  [3]  = { .base = RK3576_UART3_ADDR,  .irq = RK3576_IRQ_UART3  },
-  [4]  = { .base = RK3576_UART4_ADDR,  .irq = RK3576_IRQ_UART4  },
-  [5]  = { .base = RK3576_UART5_ADDR,  .irq = RK3576_IRQ_UART5  },
-  [6]  = { .base = RK3576_UART6_ADDR,  .irq = RK3576_IRQ_UART6  },
-  [7]  = { .base = RK3576_UART7_ADDR,  .irq = RK3576_IRQ_UART7  },
-  [8]  = { .base = RK3576_UART8_ADDR,  .irq = RK3576_IRQ_UART8  },
-  [9]  = { .base = RK3576_UART9_ADDR,  .irq = RK3576_IRQ_UART9  },
-  [10] = { .base = RK3576_UART10_ADDR, .irq = RK3576_IRQ_UART10 },
-  [11] = { .base = RK3576_UART11_ADDR, .irq = RK3576_IRQ_UART11 },
+  [UART_PORT_1]  = { .base = RK3576_UART1_ADDR,  .irq = RK3576_IRQ_UART1  },
+  [UART_PORT_2]  = { .base = RK3576_UART2_ADDR,  .irq = RK3576_IRQ_UART2  },
+  [UART_PORT_3]  = { .base = RK3576_UART3_ADDR,  .irq = RK3576_IRQ_UART3  },
+  [UART_PORT_4]  = { .base = RK3576_UART4_ADDR,  .irq = RK3576_IRQ_UART4  },
+  [UART_PORT_5]  = { .base = RK3576_UART5_ADDR,  .irq = RK3576_IRQ_UART5  },
+  [UART_PORT_6]  = { .base = RK3576_UART6_ADDR,  .irq = RK3576_IRQ_UART6  },
+  [UART_PORT_7]  = { .base = RK3576_UART7_ADDR,  .irq = RK3576_IRQ_UART7  },
+  [UART_PORT_8]  = { .base = RK3576_UART8_ADDR,  .irq = RK3576_IRQ_UART8  },
+  [UART_PORT_9]  = { .base = RK3576_UART9_ADDR,  .irq = RK3576_IRQ_UART9  },
+  [UART_PORT_10] = { .base = RK3576_UART10_ADDR, .irq = RK3576_IRQ_UART10 },
+  [UART_PORT_11] = { .base = RK3576_UART11_ADDR, .irq = RK3576_IRQ_UART11 },
 };
 
 /***************************************************************************
@@ -1036,7 +1034,7 @@ void arm64_serialinit(void)
  *   is available.  UART0 must NOT be registered through this function.
  *
  * Input Parameters:
- *   uart_id - UART number (1 ~ 11)
+ *   port_id - UART port identifier (UART_PORT_1 ~ UART_PORT_11)
  *   baud    - Baud rate
  *   bits    - Data bits (5 ~ 8)
  *   parity  - 0=none, 1=odd, 2=even
@@ -1047,7 +1045,7 @@ void arm64_serialinit(void)
  *
  ***************************************************************************/
 
-int rk3576_serial_register(int uart_id, uint32_t baud,
+int rk3576_serial_register(uint8_t port_id, uint32_t baud,
                            uint8_t bits, uint8_t parity, bool stop2)
 {
   struct rk3576_uart_port_s *priv;
@@ -1058,22 +1056,22 @@ int rk3576_serial_register(int uart_id, uint32_t baud,
   const struct rk3576_uart_hwdesc_s *hw;
   int ret;
 
-  /* Validate uart_id */
+  /* Validate port_id */
 
-  if (uart_id < 1 || uart_id > RK3576_UART_MAX_ID)
+  if (port_id < UART_PORT_1 || port_id > UART_PORT_MAX)
     {
-      _err("Invalid uart_id=%d\n", uart_id);
+      _err("Invalid port_id=%u\n", port_id);
       return -EINVAL;
     }
 
-  hw = &g_uart_hwdesc[uart_id];
+  hw = &g_uart_hwdesc[port_id];
 
   /* Allocate port private data */
 
   priv = kmm_zalloc(sizeof(*priv));
   if (priv == NULL)
     {
-      _err("UART%d: kmm_zalloc priv failed\n", uart_id);
+      _err("UART%u: kmm_zalloc priv failed\n", port_id);
       return -ENOMEM;
     }
 
@@ -1082,12 +1080,12 @@ int rk3576_serial_register(int uart_id, uint32_t baud,
   dev = kmm_zalloc(sizeof(*dev));
   if (dev == NULL)
     {
-      _err("UART%d: kmm_zalloc dev failed\n", uart_id);
+      _err("UART%u: kmm_zalloc dev failed\n", port_id);
       kmm_free(priv);
       return -ENOMEM;
     }
 
-  /* Allocate RX and TX buffers (256 bytes each, same as static defaults) */
+  /* Allocate RX and TX buffers */
 
 #define UART_DYN_RXBUFSIZE 256
 #define UART_DYN_TXBUFSIZE 256
@@ -1096,7 +1094,7 @@ int rk3576_serial_register(int uart_id, uint32_t baud,
   txbuf = kmm_zalloc(UART_DYN_TXBUFSIZE);
   if (rxbuf == NULL || txbuf == NULL)
     {
-      _err("UART%d: kmm_zalloc buffers failed\n", uart_id);
+      _err("UART%u: kmm_zalloc buffers failed\n", port_id);
       if (rxbuf) kmm_free(rxbuf);
       if (txbuf) kmm_free(txbuf);
       kmm_free(dev);
@@ -1123,14 +1121,14 @@ int rk3576_serial_register(int uart_id, uint32_t baud,
   dev->ops         = &g_uart_ops;
   dev->priv        = priv;
 
-  /* Register the device as /dev/ttySx (x = uart_id) */
+  /* Register the device as /dev/ttySx (x = port_id) */
 
-  snprintf(devname, sizeof(devname), "/dev/ttyS%d", uart_id);
+  snprintf(devname, sizeof(devname), "/dev/ttyS%u", port_id);
   ret = uart_register(devname, dev);
   if (ret < 0)
     {
-      _err("UART%d: uart_register %s failed, ret=%d\n",
-           uart_id, devname, ret);
+      _err("UART%u: uart_register %s failed, ret=%d\n",
+           port_id, devname, ret);
       kmm_free(txbuf);
       kmm_free(rxbuf);
       kmm_free(dev);

@@ -34,6 +34,25 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
+/* UART port identifiers for rk3576_serial_register().
+ * UART0 is the console (registered statically) and is intentionally omitted.
+ */
+
+#define UART_PORT_0   0
+#define UART_PORT_1   1
+#define UART_PORT_2   2
+#define UART_PORT_3   3
+#define UART_PORT_4   4
+#define UART_PORT_5   5
+#define UART_PORT_6   6
+#define UART_PORT_7   7
+#define UART_PORT_8   8
+#define UART_PORT_9   9
+#define UART_PORT_10  10
+#define UART_PORT_11  11
+
+#define UART_PORT_MAX  UART_PORT_11
+
 /****************************************************************************
  * Public Types
  ****************************************************************************/
@@ -64,7 +83,7 @@
  *   board_late_initialize, not from arm64_earlyserialinit).
  *
  * Input Parameters:
- *   uart_id - UART number (1 ~ 11)
+ *   port_id - UART port identifier (UART_PORT_1 ~ UART_PORT_11)
  *   baud    - Baud rate (e.g. 115200)
  *   bits    - Data bits (5, 6, 7, or 8)
  *   parity  - Parity (0=none, 1=odd, 2=even)
@@ -75,7 +94,7 @@
  *
  ****************************************************************************/
 
-int rk3576_serial_register(int uart_id, uint32_t baud,
+int rk3576_serial_register(uint8_t port_id, uint32_t baud,
                            uint8_t bits, uint8_t parity, bool stop2);
 
 #endif /* __ARCH_ARM64_SRC_RK3576_RK3576_SERIAL_H */
