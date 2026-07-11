@@ -13,4 +13,8 @@ if(CONFIG_RK3576_SDMMC)
   list(APPEND SRCS rk3576_sdmmc.c)
 endif()
 
+if(CONFIG_RK3576_EMMC)
+  list(APPEND SRCS rk3576_emmc.c)
+endif()
+
 target_sources(arch PRIVATE ${SRCS})

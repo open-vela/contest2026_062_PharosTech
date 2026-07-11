@@ -1,5 +1,5 @@
 /****************************************************************************
- * boards/arm64/rk3576/kickpi_k7/src/kickpi_k7.h
+ * chips/rk3576/rk3576_emmc.h
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -20,32 +20,45 @@
  *
  ****************************************************************************/
 
-#ifndef __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H
-#define __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H
+#ifndef __ARCH_ARM64_SRC_RK3576_RK3576_EMMC_H
+#define __ARCH_ARM64_SRC_RK3576_RK3576_EMMC_H
 
 /****************************************************************************
  * Included Files
  ****************************************************************************/
 
 #include <nuttx/config.h>
-#include <stdint.h>
-#ifndef __ASSEMBLY__
+#include <nuttx/sdio.h>
 
 /****************************************************************************
- * Public Functions Definitions
+ * Pre-processor Definitions
  ****************************************************************************/
 
-#ifdef CONFIG_KICKPI_K7_EMMC_PROBE
+/* Host slot for rk3576_emmc_initialize().  The RK3576 has a single eMMC
+ * host (mmc@2a330000, a Synopsys dwcmshc / SDHCI 3.0 controller).
+ */
+
+#define RK3576_EMMC_SLOT  0   /* On-board eMMC (dwcmshc, mmc@2a330000) */
+
 /****************************************************************************
- * Name: kickpi_k7_emmc_probe
+ * Public Function Prototypes
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: rk3576_emmc_initialize
  *
  * Description:
- *   eMMC (dwcmshc / SDHCI) bring-up self-test M1 (see kickpi_k7_emmcprobe.c).
+ *   Initialize the RK3576 eMMC host and return an sdio_dev_s that the mmcsd
+ *   layer can bind and enumerate.
+ *
+ * Input Parameters:
+ *   slotno - Host slot: must be RK3576_EMMC_SLOT (single host).
+ *
+ * Returned Value:
+ *   On success returns an sdio_dev_s pointer, on failure returns NULL.
  *
  ****************************************************************************/
 
-void kickpi_k7_emmc_probe(void);
-#endif
+struct sdio_dev_s *rk3576_emmc_initialize(int slotno);
 
-#endif /* __ASSEMBLY__ */
-#endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */
+#endif /* __ARCH_ARM64_SRC_RK3576_RK3576_EMMC_H */
