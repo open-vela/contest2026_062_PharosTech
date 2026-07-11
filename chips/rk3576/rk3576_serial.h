@@ -85,11 +85,13 @@
  *   board_late_initialize, not from arm64_earlyserialinit).
  *
  * Input Parameters:
- *   port_id - UART port identifier (UART_PORT_1 ~ UART_PORT_11)
- *   baud    - Baud rate (e.g. 115200)
- *   bits    - Data bits (5, 6, 7, or 8)
- *   parity  - Parity (0=none, 1=odd, 2=even)
- *   stop2   - true = 2 stop bits, false = 1 stop bit
+ *   port_id       - UART port identifier (UART_PORT_1 ~ UART_PORT_11)
+ *   baud          - Baud rate (e.g. 115200)
+ *   bits          - Data bits (5, 6, 7, or 8)
+ *   parity        - Parity (0=none, 1=odd, 2=even)
+ *   stop2         - true = 2 stop bits, false = 1 stop bit
+ *   rx_buffer_size - RX buffer size (0 = default 256)
+ *   tx_buffer_size - TX buffer size (0 = default 256)
  *
  * Returned Value:
  *   Zero (OK) on success; a negated errno value on failure.
@@ -97,6 +99,8 @@
  ****************************************************************************/
 
 int rk3576_serial_register(uint8_t port_id, uint32_t baud,
-                           uint8_t bits, uint8_t parity, bool stop2);
+                           uint8_t bits, uint8_t parity, bool stop2,
+                           uint16_t rx_buffer_size,
+                           uint16_t tx_buffer_size);
 
 #endif /* __ARCH_ARM64_SRC_RK3576_RK3576_SERIAL_H */

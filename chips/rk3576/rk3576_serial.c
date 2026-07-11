@@ -69,6 +69,7 @@
  * Pre-processor Definitions
  ***************************************************************************/
 
+#define UART_DEFAULT_BUFSIZE 256
 
 /* UART0 is console and ttyS0, follows U-Boot Bootloader */
 
@@ -1033,11 +1034,13 @@ void arm64_serialinit(void)
  *   is available.  UART0 must NOT be registered through this function.
  *
  * Input Parameters:
- *   port_id - UART port identifier (UART_PORT_1 ~ UART_PORT_11)
- *   baud    - Baud rate
- *   bits    - Data bits (5 ~ 8)
- *   parity  - 0=none, 1=odd, 2=even
- *   stop2   - true = 2 stop bits, false = 1 stop bit
+ *   port_id       - UART port identifier (UART_PORT_1 ~ UART_PORT_11)
+ *   baud          - Baud rate
+ *   bits          - Data bits (5 ~ 8)
+ *   parity        - 0=none, 1=odd, 2=even
+ *   stop2         - true = 2 stop bits, false = 1 stop bit
+ *   rx_buffer_size - RX buffer size (0 = default 256)
+ *   tx_buffer_size - TX buffer size (0 = default 256)
  *
  * Returned Value:
  *   Zero (OK) on success; a negated errno value on failure.
@@ -1045,7 +1048,9 @@ void arm64_serialinit(void)
  ***************************************************************************/
 
 int rk3576_serial_register(uint8_t port_id, uint32_t baud,
-                           uint8_t bits, uint8_t parity, bool stop2)
+                           uint8_t bits, uint8_t parity, bool stop2,
+                           uint16_t rx_buffer_size,
+                           uint16_t tx_buffer_size)
 {
   struct rk3576_uart_port_s *priv;
   struct uart_dev_s *dev;
@@ -1064,6 +1069,18 @@ int rk3576_serial_register(uint8_t port_id, uint32_t baud,
     }
 
   hw = &g_uart_hwdesc[port_id];
+
+  /* Apply default buffer sizes */
+
+  if (rx_buffer_size == 0)
+    {
+      rx_buffer_size = UART_DEFAULT_BUFSIZE;
+    }
+
+  if (tx_buffer_size == 0)
+    {
+      tx_buffer_size = UART_DEFAULT_BUFSIZE;
+    }
 
   /* Allocate port private data */
 
@@ -1086,16 +1103,19 @@ int rk3576_serial_register(uint8_t port_id, uint32_t baud,
 
   /* Allocate RX and TX buffers */
 
-#define UART_DYN_RXBUFSIZE 256
-#define UART_DYN_TXBUFSIZE 256
-
-  rxbuf = kmm_zalloc(UART_DYN_RXBUFSIZE);
-  txbuf = kmm_zalloc(UART_DYN_TXBUFSIZE);
+  rxbuf = kmm_zalloc(rx_buffer_size);
+  txbuf = kmm_zalloc(tx_buffer_size);
   if (rxbuf == NULL || txbuf == NULL)
     {
       _err("UART%u: kmm_zalloc buffers failed\n", port_id);
-      if (rxbuf) kmm_free(rxbuf);
-      if (txbuf) kmm_free(txbuf);
+      if (rxbuf)
+        {
+          kmm_free(rxbuf);
+        }
+      if (txbuf)
+        {
+          kmm_free(txbuf);
+        }
       kmm_free(dev);
       kmm_free(priv);
       return -ENOMEM;
@@ -1113,9 +1133,9 @@ int rk3576_serial_register(uint8_t port_id, uint32_t baud,
 
   /* Fill uart_dev_s */
 
-  dev->recv.size   = UART_DYN_RXBUFSIZE;
+  dev->recv.size   = rx_buffer_size;
   dev->recv.buffer = rxbuf;
-  dev->xmit.size   = UART_DYN_TXBUFSIZE;
+  dev->xmit.size   = tx_buffer_size;
   dev->xmit.buffer = txbuf;
   dev->ops         = &g_uart_ops;
   dev->priv        = priv;
