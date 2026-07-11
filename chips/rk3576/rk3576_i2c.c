@@ -50,6 +50,7 @@
 
 #include "arm64_internal.h"
 #include "hardware/rk3576_i2c.h"
+#include "hardware/rk3576_memorymap.h"
 #include "rk3576_i2c.h"
 
 #ifdef CONFIG_RK3576_I2C

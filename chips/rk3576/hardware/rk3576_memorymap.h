@@ -60,6 +60,19 @@
 #define RK3576_SDIO_ADDR       0x2A320000   /* SDIO host (dw-mshc)   */
 #define RK3576_EMMC_ADDR       0x2A330000   /* eMMC host (dwcmshc)   */
 
+/* I2C controller (Synopsys/Rockchip RK I2C, "rk3399-i2c" compatible). */
+
+#define RK3576_I2C0_ADDR        0x27300000
+#define RK3576_I2C1_ADDR        0x2ac40000
+#define RK3576_I2C2_ADDR        0x2ac50000
+#define RK3576_I2C3_ADDR        0x2ac60000
+#define RK3576_I2C4_ADDR        0x2ac70000
+#define RK3576_I2C5_ADDR        0x2ac80000
+#define RK3576_I2C6_ADDR        0x2ac90000
+#define RK3576_I2C7_ADDR        0x2aca0000
+#define RK3576_I2C8_ADDR        0x2acb0000
+#define RK3576_I2C9_ADDR        0x2ae80000
+
 /* Clock & Reset Unit / IO mux (for future CRU/pinctrl drivers). */
 
 #define RK3576_CRU_ADDR        0x27200000
