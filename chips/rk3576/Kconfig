@@ -53,6 +53,22 @@ config RK3576_PWM
 		counting clock is the 24 MHz oscillator scaled to 12 MHz.  The
 		board mux the output pin and registers /dev/pwmN.
 
+config RK3576_EMMC
+	bool "eMMC (dwcmshc / SDHCI)"
+	default n
+	select ARCH_HAVE_SDIO
+	select MMCSD
+	select MMCSD_SDIO
+	select ARCH_HAVE_SDIO_PREFLIGHT
+	select SDIO_BLOCKSETUP
+	---help---
+		Enable the RK3576 eMMC host controller driver (mmc@2a330000, a
+		Synopsys dwcmshc / SDHCI 3.0 host -- a different IP from the
+		SDMMC/SDIO dw-mshc hosts).  PIO data path, default/high-speed,
+		1/4/8-bit bus.  HS400/CQE/DLL are not supported.  The bootloader
+		leaves the eMMC CRU clock ungated, so no CRU/pinctrl setup is
+		needed (non-removable, loader-configured).
+
 config RK3576_GPIO
 	bool "GPIO"
 	default n

@@ -37,6 +37,11 @@
 #include <nuttx/mmcsd.h>
 #endif
 
+#ifdef CONFIG_RK3576_EMMC
+#include "rk3576_emmc.h"
+#include <nuttx/mmcsd.h>
+#endif
+
 #if defined(CONFIG_RK3576_SDMMC) && defined(CONFIG_GPT_PARTITION)
 #include <nuttx/fs/partition.h>
 #endif
@@ -198,6 +203,22 @@ void board_late_initialize(void)
       }
   }
 #endif
+#endif
+
+#ifdef CONFIG_RK3576_EMMC
+  /* Initialize the on-board eMMC (dwcmshc / SDHCI) as /dev/mmcsd1. */
+
+  {
+    FAR struct sdio_dev_s *emmc = rk3576_emmc_initialize(0);
+    if (emmc == NULL)
+      {
+        syslog(LOG_ERR, "ERROR: rk3576_emmc_initialize failed\n");
+      }
+    else if (mmcsd_slotinitialize(1, emmc) < 0)
+      {
+        syslog(LOG_ERR, "ERROR: eMMC mmcsd_slotinitialize failed\n");
+      }
+  }
 #endif
 }
 #endif /* CONFIG_BOARD_LATE_INITIALIZE */

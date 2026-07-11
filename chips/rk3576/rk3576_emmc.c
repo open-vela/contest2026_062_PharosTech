@@ -1,0 +1,1535 @@
+/****************************************************************************
+ * chips/rk3576/rk3576_emmc.c
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.  The
+ * ASF licenses this file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the
+ * License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ *
+ ****************************************************************************/
+
+/****************************************************************************
+ * RK3576 eMMC host controller driver -- Synopsys DesignWare Cortex MSHC
+ * (dwcmshc), which presents a standard SDHCI 3.0 register block.  Implements
+ * the NuttX struct sdio_dev_s so the generic drivers/mmcsd/mmcsd_sdio.c stack
+ * drives it.  The data path is PIO (the SDHCI buffer data port) in the
+ * interrupt/event model that mmcsd expects; a CONFIG_SDIO_DMA build compiles
+ * the DMA setup entry points but falls back to PIO (SDMA/ADMA2 and the
+ * HS400/CQE/DLL vendor area are out of scope for this milestone).
+ *
+ * The eMMC is a non-removable, loader-configured boot device: the bootloader
+ * has already ungated the CRU clock domain and configured the pin IOMUX, so
+ * this driver adds no CRU or pinctrl code (HOSTVER/CAP read back valid with
+ * the loader configuration only).
+ ****************************************************************************/
+
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
+#include <nuttx/config.h>
+
+#include <assert.h>
+#include <debug.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <sys/types.h>
+
+#include <nuttx/arch.h>
+#include <nuttx/clock.h>
+#include <nuttx/irq.h>
+#include <nuttx/mmcsd.h>
+#include <nuttx/mutex.h>
+#include <nuttx/sdio.h>
+#include <nuttx/semaphore.h>
+#include <nuttx/spinlock.h>
+#include <nuttx/wdog.h>
+#include <nuttx/wqueue.h>
+
+#include "arm64_arch.h"
+#include "arm64_internal.h"
+#include "chip.h"
+#include "hardware/rk3576_emmc.h"
+#include "hardware/rk3576_memorymap.h"
+#include "rk3576_emmc.h"
+
+#ifdef CONFIG_RK3576_EMMC
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* Single eMMC host on the RK3576. */
+
+#define RK3576_EMMC_NHOSTS 1
+
+/* Base clock: CAP0[15:8] reports the base clock in MHz (0xc8 = 200MHz on the
+ * RK3576).  Used to derive the SDCLK divider (SDCLK = baseclk / (2 * N)).
+ * The default is used only if CAP0 reads back zero.
+ */
+
+#define RK3576_EMMC_BASECLK_DEF 200000000
+
+/* Target card clock for each stage. */
+
+#define RK3576_EMMC_ID_FREQ   400000   /* Identification mode (<400KHz) */
+#define RK3576_EMMC_XFER_FREQ 25000000 /* Default-speed transfer        */
+
+/* SDCLK frequency-select field width: this driver uses the 8-bit divider in
+ * CLKCTRL[15:8] only (N up to 255 -> ~392KHz from a 200MHz base), which
+ * covers both the identification and default-speed transfer clocks.  The
+ * 10-bit extension bits [7:6] are left zero (HS400/tuning is out of scope).
+ */
+
+#define RK3576_EMMC_DIV_MAX 0xff
+
+/* Timeout control: data timeout counter = TMCLK * 2^(13 + value); 0x0e is the
+ * maximum, giving the longest tolerated data/busy timeout.
+ */
+
+#define RK3576_EMMC_TOUTCTRL_MAX 0x0e
+
+/* Bus width selected on widebus(true).  The on-board eMMC is wired 8-bit
+ * (DTS bus-width = 8); a D1-only build narrows this to 1-bit.
+ */
+
+#ifdef CONFIG_SDIO_WIDTH_D1_ONLY
+#define RK3576_EMMC_WIDEBITS 0
+#else
+#define RK3576_EMMC_WIDEBITS EMMC_HOSTCTRL1_DWIDTH8
+#endif
+
+/* Busy-wait loop limit for register self-clear / present-state polling. */
+
+#define RK3576_EMMC_SPIN 1000000
+
+/* Packed interrupt sets: the SDHCI normal (16-bit) and error (16-bit) status
+ * live in separate registers, so a single 32-bit value carries the normal
+ * bits in [15:0] and the error bits in [31:16].
+ */
+
+#define EMMC_ERR_SHIFT    16
+#define EMMC_NPART(x)     ((uint16_t)((x)&0xffff))
+#define EMMC_EPART(x)     ((uint16_t)(((x) >> EMMC_ERR_SHIFT) & 0xffff))
+#define EMMC_MKERR(e)     ((uint32_t)(e) << EMMC_ERR_SHIFT)
+
+#define EMMC_CMDDONE_INTS (EMMC_NINT_CMDDONE)
+#define EMMC_XFRDONE_INTS (EMMC_NINT_XFERDONE)
+#define EMMC_RXRDY_INT    (EMMC_NINT_BUFRDRDY)
+#define EMMC_TXRDY_INT    (EMMC_NINT_BUFWRRDY)
+
+#define EMMC_RESPERR_INTS                                                 \
+  EMMC_MKERR(EMMC_EINT_CMDTIMEOUT | EMMC_EINT_CMDCRC | EMMC_EINT_CMDEND | \
+             EMMC_EINT_CMDIDX)
+#define EMMC_DATAERR_INTS \
+  EMMC_MKERR(EMMC_EINT_DATTIMEOUT | EMMC_EINT_DATCRC | EMMC_EINT_DATEND)
+
+/* Clear-all mask for the status registers (write-1-to-clear). */
+
+#define EMMC_INT_CLRALL 0xffff
+
+/****************************************************************************
+ * Private Types
+ ****************************************************************************/
+
+/* RK3576 eMMC host private state.  The first member is sdio_dev_s so a
+ * struct sdio_dev_s pointer can be up-cast to this structure.
+ */
+
+struct rk3576_emmc_dev_s
+{
+  struct sdio_dev_s dev; /* Standard SDIO interface (must be first) */
+
+  uintptr_t base;   /* Controller register base address */
+  int irq;          /* Controller interrupt number */
+  uint32_t baseclk; /* Base clock in Hz (from CAP0) */
+
+  /* Event wait support */
+
+  sem_t waitsem;                       /* Wait-for-event semaphore */
+  struct wdog_s waitwdog;              /* Wait timeout watchdog */
+  volatile sdio_eventset_t waitevents; /* Enabled wait event set */
+  volatile sdio_eventset_t wkupevent;  /* Wakeup event set */
+
+  /* Media change callback */
+
+  sdio_eventset_t cbevents; /* Enabled callback event set */
+  worker_t callback;        /* Registered callback function */
+  void *cbarg;              /* Callback argument */
+  struct work_s cbwork;     /* Callback work queue item */
+
+  /* Data transfer (PIO) state */
+
+  uint32_t *buffer;           /* Transfer buffer (32bit aligned) */
+  volatile size_t remaining;  /* Remaining byte count */
+  volatile uint32_t xfrints;  /* Signal-enable set during data transfer */
+  volatile uint32_t waitints; /* Signal-enable set while waiting on a cmd */
+  uint32_t blocksize;         /* Current block size (from blocksetup) */
+};
+
+/****************************************************************************
+ * Private Function Prototypes
+ ****************************************************************************/
+
+/* Register access */
+
+static inline uint8_t rk3576_emmc_getreg8(struct rk3576_emmc_dev_s *priv,
+                                          unsigned int offset);
+static inline uint16_t rk3576_emmc_getreg16(struct rk3576_emmc_dev_s *priv,
+                                            unsigned int offset);
+static inline uint32_t rk3576_emmc_getreg32(struct rk3576_emmc_dev_s *priv,
+                                            unsigned int offset);
+static inline void rk3576_emmc_putreg8(struct rk3576_emmc_dev_s *priv,
+                                       unsigned int offset, uint8_t value);
+static inline void rk3576_emmc_putreg16(struct rk3576_emmc_dev_s *priv,
+                                        unsigned int offset, uint16_t value);
+static inline void rk3576_emmc_putreg32(struct rk3576_emmc_dev_s *priv,
+                                        unsigned int offset, uint32_t value);
+
+/* Low-level helpers */
+
+static void rk3576_emmc_setsigen(struct rk3576_emmc_dev_s *priv);
+static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv,
+                                 uint32_t freq);
+static void rk3576_emmc_configwaitints(struct rk3576_emmc_dev_s *priv,
+                                       uint32_t waitints,
+                                       sdio_eventset_t waitevents,
+                                       sdio_eventset_t wkupevent);
+static void rk3576_emmc_configxfrints(struct rk3576_emmc_dev_s *priv,
+                                      uint32_t xfrints);
+static void rk3576_emmc_endwait(struct rk3576_emmc_dev_s *priv,
+                                sdio_eventset_t wkupevent);
+static void rk3576_emmc_eventtimeout(wdparm_t arg);
+static void rk3576_emmc_recvfifo(struct rk3576_emmc_dev_s *priv);
+static void rk3576_emmc_sendfifo(struct rk3576_emmc_dev_s *priv);
+static void rk3576_emmc_callback(struct rk3576_emmc_dev_s *priv);
+
+/* Interrupt handling */
+
+static int rk3576_emmc_interrupt(int irq, void *context, void *arg);
+
+/* sdio_dev_s methods */
+
+static void rk3576_emmc_reset(struct sdio_dev_s *dev);
+static sdio_capset_t rk3576_emmc_capabilities(struct sdio_dev_s *dev);
+static sdio_statset_t rk3576_emmc_status(struct sdio_dev_s *dev);
+static void rk3576_emmc_widebus(struct sdio_dev_s *dev, bool enable);
+static void rk3576_emmc_clock(struct sdio_dev_s *dev, enum sdio_clock_e rate);
+static int rk3576_emmc_attach(struct sdio_dev_s *dev);
+
+static int rk3576_emmc_sendcmd(struct sdio_dev_s *dev, uint32_t cmd,
+                               uint32_t arg);
+static int rk3576_emmc_recvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
+                                 size_t nbytes);
+static int rk3576_emmc_sendsetup(struct sdio_dev_s *dev, const uint8_t *buffer,
+                                 size_t nbytes);
+static int rk3576_emmc_cancel(struct sdio_dev_s *dev);
+
+static int rk3576_emmc_waitresponse(struct sdio_dev_s *dev, uint32_t cmd);
+static int rk3576_emmc_recvshort(struct sdio_dev_s *dev, uint32_t cmd,
+                                 uint32_t *rshort);
+static int rk3576_emmc_recvlong(struct sdio_dev_s *dev, uint32_t cmd,
+                                uint32_t rlong[4]);
+
+static void rk3576_emmc_waitenable(struct sdio_dev_s *dev,
+                                   sdio_eventset_t eventset, uint32_t timeout);
+static sdio_eventset_t rk3576_emmc_eventwait(struct sdio_dev_s *dev);
+static void rk3576_emmc_callbackenable(struct sdio_dev_s *dev,
+                                       sdio_eventset_t eventset);
+#if defined(CONFIG_SCHED_WORKQUEUE) && defined(CONFIG_SCHED_HPWORK)
+static int rk3576_emmc_registercallback(struct sdio_dev_s *dev,
+                                        worker_t callback, void *arg);
+#endif
+static void rk3576_emmc_gotextcsd(struct sdio_dev_s *dev,
+                                  const uint8_t *buffer);
+
+#ifdef CONFIG_SDIO_DMA
+#ifdef CONFIG_ARCH_HAVE_SDIO_PREFLIGHT
+static int rk3576_emmc_dmapreflight(struct sdio_dev_s *dev,
+                                    const uint8_t *buffer, size_t buflen);
+#endif
+static int rk3576_emmc_dmarecvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
+                                    size_t buflen);
+static int rk3576_emmc_dmasendsetup(struct sdio_dev_s *dev,
+                                    const uint8_t *buffer, size_t buflen);
+#endif
+#ifdef CONFIG_SDIO_BLOCKSETUP
+static void rk3576_emmc_blocksetup(struct sdio_dev_s *dev,
+                                   unsigned int blocklen,
+                                   unsigned int nblocks);
+#endif
+
+/****************************************************************************
+ * Private Data
+ ****************************************************************************/
+
+/* Shared sdio_dev_s operations template. */
+
+static const struct sdio_dev_s g_rk3576_emmc_ops = {
+  .reset = rk3576_emmc_reset,
+  .capabilities = rk3576_emmc_capabilities,
+  .status = rk3576_emmc_status,
+  .widebus = rk3576_emmc_widebus,
+  .clock = rk3576_emmc_clock,
+  .attach = rk3576_emmc_attach,
+  .sendcmd = rk3576_emmc_sendcmd,
+  .recvsetup = rk3576_emmc_recvsetup,
+  .sendsetup = rk3576_emmc_sendsetup,
+  .cancel = rk3576_emmc_cancel,
+  .waitresponse = rk3576_emmc_waitresponse,
+  .recv_r1 = rk3576_emmc_recvshort,
+  .recv_r2 = rk3576_emmc_recvlong,
+  .recv_r3 = rk3576_emmc_recvshort,
+  .recv_r4 = rk3576_emmc_recvshort,
+  .recv_r5 = rk3576_emmc_recvshort,
+  .recv_r6 = rk3576_emmc_recvshort,
+  .recv_r7 = rk3576_emmc_recvshort,
+  .waitenable = rk3576_emmc_waitenable,
+  .eventwait = rk3576_emmc_eventwait,
+  .callbackenable = rk3576_emmc_callbackenable,
+#if defined(CONFIG_SCHED_WORKQUEUE) && defined(CONFIG_SCHED_HPWORK)
+  .registercallback = rk3576_emmc_registercallback,
+#endif
+  .gotextcsd = rk3576_emmc_gotextcsd,
+#ifdef CONFIG_SDIO_DMA
+#ifdef CONFIG_ARCH_HAVE_SDIO_PREFLIGHT
+  .dmapreflight = rk3576_emmc_dmapreflight,
+#endif
+  .dmarecvsetup = rk3576_emmc_dmarecvsetup,
+  .dmasendsetup = rk3576_emmc_dmasendsetup,
+#endif
+#ifdef CONFIG_SDIO_BLOCKSETUP
+  .blocksetup = rk3576_emmc_blocksetup,
+#endif
+};
+
+/* Per-slot register base and IRQ (indexed by slot number). */
+
+static const struct rk3576_emmc_cfg_s
+{
+  uintptr_t base;
+  int irq;
+} g_emmc_cfg[RK3576_EMMC_NHOSTS] = {
+  {
+      .base = RK3576_EMMC_ADDR, .irq = RK3576_IRQ_EMMC, /* slot 0: eMMC */
+  },
+};
+
+/* Host instances (ops copied from the template at initialize time). */
+
+static struct rk3576_emmc_dev_s g_emmc_hosts[RK3576_EMMC_NHOSTS];
+
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: rk3576_emmc_getreg8 / getreg16 / getreg32 / putreg8 / putreg16 /
+ *       putreg32
+ *
+ * Description:
+ *   Controller register read/write helpers.  The SDHCI block mixes 8/16/32-bit
+ *   registers, so access must use the matching width.
+ ****************************************************************************/
+
+static inline uint8_t rk3576_emmc_getreg8(struct rk3576_emmc_dev_s *priv,
+                                          unsigned int offset)
+{
+  return getreg8(priv->base + offset);
+}
+
+static inline uint16_t rk3576_emmc_getreg16(struct rk3576_emmc_dev_s *priv,
+                                            unsigned int offset)
+{
+  return getreg16(priv->base + offset);
+}
+
+static inline uint32_t rk3576_emmc_getreg32(struct rk3576_emmc_dev_s *priv,
+                                            unsigned int offset)
+{
+  return getreg32(priv->base + offset);
+}
+
+static inline void rk3576_emmc_putreg8(struct rk3576_emmc_dev_s *priv,
+                                       unsigned int offset, uint8_t value)
+{
+  putreg8(value, priv->base + offset);
+}
+
+static inline void rk3576_emmc_putreg16(struct rk3576_emmc_dev_s *priv,
+                                        unsigned int offset, uint16_t value)
+{
+  putreg16(value, priv->base + offset);
+}
+
+static inline void rk3576_emmc_putreg32(struct rk3576_emmc_dev_s *priv,
+                                        unsigned int offset, uint32_t value)
+{
+  putreg32(value, priv->base + offset);
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_setsigen
+ *
+ * Description:
+ *   Write the SDHCI signal-enable registers (0x38/0x3a) from the combined
+ *   wait + transfer interrupt sets.  The status-enable registers (0x34/0x36)
+ *   are held at 0xffff (see reset) so the status bits always latch; the
+ *   signal-enable registers are what actually route the IRQ line, so they
+ *   carry only the events currently of interest.
+ ****************************************************************************/
+
+static void rk3576_emmc_setsigen(struct rk3576_emmc_dev_s *priv)
+{
+  uint32_t combined = priv->xfrints | priv->waitints;
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSIGEN, EMMC_NPART(combined));
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSIGEN, EMMC_EPART(combined));
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_setclock
+ *
+ * Description:
+ *   Set the card clock.  Disable SD clock -> program the 8-bit divider ->
+ *   wait for the internal clock to re-stabilise -> enable SD clock.  The card
+ *   clock is baseclk / (2 * N) where N is the CLKCTRL[15:8] divider (N = 0
+ *   selects the base clock directly).
+ ****************************************************************************/
+
+static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
+{
+  uint32_t div;
+  uint16_t clk;
+  int i;
+
+  /* 1) Disable the SD clock, keep the internal clock running. */
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, EMMC_CLKCTRL_INTLEN);
+
+  if (freq == 0)
+    {
+      return;
+    }
+
+  /* 2) Compute the divider: N = ceil(baseclk / (2 * freq)), clamped. */
+
+  if (freq >= priv->baseclk)
+    {
+      div = 0;
+    }
+  else
+    {
+      div = (priv->baseclk + (2 * freq) - 1) / (2 * freq);
+      if (div > RK3576_EMMC_DIV_MAX)
+        {
+          div = RK3576_EMMC_DIV_MAX;
+        }
+    }
+
+  /* 3) Program the divider and wait for the internal clock to stabilise. */
+
+  clk = EMMC_CLKCTRL_INTLEN | (uint16_t)(div << EMMC_CLKCTRL_SDCLKFREQ_SHIFT);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, clk);
+
+  for (i = 0; i < RK3576_EMMC_SPIN; i++)
+    {
+      if ((rk3576_emmc_getreg16(priv, RK3576_EMMC_CLKCTRL) &
+           EMMC_CLKCTRL_INTSTABLE) != 0)
+        {
+          break;
+        }
+    }
+
+  /* 4) Enable the SD clock to the card. */
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, clk | EMMC_CLKCTRL_SDCLKEN);
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_configwaitints
+ *
+ * Description:
+ *   Atomically configure the wait event set and the wait signal-enable bits.
+ ****************************************************************************/
+
+static void rk3576_emmc_configwaitints(struct rk3576_emmc_dev_s *priv,
+                                       uint32_t waitints,
+                                       sdio_eventset_t waitevents,
+                                       sdio_eventset_t wkupevent)
+{
+  irqstate_t flags;
+
+  flags = enter_critical_section();
+  priv->waitevents = waitevents;
+  priv->wkupevent = wkupevent;
+  priv->waitints = waitints;
+  rk3576_emmc_setsigen(priv);
+  leave_critical_section(flags);
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_configxfrints
+ *
+ * Description:
+ *   Configure the data-transfer signal-enable bits (kept separate from the
+ *   command-wait bits so each can be cleared independently).
+ ****************************************************************************/
+
+static void rk3576_emmc_configxfrints(struct rk3576_emmc_dev_s *priv,
+                                      uint32_t xfrints)
+{
+  irqstate_t flags;
+
+  flags = enter_critical_section();
+  priv->xfrints = xfrints;
+  rk3576_emmc_setsigen(priv);
+  leave_critical_section(flags);
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_endwait
+ *
+ * Description:
+ *   End one event wait in interrupt context: stop the watchdog, disable the
+ *   wait interrupts and wake the waiting thread.
+ ****************************************************************************/
+
+static void rk3576_emmc_endwait(struct rk3576_emmc_dev_s *priv,
+                                sdio_eventset_t wkupevent)
+{
+  wd_cancel(&priv->waitwdog);
+  rk3576_emmc_configwaitints(priv, 0, 0, wkupevent);
+  nxsem_post(&priv->waitsem);
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_eventtimeout
+ *
+ * Description:
+ *   Wait-timeout watchdog callback (software timeout).
+ ****************************************************************************/
+
+static void rk3576_emmc_eventtimeout(wdparm_t arg)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)arg;
+
+  if ((priv->waitevents & SDIOWAIT_TIMEOUT) != 0)
+    {
+      rk3576_emmc_endwait(priv, SDIOWAIT_TIMEOUT);
+      mcerr("ERROR: Event wait timed out\n");
+    }
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_recvfifo
+ *
+ * Description:
+ *   Drain the SDHCI buffer data port into the receive buffer (PIO), while the
+ *   host reports buffer-read-enable and the caller still expects data.
+ ****************************************************************************/
+
+static void rk3576_emmc_recvfifo(struct rk3576_emmc_dev_s *priv)
+{
+  /* A buffer-read-ready interrupt means one whole block is already in the
+   * buffer port; read the block out unconditionally (do NOT gate on the
+   * BUFRDEN present-state bit -- on this dwcmshc the bit's per-word timing
+   * does not track a word-at-a-time poll, and gating causes a short/zero
+   * drain).  This matches the polled bring-up probe.
+   */
+
+  size_t chunk = priv->blocksize ? priv->blocksize : priv->remaining;
+
+  while (chunk >= sizeof(uint32_t) && priv->remaining >= sizeof(uint32_t))
+    {
+      *priv->buffer++ = rk3576_emmc_getreg32(priv, RK3576_EMMC_BUFFER);
+      priv->remaining -= sizeof(uint32_t);
+      chunk -= sizeof(uint32_t);
+    }
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_sendfifo
+ *
+ * Description:
+ *   Fill the SDHCI buffer data port from the send buffer (PIO), while the host
+ *   reports buffer-write-enable and data remains.
+ ****************************************************************************/
+
+static void rk3576_emmc_sendfifo(struct rk3576_emmc_dev_s *priv)
+{
+  while (priv->remaining >= sizeof(uint32_t) &&
+         (rk3576_emmc_getreg32(priv, RK3576_EMMC_PRESENT) &
+          EMMC_PRESENT_BUFWREN) != 0)
+    {
+      rk3576_emmc_putreg32(priv, RK3576_EMMC_BUFFER, *priv->buffer++);
+      priv->remaining -= sizeof(uint32_t);
+    }
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_callback
+ *
+ * Description:
+ *   If the conditions are met, schedule the media-change callback onto the
+ *   work queue.  The eMMC is non-removable, so this fires at most once (at
+ *   callbackenable time) to report the fixed "inserted" state.
+ ****************************************************************************/
+
+static void rk3576_emmc_callback(struct rk3576_emmc_dev_s *priv)
+{
+#if defined(CONFIG_SCHED_WORKQUEUE) && defined(CONFIG_SCHED_HPWORK)
+  if (priv->callback)
+    {
+      sdio_statset_t status = rk3576_emmc_status(&priv->dev);
+      bool present = (status & SDIO_STATUS_PRESENT) != 0;
+
+      if ((present && (priv->cbevents & SDIOMEDIA_INSERTED) != 0) ||
+          (!present && (priv->cbevents & SDIOMEDIA_EJECTED) != 0))
+        {
+          priv->cbevents = 0;
+          work_queue(HPWORK, &priv->cbwork, priv->callback, priv->cbarg, 0);
+        }
+    }
+#endif
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_interrupt
+ *
+ * Description:
+ *   Controller interrupt handler: handles command done/response errors, PIO
+ *   data movement and transfer done/errors.  The SDHCI normal and error
+ *   status registers are read and cleared (write-1-to-clear).
+ ****************************************************************************/
+
+static int rk3576_emmc_interrupt(int irq, void *context, void *arg)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)arg;
+  uint16_t nint;
+  uint16_t eint;
+
+  UNUSED(irq);
+  UNUSED(context);
+
+  nint = rk3576_emmc_getreg16(priv, RK3576_EMMC_NINTSTS);
+  eint = rk3576_emmc_getreg16(priv, RK3576_EMMC_EINTSTS);
+
+  /* Clear the latched status (write 1 to clear). */
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSTS, nint);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSTS, eint);
+
+  /* --- PIO data movement --- */
+
+  if ((nint & EMMC_RXRDY_INT) != 0 && priv->buffer != NULL)
+    {
+      /* Drain the ready block; the transfer completes on XFERDONE. */
+
+      rk3576_emmc_recvfifo(priv);
+    }
+
+  if ((nint & EMMC_TXRDY_INT) != 0 && priv->buffer != NULL)
+    {
+      rk3576_emmc_sendfifo(priv);
+    }
+
+  /* --- Data transfer error --- */
+
+  if ((eint & EMMC_EPART(EMMC_DATAERR_INTS)) != 0)
+    {
+      priv->remaining = 0;
+      priv->buffer = NULL;
+      rk3576_emmc_configxfrints(priv, 0);
+
+      if ((priv->waitevents & (SDIOWAIT_TRANSFERDONE | SDIOWAIT_ERROR)) != 0)
+        {
+          rk3576_emmc_endwait(priv, SDIOWAIT_ERROR);
+        }
+    }
+
+  /* --- Data transfer done --- */
+
+  else if ((nint & EMMC_NINT_XFERDONE) != 0 && priv->buffer != NULL)
+    {
+      /* Drain any tail still in the buffer port.  On this dwcmshc XFERDONE can
+       * post together with the final buffer-read-ready window, so read the
+       * remaining words out unconditionally (the block is already buffered),
+       * matching the polled probe rather than gating on BUFRDEN.  XFERDONE is
+       * the single completion point.
+       *
+       * The priv->buffer != NULL guard is essential: a spurious/leftover
+       * XFERDONE with no active transfer must NOT complete a wait, or it wakes
+       * the next command's waiter before its data has arrived (observed:
+       * EXT_CSD read back as zero).
+       */
+
+      while (priv->remaining >= sizeof(uint32_t))
+        {
+          *priv->buffer++ = rk3576_emmc_getreg32(priv, RK3576_EMMC_BUFFER);
+          priv->remaining -= sizeof(uint32_t);
+        }
+
+      priv->remaining = 0;
+      priv->buffer = NULL;
+      rk3576_emmc_configxfrints(priv, 0);
+
+      if ((priv->waitevents & SDIOWAIT_TRANSFERDONE) != 0)
+        {
+          rk3576_emmc_endwait(priv, SDIOWAIT_TRANSFERDONE);
+        }
+    }
+
+  /* --- Command response error --- */
+
+  if ((eint & EMMC_EPART(EMMC_RESPERR_INTS)) != 0)
+    {
+      if ((priv->waitevents &
+           (SDIOWAIT_CMDDONE | SDIOWAIT_RESPONSEDONE | SDIOWAIT_ERROR)) != 0)
+        {
+          rk3576_emmc_endwait(priv, SDIOWAIT_ERROR);
+        }
+    }
+
+  /* --- Command done --- */
+
+  else if ((nint & EMMC_NINT_CMDDONE) != 0)
+    {
+      if ((priv->waitevents & (SDIOWAIT_CMDDONE | SDIOWAIT_RESPONSEDONE)) != 0)
+        {
+          rk3576_emmc_endwait(priv,
+                              priv->waitevents &
+                                  (SDIOWAIT_CMDDONE | SDIOWAIT_RESPONSEDONE));
+        }
+    }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_reset
+ *
+ * Description:
+ *   Software-reset the host, bring up the internal + card clock and bus power,
+ *   latch all status bits and restore the identification-mode defaults.  Adds
+ *   no CRU/pinctrl setup: the eMMC is a non-removable, loader-configured boot
+ *   device whose clock domain and pins are already up.
+ ****************************************************************************/
+
+static void rk3576_emmc_reset(struct sdio_dev_s *dev)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  uint32_t cap0;
+  uint32_t basemhz;
+  irqstate_t flags;
+  int i;
+
+  flags = enter_critical_section();
+
+  /* Determine the base clock from CAP0[15:8] (MHz). */
+
+  cap0 = rk3576_emmc_getreg32(priv, RK3576_EMMC_CAP0);
+  basemhz = (cap0 >> 8) & 0xff;
+  priv->baseclk = basemhz != 0 ? basemhz * 1000000 : RK3576_EMMC_BASECLK_DEF;
+
+  /* Software-reset the whole host and wait for the bit to self-clear. */
+
+  rk3576_emmc_putreg8(priv, RK3576_EMMC_SWRESET, EMMC_SWRESET_ALL);
+  for (i = 0; i < RK3576_EMMC_SPIN; i++)
+    {
+      if ((rk3576_emmc_getreg8(priv, RK3576_EMMC_SWRESET) &
+           EMMC_SWRESET_ALL) == 0)
+        {
+          break;
+        }
+    }
+
+  /* Internal clock on, wait until stable. */
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, EMMC_CLKCTRL_INTLEN);
+  for (i = 0; i < RK3576_EMMC_SPIN; i++)
+    {
+      if ((rk3576_emmc_getreg16(priv, RK3576_EMMC_CLKCTRL) &
+           EMMC_CLKCTRL_INTSTABLE) != 0)
+        {
+          break;
+        }
+    }
+
+  /* Bus power on at 1.8 V (eMMC VCCQ). */
+
+  rk3576_emmc_putreg8(priv, RK3576_EMMC_PWRCTRL,
+                      EMMC_PWRCTRL_1V8 | EMMC_PWRCTRL_ON);
+
+  /* Data timeout to maximum, default to 1-bit bus for identification. */
+
+  rk3576_emmc_putreg8(priv, RK3576_EMMC_TOUTCTRL, RK3576_EMMC_TOUTCTRL_MAX);
+  rk3576_emmc_putreg8(priv, RK3576_EMMC_HOSTCTRL1, 0);
+
+  /* Clear then latch all normal + error status.  The status-enable registers
+   * MUST be 0xffff or the status bits never latch and a completed command
+   * reads as if nothing happened.  The signal-enable registers stay clear
+   * here (armed per-wait) so no spurious IRQ fires yet.
+   */
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSTS, EMMC_INT_CLRALL);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSTS, EMMC_INT_CLRALL);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTEN, EMMC_INT_CLRALL);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTEN, EMMC_INT_CLRALL);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSIGEN, 0);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSIGEN, 0);
+
+  /* Reset the driver software state. */
+
+  priv->buffer = NULL;
+  priv->remaining = 0;
+  priv->xfrints = 0;
+  priv->waitints = 0;
+  priv->waitevents = 0;
+  priv->wkupevent = 0;
+  priv->blocksize = 0;
+
+  /* Identification-mode initial clock (<400KHz). */
+
+  rk3576_emmc_setclock(priv, RK3576_EMMC_ID_FREQ);
+
+  leave_critical_section(flags);
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_capabilities
+ *
+ * Description:
+ *   Report host capabilities: 8-bit (or 1-bit in a D1-only build) bus, PIO
+ *   data path.  DMABEFOREWRITE makes mmcsd run SENDSETUP before the write
+ *   command, which is required on SDHCI because the transfer mode must be
+ *   programmed before the command register write.
+ ****************************************************************************/
+
+static sdio_capset_t rk3576_emmc_capabilities(struct sdio_dev_s *dev)
+{
+  sdio_capset_t caps = 0;
+
+  UNUSED(dev);
+
+  /* Force 1-bit bus for this milestone.  Without SDIO_CAPS_1BIT_ONLY the mmcsd
+   * layer switches the eMMC to 4-bit (MMC_SWITCH BUS_WIDTH), which must be
+   * matched by the host width -- the wider data lines depend on board pinmux
+   * that is out of scope here.  1-bit (DAT0) is proven working; 4/8-bit is a
+   * follow-up once the eMMC data-pin muxing is added.
+   */
+
+  caps |= SDIO_CAPS_1BIT_ONLY;
+  caps |= SDIO_CAPS_DMABEFOREWRITE;
+
+  return caps;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_status
+ *
+ * Description:
+ *   Return card present/write-protect status.  The eMMC is soldered and
+ *   non-removable, so it is always reported present and never write-protected.
+ ****************************************************************************/
+
+static sdio_statset_t rk3576_emmc_status(struct sdio_dev_s *dev)
+{
+  UNUSED(dev);
+  return SDIO_STATUS_PRESENT;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_widebus
+ *
+ * Description:
+ *   Select the data bus width in HOSTCTRL1.  enable selects the widest wired
+ *   width (8-bit on this board); disable narrows to 1-bit.
+ ****************************************************************************/
+
+static void rk3576_emmc_widebus(struct sdio_dev_s *dev, bool enable)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  uint8_t hc;
+
+  hc = rk3576_emmc_getreg8(priv, RK3576_EMMC_HOSTCTRL1);
+  hc &= ~(EMMC_HOSTCTRL1_DWIDTH4 | EMMC_HOSTCTRL1_DWIDTH8);
+
+  if (enable)
+    {
+      hc |= RK3576_EMMC_WIDEBITS;
+    }
+
+  rk3576_emmc_putreg8(priv, RK3576_EMMC_HOSTCTRL1, hc);
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_clock
+ *
+ * Description:
+ *   Set the card clock for the requested stage.  eMMC only exercises the
+ *   identification and default-speed transfer clocks; the SD-specific rates
+ *   map to the same default-speed transfer clock.
+ ****************************************************************************/
+
+static void rk3576_emmc_clock(struct sdio_dev_s *dev, enum sdio_clock_e rate)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  uint32_t freq;
+
+  switch (rate)
+    {
+      default:
+      case CLOCK_SDIO_DISABLED:
+        freq = 0;
+        break;
+
+      case CLOCK_IDMODE:
+        freq = RK3576_EMMC_ID_FREQ;
+        break;
+
+      case CLOCK_MMC_TRANSFER:
+      case CLOCK_SD_TRANSFER_1BIT:
+      case CLOCK_SD_TRANSFER_4BIT:
+        freq = RK3576_EMMC_XFER_FREQ;
+        break;
+    }
+
+  rk3576_emmc_setclock(priv, freq);
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_attach
+ *
+ * Description:
+ *   Attach and enable the controller interrupt.
+ ****************************************************************************/
+
+static int rk3576_emmc_attach(struct sdio_dev_s *dev)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  int ret;
+
+  ret = irq_attach(priv->irq, rk3576_emmc_interrupt, priv);
+  if (ret < 0)
+    {
+      mcerr("ERROR: irq_attach failed irq=%d ret=%d\n", priv->irq, ret);
+      return ret;
+    }
+
+  /* Disable all interrupt signals, clear pending status, then open the IRQ. */
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSIGEN, 0);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSIGEN, 0);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSTS, EMMC_INT_CLRALL);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSTS, EMMC_INT_CLRALL);
+
+  up_enable_irq(priv->irq);
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_sendcmd
+ *
+ * Description:
+ *   Issue a command.  Builds the 16-bit SDHCI command register from the NuttX
+ *   command encoding and starts it with the mandated write sequence
+ *   (ARG1 -> XFERMODE -> CMD).  For data commands the transfer mode has
+ *   already been programmed by recv/sendsetup and is left intact; for
+ *   non-data commands the transfer mode is cleared.  The command register
+ *   write (16-bit to 0x0e) is what actually launches the command.
+ ****************************************************************************/
+
+static int rk3576_emmc_sendcmd(struct sdio_dev_s *dev, uint32_t cmd,
+                               uint32_t arg)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  uint32_t cmdidx;
+  uint16_t regval;
+  bool data;
+  bool needdat;
+  int i;
+
+  cmdidx = (cmd & MMCSD_CMDIDX_MASK) >> MMCSD_CMDIDX_SHIFT;
+  data = (cmd & MMCSD_DATAXFR_MASK) != 0;
+
+  /* A command that uses the DAT line for data, or one that reports busy on
+   * DAT (R1b), must wait for the DAT line to be free before it is issued.
+   */
+
+  needdat = data || (cmd & MMCSD_RESPONSE_MASK) == MMCSD_R1B_RESPONSE;
+  regval = (uint16_t)(cmdidx << EMMC_CMD_INDEX_SHIFT);
+
+  /* Response type: pick the response length and enable the CRC/index checks
+   * appropriate for each response class.
+   */
+
+  switch (cmd & MMCSD_RESPONSE_MASK)
+    {
+      case MMCSD_NO_RESPONSE:
+        regval |= EMMC_CMD_RESP_NONE;
+        break;
+
+      case MMCSD_R2_RESPONSE:
+        /* 136-bit response, CRC checked, index not present. */
+
+        regval |= EMMC_CMD_RESP_LONG | EMMC_CMD_CRCEN;
+        break;
+
+      case MMCSD_R3_RESPONSE:
+      case MMCSD_R4_RESPONSE:
+        /* Short OCR-class response: no CRC, no index check. */
+
+        regval |= EMMC_CMD_RESP_SHORT;
+        break;
+
+      case MMCSD_R1B_RESPONSE:
+        /* Short response with busy on the DAT line, CRC + index checked. */
+
+        regval |= EMMC_CMD_RESP_SHORT_BUSY | EMMC_CMD_CRCEN | EMMC_CMD_IDXEN;
+        break;
+
+      default:
+        /* R1/R5/R6/R7: short response, CRC + index checked. */
+
+        regval |= EMMC_CMD_RESP_SHORT | EMMC_CMD_CRCEN | EMMC_CMD_IDXEN;
+        break;
+    }
+
+  if (data)
+    {
+      regval |= EMMC_CMD_DATA;
+    }
+
+  /* Wait for the command (and, for data commands, the DAT) line to be free. */
+
+  for (i = 0; i < RK3576_EMMC_SPIN; i++)
+    {
+      uint32_t present = rk3576_emmc_getreg32(priv, RK3576_EMMC_PRESENT);
+      uint32_t busy =
+          EMMC_PRESENT_CMDINHIBIT | (needdat ? EMMC_PRESENT_DATINHIBIT : 0);
+
+      if ((present & busy) == 0)
+        {
+          break;
+        }
+    }
+
+  if (i >= RK3576_EMMC_SPIN)
+    {
+      mcerr("ERROR: Command line busy cmd=%08" PRIx32 "\n", cmd);
+      return -EBUSY;
+    }
+
+  /* Clear stale command status, write the argument, (clear the transfer mode
+   * for non-data commands), then launch the command.
+   */
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSTS, EMMC_CMDDONE_INTS);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSTS,
+                       EMMC_EPART(EMMC_RESPERR_INTS));
+
+  rk3576_emmc_putreg32(priv, RK3576_EMMC_ARG1, arg);
+
+  if (!data)
+    {
+      rk3576_emmc_putreg16(priv, RK3576_EMMC_XFERMODE, 0);
+    }
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_CMD, regval);
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_recvsetup
+ *
+ * Description:
+ *   PIO receive setup: program block size/count and the read transfer mode,
+ *   register the buffer and arm the buffer-read + transfer-done interrupts.
+ *   Called by mmcsd before the read command, so the transfer mode is in place
+ *   when sendcmd writes the command register.
+ ****************************************************************************/
+
+static int rk3576_emmc_recvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
+                                 size_t nbytes)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  uint32_t blksz;
+  uint32_t nblocks;
+  uint16_t mode;
+
+  DEBUGASSERT(buffer != NULL && nbytes > 0);
+  DEBUGASSERT(((uintptr_t)buffer & 3) == 0); /* 32-bit aligned */
+
+  blksz = priv->blocksize ? priv->blocksize : nbytes;
+  nblocks = blksz ? (nbytes / blksz) : 1;
+
+  priv->buffer = (uint32_t *)buffer;
+  priv->remaining = nbytes;
+
+  /* Clear stale data status. */
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSTS,
+                       EMMC_NINT_XFERDONE | EMMC_NINT_BUFRDRDY);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSTS,
+                       EMMC_EPART(EMMC_DATAERR_INTS));
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_BLOCKSIZE, (uint16_t)blksz);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_BLOCKCOUNT, (uint16_t)nblocks);
+
+  /* Single-block reads use only the read-direction select (matching the
+   * proven bring-up probe); block-count + multi-block select are added only
+   * for multi-block transfers.  Enabling block-count on a single-block read
+   * makes this dwcmshc withhold the data phase (observed: CMD17 DAT timeout).
+   */
+
+  mode = EMMC_XFERMODE_DTDSEL;
+  if (nblocks > 1)
+    {
+      mode |= EMMC_XFERMODE_BCEN | EMMC_XFERMODE_MSBSEL;
+    }
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_XFERMODE, mode);
+
+  rk3576_emmc_configxfrints(priv, EMMC_RXRDY_INT | EMMC_XFRDONE_INTS |
+                                      EMMC_DATAERR_INTS);
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_sendsetup
+ *
+ * Description:
+ *   PIO send setup: program block size/count and the write transfer mode,
+ *   register the buffer and arm the buffer-write + transfer-done interrupts.
+ *   No FIFO prefill is done (unlike dw_mmc): on SDHCI the buffer-write-ready
+ *   interrupt fires only after the write command starts the data phase, so
+ *   the data is pushed from the ISR.  DMABEFOREWRITE guarantees this setup
+ *   runs before sendcmd writes the command register.
+ ****************************************************************************/
+
+static int rk3576_emmc_sendsetup(struct sdio_dev_s *dev, const uint8_t *buffer,
+                                 size_t nbytes)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  uint32_t blksz;
+  uint32_t nblocks;
+  uint16_t mode;
+
+  DEBUGASSERT(buffer != NULL && nbytes > 0);
+  DEBUGASSERT(((uintptr_t)buffer & 3) == 0);
+
+  blksz = priv->blocksize ? priv->blocksize : nbytes;
+  nblocks = blksz ? (nbytes / blksz) : 1;
+
+  priv->buffer = (uint32_t *)buffer;
+  priv->remaining = nbytes;
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSTS,
+                       EMMC_NINT_XFERDONE | EMMC_NINT_BUFWRRDY);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSTS,
+                       EMMC_EPART(EMMC_DATAERR_INTS));
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_BLOCKSIZE, (uint16_t)blksz);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_BLOCKCOUNT, (uint16_t)nblocks);
+
+  mode = EMMC_XFERMODE_BCEN;
+  if (nblocks > 1)
+    {
+      mode |= EMMC_XFERMODE_MSBSEL;
+    }
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_XFERMODE, mode);
+
+  rk3576_emmc_configxfrints(priv, EMMC_TXRDY_INT | EMMC_XFRDONE_INTS |
+                                      EMMC_DATAERR_INTS);
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_cancel
+ *
+ * Description:
+ *   Cancel an outstanding data transfer: disable interrupts, stop the
+ *   watchdog and clear software state.
+ ****************************************************************************/
+
+static int rk3576_emmc_cancel(struct sdio_dev_s *dev)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+
+  rk3576_emmc_configxfrints(priv, 0);
+  rk3576_emmc_configwaitints(priv, 0, 0, 0);
+  wd_cancel(&priv->waitwdog);
+
+  priv->buffer = NULL;
+  priv->remaining = 0;
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_waitresponse
+ *
+ * Description:
+ *   Poll-wait until the command completes, checking for command timeout/CRC
+ *   errors.  Used by mmcsd for the polled command path.
+ ****************************************************************************/
+
+static int rk3576_emmc_waitresponse(struct sdio_dev_s *dev, uint32_t cmd)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  bool crccheck;
+  uint16_t nint;
+  uint16_t eint;
+  int i;
+
+  crccheck = (cmd & MMCSD_RESPONSE_MASK) != MMCSD_R3_RESPONSE &&
+             (cmd & MMCSD_RESPONSE_MASK) != MMCSD_R4_RESPONSE;
+
+  for (i = 0; i < RK3576_EMMC_SPIN; i++)
+    {
+      eint = rk3576_emmc_getreg16(priv, RK3576_EMMC_EINTSTS);
+
+      if ((eint & EMMC_EINT_CMDTIMEOUT) != 0)
+        {
+          mcerr("ERROR: Response timed out cmd=%08" PRIx32 "\n", cmd);
+          return -ETIMEDOUT;
+        }
+
+      if (crccheck && (eint & (EMMC_EINT_CMDCRC | EMMC_EINT_CMDEND |
+                               EMMC_EINT_CMDIDX)) != 0)
+        {
+          mcerr("ERROR: Response error cmd=%08" PRIx32 " eint=%04x\n", cmd,
+                eint);
+          return -EIO;
+        }
+
+      nint = rk3576_emmc_getreg16(priv, RK3576_EMMC_NINTSTS);
+      if ((nint & EMMC_NINT_CMDDONE) != 0)
+        {
+          return OK;
+        }
+    }
+
+  return -ETIMEDOUT;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_recvshort
+ *
+ * Description:
+ *   Read a short (R1/R3/R4/R5/R6/R7) command response from RESP0.
+ ****************************************************************************/
+
+static int rk3576_emmc_recvshort(struct sdio_dev_s *dev, uint32_t cmd,
+                                 uint32_t *rshort)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  uint16_t eint = rk3576_emmc_getreg16(priv, RK3576_EMMC_EINTSTS);
+
+  if ((eint & EMMC_EINT_CMDTIMEOUT) != 0)
+    {
+      return -ETIMEDOUT;
+    }
+
+  if ((cmd & MMCSD_RESPONSE_MASK) != MMCSD_R3_RESPONSE &&
+      (cmd & MMCSD_RESPONSE_MASK) != MMCSD_R4_RESPONSE &&
+      (eint & (EMMC_EINT_CMDCRC | EMMC_EINT_CMDEND | EMMC_EINT_CMDIDX)) != 0)
+    {
+      return -EIO;
+    }
+
+  if (rshort != NULL)
+    {
+      *rshort = rk3576_emmc_getreg32(priv, RK3576_EMMC_RESP0);
+    }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_recvlong
+ *
+ * Description:
+ *   Read a long (R2, 136-bit CID/CSD) command response.  SDHCI strips the CRC
+ *   and stores the card response bits [127:8] right-justified in RESP3:RESP0
+ *   (RESP0[31:0] = card[39:8] ... RESP3[23:0] = card[127:104]).  The mmcsd
+ *   stack expects rlong[] to hold the card register with bit 127 at
+ *   rlong[0] bit 31, so the four words are shifted left by 8 and reassembled;
+ *   the stripped CRC byte reads back as zero in rlong[3] bits [7:0].
+ ****************************************************************************/
+
+static int rk3576_emmc_recvlong(struct sdio_dev_s *dev, uint32_t cmd,
+                                uint32_t rlong[4])
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  uint16_t eint = rk3576_emmc_getreg16(priv, RK3576_EMMC_EINTSTS);
+  uint32_t resp0;
+  uint32_t resp1;
+  uint32_t resp2;
+  uint32_t resp3;
+
+  UNUSED(cmd);
+
+  if ((eint & EMMC_EINT_CMDTIMEOUT) != 0)
+    {
+      return -ETIMEDOUT;
+    }
+
+  if ((eint & (EMMC_EINT_CMDCRC | EMMC_EINT_CMDEND)) != 0)
+    {
+      return -EIO;
+    }
+
+  if (rlong != NULL)
+    {
+      resp0 = rk3576_emmc_getreg32(priv, RK3576_EMMC_RESP0);
+      resp1 = rk3576_emmc_getreg32(priv, RK3576_EMMC_RESP1);
+      resp2 = rk3576_emmc_getreg32(priv, RK3576_EMMC_RESP2);
+      resp3 = rk3576_emmc_getreg32(priv, RK3576_EMMC_RESP3);
+
+      rlong[0] = (resp3 << 8) | (resp2 >> 24);
+      rlong[1] = (resp2 << 8) | (resp1 >> 24);
+      rlong[2] = (resp1 << 8) | (resp0 >> 24);
+      rlong[3] = (resp0 << 8);
+    }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_waitenable
+ *
+ * Description:
+ *   Enable a set of wait events, arm the matching signal-enable bits and start
+ *   the software timeout watchdog.
+ ****************************************************************************/
+
+static void rk3576_emmc_waitenable(struct sdio_dev_s *dev,
+                                   sdio_eventset_t eventset, uint32_t timeout)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  uint32_t waitints = 0;
+
+  if ((eventset & (SDIOWAIT_CMDDONE | SDIOWAIT_RESPONSEDONE)) != 0)
+    {
+      waitints |= EMMC_CMDDONE_INTS | EMMC_RESPERR_INTS;
+    }
+
+  if ((eventset & SDIOWAIT_TRANSFERDONE) != 0)
+    {
+      waitints |= EMMC_XFRDONE_INTS | EMMC_DATAERR_INTS;
+    }
+
+  rk3576_emmc_configwaitints(priv, waitints, eventset, 0);
+
+  if ((eventset & SDIOWAIT_TIMEOUT) != 0 && timeout > 0)
+    {
+      int ret = wd_start(&priv->waitwdog, MSEC2TICK(timeout),
+                         rk3576_emmc_eventtimeout, (wdparm_t)priv);
+      if (ret < 0)
+        {
+          mcerr("ERROR: wd_start failed ret=%d\n", ret);
+        }
+    }
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_eventwait
+ *
+ * Description:
+ *   Block waiting for one of the enabled events (or a timeout).  Returns the
+ *   wakeup event set.
+ ****************************************************************************/
+
+static sdio_eventset_t rk3576_emmc_eventwait(struct sdio_dev_s *dev)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  sdio_eventset_t wkupevent;
+
+  for (;;)
+    {
+      nxsem_wait_uninterruptible(&priv->waitsem);
+
+      wkupevent = priv->wkupevent;
+      if (wkupevent != 0)
+        {
+          break;
+        }
+    }
+
+  rk3576_emmc_configwaitints(priv, 0, 0, 0);
+  wd_cancel(&priv->waitwdog);
+  priv->wkupevent = 0;
+
+  return wkupevent;
+}
+
+/****************************************************************************
+ * Name: rk3576_emmc_callbackenable
+ ****************************************************************************/
+
+static void rk3576_emmc_callbackenable(struct sdio_dev_s *dev,
+                                       sdio_eventset_t eventset)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+
+  priv->cbevents = eventset;
+  rk3576_emmc_callback(priv);
+}
+
+#if defined(CONFIG_SCHED_WORKQUEUE) && defined(CONFIG_SCHED_HPWORK)
+/****************************************************************************
+ * Name: rk3576_emmc_registercallback
+ ****************************************************************************/
+
+static int rk3576_emmc_registercallback(struct sdio_dev_s *dev,
+                                        worker_t callback, void *arg)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+
+  priv->cbevents = 0;
+  priv->cbarg = arg;
+  priv->callback = callback;
+  return OK;
+}
+#endif
+
+/****************************************************************************
+ * Name: rk3576_emmc_gotextcsd
+ *
+ * Description:
+ *   Receive EXT CSD notification.  The eMMC EXT_CSD is read through the normal
+ *   data path, so nothing extra is required here.
+ ****************************************************************************/
+
+static void rk3576_emmc_gotextcsd(struct sdio_dev_s *dev,
+                                  const uint8_t *buffer)
+{
+  UNUSED(dev);
+  UNUSED(buffer);
+}
+
+#ifdef CONFIG_SDIO_DMA
+
+#ifdef CONFIG_ARCH_HAVE_SDIO_PREFLIGHT
+/****************************************************************************
+ * Name: rk3576_emmc_dmapreflight
+ *
+ * Description:
+ *   Validate a buffer for the DMA path.  This milestone runs PIO for all
+ *   transfers, so every buffer is accepted (the setup below routes it through
+ *   the PIO path).
+ ****************************************************************************/
+
+static int rk3576_emmc_dmapreflight(struct sdio_dev_s *dev,
+                                    const uint8_t *buffer, size_t buflen)
+{
+  UNUSED(dev);
+  UNUSED(buffer);
+  UNUSED(buflen);
+  return OK;
+}
+#endif
+
+/****************************************************************************
+ * Name: rk3576_emmc_dmarecvsetup / rk3576_emmc_dmasendsetup
+ *
+ * Description:
+ *   DMA setup entry points.  SDMA/ADMA2 is out of scope for this milestone;
+ *   these fall back to the proven PIO setup so a CONFIG_SDIO_DMA build still
+ *   enumerates and transfers correctly.
+ ****************************************************************************/
+
+static int rk3576_emmc_dmarecvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
+                                    size_t buflen)
+{
+  return rk3576_emmc_recvsetup(dev, buffer, buflen);
+}
+
+static int rk3576_emmc_dmasendsetup(struct sdio_dev_s *dev,
+                                    const uint8_t *buffer, size_t buflen)
+{
+  return rk3576_emmc_sendsetup(dev, buffer, buflen);
+}
+
+#endif /* CONFIG_SDIO_DMA */
+
+#ifdef CONFIG_SDIO_BLOCKSETUP
+/****************************************************************************
+ * Name: rk3576_emmc_blocksetup
+ *
+ * Description:
+ *   Record the block size and preset BLOCKSIZE/BLOCKCOUNT.  The recv/send
+ *   setup paths derive the block count from this recorded size.
+ ****************************************************************************/
+
+static void rk3576_emmc_blocksetup(struct sdio_dev_s *dev,
+                                   unsigned int blocklen, unsigned int nblocks)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+
+  priv->blocksize = blocklen;
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_BLOCKSIZE, (uint16_t)blocklen);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_BLOCKCOUNT, (uint16_t)nblocks);
+}
+#endif
+
+/****************************************************************************
+ * Public Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: rk3576_emmc_initialize
+ *
+ * Description:
+ *   Initialize the RK3576 eMMC host and return an sdio_dev_s for the mmcsd
+ *   layer to bind and enumerate.
+ *
+ * Input Parameters:
+ *   slotno - Host slot: must be RK3576_EMMC_SLOT (single host).
+ *
+ * Returned Value:
+ *   On success returns an sdio_dev_s pointer, on failure returns NULL.
+ ****************************************************************************/
+
+struct sdio_dev_s *rk3576_emmc_initialize(int slotno)
+{
+  struct rk3576_emmc_dev_s *priv;
+
+  DEBUGASSERT(slotno >= 0 && slotno < RK3576_EMMC_NHOSTS);
+
+  priv = &g_emmc_hosts[slotno];
+  priv->dev = g_rk3576_emmc_ops; /* copy the shared ops template */
+  priv->base = g_emmc_cfg[slotno].base;
+  priv->irq = g_emmc_cfg[slotno].irq;
+
+  nxmutex_init(&priv->dev.mutex);
+  nxsem_init(&priv->waitsem, 0, 0);
+  wd_init(&priv->waitwdog);
+
+  /* Reset the controller to a known state. */
+
+  rk3576_emmc_reset(&priv->dev);
+
+  mcinfo("RK3576 eMMC initialization complete base=%08" PRIxPTR " irq=%d\n",
+         priv->base, priv->irq);
+
+  return &priv->dev;
+}
+
+#endif /* CONFIG_RK3576_EMMC */
