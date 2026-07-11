@@ -60,6 +60,7 @@
 #include "rk3576_boot.h"
 #include "arm64_gic.h"
 #include "hardware/rk3576_memorymap.h"
+#include "hardware/rk3576_serial.h"
 
 #ifdef USE_SERIALDRIVER
 
@@ -112,91 +113,10 @@
 /* UART pin mux and clock gating are configured by the bootloader (U-Boot).
  * RK3576 UART1-4 will get pinctrl/CRU setup here once those drivers land;
  * UART0 (console) needs neither -- the loader leaves it fully configured.
- */
-
-/* UART Registers and Bit Definitions *************************************/
-
-/* The RK3576 UART is a Synopsys DesignWare 16550 (the same IP Allwinner
- * licensed as the "A64 UART"), so the register layout below -- including the
- * DesignWare-specific USR at 0x7c -- is identical. Page numbers refer to the
- * Allwinner A64 User Manual, which documents this DW UART clearly.
- */
-
-/* UART Registers */
-
-#define UART_THR(uart_addr) (uart_addr + 0x00)  /* Tx Holding */
-#define UART_RBR(uart_addr) (uart_addr + 0x00)  /* Rx Buffer */
-#define UART_DLL(uart_addr) (uart_addr + 0x00)  /* Divisor Latch Low */
-#define UART_DLH(uart_addr) (uart_addr + 0x04)  /* Divisor Latch High */
-#define UART_IER(uart_addr) (uart_addr + 0x04)  /* Interrupt Enable */
-#define UART_IIR(uart_addr) (uart_addr + 0x08)  /* Interrupt Identity */
-#define UART_FCR(uart_addr) (uart_addr + 0x08)  /* FIFO Control */
-#define UART_LCR(uart_addr) (uart_addr + 0x0c)  /* Line Control */
-#define UART_LSR(uart_addr) (uart_addr + 0x14)  /* Line Status */
-#define UART_MSR(uart_addr) (uart_addr + 0x18)  /* Modem Status */
-#define UART_USR(uart_addr) (uart_addr + 0x7c)  /* UART Status */
-
-/* UART Register Bit Definitions (DW UART) */
-
-#define UART_IER_ERBFI (1 << 0)  /* Enable Rx Data Interrupt */
-#define UART_IER_ETBEI (1 << 1)  /* Enable Tx Empty Interrupt */
-#define UART_LSR_DR    (1 << 0)  /* Rx Data Ready */
-#define UART_LSR_THRE  (1 << 5)  /* Tx Empty */
-#define UART_USR_BUSY  (1 << 0)  /* UART Busy */
-
-/* UART Interrupt Identity Register (DW UART) */
-
-#define UART_IIR_IID_SHIFT        (0) /* Bits: 0-3: Interrupt ID */
-#define UART_IIR_IID_MASK         (15 << UART_IIR_IID_SHIFT)
-#  define UART_IIR_IID_MODEM      (0 << UART_IIR_IID_SHIFT)  /* Modem status */
-#  define UART_IIR_IID_NONE       (1 << UART_IIR_IID_SHIFT)  /* No interrupt pending */
-#  define UART_IIR_IID_TXEMPTY    (2 << UART_IIR_IID_SHIFT)  /* THR empty */
-#  define UART_IIR_IID_RECV       (4 << UART_IIR_IID_SHIFT)  /* Received data available */
-#  define UART_IIR_IID_LINESTATUS (6 << UART_IIR_IID_SHIFT)  /* Receiver line status */
-#  define UART_IIR_IID_BUSY       (7 << UART_IIR_IID_SHIFT)  /* Busy detect */
-#  define UART_IIR_IID_TIMEOUT    (12 << UART_IIR_IID_SHIFT) /* Character timeout */
-
-#define UART_IIR_FEFLAG_SHIFT     (6) /* Bits 6-7: FIFOs Enable Flag */
-#define UART_IIR_FEFLAG_MASK      (3 << UART_IIR_FEFLAG_SHIFT)
-#  define UART_IIR_FEFLAG_DISABLE (0 << UART_IIR_FEFLAG_SHIFT)
-#  define UART_IIR_FEFLAG_ENABLE  (3 << UART_IIR_FEFLAG_SHIFT)
-
-/* UART FIFO Control Register (DW UART) */
-
-#define UART_FCR_FIFOE            (1 << 0)  /* Bit 0:  Enable FIFOs */
-#define UART_FCR_RFIFOR           (1 << 1)  /* Bit 1:  RCVR FIFO Reset */
-#define UART_FCR_XFIFOR           (1 << 2)  /* Bit 2:  XMIT FIFO reset */
-#define UART_FCR_DMAM             (1 << 3)  /* Bit 3:  DMA mode */
-#define UART_FCR_TFT_SHIFT        (4)       /* Bits 4-5: TX Empty Trigger */
-#define UART_FCR_TFT_MASK         (3 << UART_FCR_TFT_SHIFT)
-#  define UART_FCR_TFT_EMPTY      (0 << UART_FCR_TFT_SHIFT) /* FIFO empty */
-#  define UART_FCR_TFT_TWO        (1 << UART_FCR_TFT_SHIFT) /* 2 characters in the FIFO */
-#  define UART_FCR_TFT_QUARTER    (2 << UART_FCR_TFT_SHIFT) /* FIFO 1/4 full */
-#  define UART_FCR_TFT_HALF       (3 << UART_FCR_TFT_SHIFT) /* FIFO 1/2 full */
-
-#define UART_FCR_RT_SHIFT         (6)       /* Bits 6-7: RCVR Trigger */
-#define UART_FCR_RT_MASK          (3 << UART_FCR_RT_SHIFT)
-#  define UART_FCR_RT_ONE         (0 << UART_FCR_RT_SHIFT) /* 1 character in the FIFO */
-#  define UART_FCR_RT_QUARTER     (1 << UART_FCR_RT_SHIFT) /* FIFO 1/4 full */
-#  define UART_FCR_RT_HALF        (2 << UART_FCR_RT_SHIFT) /* FIFO 1/2 full */
-#  define UART_FCR_RT_MINUS2      (3 << UART_FCR_RT_SHIFT) /* FIFO-2 less than full */
-
-/* UART Line Control Register (DW UART) */
-
-#define UART_LCR_DLS_SHIFT        (0)       /* Bits 0-1: Data Length Select */
-#define UART_LCR_DLS_MASK         (3 << UART_LCR_DLS_SHIFT)
-#  define UART_LCR_DLS_5BITS      (0 << UART_LCR_DLS_SHIFT) /* 5 bits */
-#  define UART_LCR_DLS_6BITS      (1 << UART_LCR_DLS_SHIFT) /* 6 bits */
-#  define UART_LCR_DLS_7BITS      (2 << UART_LCR_DLS_SHIFT) /* 7 bits */
-#  define UART_LCR_DLS_8BITS      (3 << UART_LCR_DLS_SHIFT) /* 8 bits */
-
-#define UART_LCR_STOP             (1 << 2)  /* Bit 2:  Number of stop bits */
-#define UART_LCR_PEN              (1 << 3)  /* Bit 3:  Parity Enable */
-#define UART_LCR_EPS              (1 << 4)  /* Bit 4:  Even Parity Select */
-#define UART_LCR_BC               (1 << 6)  /* Bit 6:  Break Control Bit */
-#define UART_LCR_DLAB             (1 << 7)  /* Bit 7:  Divisor Latch Access Bit */
-
-/* NOTE: Clock gating / software reset live in the RK3576 CRU, not here.
+ *
+ * UART register definitions are in hardware/rk3576_serial.h.
+ *
+ * NOTE: Clock gating / software reset live in the RK3576 CRU, not here.
  * The bootloader enables the UART0 clock; a dedicated CRU driver will handle
  * UART1-4 gating/reset when they are brought up.
  */
@@ -300,16 +220,16 @@ static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
     {
       /* Get the current UART status */
 
-      status = getreg32(UART_IIR(config->uart));
+      status = getreg32(RK3576_UART_IIR(config->uart));
 
       /* Handle the interrupt by its interrupt ID field */
 
-      switch (status & UART_IIR_IID_MASK)
+      switch (status & RK3576_UART_IIR_IID_MASK)
         {
           /* Handle incoming, receive bytes (with or without timeout) */
 
-          case UART_IIR_IID_RECV:
-          case UART_IIR_IID_TIMEOUT:
+          case RK3576_UART_IIR_IID_RECV:
+          case RK3576_UART_IIR_IID_TIMEOUT:
             {
               uart_recvchars(dev);
               break;
@@ -317,7 +237,7 @@ static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
 
           /* Handle outgoing, transmit bytes */
 
-          case UART_IIR_IID_TXEMPTY:
+          case RK3576_UART_IIR_IID_TXEMPTY:
             {
               uart_xmitchars(dev);
               break;
@@ -325,21 +245,21 @@ static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
 
           /* Just clear modem status interrupts (UART1 only) */
 
-          case UART_IIR_IID_MODEM:
+          case RK3576_UART_IIR_IID_MODEM:
             {
               /* Read the modem status register (MSR) to clear */
 
-              status = getreg32(UART_MSR(config->uart));
+              status = getreg32(RK3576_UART_MSR(config->uart));
               break;
             }
 
           /* Just clear any line status interrupts */
 
-          case UART_IIR_IID_LINESTATUS:
+          case RK3576_UART_IIR_IID_LINESTATUS:
             {
               /* Read the line status register (LSR) to clear */
 
-              status = getreg32(UART_LSR(config->uart));
+              status = getreg32(RK3576_UART_LSR(config->uart));
               break;
             }
 
@@ -348,19 +268,19 @@ static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
            * Cleared by reading the status register
            */
 
-          case UART_IIR_IID_BUSY:
+          case RK3576_UART_IIR_IID_BUSY:
             {
               /* Read from the UART status register
                * to clear the BUSY condition
                */
 
-              status = getreg32(UART_USR(config->uart));
+              status = getreg32(RK3576_UART_USR(config->uart));
               break;
             }
 
           /* No further interrupts pending... return now */
 
-          case UART_IIR_IID_NONE:
+          case RK3576_UART_IIR_IID_NONE:
             {
               return OK;
             }
@@ -402,9 +322,9 @@ static int rk3576_uart_wait(struct uart_dev_s *dev)
 
   for (i = 0; i < UART_TIMEOUT_MS; i++)
     {
-      uint32_t status = getreg32(UART_USR(config->uart));
+      uint32_t status = getreg32(RK3576_UART_USR(config->uart));
 
-      if ((status & UART_USR_BUSY) == 0)
+      if ((status & RK3576_UART_USR_BUSY) == 0)
         {
           return OK;
         }
@@ -445,15 +365,15 @@ static int rk3576_uart_setup(struct uart_dev_s *dev)
 
   /* Clear fifos */
 
-  putreg32(UART_FCR_RFIFOR | UART_FCR_XFIFOR, UART_FCR(config->uart));
+  putreg32(RK3576_UART_FCR_RFIFOR | RK3576_UART_FCR_XFIFOR, RK3576_UART_FCR(config->uart));
 
   /* Set trigger */
 
-  putreg32(UART_FCR_FIFOE | UART_FCR_RT_HALF, UART_FCR(config->uart));
+  putreg32(RK3576_UART_FCR_FIFOE | RK3576_UART_FCR_RT_HALF, RK3576_UART_FCR(config->uart));
 
   /* Set up the IER */
 
-  data->ier = getreg32(UART_IER(config->uart));
+  data->ier = getreg32(RK3576_UART_IER(config->uart));
 
   /* Set up the LCR */
 
@@ -462,35 +382,35 @@ static int rk3576_uart_setup(struct uart_dev_s *dev)
   switch (data->bits)
     {
     case 5:
-      lcr |= UART_LCR_DLS_5BITS;
+      lcr |= RK3576_UART_LCR_DLS_5BITS;
       break;
 
     case 6:
-      lcr |= UART_LCR_DLS_6BITS;
+      lcr |= RK3576_UART_LCR_DLS_6BITS;
       break;
 
     case 7:
-      lcr |= UART_LCR_DLS_7BITS;
+      lcr |= RK3576_UART_LCR_DLS_7BITS;
       break;
 
     case 8:
     default:
-      lcr |= UART_LCR_DLS_8BITS;
+      lcr |= RK3576_UART_LCR_DLS_8BITS;
       break;
     }
 
   if (data->stopbits2)
     {
-      lcr |= UART_LCR_STOP;
+      lcr |= RK3576_UART_LCR_STOP;
     }
 
   if (data->parity == 1)
     {
-      lcr |= UART_LCR_PEN;
+      lcr |= RK3576_UART_LCR_PEN;
     }
   else if (data->parity == 2)
     {
-      lcr |= (UART_LCR_PEN | UART_LCR_EPS);
+      lcr |= (RK3576_UART_LCR_PEN | RK3576_UART_LCR_EPS);
     }
 
   /* Set DLAB when UART is not busy */
@@ -503,7 +423,7 @@ static int rk3576_uart_setup(struct uart_dev_s *dev)
       return ret;
     }
 
-  putreg32(lcr | UART_LCR_DLAB, UART_LCR(config->uart));
+  putreg32(lcr | RK3576_UART_LCR_DLAB, RK3576_UART_LCR(config->uart));
 
   ret = rk3576_uart_wait(dev);
 
@@ -516,13 +436,13 @@ static int rk3576_uart_setup(struct uart_dev_s *dev)
   /* Set the BAUD divisor */
 
   dl = rk3576_uart_divisor(data->baud_rate);
-  putreg8(dl >> 8,   UART_DLH(config->uart));
-  putreg8(dl & 0xff, UART_DLL(config->uart));
+  putreg8(dl >> 8,   RK3576_UART_DLH(config->uart));
+  putreg8(dl & 0xff, RK3576_UART_DLL(config->uart));
 
   /* Check the BAUD divisor */
 
-  if (getreg8(UART_DLH(config->uart)) != (dl >> 8) ||
-      getreg8(UART_DLL(config->uart)) != (dl & 0xff))
+  if (getreg8(RK3576_UART_DLH(config->uart)) != (dl >> 8) ||
+      getreg8(RK3576_UART_DLL(config->uart)) != (dl & 0xff))
     {
       _err("UART BAUD divisor failed\n");
       return ERROR;
@@ -530,12 +450,12 @@ static int rk3576_uart_setup(struct uart_dev_s *dev)
 
   /* Clear DLAB */
 
-  putreg32(lcr, UART_LCR(config->uart));
+  putreg32(lcr, RK3576_UART_LCR(config->uart));
 
   /* Configure the FIFOs */
 
-  putreg32(UART_FCR_RT_HALF | UART_FCR_XFIFOR | UART_FCR_RFIFOR |
-           UART_FCR_FIFOE, UART_FCR(config->uart));
+  putreg32(RK3576_UART_FCR_RT_HALF | RK3576_UART_FCR_XFIFOR | RK3576_UART_FCR_RFIFOR |
+           RK3576_UART_FCR_FIFOE, RK3576_UART_FCR(config->uart));
 
   /* Enable Auto-Flow Control in the Modem Control Register */
 
@@ -714,8 +634,8 @@ static int rk3576_uart_receive(struct uart_dev_s *dev, unsigned int *status)
   const struct rk3576_uart_config *config = &port->config;
   uint32_t rbr;
 
-  *status = getreg8(UART_LSR(config->uart));
-  rbr     = getreg8(UART_RBR(config->uart));
+  *status = getreg8(RK3576_UART_LSR(config->uart));
+  rbr     = getreg8(RK3576_UART_RBR(config->uart));
   return rbr;
 }
 
@@ -745,13 +665,13 @@ static void rk3576_uart_rxint(struct uart_dev_s *dev, bool enable)
     {
       /* Set ERBFI bit (Enable Rx Data Available Interrupt) */
 
-      modreg8(UART_IER_ERBFI, UART_IER_ERBFI, UART_IER(config->uart));
+      modreg8(RK3576_UART_IER_ERBFI, RK3576_UART_IER_ERBFI, RK3576_UART_IER(config->uart));
     }
   else
     {
       /* Clear ERBFI bit (Disable Rx Data Available Interrupt) */
 
-      modreg8(0, UART_IER_ERBFI, UART_IER(config->uart));
+      modreg8(0, RK3576_UART_IER_ERBFI, RK3576_UART_IER(config->uart));
     }
 }
 
@@ -776,7 +696,7 @@ static bool rk3576_uart_rxavailable(struct uart_dev_s *dev)
 
   /* Data Ready Bit (Line Status Register) is 1 if Rx Data is ready */
 
-  return getreg8(UART_LSR(config->uart)) & UART_LSR_DR;
+  return getreg8(RK3576_UART_LSR(config->uart)) & RK3576_UART_LSR_DR;
 }
 
 /***************************************************************************
@@ -801,7 +721,7 @@ static void rk3576_uart_send(struct uart_dev_s *dev, int ch)
 
   /* Write char to Transmit Holding Register (UART_THR) */
 
-  putreg8(ch, UART_THR(config->uart));
+  putreg8(ch, RK3576_UART_THR(config->uart));
 }
 
 /***************************************************************************
@@ -830,13 +750,13 @@ static void rk3576_uart_txint(struct uart_dev_s *dev, bool enable)
     {
       /* Set ETBEI bit (Enable Tx Holding Register Empty Interrupt) */
 
-      modreg8(UART_IER_ETBEI, UART_IER_ETBEI, UART_IER(config->uart));
+      modreg8(RK3576_UART_IER_ETBEI, RK3576_UART_IER_ETBEI, RK3576_UART_IER(config->uart));
     }
   else
     {
       /* Clear ETBEI bit (Disable Tx Holding Register Empty Interrupt) */
 
-      modreg8(0, UART_IER_ETBEI, UART_IER(config->uart));
+      modreg8(0, RK3576_UART_IER_ETBEI, RK3576_UART_IER(config->uart));
     }
 }
 
@@ -861,7 +781,7 @@ static bool rk3576_uart_txready(struct uart_dev_s *dev)
 
   /* Tx FIFO is ready if THRE Bit is 1 (Tx Holding Register Empty) */
 
-  return (getreg8(UART_LSR(config->uart)) & UART_LSR_THRE) != 0;
+  return (getreg8(RK3576_UART_LSR(config->uart)) & RK3576_UART_LSR_THRE) != 0;
 }
 
 /***************************************************************************
