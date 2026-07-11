@@ -42,32 +42,13 @@
  * Inline Functions
  ****************************************************************************/
 
-#ifndef __ASSEMBLY__
-
 /****************************************************************************
  * Public Data
  ****************************************************************************/
 
-#ifdef CONFIG_ARCH_CHIP_RK3576
-
-/* IRQ for RK3576 UART - see include/rk3576/irq.h (TRM Part1 V1.2 Table 1-3) */
-
-#define RK3576_UART0_IRQ       RK3576_IRQ_UART0
-#define RK3576_UART1_IRQ       RK3576_IRQ_UART1
-#define RK3576_UART2_IRQ       RK3576_IRQ_UART2
-#define RK3576_UART3_IRQ       RK3576_IRQ_UART3
-#define RK3576_UART4_IRQ       RK3576_IRQ_UART4
-
-#endif /* CONFIG_ARCH_CHIP_RK3576 */
 
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
 
-#endif /* __ASSEMBLY__ */
-#define RK3576_UART0_ADDR      0x2AD40000
-#define RK3576_UART1_ADDR      0x27310000
-#define RK3576_UART2_ADDR      0x2AD50000
-#define RK3576_UART3_ADDR      0x2AD60000
-#define RK3576_UART4_ADDR      0x2AD70000
 #endif /* __ARCH_ARM64_SRC_RK3576_RK3576_SERIAL_H */

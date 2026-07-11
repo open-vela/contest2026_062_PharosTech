@@ -59,6 +59,7 @@
 #include "arm64_arch_timer.h"
 #include "rk3576_boot.h"
 #include "arm64_gic.h"
+#include "hardware/rk3576_memorymap.h"
 
 #ifdef USE_SERIALDRIVER
 
@@ -950,7 +951,7 @@ static struct rk3576_uart_port_s g_uart0priv =
       .uart       = RK3576_UART0_ADDR
     },
 
-    .irq_num      = RK3576_UART0_IRQ,
+    .irq_num      = RK3576_IRQ_UART0,
     .is_console   = 1
 };
 
@@ -1000,7 +1001,7 @@ static struct rk3576_uart_port_s g_uart1priv =
       .uart       = RK3576_UART1_ADDR
     },
 
-    .irq_num      = RK3576_UART1_IRQ,
+    .irq_num      = RK3576_IRQ_UART1,
     .is_console   = 0
 };
 
@@ -1050,7 +1051,7 @@ static struct rk3576_uart_port_s g_uart2priv =
       .uart       = RK3576_UART2_ADDR
     },
 
-    .irq_num      = RK3576_UART2_IRQ,
+    .irq_num      = RK3576_IRQ_UART2,
     .is_console   = 0
 };
 
@@ -1100,7 +1101,7 @@ static struct rk3576_uart_port_s g_uart3priv =
       .uart       = RK3576_UART3_ADDR
     },
 
-    .irq_num      = RK3576_UART3_IRQ,
+    .irq_num      = RK3576_IRQ_UART3,
     .is_console   = 0
 };
 
@@ -1150,7 +1151,7 @@ static struct rk3576_uart_port_s g_uart4priv =
       .uart       = RK3576_UART4_ADDR
     },
 
-    .irq_num      = RK3576_UART4_IRQ,
+    .irq_num      = RK3576_IRQ_UART4,
     .is_console   = 0
 };
 
