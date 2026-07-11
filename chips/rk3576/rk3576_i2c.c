@@ -61,18 +61,31 @@
 
 #define RK3576_I2C_FIFO_BYTES   32
 #define RK3576_I2C_POLL_LIMIT   1000000       /* busy-wait iterations */
+#define RK3576_I2C_NUM           10            /* I2C0 .. I2C9 */
 
-/* I2C2 bus/functional clock gates: PCLK_I2C2 = CLKGATE_CON(12) bit1,
- * CLK_I2C2 = CLKGATE_CON(12) bit13.  The functional-clock mux is left at its
- * reset default (clk_i2c2 = 100 MHz); re-muxing it here is unnecessary and
- * risks selecting a stopped parent.  This 100 MHz input matches the CLKDIV
- * the bare-metal bring-up code used successfully on hardware.
+/* Default functional clock into the divider (Hz).  The clk_i2c mux is left
+ * at its reset default; re-muxing it here is unnecessary and risks selecting
+ * a stopped parent.  This 100 MHz input matches the CLKDIV the bare-metal
+ * bring-up code used successfully on hardware.
  */
 
-#define RK3576_I2C2_CLKIN       100000000
-#define RK3576_I2C2_GATE_CON    12
-#define RK3576_I2C2_PCLK_BIT    (1 << 1)
-#define RK3576_I2C2_CCLK_BIT    (1 << 13)
+#define RK3576_I2C_CLKIN         100000000
+
+/* I2C controller base addresses (TRM §32.4.1). */
+
+static const uintptr_t g_rk3576_i2c_base[RK3576_I2C_NUM] =
+{
+  RK3576_I2C0_ADDR,
+  RK3576_I2C1_ADDR,
+  RK3576_I2C2_ADDR,
+  RK3576_I2C3_ADDR,
+  RK3576_I2C4_ADDR,
+  RK3576_I2C5_ADDR,
+  RK3576_I2C6_ADDR,
+  RK3576_I2C7_ADDR,
+  RK3576_I2C8_ADDR,
+  RK3576_I2C9_ADDR,
+};
 
 /****************************************************************************
  * Private Types
@@ -102,14 +115,8 @@ static const struct i2c_ops_s g_rk3576_i2c_ops =
   .transfer = rk3576_i2c_transfer,
 };
 
-#ifdef CONFIG_RK3576_I2C2
-static struct rk3576_i2c_priv_s g_rk3576_i2c2 =
-{
-  .dev   = { .ops = &g_rk3576_i2c_ops },
-  .base  = RK3576_I2C2_ADDR,
-  .clkin = RK3576_I2C2_CLKIN,
-};
-#endif
+static struct rk3576_i2c_priv_s g_rk3576_i2c[RK3576_I2C_NUM];
+static bool g_rk3576_i2c_inited[RK3576_I2C_NUM];
 
 /****************************************************************************
  * Private Functions
@@ -131,24 +138,36 @@ static inline void i2c_putreg(struct rk3576_i2c_priv_s *priv,
  * Name: rk3576_i2c_clk_enable
  *
  * Description:
- *   Ungate the controller's bus + functional clock in the CRU.  Only the
- *   I2C2 clock is wired up here; add the corresponding gate bits for other
- *   controllers as they are brought up.
+ *   Ungate the controller's bus + functional clock in the CRU.
  ****************************************************************************/
 
-static void rk3576_i2c_clk_enable(struct rk3576_i2c_priv_s *priv)
+static void rk3576_i2c_clk_enable(struct rk3576_i2c_priv_s *priv, int bus)
 {
-#ifdef CONFIG_RK3576_I2C2
-  if (priv->base == RK3576_I2C2_ADDR)
-    {
-      /* Ungate pclk_i2c2 + clk_i2c2 (gate bit high = disabled).  The clock
-       * mux is left at its reset default; see the clock note above.
-       */
+  /* TODO: move CRU clock-gate knowledge into a proper cru driver.  This
+   * switch is a temporary stop-gap until rk3576_cru provides a public
+   * clk_enable("i2cXX_pclk") / clk_enable("i2cXX_cclk") API.
+   */
 
-      putreg32(((RK3576_I2C2_PCLK_BIT | RK3576_I2C2_CCLK_BIT) << 16),
-               RK3576_CRU_GATE(RK3576_I2C2_GATE_CON));
+  uint8_t  gate;
+  uint16_t pclk;
+  uint16_t cclk;
+
+  switch (bus)
+    {
+      case 0:  gate = 10; pclk = 1 << 0;  cclk = 1 << 8;  break;
+      case 1:  gate = 12; pclk = 1 << 0;  cclk = 1 << 12; break;
+      case 2:  gate = 12; pclk = 1 << 1;  cclk = 1 << 13; break;
+      case 3:  gate = 12; pclk = 1 << 2;  cclk = 1 << 14; break;
+      case 4:  gate = 12; pclk = 1 << 3;  cclk = 1 << 15; break;
+      case 5:  gate = 13; pclk = 1 << 12; cclk = 1 << 13; break;
+      case 6:  gate = 13; pclk = 1 << 0;  cclk = 1 << 1;  break;
+      case 7:  gate = 13; pclk = 1 << 2;  cclk = 1 << 3;  break;
+      case 8:  gate = 13; pclk = 1 << 4;  cclk = 1 << 14; break;
+      case 9:  gate = 13; pclk = 1 << 5;  cclk = 1 << 15; break;
+      default: return;
     }
-#endif
+
+  putreg32((uint32_t)(pclk | cclk) << 16, RK3576_CRU_GATE(gate));
 }
 
 /****************************************************************************
@@ -401,24 +420,26 @@ static int rk3576_i2c_transfer(struct i2c_master_s *dev,
 
 struct i2c_master_s *rk3576_i2c_initialize(int bus)
 {
-  struct rk3576_i2c_priv_s *priv = NULL;
+  struct rk3576_i2c_priv_s *priv;
 
-  switch (bus)
+  if (bus < 0 || bus >= RK3576_I2C_NUM)
     {
-#ifdef CONFIG_RK3576_I2C2
-      case 2:
-        priv = &g_rk3576_i2c2;
-        break;
-#endif
-
-      default:
-        i2cerr("ERROR: unsupported I2C bus %d\n", bus);
-        return NULL;
+      i2cerr("ERROR: unsupported I2C bus %d\n", bus);
+      return NULL;
     }
 
-  nxmutex_init(&priv->lock);
-  rk3576_i2c_clk_enable(priv);
-  i2c_putreg(priv, RK3576_I2C_CON, 0);
+  priv = &g_rk3576_i2c[bus];
+
+  if (!g_rk3576_i2c_inited[bus])
+    {
+      g_rk3576_i2c_inited[bus] = true;
+      priv->dev.ops  = &g_rk3576_i2c_ops;
+      priv->base     = g_rk3576_i2c_base[bus];
+      priv->clkin    = RK3576_I2C_CLKIN;
+      nxmutex_init(&priv->lock);
+      rk3576_i2c_clk_enable(priv, bus);
+      i2c_putreg(priv, RK3576_I2C_CON, 0);
+    }
 
   return &priv->dev;
 }

@@ -84,19 +84,11 @@ config RK3576_I2C
 	select I2C
 	---help---
 		Enable the RK3576 I2C master driver (Rockchip RK I2C block,
-		polled).  The controller clock is brought up via the CRU; SCL/SDA
-		pin muxing is the board's responsibility.
-
-if RK3576_I2C
-
-config RK3576_I2C2
-	bool "I2C2"
-	default n
-	---help---
-		Enable the I2C2 controller (mmc@... hym8563 RTC bus,
-		0x2AC50000).
-
-endif # RK3576_I2C
+		polled).  All ten I2C controllers (I2C0..I2C9) are supported;
+		the driver is data-driven at runtime -- a per-controller config
+		option is unnecessary on this platform.  The controller clock is
+		brought up via the CRU; SCL/SDA pin muxing is the board's
+		responsibility.
 
 endmenu # Rockchip RK3576 Peripheral Selection
 
