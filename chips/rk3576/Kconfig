@@ -18,44 +18,17 @@ if ARCH_CHIP_RK3576
 menu "Rockchip RK3576 Peripheral Selection"
 
 config RK3576_UART
-	bool "UART 0"
+	bool "UART serial"
 	default y
+	# select UART0_SERIALDRIVER triggers Kconfig-uart which provides
+	# CONFIG_UART0_BAUD / CONFIG_UART0_BITS / …  — do NOT remove.
 	select UART0_SERIALDRIVER
-	select ARCH_HAVE_SERIAL_TERMIOS
-	---help---
-		Select to enable support for UART0.
+	# serial ports other than UART0 are configured dynamically
+	# not by CONFIG_UARTn_xxx
 
-config RK3576_UART1
-	bool "UART 1"
-	default n
-	select UART1_SERIALDRIVER
 	select ARCH_HAVE_SERIAL_TERMIOS
 	---help---
-		Select to enable support for UART1.
-
-config RK3576_UART2_OFF
-	bool "UART 2"
-	default y
-	select UART2_SERIALDRIVER
-	select ARCH_HAVE_SERIAL_TERMIOS
-	---help---
-		Select to enable support for UART2.
-
-config RK3576_UART3
-	bool "UART 3"
-	default n
-	select UART3_SERIALDRIVER
-	select ARCH_HAVE_SERIAL_TERMIOS
-	---help---
-		Select to enable support for UART3.
-
-config RK3576_UART4
-	bool "UART 4"
-	default n
-	select UART4_SERIALDRIVER
-	select ARCH_HAVE_SERIAL_TERMIOS
-	---help---
-		Select to enable support for UART4.
+		Select to enable support for UART.
 
 config RK3576_SDMMC
 	bool "SD/MMC (SDMMC0 - SD card)"

@@ -52,6 +52,7 @@
 #include <nuttx/fs/ioctl.h>
 #include <nuttx/semaphore.h>
 #include <nuttx/serial/serial.h>
+#include <nuttx/kmalloc.h>
 
 #include "arm64_arch.h"
 #include "arm64_internal.h"
@@ -68,31 +69,6 @@
  * Pre-processor Definitions
  ***************************************************************************/
 
-/* UART0 Settings should be same as U-Boot Bootloader */
-
-#ifndef CONFIG_UART0_BAUD
-#  define CONFIG_UART0_BAUD 115200
-#endif
-
-#ifndef CONFIG_UART0_BITS
-#  define CONFIG_UART0_BITS 8
-#endif
-
-#ifndef CONFIG_UART0_PARITY
-#  define CONFIG_UART0_PARITY 0
-#endif
-
-#ifndef CONFIG_UART0_2STOP
-#  define CONFIG_UART0_2STOP 0
-#endif
-
-#ifndef CONFIG_UART0_RXBUFSIZE
-#  define CONFIG_UART0_RXBUFSIZE 256
-#endif
-
-#ifndef CONFIG_UART0_TXBUFSIZE
-#  define CONFIG_UART0_TXBUFSIZE 256
-#endif
 
 /* UART0 is console and ttyS0, follows U-Boot Bootloader */
 
@@ -855,6 +831,30 @@ static const struct uart_ops_s g_uart_ops =
 
 /* UART0 Port State (Console) */
 
+#ifndef CONFIG_UART0_BAUD
+#  define CONFIG_UART0_BAUD 115200
+#endif
+
+#ifndef CONFIG_UART0_BITS
+#  define CONFIG_UART0_BITS 8
+#endif
+
+#ifndef CONFIG_UART0_PARITY
+#  define CONFIG_UART0_PARITY 0
+#endif
+
+#ifndef CONFIG_UART0_2STOP
+#  define CONFIG_UART0_2STOP 0
+#endif
+
+#ifndef CONFIG_UART0_RXBUFSIZE
+#  define CONFIG_UART0_RXBUFSIZE 256
+#endif
+
+#ifndef CONFIG_UART0_TXBUFSIZE
+#  define CONFIG_UART0_TXBUFSIZE 256
+#endif
+
 #ifdef CONFIG_RK3576_UART
 static struct rk3576_uart_port_s g_uart0priv =
 {
@@ -902,251 +902,34 @@ static struct uart_dev_s g_uart0port =
 
 #endif /* CONFIG_RK3576_UART */
 
-#ifdef CONFIG_RK3576_UART1
+/* Look-up table for dynamic UART registration (UART1 ~ UART11).
+ * UART0 is excluded because it is the console and is registered statically.
+ * All entries are unconditional — board code decides which UARTs to
+ * actually register at runtime via rk3576_serial_register().
+ */
 
-/* UART1 Port State */
+#define RK3576_UART_MAX_ID 11
 
-static struct rk3576_uart_port_s g_uart1priv =
+struct rk3576_uart_hwdesc_s
 {
-  .data   =
-    {
-      .baud_rate  = CONFIG_UART1_BAUD,
-      .parity     = CONFIG_UART1_PARITY,
-      .bits       = CONFIG_UART1_BITS,
-      .stopbits2  = CONFIG_UART1_2STOP
-    },
-
-  .config =
-    {
-      .uart       = RK3576_UART1_ADDR
-    },
-
-    .irq_num      = RK3576_IRQ_UART1,
-    .is_console   = 0
+  uintptr_t base;     /* Register base address */
+  unsigned int irq;   /* IRQ number */
 };
 
-/* UART1 I/O Buffers */
-
-static char g_uart1rxbuffer[CONFIG_UART1_RXBUFSIZE];
-static char g_uart1txbuffer[CONFIG_UART1_TXBUFSIZE];
-
-/* UART1 Port Definition */
-
-static struct uart_dev_s g_uart1port =
+static const struct rk3576_uart_hwdesc_s g_uart_hwdesc[RK3576_UART_MAX_ID + 1] =
 {
-  .recv  =
-    {
-      .size   = CONFIG_UART1_RXBUFSIZE,
-      .buffer = g_uart1rxbuffer,
-    },
-
-  .xmit  =
-    {
-      .size   = CONFIG_UART1_TXBUFSIZE,
-      .buffer = g_uart1txbuffer,
-    },
-
-  .ops   = &g_uart_ops,
-  .priv  = &g_uart1priv,
+  [1]  = { .base = RK3576_UART1_ADDR,  .irq = RK3576_IRQ_UART1  },
+  [2]  = { .base = RK3576_UART2_ADDR,  .irq = RK3576_IRQ_UART2  },
+  [3]  = { .base = RK3576_UART3_ADDR,  .irq = RK3576_IRQ_UART3  },
+  [4]  = { .base = RK3576_UART4_ADDR,  .irq = RK3576_IRQ_UART4  },
+  [5]  = { .base = RK3576_UART5_ADDR,  .irq = RK3576_IRQ_UART5  },
+  [6]  = { .base = RK3576_UART6_ADDR,  .irq = RK3576_IRQ_UART6  },
+  [7]  = { .base = RK3576_UART7_ADDR,  .irq = RK3576_IRQ_UART7  },
+  [8]  = { .base = RK3576_UART8_ADDR,  .irq = RK3576_IRQ_UART8  },
+  [9]  = { .base = RK3576_UART9_ADDR,  .irq = RK3576_IRQ_UART9  },
+  [10] = { .base = RK3576_UART10_ADDR, .irq = RK3576_IRQ_UART10 },
+  [11] = { .base = RK3576_UART11_ADDR, .irq = RK3576_IRQ_UART11 },
 };
-
-#endif /* CONFIG_RK3576_UART1 */
-
-#ifdef CONFIG_RK3576_UART2
-
-/* UART2 Port State */
-
-static struct rk3576_uart_port_s g_uart2priv =
-{
-  .data   =
-    {
-      .baud_rate  = CONFIG_UART2_BAUD,
-      .parity     = CONFIG_UART2_PARITY,
-      .bits       = CONFIG_UART2_BITS,
-      .stopbits2  = CONFIG_UART2_2STOP
-    },
-
-  .config =
-    {
-      .uart       = RK3576_UART2_ADDR
-    },
-
-    .irq_num      = RK3576_IRQ_UART2,
-    .is_console   = 0
-};
-
-/* UART2 I/O Buffers */
-
-static char g_uart2rxbuffer[CONFIG_UART2_RXBUFSIZE];
-static char g_uart2txbuffer[CONFIG_UART2_TXBUFSIZE];
-
-/* UART2 Port Definition */
-
-static struct uart_dev_s g_uart2port =
-{
-  .recv  =
-    {
-      .size   = CONFIG_UART2_RXBUFSIZE,
-      .buffer = g_uart2rxbuffer,
-    },
-
-  .xmit  =
-    {
-      .size   = CONFIG_UART2_TXBUFSIZE,
-      .buffer = g_uart2txbuffer,
-    },
-
-  .ops   = &g_uart_ops,
-  .priv  = &g_uart2priv,
-};
-
-#endif /* CONFIG_RK3576_UART2 */
-
-#ifdef CONFIG_RK3576_UART3
-
-/* UART3 Port State */
-
-static struct rk3576_uart_port_s g_uart3priv =
-{
-  .data   =
-    {
-      .baud_rate  = CONFIG_UART3_BAUD,
-      .parity     = CONFIG_UART3_PARITY,
-      .bits       = CONFIG_UART3_BITS,
-      .stopbits2  = CONFIG_UART3_2STOP
-    },
-
-  .config =
-    {
-      .uart       = RK3576_UART3_ADDR
-    },
-
-    .irq_num      = RK3576_IRQ_UART3,
-    .is_console   = 0
-};
-
-/* UART3 I/O Buffers */
-
-static char g_uart3rxbuffer[CONFIG_UART3_RXBUFSIZE];
-static char g_uart3txbuffer[CONFIG_UART3_TXBUFSIZE];
-
-/* UART3 Port Definition */
-
-static struct uart_dev_s g_uart3port =
-{
-  .recv  =
-    {
-      .size   = CONFIG_UART3_RXBUFSIZE,
-      .buffer = g_uart3rxbuffer,
-    },
-
-  .xmit  =
-    {
-      .size   = CONFIG_UART3_TXBUFSIZE,
-      .buffer = g_uart3txbuffer,
-    },
-
-  .ops   = &g_uart_ops,
-  .priv  = &g_uart3priv,
-};
-
-#endif /* CONFIG_RK3576_UART3 */
-
-#ifdef CONFIG_RK3576_UART4
-
-/* UART4 Port State */
-
-static struct rk3576_uart_port_s g_uart4priv =
-{
-  .data   =
-    {
-      .baud_rate  = CONFIG_UART4_BAUD,
-      .parity     = CONFIG_UART4_PARITY,
-      .bits       = CONFIG_UART4_BITS,
-      .stopbits2  = CONFIG_UART4_2STOP
-    },
-
-  .config =
-    {
-      .uart       = RK3576_UART4_ADDR
-    },
-
-    .irq_num      = RK3576_IRQ_UART4,
-    .is_console   = 0
-};
-
-/* UART4 I/O Buffers */
-
-static char g_uart4rxbuffer[CONFIG_UART4_RXBUFSIZE];
-static char g_uart4txbuffer[CONFIG_UART4_TXBUFSIZE];
-
-/* UART4 Port Definition */
-
-static struct uart_dev_s g_uart4port =
-{
-  .recv  =
-    {
-      .size   = CONFIG_UART4_RXBUFSIZE,
-      .buffer = g_uart4rxbuffer,
-    },
-
-  .xmit  =
-    {
-      .size   = CONFIG_UART4_TXBUFSIZE,
-      .buffer = g_uart4txbuffer,
-    },
-
-  .ops   = &g_uart_ops,
-  .priv  = &g_uart4priv,
-};
-
-#endif /* CONFIG_RK3576_UART4 */
-
-/* Pick ttys1.  This could be any of UART1-4. */
-
-#if defined(CONFIG_RK3576_UART1) && !defined(UART1_ASSIGNED)
-#  define TTYS1_DEV           g_uart1port /* UART1 is ttyS1 */
-#  define UART1_ASSIGNED      1
-#elif defined(CONFIG_RK3576_UART2) && !defined(UART2_ASSIGNED)
-#  define TTYS1_DEV           g_uart2port /* UART2 is ttyS1 */
-#  define UART2_ASSIGNED      1
-#elif defined(CONFIG_RK3576_UART3) && !defined(UART3_ASSIGNED)
-#  define TTYS1_DEV           g_uart3port /* UART3 is ttyS1 */
-#  define UART3_ASSIGNED      1
-#elif defined(CONFIG_RK3576_UART4) && !defined(UART4_ASSIGNED)
-#  define TTYS1_DEV           g_uart4port /* UART4 is ttyS1 */
-#  define UART4_ASSIGNED      1
-#endif
-
-/* Pick ttys2.  This could be one of UART2-4. */
-
-#if defined(CONFIG_RK3576_UART2) && !defined(UART2_ASSIGNED)
-#  define TTYS2_DEV           g_uart2port /* UART2 is ttyS2 */
-#  define UART2_ASSIGNED      1
-#elif defined(CONFIG_RK3576_UART3) && !defined(UART3_ASSIGNED)
-#  define TTYS2_DEV           g_uart3port /* UART3 is ttyS2 */
-#  define UART3_ASSIGNED      1
-#elif defined(CONFIG_RK3576_UART4) && !defined(UART4_ASSIGNED)
-#  define TTYS2_DEV           g_uart4port /* UART4 is ttyS2 */
-#  define UART4_ASSIGNED      1
-#endif
-
-/* Pick ttys3.  This could be one of UART3-4. */
-
-#if defined(CONFIG_RK3576_UART3) && !defined(UART3_ASSIGNED)
-#  define TTYS3_DEV           g_uart3port /* UART3 is ttyS3 */
-#  define UART3_ASSIGNED      1
-#elif defined(CONFIG_RK3576_UART4) && !defined(UART4_ASSIGNED)
-#  define TTYS3_DEV           g_uart4port /* UART4 is ttyS3 */
-#  define UART4_ASSIGNED      1
-#endif
-
-/* Pick ttys4.  This could only be UART4. */
-
-#if defined(CONFIG_RK3576_UART4) && !defined(UART4_ASSIGNED)
-#  define TTYS4_DEV           g_uart4port /* UART4 is ttyS4 */
-#  define UART4_ASSIGNED      1
-#endif
 
 /***************************************************************************
  * Public Functions
@@ -1172,7 +955,7 @@ void arm64_earlyserialinit(void)
    * earlier by U-Boot Bootloader.
    */
 
-  /* UART1-4 need CRU clock + pinctrl setup here once those drivers exist.
+  /* UART1-11 need CRU clock + pinctrl setup here once those drivers exist.
    * Until then only the console (UART0, configured by the bootloader) is
    * brought up below.
    */
@@ -1226,6 +1009,10 @@ void arm64_serialinit(void)
 #ifdef CONSOLE_DEV
   int ret;
 
+  /* Register the console (UART0).  Non-console UARTs are registered
+   * dynamically by board code via rk3576_serial_register().
+   */
+
   ret = uart_register("/dev/console", &CONSOLE_DEV);
   if (ret < 0)
     {
@@ -1233,49 +1020,125 @@ void arm64_serialinit(void)
     }
 
   ret = uart_register("/dev/ttyS0", &TTYS0_DEV);
-
   if (ret < 0)
     {
       _err("Register /dev/ttyS0 failed, ret=%d\n", ret);
     }
-
-#ifdef TTYS1_DEV
-  ret = uart_register("/dev/ttyS1", &TTYS1_DEV);
-
-  if (ret < 0)
-    {
-      _err("Register /dev/ttyS1 failed, ret=%d\n", ret);
-    }
-#endif /* TTYS1_DEV */
-
-#ifdef TTYS2_DEV
-  ret = uart_register("/dev/ttyS2", &TTYS2_DEV);
-
-  if (ret < 0)
-    {
-      _err("Register /dev/ttyS2 failed, ret=%d\n", ret);
-    }
-#endif /* TTYS2_DEV */
-
-#ifdef TTYS3_DEV
-  ret = uart_register("/dev/ttyS3", &TTYS3_DEV);
-
-  if (ret < 0)
-    {
-      _err("Register /dev/ttyS3 failed, ret=%d\n", ret);
-    }
-#endif /* TTYS3_DEV */
-
-#ifdef TTYS4_DEV
-  ret = uart_register("/dev/ttyS4", &TTYS4_DEV);
-
-  if (ret < 0)
-    {
-      _err("Register /dev/ttyS4 failed, ret=%d\n", ret);
-    }
-#endif /* TTYS4_DEV */
-
 #endif
+}
+
+/***************************************************************************
+ * Name: rk3576_serial_register
+ *
+ * Description:
+ *   Dynamically allocate and register a non-console UART port (UART1~11).
+ *   Called by board-level code (e.g. board_late_initialize) after the heap
+ *   is available.  UART0 must NOT be registered through this function.
+ *
+ * Input Parameters:
+ *   uart_id - UART number (1 ~ 11)
+ *   baud    - Baud rate
+ *   bits    - Data bits (5 ~ 8)
+ *   parity  - 0=none, 1=odd, 2=even
+ *   stop2   - true = 2 stop bits, false = 1 stop bit
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ***************************************************************************/
+
+int rk3576_serial_register(int uart_id, uint32_t baud,
+                           uint8_t bits, uint8_t parity, bool stop2)
+{
+  struct rk3576_uart_port_s *priv;
+  struct uart_dev_s *dev;
+  char *rxbuf;
+  char *txbuf;
+  char devname[16];
+  const struct rk3576_uart_hwdesc_s *hw;
+  int ret;
+
+  /* Validate uart_id */
+
+  if (uart_id < 1 || uart_id > RK3576_UART_MAX_ID)
+    {
+      _err("Invalid uart_id=%d\n", uart_id);
+      return -EINVAL;
+    }
+
+  hw = &g_uart_hwdesc[uart_id];
+
+  /* Allocate port private data */
+
+  priv = kmm_zalloc(sizeof(*priv));
+  if (priv == NULL)
+    {
+      _err("UART%d: kmm_zalloc priv failed\n", uart_id);
+      return -ENOMEM;
+    }
+
+  /* Allocate uart_dev_s */
+
+  dev = kmm_zalloc(sizeof(*dev));
+  if (dev == NULL)
+    {
+      _err("UART%d: kmm_zalloc dev failed\n", uart_id);
+      kmm_free(priv);
+      return -ENOMEM;
+    }
+
+  /* Allocate RX and TX buffers (256 bytes each, same as static defaults) */
+
+#define UART_DYN_RXBUFSIZE 256
+#define UART_DYN_TXBUFSIZE 256
+
+  rxbuf = kmm_zalloc(UART_DYN_RXBUFSIZE);
+  txbuf = kmm_zalloc(UART_DYN_TXBUFSIZE);
+  if (rxbuf == NULL || txbuf == NULL)
+    {
+      _err("UART%d: kmm_zalloc buffers failed\n", uart_id);
+      if (rxbuf) kmm_free(rxbuf);
+      if (txbuf) kmm_free(txbuf);
+      kmm_free(dev);
+      kmm_free(priv);
+      return -ENOMEM;
+    }
+
+  /* Fill port private data */
+
+  priv->data.baud_rate = baud;
+  priv->data.parity    = parity;
+  priv->data.bits      = bits;
+  priv->data.stopbits2 = stop2;
+  priv->config.uart    = hw->base;
+  priv->irq_num        = hw->irq;
+  priv->is_console     = false;
+
+  /* Fill uart_dev_s */
+
+  dev->recv.size   = UART_DYN_RXBUFSIZE;
+  dev->recv.buffer = rxbuf;
+  dev->xmit.size   = UART_DYN_TXBUFSIZE;
+  dev->xmit.buffer = txbuf;
+  dev->ops         = &g_uart_ops;
+  dev->priv        = priv;
+
+  /* Register the device as /dev/ttySx (x = uart_id) */
+
+  snprintf(devname, sizeof(devname), "/dev/ttyS%d", uart_id);
+  ret = uart_register(devname, dev);
+  if (ret < 0)
+    {
+      _err("UART%d: uart_register %s failed, ret=%d\n",
+           uart_id, devname, ret);
+      kmm_free(txbuf);
+      kmm_free(rxbuf);
+      kmm_free(dev);
+      kmm_free(priv);
+      return ret;
+    }
+
+  return OK;
 }
 
 #endif /* USE_SERIALDRIVER */

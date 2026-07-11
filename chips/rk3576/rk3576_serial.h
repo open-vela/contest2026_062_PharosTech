@@ -51,4 +51,31 @@
  * Public Function Prototypes
  ****************************************************************************/
 
+/****************************************************************************
+ * Name: rk3576_serial_register
+ *
+ * Description:
+ *   Dynamically register a non-console UART port (UART1~11).
+ *   UART0 is the console and is registered statically by the chip init
+ *   code; do NOT call this function for UART0.
+ *
+ *   This function uses kmalloc to allocate the port structure and I/O
+ *   buffers, so it must be called after the heap is available (e.g. from
+ *   board_late_initialize, not from arm64_earlyserialinit).
+ *
+ * Input Parameters:
+ *   uart_id - UART number (1 ~ 11)
+ *   baud    - Baud rate (e.g. 115200)
+ *   bits    - Data bits (5, 6, 7, or 8)
+ *   parity  - Parity (0=none, 1=odd, 2=even)
+ *   stop2   - true = 2 stop bits, false = 1 stop bit
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int rk3576_serial_register(int uart_id, uint32_t baud,
+                           uint8_t bits, uint8_t parity, bool stop2);
+
 #endif /* __ARCH_ARM64_SRC_RK3576_RK3576_SERIAL_H */
