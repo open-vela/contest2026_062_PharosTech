@@ -74,7 +74,6 @@
 
 #define CONSOLE_DEV     g_uart0port         /* UART0 is console */
 #define TTYS0_DEV       g_uart0port         /* UART0 is ttyS0 */
-#define UART0_ASSIGNED  1
 
 /* UART SCLK is the UART Input Clock.  Through experimentation, it has
  * been found that the serial clock is OSC24M

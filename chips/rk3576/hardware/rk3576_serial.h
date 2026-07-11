@@ -1,6 +1,8 @@
 /****************************************************************************
  * vendor/rockchip/chips/rk3576/hardware/rk3576_serial.h
  *
+ *  SPDX-License-Identifier: Apache-2.0
+ * 
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.  The
@@ -16,12 +18,6 @@
  * License for the specific language governing permissions and limitations
  * under the License.
  *
- ****************************************************************************/
-
-/****************************************************************************
- * RK3576 UART registers -- Synopsys DesignWare 16550 (same IP as the
- * Allwinner A64 UART).  Register layout is documented in the Allwinner
- * A64 User Manual and the DesignWare DW_apb_uart Databook.
  ****************************************************************************/
 
 #ifndef __VENDOR_ROCKCHIP_RK3576_HARDWARE_RK3576_SERIAL_H
