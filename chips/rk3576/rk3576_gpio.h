@@ -39,9 +39,8 @@
  *  Bit [4:0]   - Pin number within port (0-31)
  *  Bit [7:5]   - Port number (0-4)
  *  Bit [9:8]   - Mode (Input/Output/AF)
- *  Bit [10]    - (reserved — was GPIO_OPENDRAIN, RK3576 unsupported)
- *  Bit [12:11] - Pull-up/Pull-down
- *  Bit [14:13] - Drive strength (0=12mA .. 3=2mA, see GPIO_SPEED_*)
+ *  Bit [11:10] - Pull-up/Pull-down
+ *  Bit [14:12] - Drive strength (see GPIO_DRV_STRENGTH_*, 3-bit field)
  *  Bit [18:15] - Alternate function number (0-15)
  *  Bit [19]    - Initial output value (GPIO_OUTPUT_SET)
  *  Bit [20]    - EXTI interrupt enable
@@ -116,20 +115,37 @@
 
 /* Pull-up/Pull-down **********************************************************/
 
-#define GPIO_PUPD_SHIFT        (11)          /* Bits 11-12: Pull-up/pull-down */
+#define GPIO_PUPD_SHIFT        (10)          /* Bits 10-11: Pull-up/pull-down */
 #define GPIO_PUPD_MASK         (0x3 << GPIO_PUPD_SHIFT)
 #  define GPIO_FLOAT           (0 << GPIO_PUPD_SHIFT)  /* No pull */
 #  define GPIO_PULLUP          (1 << GPIO_PUPD_SHIFT)  /* Pull-up */
 #  define GPIO_PULLDOWN        (2 << GPIO_PUPD_SHIFT)  /* Pull-down */
 
-/* Speed encoding (for output and AF pins) ************************************/
+/* Drive strength encoding — 3-bit field (for output and AF pins)
+ *
+ * Bit layout: DRV_STRENGTH[2:0] = bits [14:12]
+ *
+ *
+ *   GPIO_DRV_STRENGTH_DEFAULT (0) — hardware reset value (50Ω for 4-level,
+ *                                    40Ω for 6-level GPIOs)
+ *   GPIO_DRV_STRENGTH_100OHM  (1) — 100 ohms — both 4-level and 6-level GPIOs
+ *   GPIO_DRV_STRENGTH_66OHM   (2) —  66 ohms — 6-level GPIOs only (error on 4-level)
+ *   GPIO_DRV_STRENGTH_50OHM   (3) —  50 ohms — both 4-level and 6-level GPIOs
+ *   GPIO_DRV_STRENGTH_40OHM   (4) —  40 ohms — 6-level GPIOs only (error on 4-level)
+ *   GPIO_DRV_STRENGTH_33OHM   (5) —  33 ohms — both 4-level and 6-level GPIOs
+ *   GPIO_DRV_STRENGTH_25OHM   (6) —  25 ohms — both 4-level and 6-level GPIOs
+ *
+ */
 
-#define GPIO_SPEED_SHIFT       (13)          /* Bits 13-14: Drive strength */
-#define GPIO_SPEED_MASK        (0x3 << GPIO_SPEED_SHIFT)
-#  define GPIO_SPEED_HIGH      (0 << GPIO_SPEED_SHIFT) /* default */
-#  define GPIO_SPEED_VERY_HIGH (1 << GPIO_SPEED_SHIFT)
-#  define GPIO_SPEED_MED       (2 << GPIO_SPEED_SHIFT)
-#  define GPIO_SPEED_LOW       (3 << GPIO_SPEED_SHIFT)
+#define GPIO_DRV_STRENGTH_SHIFT    (12)          /* Bits 12-14: Drive strength */
+#define GPIO_DRV_STRENGTH_MASK     (0x7 << GPIO_DRV_STRENGTH_SHIFT)
+#  define GPIO_DRV_STRENGTH_DEFAULT (0 << GPIO_DRV_STRENGTH_SHIFT)  /* hw reset: 50Ω(4-lv) / 40Ω(6-lv) */
+#  define GPIO_DRV_STRENGTH_100OHM (1 << GPIO_DRV_STRENGTH_SHIFT)  /* 100 ohms */
+#  define GPIO_DRV_STRENGTH_66OHM  (2 << GPIO_DRV_STRENGTH_SHIFT)  /*  66 ohms — 6-level only */
+#  define GPIO_DRV_STRENGTH_50OHM  (3 << GPIO_DRV_STRENGTH_SHIFT)  /*  50 ohms */
+#  define GPIO_DRV_STRENGTH_40OHM  (4 << GPIO_DRV_STRENGTH_SHIFT)  /*  40 ohms — 6-level only */
+#  define GPIO_DRV_STRENGTH_33OHM  (5 << GPIO_DRV_STRENGTH_SHIFT)  /*  33 ohms */
+#  define GPIO_DRV_STRENGTH_25OHM  (6 << GPIO_DRV_STRENGTH_SHIFT)  /*  25 ohms */
 
 /* Alternate function encoding ************************************************/
 

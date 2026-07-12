@@ -188,6 +188,17 @@ extern const struct rk3576_iomux_group
 /* =========================================================================
  * Drive-strength register layout (4 bits/pin, 4 pins/reg)
  *
+ * RK3576 has two classes of GPIO drive strength:
+ *
+ *   4-level GPIOs: GPIO0_A[0:7], GPIO0_B[0:3], GPIO4_D[0:1]
+ *     Lv0=0b0000(100 ohms), Lv1=0b0010(50 ohms), Lv2=0b0001(33 ohms), Lv3=0b0011(25 ohms)
+ *
+ *   6-level GPIOs: GPIO0_B[4:7], GPIO1, GPIO2, GPIO3, GPIO4_A/B/C
+ *     Lv0=0b0000(100 ohms), Lv1=0b0100(66 ohms),  Lv2=0b0010(50 ohms),
+ *     Lv3=0b0110(40 ohms),  Lv4=0b0001(33 ohms),  Lv5=0b0101(25 ohms)
+ *
+ *   GPIO4_D[2:7] — not specified in TRM (drive strength unsupported).
+ *
  * Per-bank drive offset table:
  *
  *   GPIO0A(pin 0-11):  offset 0x0010, GPIO0BH(pin 12-31): offset 0x2008
@@ -196,36 +207,25 @@ extern const struct rk3576_iomux_group
  *   GPIO3:             offset 0x6060
  *   GPIO4A(pin 0-15):  offset 0x6080, GPIO4CL(pin 16-23): offset 0xA080,
  *   GPIO4DL(pin 24-31): offset 0xB080
- *
- * Drive value encoding:
- *   hw_val = ((strength & BIT(2)) >> 2) |
- *            ((strength & BIT(0)) << 2) |
- *            (strength & BIT(1))
- *
- * This is a bit-permutation of the 3-bit level (0-7):
- *   level  hw[3:0]   ~ current
- *     0     0000      2 mA
- *     1     0100      4 mA
- *     2     0010      8 mA
- *     3     0110      12 mA (default)
- *     4     0001      level 4
- *     5     0101      level 5
- *     6     0011      level 6
- *     7     0111      level 7
  * ========================================================================= */
 
 #define RK3576_DRV_BITS_PER_PIN      4
 #define RK3576_DRV_PINS_PER_REG      4
 
-/* Convert drive level (0-7) to hardware register value */
-#define RK3576_DRIVE_LEVEL_TO_HW(l) \
-  ((((l) & 0x4) >> 2) | (((l) & 0x1) << 2) | ((l) & 0x2))
+/* Common drive strength levels (logical level, NOT hardware register value).
+ * Use rk3576_drive_level_to_hw() to convert to hardware format.
+ */
+#define RK3576_DRIVE_LEVEL_0        0   /* 100 ohms */
+#define RK3576_DRIVE_LEVEL_1        1   /*  66 ohms (6-level only; error on 4-level) */
+#define RK3576_DRIVE_LEVEL_2        2   /*  50 ohms */
+#define RK3576_DRIVE_LEVEL_3        3   /*  40 ohms (6-level only; error on 4-level) */
+#define RK3576_DRIVE_LEVEL_4        4   /*  33 ohms */
+#define RK3576_DRIVE_LEVEL_5        5   /*  25 ohms */
 
-/* Common drive strength levels */
-#define RK3576_DRIVE_LEVEL_0        0
-#define RK3576_DRIVE_LEVEL_1        1
-#define RK3576_DRIVE_LEVEL_2        2
-#define RK3576_DRIVE_LEVEL_3        3
+/* Determine whether a GPIO uses 4-level or 6-level drive strength */
+#define RK3576_DRIVE_IS_4LEVEL(port, pin) \
+  (((port) == 0 && (pin) < 12) ||          /* GPIO0_A[0:7] + GPIO0_B[0:3] */ \
+   ((port) == 4 && (pin) >= 24 && (pin) <= 25))  /* GPIO4_D[0:1] */
 
 /* =========================================================================
  * Schmitt-trigger register layout (1 bit/pin, 8 pins/reg)

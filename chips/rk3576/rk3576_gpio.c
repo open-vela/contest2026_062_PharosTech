@@ -311,39 +311,112 @@ static void rk3576_pull_set(uint32_t ioc_base, unsigned int port,
 }
 
 /****************************************************************************
+ * Name: rk3576_drive_level_to_hw
+ *
+ * Description:
+ *   Convert a logical drive level (0-5) to the hardware register value
+ *   for the given GPIO class (4-level or 6-level).
+ *
+ *   4-level GPIOs (GPIO0_A, GPIO0_B0~3, GPIO4_D0~1):
+ *     level 0 → 0b0000 (100 ohms)
+ *     level 2 → 0b0010 (50 ohms)
+ *     level 4 → 0b0001 (33 ohms)
+ *     level 5 → 0b0011 (25 ohms)
+ *     level 1, 3 → ERROR (not supported on 4-level GPIOs)
+ *
+ *   6-level GPIOs (GPIO0_B4~7, GPIO1, GPIO2, GPIO3, GPIO4_A/B/C):
+ *     level 0 → 0b0000 (100 ohms)
+ *     level 1 → 0b0100 (66 ohms)
+ *     level 2 → 0b0010 (50 ohms)
+ *     level 3 → 0b0110 (40 ohms)
+ *     level 4 → 0b0001 (33 ohms)
+ *     level 5 → 0b0101 (25 ohms)
+ *
+ * Input Parameters:
+ *   is_4level - true if the GPIO uses 4-level drive, false for 6-level
+ *   level     - Logical drive level (0-5)
+ *   hw_val    - Output: 4-bit hardware register value
+ *
+ * Returned Value:
+ *   true on success, false if the level is not valid for this GPIO class.
+ *
+ ****************************************************************************/
+
+static bool rk3576_drive_level_to_hw(bool is_4level, unsigned int level,
+                                     uint32_t *hw_val)
+{
+  if (is_4level)
+    {
+      /* 4-level GPIO: only levels 0, 2, 4, 5 are valid */
+      switch (level)
+        {
+          case 0:  *hw_val = 0x0; return true;  /* 0b0000 — 100 ohms */
+          case 2:  *hw_val = 0x2; return true;  /* 0b0010 —  50 ohms */
+          case 4:  *hw_val = 0x1; return true;  /* 0b0001 —  33 ohms */
+          case 5:  *hw_val = 0x3; return true;  /* 0b0011 —  25 ohms */
+          default:
+            gpioerr("ERROR: drive level %u not supported on 4-level GPIO\n",
+                    level);
+            return false;
+        }
+    }
+  else
+    {
+      /* 6-level GPIO */
+      switch (level)
+        {
+          case 0:  *hw_val = 0x0; return true;  /* 0b0000 — 100 ohms */
+          case 1:  *hw_val = 0x4; return true;  /* 0b0100 —  66 ohms */
+          case 2:  *hw_val = 0x2; return true;  /* 0b0010 —  50 ohms */
+          case 3:  *hw_val = 0x6; return true;  /* 0b0110 —  40 ohms */
+          case 4:  *hw_val = 0x1; return true;  /* 0b0001 —  33 ohms */
+          case 5:  *hw_val = 0x5; return true;  /* 0b0101 —  25 ohms */
+          default:
+            gpioerr("ERROR: invalid drive level %u\n", level);
+            return false;
+        }
+    }
+}
+
+/****************************************************************************
  * Name: rk3576_drive_set
  *
  * Description:
  *   Set drive strength for a GPIO pin via IOC registers.
  *
  *   RK3576 uses 4 bits/pin, 4 pins/reg.
- *   Drive level encoding: hw = RK3576_DRIVE_LEVEL_TO_HW(level).
+ *   Supports 4-level and 6-level drive strength GPIOs; automatically
+ *   selects the correct hardware encoding via rk3576_drive_level_to_hw().
  *
  * Input Parameters:
  *   ioc_base - IOC register base address
  *   port     - GPIO bank number (0-4)
  *   pin      - Pin number within bank (0-31)
- *   level    - Drive level (0-7, see RK3576_DRIVE_LEVEL_*)
+ *   level    - Logical drive level (0-5, see RK3576_DRIVE_LEVEL_*)
+ *
+ * Returned Value:
+ *   OK on success, -EINVAL if the drive level is invalid for this GPIO.
  *
  ****************************************************************************/
 
-static void rk3576_drive_set(uint32_t ioc_base, unsigned int port,
-                              unsigned int pin, unsigned int level)
+static int rk3576_drive_set(uint32_t ioc_base, unsigned int port,
+                             unsigned int pin, unsigned int level)
 {
   uint32_t reg;
   unsigned int reg_offset;
   unsigned int bit;
   uint32_t data;
   uint32_t hw_val;
+  bool is_4level;
 
   /* Determine the drive register offset for this bank/pin. */
   if (port == 0 && pin < RK_PIN_B4)
     {
-      reg_offset = 0x0010;  /* GPIO0_AL */
+      reg_offset = 0x0010;  /* GPIO0_A + GPIO0_B[0:3]: pins 0-11 */
     }
   else if (port == 0)
     {
-      reg_offset = 0x2014 - 0xc;  /* GPIO0_BH */
+      reg_offset = 0x2008;  /* GPIO0_B[4:7] + GPIO0_C + GPIO0_D: pins 12-31 */
     }
   else if (port == 1)
     {
@@ -359,23 +432,27 @@ static void rk3576_drive_set(uint32_t ioc_base, unsigned int port,
     }
   else if (port == 4 && pin < RK_PIN_C0)
     {
-      reg_offset = 0x6080;
+      reg_offset = 0x6080;  /* GPIO4_A + GPIO4_B: pins 0-15 */
     }
   else if (port == 4 && pin < RK_PIN_D0)
     {
-      reg_offset = 0xA090 - 0x10;
+      reg_offset = 0xA080;  /* GPIO4_C: pins 16-23 */
     }
   else /* port == 4, pin >= RK_PIN_D0 */
     {
-      reg_offset = 0xB098 - 0x18;
+      reg_offset = 0xB080;  /* GPIO4_D: pins 24-31 */
     }
 
   /* 4 pins per register, 4 bits per pin */
   reg_offset += (pin / RK3576_DRV_PINS_PER_REG) * 4;
   bit = (pin % RK3576_DRV_PINS_PER_REG) * RK3576_DRV_BITS_PER_PIN;
 
-  /* Encode the drive level to hardware format */
-  hw_val = RK3576_DRIVE_LEVEL_TO_HW(level);
+  /* Determine 4-level vs 6-level and convert to hardware value */
+  is_4level = RK3576_DRIVE_IS_4LEVEL(port, pin);
+  if (!rk3576_drive_level_to_hw(is_4level, level, &hw_val))
+    {
+      return -EINVAL;
+    }
 
   reg = ioc_base + reg_offset;
 
@@ -383,6 +460,8 @@ static void rk3576_drive_set(uint32_t ioc_base, unsigned int port,
   data = RK3576_WRITE_MASK(bit + 3, bit, hw_val);
 
   putreg32(data, reg);
+
+  return OK;
 }
 
 /****************************************************************************
@@ -469,7 +548,7 @@ static void rk3576_schmitt_set(uint32_t ioc_base, unsigned int port,
  *   - Port and pin number
  *   - Mode (input/output/alternate)
  *   - Pull-up/pull-down
- *   - Speed (for output/AF pins)
+ *   - Drive strength (for output/AF pins)
  *   - Output type (push-pull/open-drain)
  *   - Alternate function number
  *
@@ -485,6 +564,7 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
   unsigned int pin;
   unsigned int mode;
   unsigned int drive_level;
+  int ret;
   irqstate_t flags;
 
   /* Extract port and pin from the configuration */
@@ -493,26 +573,45 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
   pin  = (pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
   mode = pinset & GPIO_MODE_MASK;
 
-  /* Map pinset speed bits to RK3576 drive level. */
+  /* Map pinset drive strength bits to RK3576 drive level.
+   * DRV_STRENGTH is a contiguous 3-bit field at bits [14:12].
+   * GPIO_DRV_STRENGTH_DEFAULT maps to the hardware reset value per GPIO class:
+   *   4-level GPIOs → 50 ohms (level 2), 6-level GPIOs → 40 ohms (level 3).
+   */
 
-  switch (pinset & GPIO_SPEED_MASK)
+  uint32_t drv = (pinset & GPIO_DRV_STRENGTH_MASK);
+  switch (drv)
     {
-      case GPIO_SPEED_LOW:
-        drive_level = RK3576_DRIVE_LEVEL_0;
+      case GPIO_DRV_STRENGTH_100OHM:
+        drive_level = RK3576_DRIVE_LEVEL_0; 
         break;
-
-      case GPIO_SPEED_MED:
+      case GPIO_DRV_STRENGTH_66OHM:
         drive_level = RK3576_DRIVE_LEVEL_1;
         break;
-
-      case GPIO_SPEED_HIGH:
-      default:
+      case GPIO_DRV_STRENGTH_50OHM:
         drive_level = RK3576_DRIVE_LEVEL_2;
         break;
-
-      case GPIO_SPEED_VERY_HIGH:
+      case GPIO_DRV_STRENGTH_40OHM:
         drive_level = RK3576_DRIVE_LEVEL_3;
         break;
+      case GPIO_DRV_STRENGTH_33OHM:
+        drive_level = RK3576_DRIVE_LEVEL_4;
+        break;
+      case GPIO_DRV_STRENGTH_25OHM:
+        drive_level = RK3576_DRIVE_LEVEL_5;
+        break;
+      case GPIO_DRV_STRENGTH_DEFAULT:
+        /* GPIO_DRV_STRENGTH_DEFAULT or unspecified → hardware reset value.
+         * 4-level reset = 50 ohms, 6-level reset = 40 ohms.
+         */
+        drive_level = RK3576_DRIVE_IS_4LEVEL(port, pin)
+                        ? RK3576_DRIVE_LEVEL_2   /* 50 ohms */
+                        : RK3576_DRIVE_LEVEL_3;  /* 40 ohms */
+        break;
+      default:
+        gpioerr("ERROR: Invalid GPIO drive strength: 0x%lx\n",
+                (unsigned long)drv);
+        return -EINVAL;
     }
 
   /* Verify that this hardware supports the selected GPIO port */
@@ -533,6 +632,7 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
 
   /* Disable interrupts for mutually exclusive register access */
 
+  ret = OK;
   flags = spin_lock_irqsave(&g_gpio_lock);
 
   switch (mode)
@@ -596,7 +696,11 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
 
           /* Configure drive strength */
 
-          rk3576_drive_set(RK3576_IOC_ADDR, port, pin, drive_level);
+          ret = rk3576_drive_set(RK3576_IOC_ADDR, port, pin, drive_level);
+          if (ret < 0)
+            {
+              goto errout;
+            }
 
           /* Configure pull-up/pull-down if specified */
 
@@ -636,14 +740,18 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
 
           /* Configure drive strength */
 
-          rk3576_drive_set(RK3576_IOC_ADDR, port, pin, drive_level);
+          ret = rk3576_drive_set(RK3576_IOC_ADDR, port, pin, drive_level);
+          if (ret < 0)
+            {
+              goto errout;
+            }
         }
         break;
 
       default:
         gpioerr("ERROR: Invalid GPIO mode: %u\n", mode);
-        spin_unlock_irqrestore(&g_gpio_lock, flags);
-        return -EINVAL;
+        ret = -EINVAL;
+        goto errout;
     }
 
   /* Handle EXTI interrupt configuration */
@@ -684,8 +792,9 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
        */
     }
 
+errout:
   spin_unlock_irqrestore(&g_gpio_lock, flags);
-  return OK;
+  return ret;
 }
 
 /****************************************************************************
