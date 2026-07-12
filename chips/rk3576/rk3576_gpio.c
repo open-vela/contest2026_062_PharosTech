@@ -79,8 +79,6 @@
 #define RK_PIN_D6 0x1e
 #define RK_PIN_D7 0x1f
 
-#define RK3576_IOMUX_FUNC_GPIO 0
-
 /****************************************************************************
  * Public Data
  ****************************************************************************/
@@ -99,13 +97,7 @@ const uint32_t g_gpio_base[RK3576_GPIO_NPORTS] =
   RK3576_GPIO4_ADDR,
 };
 
-/* IOMUX register base offsets for each 8-pin group per bank.
- *
- * From Linux pinctrl-rockchip RK3576 data (rk3576_pin_banks):
- *   RK3576_PIN_BANK(num, label, offset_A, offset_B, offset_C, offset_D)
- *   = PIN_BANK_IOMUX_FLAGS_OFFSET_PULL_FLAGS(num, 32, label,
- *       IOMUX_WIDTH_4BIT * 4, offset_A/B/C/D, PULL_TYPE_IO_1V8_ONLY * 4)
- */
+/* IOMUX register base offsets for each 8-pin group per bank. */
 
 const struct rk3576_iomux_group
   g_iomux_groups[RK3576_GPIO_NPORTS][4] =
@@ -157,9 +149,6 @@ const struct rk3576_iomux_group
 
 static spinlock_t g_gpio_lock = SP_UNLOCKED;
 
-/* IOC (I/O Control) base address for pin configuration registers. */
-
-static const uint32_t g_ioc_base = RK3576_IOC_BASE;
 
 /****************************************************************************
  * Private Functions
@@ -273,9 +262,7 @@ static void rk3576_pull_set(uint32_t ioc_base, unsigned int port,
   unsigned int bit;
   uint32_t data;
 
-  /* Determine the pull register offset for this bank/pin.
-   * From Linux rk3576_calc_pull_reg_and_bit:
-   */
+  /* Determine the pull register offset for this bank/pin. */
   if (port == 0 && pin < RK_PIN_B4)
     {
       reg_offset = 0x0020;  /* GPIO0_AH */
@@ -349,9 +336,7 @@ static void rk3576_drive_set(uint32_t ioc_base, unsigned int port,
   uint32_t data;
   uint32_t hw_val;
 
-  /* Determine the drive register offset for this bank/pin.
-   * From Linux rk3576_calc_drv_reg_and_bit:
-   */
+  /* Determine the drive register offset for this bank/pin. */
   if (port == 0 && pin < RK_PIN_B4)
     {
       reg_offset = 0x0010;  /* GPIO0_AL */
@@ -424,9 +409,7 @@ static void rk3576_schmitt_set(uint32_t ioc_base, unsigned int port,
   unsigned int bit;
   uint32_t data;
 
-  /* Determine the schmitt register offset for this bank/pin.
-   * From Linux rk3576_calc_schmitt_reg_and_bit:
-   */
+  /* Determine the schmitt register offset for this bank/pin. */
   if (port == 0 && pin < RK_PIN_B4)
     {
       reg_offset = 0x0030;  /* GPIO0_AL */
@@ -560,7 +543,7 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
            * Bootloader may have left IOMUX in a non-GPIO state.
            */
 
-          rk3576_iomux_set(g_ioc_base, port, pin, RK3576_IOMUX_FUNC_GPIO);
+          rk3576_iomux_set(RK3576_IOC_ADDR, port, pin, (GPIO_AF0 >> GPIO_AF_SHIFT));
 
           /* Configure as input */
 
@@ -568,24 +551,24 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
 
           /* Enable schmitt trigger if requested (default for clean input) */
 
-          rk3576_schmitt_set(g_ioc_base, port, pin,
+          rk3576_schmitt_set(RK3576_IOC_ADDR, port, pin,
                              (pinset & GPIO_SCHMITT) != 0);
 
           /* Configure pull-up/pull-down via IOC if specified */
 
           if ((pinset & GPIO_PUPD_MASK) == GPIO_PULLUP)
             {
-              rk3576_pull_set(g_ioc_base, port, pin,
+              rk3576_pull_set(RK3576_IOC_ADDR, port, pin,
                               RK3576_PULL_UP);
             }
           else if ((pinset & GPIO_PUPD_MASK) == GPIO_PULLDOWN)
             {
-              rk3576_pull_set(g_ioc_base, port, pin,
+              rk3576_pull_set(RK3576_IOC_ADDR, port, pin,
                               RK3576_PULL_DOWN);
             }
           else
             {
-              rk3576_pull_set(g_ioc_base, port, pin,
+              rk3576_pull_set(RK3576_IOC_ADDR, port, pin,
                               RK3576_PULL_DISABLE);
             }
         }
@@ -597,7 +580,7 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
            * Bootloader may have left IOMUX in a non-GPIO state.
            */
 
-          rk3576_iomux_set(g_ioc_base, port, pin, RK3576_IOMUX_FUNC_GPIO);
+          rk3576_iomux_set(RK3576_IOC_ADDR, port, pin, (GPIO_AF0 >> GPIO_AF_SHIFT));
 
           /* Set the initial output value before changing direction */
 
@@ -609,22 +592,22 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
 
           /* Disable schmitt trigger for output pins */
 
-          rk3576_schmitt_set(g_ioc_base, port, pin, false);
+          rk3576_schmitt_set(RK3576_IOC_ADDR, port, pin, false);
 
           /* Configure drive strength */
 
-          rk3576_drive_set(g_ioc_base, port, pin, drive_level);
+          rk3576_drive_set(RK3576_IOC_ADDR, port, pin, drive_level);
 
           /* Configure pull-up/pull-down if specified */
 
           if ((pinset & GPIO_PUPD_MASK) == GPIO_PULLUP)
             {
-              rk3576_pull_set(g_ioc_base, port, pin,
+              rk3576_pull_set(RK3576_IOC_ADDR, port, pin,
                               RK3576_PULL_UP);
             }
           else if ((pinset & GPIO_PUPD_MASK) == GPIO_PULLDOWN)
             {
-              rk3576_pull_set(g_ioc_base, port, pin,
+              rk3576_pull_set(RK3576_IOC_ADDR, port, pin,
                               RK3576_PULL_DOWN);
             }
         }
@@ -644,16 +627,16 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
 
           rk3576_gpio_dirin(port, pin);
 
-          rk3576_iomux_set(g_ioc_base, port, pin, af);
+          rk3576_iomux_set(RK3576_IOC_ADDR, port, pin, af);
 
           /* Enable schmitt trigger for AF input (e.g. UART RX, I2C) */
 
-          rk3576_schmitt_set(g_ioc_base, port, pin,
+          rk3576_schmitt_set(RK3576_IOC_ADDR, port, pin,
                              (pinset & GPIO_SCHMITT) != 0);
 
           /* Configure drive strength */
 
-          rk3576_drive_set(g_ioc_base, port, pin, drive_level);
+          rk3576_drive_set(RK3576_IOC_ADDR, port, pin, drive_level);
         }
         break;
 
@@ -669,7 +652,7 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
     {
       /* Enable schmitt trigger to prevent spurious interrupts from noise */
 
-      rk3576_schmitt_set(g_ioc_base, port, pin, true);
+      rk3576_schmitt_set(RK3576_IOC_ADDR, port, pin, true);
 
       /* Set interrupt type (level or edge).
        * All GPIO registers use hiword-mask writes.

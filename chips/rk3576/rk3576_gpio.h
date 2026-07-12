@@ -37,7 +37,7 @@
 /* GPIO pinset encoding (32-bit word):
  *
  *  Bit [4:0]   - Pin number within port (0-31)
- *  Bit [7:5]   - Port number (0-4, same as Linux GPIO0-GPIO4)
+ *  Bit [7:5]   - Port number (0-4)
  *  Bit [9:8]   - Mode (Input/Output/AF)
  *  Bit [10]    - (reserved — was GPIO_OPENDRAIN, RK3576 unsupported)
  *  Bit [12:11] - Pull-up/Pull-down
@@ -50,7 +50,7 @@
  *  Bit [23]    - Schmitt trigger enable
  *  Bit [24]    - Both-edge trigger (for edge interrupts)
  *
- * Pin naming follows Linux pinctrl-rockchip convention:
+ * Pin naming convention:
  *   RK_GPIO0_A0 = GPIO_PORT0 | GPIO_PIN_A0
  *   RK_GPIO4_D7 = GPIO_PORT4 | GPIO_PIN_D7
  */

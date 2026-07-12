@@ -136,38 +136,11 @@ extern const uint32_t g_gpio_base[RK3576_GPIO_NPORTS];
 #define RK3576_GPIO_INTPOL_LOW_FALLING     0
 #define RK3576_GPIO_INTPOL_HIGH_RISING     1
 
-/* GPIO interrupt IRQ numbers — see include/irq.h */
-
-/* =========================================================================
- * IOC (I/O Control) Register Definitions
- *
- * On RK3576, pin configuration (mux, pull, drive, schmitt) is controlled
- * through the IOC region, separate from the GPIO data registers.
- * Verified against Linux pinctrl-rockchip RK3576 data.
- *
- * The IOC cluster starts at PMU0_IOC and spans PMU1/TOP/VCCIO/VCCIO6/7:
- *   PMU0_IOC   @ 0x26040000  (GPIO0 MUX/Attribute, pin 0-11)
- *   PMU1_IOC   @ 0x26042000  (GPIO0 MUX/Attribute, pin 12-31)
- *   TOP_IOC    @ 0x26044000  (GPIO1/2/3/4 MUX)
- *   VCCIO_IOC  @ 0x26046000  (GPIO1/2/3/4 Attribute: pull/drive/schmitt)
- *   VCCIO6_IOC @ 0x2604A000  (GPIO4 MUX/Attribute, pin 16-23)
- *   VCCIO7_IOC @ 0x2604B000  (GPIO4 MUX/Attribute, pin 24-31)
- *
- * All offsets in this driver are relative to PMU0_IOC as the unified base.
- *
- * All IOC registers use "hiword-mask" write scheme:
- *   Upper 16 bits: bitmask indicating which lower bits to modify
- *   Lower 16 bits: actual values
- * ========================================================================= */
-
-/* Unified IOC base address (PMU0_IOC) — all offsets are relative to this */
-#define RK3576_IOC_BASE                 0x26040000
-
 /* =========================================================================
  * IOMUX register layout (4-bit width per pin, IOMUX_WIDTH_4BIT)
  *
  * Each 8-pin group uses 2 consecutive registers (4 pins each).
- * Per-bank IOMUX offset table (from Linux RK3576 pin_banks):
+ * Per-bank IOMUX offset table:
  *
  *   GPIO0: 0x0000(A), 0x0008(B*), 0x2004(C), 0x200C(D)
  *          * B group (pins 8-15): pins 12-15 add +0x1FF4 extra offset
@@ -189,7 +162,7 @@ extern const struct rk3576_iomux_group
 /* =========================================================================
  * Pull-up/down register layout (2 bits/pin, 8 pins/reg, PULL_TYPE_IO_1V8_ONLY)
  *
- * Per-bank pull offset table (from Linux rk3576_calc_pull_reg_and_bit):
+ * Per-bank pull offset table:
  *
  *   GPIO0A(pin 0-11):  offset 0x0020, GPIO0BH(pin 12-31): offset 0x2024
  *   GPIO1:             offset 0x6110
@@ -215,7 +188,7 @@ extern const struct rk3576_iomux_group
 /* =========================================================================
  * Drive-strength register layout (4 bits/pin, 4 pins/reg)
  *
- * Per-bank drive offset table (from Linux rk3576_calc_drv_reg_and_bit):
+ * Per-bank drive offset table:
  *
  *   GPIO0A(pin 0-11):  offset 0x0010, GPIO0BH(pin 12-31): offset 0x2008
  *   GPIO1:             offset 0x6020
@@ -224,7 +197,7 @@ extern const struct rk3576_iomux_group
  *   GPIO4A(pin 0-15):  offset 0x6080, GPIO4CL(pin 16-23): offset 0xA080,
  *   GPIO4DL(pin 24-31): offset 0xB080
  *
- * Drive value encoding (from Linux rockchip_set_drive_perpin RK3576 case):
+ * Drive value encoding:
  *   hw_val = ((strength & BIT(2)) >> 2) |
  *            ((strength & BIT(0)) << 2) |
  *            (strength & BIT(1))
@@ -257,7 +230,7 @@ extern const struct rk3576_iomux_group
 /* =========================================================================
  * Schmitt-trigger register layout (1 bit/pin, 8 pins/reg)
  *
- * Per-bank schmitt offset table (from Linux rk3576_calc_schmitt_reg_and_bit):
+ * Per-bank schmitt offset table:
  *
  *   GPIO0A(pin 0-11):  offset 0x0030, GPIO0BH(pin 12-31): offset 0x203C
  *   GPIO1:             offset 0x6210
