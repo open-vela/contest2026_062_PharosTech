@@ -143,6 +143,14 @@
 #  define GPIO_AF5             (5 << GPIO_AF_SHIFT)
 #  define GPIO_AF6             (6 << GPIO_AF_SHIFT)
 #  define GPIO_AF7             (7 << GPIO_AF_SHIFT)
+#  define GPIO_AF8             (8 << GPIO_AF_SHIFT)
+#  define GPIO_AF9             (9 << GPIO_AF_SHIFT)
+#  define GPIO_AF10            (10 << GPIO_AF_SHIFT)
+#  define GPIO_AF11            (11 << GPIO_AF_SHIFT)
+#  define GPIO_AF12            (12 << GPIO_AF_SHIFT)
+#  define GPIO_AF13            (13 << GPIO_AF_SHIFT)
+#  define GPIO_AF14            (14 << GPIO_AF_SHIFT)
+#  define GPIO_AF15            (15 << GPIO_AF_SHIFT)
 
 /* Initial output value *******************************************************/
 
