@@ -38,3 +38,7 @@ endif
 ifeq ($(CONFIG_RK3576_I2C),y)
 CHIP_CSRCS += rk3576_i2c.c
 endif
+
+ifeq ($(CONFIG_RK3576_PWM),y)
+CHIP_CSRCS += rk3576_pwm.c
+endif

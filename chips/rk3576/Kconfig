@@ -43,6 +43,16 @@ config RK3576_SDMMC
 		Enable the RK3576 SDMMC (SD card) host controller driver
 		(Synopsys DesignWare MSHC, PIO + IDMAC internal DMA).
 
+config RK3576_PWM
+	bool "PWM (Rockchip PWM v4)"
+	default n
+	select PWM
+	---help---
+		Enable the RK3576 PWM driver (Rockchip PWM v4, PWM1 @ 2add0000, 6
+		channels).  Continuous-mode output for servo/fan/LED control; the
+		counting clock is the 24 MHz oscillator scaled to 12 MHz.  The
+		board mux the output pin and registers /dev/pwmN.
+
 config RK3576_GPIO
 	bool "GPIO"
 	default n
