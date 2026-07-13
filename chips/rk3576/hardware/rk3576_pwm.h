@@ -22,9 +22,14 @@
 
 /****************************************************************************
  * The RK3576 PWM is a Rockchip PWM v4 block: each channel is an independent
- * 0x1000 register window.  The PWM1 controller (0x2add0000) has 6 channels
- * at 0x1000 stride.  Registers marked HIWORD are write-masked: the upper 16
- * bits are a per-bit write-enable for the lower 16 bits.
+ * 0x1000 register window.  The SoC has three controllers:
+ *
+ *   PWM0 (0x27330000) – 2 channels, PMU1CRU domain
+ *   PWM1 (0x2ADD0000) – 6 channels, CRU domain
+ *   PWM2 (0x2ADE0000) – 8 channels, CRU domain
+ *
+ * Registers marked HIWORD are write-masked: the upper 16 bits are a
+ * per-bit write-enable for the lower 16 bits.
  ****************************************************************************/
 
 #ifndef __VENDOR_ROCKCHIP_RK3576_HARDWARE_RK3576_PWM_H
@@ -41,18 +46,20 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Controller base + per-channel stride (PWM1 = 6 channels). */
+/* Controller base + per-channel stride. */
 
 #define RK3576_PWM_CH_STRIDE    0x1000
-#define RK3576_PWM1_NCHAN       6
 
-/* CRU (0x27200000): GATE_CON16 gates the PWM1 clocks (1 = gated off). */
+/* Number of channels per controller. */
 
-#define RK3576_PWM_CRU_BASE     0x27200000
-#define RK3576_PWM_CRU_GATE16   0x0840
-#define RK3576_PWM1_PCLK_BIT    (1 << 10)   /* pclk_pwm1     */
-#define RK3576_PWM1_CLK_BIT     (1 << 11)   /* clk_pwm1 (PLL) */
-#define RK3576_PWM1_OSCCLK_BIT  (1 << 13)   /* clk_osc_pwm1 (24MHz) */
+#define RK3576_PWM_NSLOTS       8      /* Max channels (PWM2), for array sizing */
+
+/* Controller enumeration (used as array index and rk3576_pwm_initialize param). */
+
+#define RK3576_PWM0             0
+#define RK3576_PWM1             1
+#define RK3576_PWM2             2
+#define RK3576_PWM_NCTRL        3      /* Total number of controllers         */
 
 /* clk_osc_pwm1 root frequency (crystal, fixed). */
 

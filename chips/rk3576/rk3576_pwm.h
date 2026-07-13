@@ -34,6 +34,10 @@
 #ifdef CONFIG_RK3576_PWM
 
 /****************************************************************************
+ * Public Types
+ ****************************************************************************/
+
+/****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
 
@@ -41,19 +45,21 @@
  * Name: rk3576_pwm_initialize
  *
  * Description:
- *   Return the lower-half handle for one PWM1 channel (0..5) for the board
- *   to register with pwm_register().  The board must mux the channel's
+ *   Return the lower-half handle for one PWM channel for the board to
+ *   register with pwm_register().  The board must mux the channel's
  *   output pin before the device is used.
  *
  * Input Parameters:
- *   channel - PWM1 channel index (0..5)
+ *   controller - PWM controller index (RK3576_PWM0, RK3576_PWM1, RK3576_PWM2)
+ *   channel    - Channel index within the controller (0-based)
  *
  * Returned Value:
- *   A pwm_lowerhalf_s handle on success; NULL on an invalid channel.
+ *   A pwm_lowerhalf_s handle on success; NULL on an invalid controller or
+ *   channel.
  *
  ****************************************************************************/
 
-struct pwm_lowerhalf_s *rk3576_pwm_initialize(int channel);
+struct pwm_lowerhalf_s *rk3576_pwm_initialize(int pwm_controller_id, int channel);
 
 #endif /* CONFIG_RK3576_PWM */
 #endif /* __VENDOR_ROCKCHIP_CHIPS_RK3576_RK3576_PWM_H */

@@ -47,6 +47,7 @@
 
 #include "arm64_internal.h"
 #include "hardware/rk3576_pwm.h"
+#include "rk3576_cru.h"
 
 #ifdef CONFIG_RK3576_PWM
 
@@ -63,15 +64,24 @@
  * Private Types
  ****************************************************************************/
 
+/* Static per-controller descriptor — base address and channel count. */
+
+struct rk3576_pwm_ctrl_desc_s
+{
+  uintptr_t base_addr;       /* Controller register base (PWMn_ADDR)      */
+  unsigned int nchan;        /* Number of channels                        */
+};
+
 /* One PWM channel.  The first member is the lower-half ops pointer so a
  * struct pwm_lowerhalf_s pointer can be up-cast to this structure.
  */
 
 struct rk3576_pwm_s
 {
-  const struct pwm_ops_s *ops;   /* Lower-half operations (must be first)  */
-  uintptr_t               base;   /* Channel register base address          */
-  bool                    started;/* Output currently running               */
+  const struct pwm_ops_s    *ops;  /* Lower-half operations (must be first) */
+  uintptr_t                  base;  /* Channel register base address          */
+  unsigned int               ctrl;  /* Parent controller index (0..2)         */
+  bool                       started;/* Output currently running              */
 };
 
 /****************************************************************************
@@ -103,11 +113,34 @@ static const struct pwm_ops_s g_rk3576_pwm_ops =
   .ioctl    = rk3576_pwm_ioctl,
 };
 
-/* One instance per PWM1 channel; only the channels a board actually uses
- * are handed out by rk3576_pwm_initialize().
+/* Per-controller static descriptor table (PWM0, PWM1, PWM2). */
+
+static const struct rk3576_pwm_ctrl_desc_s g_pwm_ctrls[RK3576_PWM_NCTRL] =
+{
+  [RK3576_PWM0] =
+  {
+    .base_addr     = RK3576_PWM0_ADDR,
+    .nchan         = 2,
+  },
+  [RK3576_PWM1] =
+  {
+    .base_addr     = RK3576_PWM1_ADDR,
+    .nchan         = 6,
+  },
+  [RK3576_PWM2] =
+  {
+    .base_addr     = RK3576_PWM2_ADDR,
+    .nchan         = 8,
+  },
+};
+
+/* Per-channel instance array; only the slots a board actually uses are
+ * handed out by rk3576_pwm_initialize().  Dimensioned for the worst-case
+ * (PWM2, 8 channels).
  */
 
-static struct rk3576_pwm_s g_rk3576_pwm[RK3576_PWM1_NCHAN];
+static struct rk3576_pwm_s
+  g_rk3576_pwm[RK3576_PWM_NCTRL][RK3576_PWM_NSLOTS];
 
 /****************************************************************************
  * Private Functions
@@ -137,12 +170,16 @@ static int rk3576_pwm_setup(struct pwm_lowerhalf_s *dev)
 {
   struct rk3576_pwm_s *priv = (struct rk3576_pwm_s *)dev;
 
-  /* Ungate pclk_pwm1 + clk_osc_pwm1 (CRU gate bits are active-high-disable,
-   * so write the target bits into the mask and 0 into the value.
+  /* Ungate pclk + osc_clk for this controller via the CRU driver.
+   * PLL clock (clk_pwm) and RC clock are left gated — only the 24 MHz
+   * oscillator is used as the counting-clock source.
    */
 
-  putreg32(PWM_HIWORD_CLR(RK3576_PWM1_PCLK_BIT | RK3576_PWM1_OSCCLK_BIT),
-           RK3576_PWM_CRU_BASE + RK3576_PWM_CRU_GATE16);
+  rk3576_cru_set_pwm_clock_gate(priv->ctrl,
+                                true,  /* pclk    */
+                                false, /* clk_pwm */
+                                false, /* rc_clk  */
+                                true); /* osc_clk */
 
   /* Clock control: oscillator source, prescale = 0, scale = 1 (-> 12 MHz). */
 
@@ -150,8 +187,9 @@ static int rk3576_pwm_setup(struct pwm_lowerhalf_s *dev)
                     PWM_HIWORD((PWM_CLK_SRC_OSC << PWM_CLK_SRC_SEL_SHIFT) |
                                (RK3576_PWM_SCALE << PWM_CLK_SCALE_SHIFT)));
 
-  pwminfo("PWM setup base=%08" PRIxPTR " version=%08" PRIx32 "\n",
-          priv->base, rk3576_pwm_getreg(priv, RK3576_PWM_VERSION));
+  pwminfo("PWM%u setup base=%08" PRIxPTR " version=%08" PRIx32 "\n",
+          priv->ctrl, priv->base,
+          rk3576_pwm_getreg(priv, RK3576_PWM_VERSION));
   return OK;
 }
 
@@ -250,23 +288,43 @@ static int rk3576_pwm_ioctl(struct pwm_lowerhalf_s *dev, int cmd,
  * Name: rk3576_pwm_initialize
  *
  * Description:
- *   Return the lower-half handle for one PWM1 channel (0..5), for the board
+ *   Return the lower-half handle for one PWM channel for the board
  *   to pass to pwm_register().  The board is responsible for muxing the
  *   channel's output pin before the device is used.
+ *
+ * Input Parameters:
+ *   controller - PWM controller index (RK3576_PWM0, RK3576_PWM1, RK3576_PWM2)
+ *   channel    - Channel index within the controller (0-based)
+ *
+ * Returned Value:
+ *   A pwm_lowerhalf_s handle on success; NULL on an invalid controller or
+ *   channel.
  ****************************************************************************/
 
-struct pwm_lowerhalf_s *rk3576_pwm_initialize(int channel)
+struct pwm_lowerhalf_s *rk3576_pwm_initialize(int pwm_controller_id, int channel)
 {
+  const struct rk3576_pwm_ctrl_desc_s *desc;
   struct rk3576_pwm_s *priv;
 
-  if (channel < 0 || channel >= RK3576_PWM1_NCHAN)
+  if (pwm_controller_id < 0 || pwm_controller_id >= RK3576_PWM_NCTRL)
     {
+      pwmerr("ERROR: Invalid PWM controller: %d\n", pwm_controller_id);
       return NULL;
     }
 
-  priv = &g_rk3576_pwm[channel];
+  desc = &g_pwm_ctrls[pwm_controller_id];
+
+  if (channel < 0 || (unsigned int)channel >= desc->nchan)
+    {
+      pwmerr("ERROR: PWM%u channel %d out of range (max %u)\n",
+             pwm_controller_id, channel, desc->nchan);
+      return NULL;
+    }
+
+  priv = &g_rk3576_pwm[pwm_controller_id][channel];
   priv->ops     = &g_rk3576_pwm_ops;
-  priv->base    = RK3576_PWM1_ADDR + channel * RK3576_PWM_CH_STRIDE;
+  priv->base    = desc->base_addr + channel * RK3576_PWM_CH_STRIDE;
+  priv->ctrl    = pwm_controller_id;
   priv->started = false;
 
   return (struct pwm_lowerhalf_s *)priv;
