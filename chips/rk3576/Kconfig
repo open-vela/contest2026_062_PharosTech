@@ -63,6 +63,16 @@ config RK3576_I2C
 		brought up via the CRU; SCL/SDA pin muxing is the board's
 		responsibility.
 
+config RK3576_DMA
+	bool "DMA (ARM PL330 / DMA-330)"
+	default n
+	---help---
+		Enable the RK3576 ARM PL330 (DMA-330) DMA controller driver
+		(dma-controller@2ab90000).  Micro-coded engine, 8 channels;
+		single-shot memory-to-memory and peripheral (M2P/P2M) transfers.
+		Chief consumer is the SAI/I2S audio driver.  Cyclic and
+		scatter/gather transfers are not yet implemented.
+
 endmenu # Rockchip RK3576 Peripheral Selection
 
 endif # ARCH_CHIP_RK3576

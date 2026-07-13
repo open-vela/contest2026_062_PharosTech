@@ -164,6 +164,12 @@ void board_late_initialize(void)
   rk3576_gpio_register(GPIO_PORT0 | GPIO_PIN_B4 | GPIO_OUTPUT);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_DMA_PROBE
+  /* Bring-up self-test for the ARM PL330 DMA controller. */
+
+  kickpi_k7_dma_probe();
+#endif
+
 #ifdef CONFIG_RK3576_SDMMC
   /* Initialize the SD card slot (SDMMC0).  The SD card is an
    * optional peripheral: on failure only warn, do not block the boot (booting

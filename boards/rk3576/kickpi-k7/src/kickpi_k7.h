@@ -35,5 +35,18 @@
  * Public Functions Definitions
  ****************************************************************************/
 
+#ifdef CONFIG_KICKPI_K7_DMA_PROBE
+/****************************************************************************
+ * Name: kickpi_k7_dma_probe
+ *
+ * Description:
+ *   ARM PL330 memory-to-memory bring-up self-test (see
+ *   kickpi_k7_dmaprobe.c).
+ *
+ ****************************************************************************/
+
+void kickpi_k7_dma_probe(void);
+#endif
+
 #endif /* __ASSEMBLY__ */
 #endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */

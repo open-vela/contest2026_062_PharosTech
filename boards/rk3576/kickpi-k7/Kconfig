@@ -6,4 +6,16 @@ config ARCH_BOARD_KICKPI_K7
 	default y
 
 if ARCH_BOARD_KICKPI_K7
+
+config KICKPI_K7_DMA_PROBE
+	bool "DMA (PL330) bring-up probe"
+	default n
+	depends on RK3576_DMA
+	---help---
+		Run a bring-up self-test at boot for the ARM PL330 DMA controller
+		(dma-controller@2ab90000): reserve a memory-to-memory channel,
+		copy a test buffer, and verify the destination matches the source.
+		Validates the micro-code assembler, channel launch and completion
+		interrupt on real hardware before wiring DMA to the SAI driver.
+
 endif # ARCH_BOARD_KICKPI_K7

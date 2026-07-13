@@ -26,6 +26,10 @@ CSRCS = kickpi_k7_boardinit.c
 CSRCS += kickpi_k7_appinit.c
 CSRCS += kickpi_k7_reset.c
 
+ifeq ($(CONFIG_KICKPI_K7_DMA_PROBE),y)
+CSRCS += kickpi_k7_dmaprobe.c
+endif
+
 ifeq ($(CONFIG_ETC_ROMFS),y)
   RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS
 endif
