@@ -1,0 +1,32 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config EXAMPLES_EMMCPROBE
+	tristate "KICKPI-K7 on-board eMMC (dwcmshc/SDHCI) bring-up probe"
+	default n
+	---help---
+		Milestone-M1 bring-up self-test for the KICKPI-K7 on-board eMMC
+		(mmc@2a330000, a Synopsys dwcmshc / SDHCI 3.0 host).  Reads the host
+		version + capabilities, software-resets the host, brings up the
+		clock + bus power, then enumerates the device with CMD0/CMD1 (and,
+		if ready, CMD2/3/9/7 + a single-block PIO read).  Self-contained raw
+		MMIO diagnostic, not wired into the board boot path; run as
+		"emmcprobe" from NSH and read the results on the console/syslog.
+
+if EXAMPLES_EMMCPROBE
+
+config EXAMPLES_EMMCPROBE_PROGNAME
+	string "Program name"
+	default "emmcprobe"
+
+config EXAMPLES_EMMCPROBE_PRIORITY
+	int "emmcprobe task priority"
+	default 100
+
+config EXAMPLES_EMMCPROBE_STACKSIZE
+	int "emmcprobe stack size"
+	default 4096
+
+endif
