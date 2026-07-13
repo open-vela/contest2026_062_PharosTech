@@ -277,6 +277,121 @@ static int _get_i2c_clock_sel_register(uint16_t i2c_bus_id,
 }
 
 /****************************************************************************
+ * Name: _get_pwm_clock_gate_reg
+ *
+ * Description:
+ *   Resolve the CRU gate register address and bit-offsets for a given PWM
+ *   controller.  Each PWM controller has up to four independently-gated
+ *   clocks:
+ *   - pclk:       APB bus interface clock (register access).
+ *   - clk:        Primary PWM functional clock (clk_pwm).
+ *   - osc_clk:    Alternative clock source from external oscillator
+ *                 (clk_pwm_osc), used as a low-power or fallback clock
+ *                 for PWM output.
+ *   - rc_clk:     Alternative clock source from internal RC oscillator
+ *                 (clk_pwm_rc), used as a low-power or fallback clock
+ *                 for PWM output.
+ *
+ *   PWM0 lives in the PMU1 CRU power domain (PMU1CRU_GATE_CON(4)/(5)).
+ *   PWM1 uses GATE_CON(16), PWM2 uses GATE_CON(20).  For PWM1/2 the RC
+ *   clock gate shares the same register as the other clocks.
+ *
+ * Input Parameters:
+ *   pwm_controller_id - PWM controller index (0 ~ 2).  Out-of-range
+ *                       returns -EINVAL.
+ *   p_reg             - [out] Absolute address of the gate register
+ *                       (pclk/clk/osc).  May be NULL.
+ *   p_rc_reg          - [out] Absolute address of the RC clock gate
+ *                       register.  May be NULL.
+ *   p_pclk_offset     - [out] Bit position of pclk gate.  May be NULL.
+ *   p_clk_offset      - [out] Bit position of clk_pwm gate.  May be NULL.
+ *   p_osc_clk_offset  - [out] Bit position of clk_pwm_osc gate.
+ *                       May be NULL.
+ *   p_rc_clk_offset   - [out] Bit position of clk_pwm_rc gate.
+ *                       May be NULL.
+ *
+ * Returned Value:
+ *   OK (0) on success; -EINVAL if the PWM controller ID is not recognized.
+ *
+ ****************************************************************************/
+
+static int
+_get_pwm_clock_gate_reg(uint16_t pwm_controller_id, unsigned long *p_reg,
+                        unsigned long *p_rc_reg, uint8_t *p_pclk_offset,
+                        uint8_t *p_clk_offset, uint8_t *p_osc_clk_offset,
+                        uint8_t *p_rc_clk_offset)
+{
+  unsigned long base = RK3576_CRU_ADDR;
+  unsigned long reg_offset, rc_reg_offset;
+  uint8_t pclk_offset, clk_offset;
+  uint8_t osc_clk_offset, rc_clk_offset;
+
+  switch (pwm_controller_id)
+    {
+      case 0:
+        base = RK3576_PMU1_CRU_ADDR;
+        reg_offset = RK3576_PMU1CRU_GATE_CON(4);
+        pclk_offset = 11;
+        clk_offset = 12;
+        osc_clk_offset = 13;
+        rc_reg_offset = RK3576_PMU1CRU_GATE_CON(5);
+        rc_clk_offset = 7;
+        break;
+      case 1:
+        reg_offset = RK3576_CRU_GATE_CON(16);
+        rc_reg_offset = reg_offset;
+        pclk_offset = 10;
+        clk_offset = 11;
+        osc_clk_offset = 13;
+        rc_clk_offset = 15;
+        break;
+      case 2:
+        reg_offset = RK3576_CRU_GATE_CON(20);
+        rc_reg_offset = reg_offset;
+        pclk_offset = 4;
+        clk_offset = 5;
+        osc_clk_offset = 7;
+        rc_clk_offset = 6;
+        break;
+      default:
+        _err("CRU: Invalid pwm controller id %u", pwm_controller_id);
+        return -EINVAL;
+    }
+
+  if (p_reg)
+    {
+      *p_reg = reg_offset + base;
+    }
+
+  if (p_rc_reg)
+    {
+      *p_rc_reg = rc_reg_offset + base;
+    }
+
+  if (p_pclk_offset)
+    {
+      *p_pclk_offset = pclk_offset;
+    }
+
+  if (p_clk_offset)
+    {
+      *p_clk_offset = clk_offset;
+    }
+
+  if (p_osc_clk_offset)
+    {
+      *p_osc_clk_offset = osc_clk_offset;
+    }
+
+  if (p_rc_clk_offset)
+    {
+      *p_rc_clk_offset = rc_clk_offset;
+    }
+
+  return OK;
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -284,13 +399,7 @@ static int _get_i2c_clock_sel_register(uint16_t i2c_bus_id,
  * Name: rk3576_cru_set_i2c_clock_selection
  *
  * Description:
- *   Program the clock source selection for a given I2C bus.  Each I2C
- *   controller's functional clock can be sourced from one of four options:
- *   GPLL divided by 6, CPLL divided by 10, CPLL divided by 20, or the
- *   XIN_OSC0 external oscillator.
- *
- *   The register write uses the "write-enable" mask (upper 16 bits) to
- *   ensure only the target selection field is modified atomically.
+ *   Program the clock source selection for a given I2C bus.
  *
  * Input Parameters:
  *   i2c_bus_id - I2C bus index (0 ~ 9).
@@ -351,9 +460,7 @@ int rk3576_cru_set_i2c_clock_selection(uint16_t i2c_bus_id,
  *
  * Description:
  *   Read back the currently configured clock source selection for a given
- *   I2C bus.  The 2-bit field is extracted from the appropriate CLKSEL_CON
- *   register and decoded into the corresponding rk3576_clock_source_t
- *   enumeration value.
+ *   I2C bus.
  *
  * Input Parameters:
  *   i2c_bus_id - I2C bus index (0 ~ 9).
@@ -411,10 +518,7 @@ int rk3576_cru_get_i2c_clock_selection(uint16_t i2c_bus_id,
  *
  * Description:
  *   Enable or disable the I2C peripheral clock (pclk) and/or functional
- *   clock (clk) gate for the specified I2C bus.  On RK3576, writing 0 to
- *   the gate bit enables the clock, writing 1 disables it — the hardware
- *   uses active-low gating semantics.  The "write-enable" mask bit (offset
- *   + 16) is always set so that only the target bit is affected.
+ *   clock (clk) gate for the specified I2C bus.
  *
  * Input Parameters:
  *   i2c_bus_id - I2C bus index (e.g. 0 for I2C0, 1 for I2C1, …).
@@ -470,9 +574,7 @@ int rk3576_cru_set_i2c_clock_gate(uint16_t i2c_bus_id, bool pclk_en,
  *
  * Description:
  *   Query the current gate state of the I2C pclk and functional clock for
- *   a given I2C bus.  Because the hardware uses active-low gating (0 =
- *   enabled, 1 = disabled), the returned boolean values indicate the
- *   logical "enabled" state (true = clock running).
+ *   a given I2C bus.
  *
  * Input Parameters:
  *   i2c_bus_id  - I2C bus index (e.g. 0 for I2C0, 1 for I2C1, …).
@@ -509,6 +611,163 @@ int rk3576_cru_get_i2c_clock_gate(uint16_t i2c_bus_id, bool *p_pclk_en,
   if (p_clk_en)
     {
       *p_clk_en = (getreg32(clk_reg) & (1 << clk_offset)) == 0;
+    }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_cru_set_pwm_clock_gate
+ *
+ * Description:
+ *   Enable or disable the PWM peripheral clocks (pclk, clk_pwm,
+ *   clk_pwm_rc, clk_pwm_osc) for the specified PWM controller.
+ *
+ *   - pclk:          APB bus interface clock. Must be enabled for any
+ *                    register access to the PWM controller.
+ *   - clk_pwm:       Primary PWM functional clock, used to generate the
+ *                    PWM output waveform.
+ *   - clk_pwm_rc:    Alternative clock source from the internal RC
+ *                    oscillator.  Can be used as a low-power or fallback
+ *                    clock for PWM output timing.
+ *   - clk_pwm_osc:   Alternative clock source from an oscillator
+ *                    Can be used as a low-power or fallback
+ *                    clock for PWM output timing.
+ *
+ *   Typically, the caller enables pclk + one of {clk_pwm, clk_pwm_rc,
+ *   clk_pwm_osc} depending on the desired PWM clock source.
+ *
+ * Input Parameters:
+ *   pwm_controller_id - PWM controller index (0 ~ 2).
+ *   pclk_en           - true → enable pclk (APB bus clock gate open).
+ *                       false → disable (gate) pclk.
+ *   clk_pwm_en        - true → enable primary PWM functional clock.
+ *                       false → disable (gate) clk_pwm.
+ *   clk_pwm_rc_en     - true → enable RC oscillator alternative clock.
+ *                       false → disable (gate) clk_pwm_rc.
+ *   clk_pwm_osc_en    - true → enable external oscillator alternative
+ *                       clock.  false → disable (gate) clk_pwm_osc.
+ *
+ * Returned Value:
+ *   OK (0) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int rk3576_cru_set_pwm_clock_gate(uint16_t pwm_controller_id, bool pclk_en,
+                                  bool clk_pwm_en, bool clk_pwm_rc_en,
+                                  bool clk_pwm_osc_en)
+{
+  unsigned long reg, rc_reg;
+  uint8_t pclk_offset, clk_offset;
+  uint8_t rc_clk_offset, osc_clk_offset;
+
+  uint32_t reg_bits, rc_reg_bits;
+
+  int ret =
+      _get_pwm_clock_gate_reg(pwm_controller_id, &reg, &rc_reg, &pclk_offset,
+                              &clk_offset, &osc_clk_offset, &rc_clk_offset);
+
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  /* write 0 to enable clock, write 1 to disable */
+
+  reg_bits = pclk_en ? 0 : (1 << pclk_offset);
+  reg_bits |= clk_pwm_en ? 0 : (1 << clk_offset);
+  reg_bits |= clk_pwm_osc_en ? 0 : (1 << osc_clk_offset);
+
+  /* WE bits */
+
+  reg_bits |= ((1 << pclk_offset) | (1 << clk_offset) | (1 << osc_clk_offset))
+              << 16;
+
+  rc_reg_bits = clk_pwm_rc_en ? 0 : (1 << rc_clk_offset);
+
+  rc_reg_bits |= (1 << (rc_clk_offset + 16)); /* WE bits */
+
+  /* if register is the same, merge write operation */
+  if (reg == rc_reg)
+    {
+      putreg32(reg_bits | rc_reg_bits, reg);
+    }
+  else
+    {
+      putreg32(reg_bits, reg);
+      putreg32(rc_reg_bits, rc_reg);
+    }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_cru_get_pwm_clock_gate
+ *
+ * Description:
+ *   Query the current gate state of the PWM peripheral clocks (pclk,
+ *   clk_pwm, clk_pwm_rc, clk_pwm_osc) for the specified PWM controller.
+ *
+ * Input Parameters:
+ *   pwm_controller_id - PWM controller index (0 ~ 2).
+ *   p_pclk_en         - [out] Receives true if pclk is currently enabled,
+ *                       false if gated.  May be NULL.
+ *   p_clk_pwm_en      - [out] Receives true if the primary PWM functional
+ *                       clock is currently enabled, false if gated.
+ *                       May be NULL.
+ *   p_clk_pwm_rc_en   - [out] Receives true if the RC oscillator
+ *                       alternative clock is currently enabled, false if
+ *                       gated.  May be NULL.
+ *   p_clk_pwm_osc_en  - [out] Receives true if the external oscillator
+ *                       alternative clock is currently enabled, false if
+ *                       gated.  May be NULL.
+ *
+ * Returned Value:
+ *   OK (0) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int rk3576_cru_get_pwm_clock_gate(uint16_t pwm_controller_id, bool *p_pclk_en,
+                                  bool *p_clk_pwm_en, bool *p_clk_pwm_rc_en,
+                                  bool *p_clk_pwm_osc_en)
+{
+  unsigned long reg, rc_reg;
+  uint8_t pclk_offset, clk_offset;
+  uint8_t rc_clk_offset, osc_clk_offset;
+
+  uint32_t reg_bits, rc_reg_bits;
+
+  int ret =
+      _get_pwm_clock_gate_reg(pwm_controller_id, &reg, &rc_reg, &pclk_offset,
+                              &clk_offset, &osc_clk_offset, &rc_clk_offset);
+
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  reg_bits = getreg32(reg);
+
+  if (p_pclk_en)
+    {
+      /* 0 -> enabled ; 1 -> disabled */
+      *p_pclk_en = (reg_bits & (1 << pclk_offset)) == 0;
+    }
+
+  if (p_clk_pwm_en)
+    {
+      *p_clk_pwm_en = (reg_bits & (1 << clk_offset)) == 0;
+    }
+
+  if (p_clk_pwm_osc_en)
+    {
+      *p_clk_pwm_osc_en = (reg_bits & (1 << osc_clk_offset)) == 0;
+    }
+
+  if (p_clk_pwm_rc_en)
+    {
+      rc_reg_bits = (rc_reg != reg) ? getreg32(rc_reg) : reg_bits;
+      *p_clk_pwm_rc_en = (rc_reg_bits & (1 << rc_clk_offset)) == 0;
     }
 
   return OK;
