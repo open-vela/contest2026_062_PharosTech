@@ -62,6 +62,11 @@
 #define RK3576_UART10_ADDR 0x2AFC0000
 #define RK3576_UART11_ADDR 0x2AFD0000
 
+/* PWM (Rockchip PWM v4) */
+#define RK3576_PWM0_ADDR        0x27330000
+#define RK3576_PWM1_ADDR        0x2ADD0000
+#define RK3576_PWM2_ADDR        0x2ADE0000
+
 /* Synopsys DesignWare MSHC (dw_mmc, same IP as rk3288/rk3399) */
 
 #define RK3576_SDMMC_ADDR 0x2A310000 /* SD/MMC host (dw-mshc) */

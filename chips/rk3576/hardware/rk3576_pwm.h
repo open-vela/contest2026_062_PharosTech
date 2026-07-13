@@ -35,6 +35,7 @@
  ****************************************************************************/
 
 #include <nuttx/config.h>
+#include "rk3576_memorymap.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -42,7 +43,6 @@
 
 /* Controller base + per-channel stride (PWM1 = 6 channels). */
 
-#define RK3576_PWM1_BASE        0x2add0000
 #define RK3576_PWM_CH_STRIDE    0x1000
 #define RK3576_PWM1_NCHAN       6
 

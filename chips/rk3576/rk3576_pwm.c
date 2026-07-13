@@ -266,7 +266,7 @@ struct pwm_lowerhalf_s *rk3576_pwm_initialize(int channel)
 
   priv = &g_rk3576_pwm[channel];
   priv->ops     = &g_rk3576_pwm_ops;
-  priv->base    = RK3576_PWM1_BASE + channel * RK3576_PWM_CH_STRIDE;
+  priv->base    = RK3576_PWM1_ADDR + channel * RK3576_PWM_CH_STRIDE;
   priv->started = false;
 
   return (struct pwm_lowerhalf_s *)priv;
