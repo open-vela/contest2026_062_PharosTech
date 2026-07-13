@@ -35,17 +35,5 @@
  * Public Functions Definitions
  ****************************************************************************/
 
-#ifdef CONFIG_KICKPI_K7_EMMC_PROBE
-/****************************************************************************
- * Name: kickpi_k7_emmc_probe
- *
- * Description:
- *   eMMC (dwcmshc / SDHCI) bring-up self-test M1 (see kickpi_k7_emmcprobe.c).
- *
- ****************************************************************************/
-
-void kickpi_k7_emmc_probe(void);
-#endif
-
 #endif /* __ASSEMBLY__ */
 #endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */

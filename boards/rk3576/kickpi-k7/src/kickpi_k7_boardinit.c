@@ -205,12 +205,6 @@ void board_late_initialize(void)
 #endif
 #endif
 
-#ifdef CONFIG_KICKPI_K7_EMMC_PROBE
-  /* Bring-up self-test M1 for the on-board eMMC (dwcmshc / SDHCI). */
-
-  kickpi_k7_emmc_probe();
-#endif
-
 #ifdef CONFIG_RK3576_EMMC
   /* Initialize the on-board eMMC (dwcmshc / SDHCI) as /dev/mmcsd1. */
 

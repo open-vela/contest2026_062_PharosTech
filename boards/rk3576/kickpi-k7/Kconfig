@@ -7,15 +7,4 @@ config ARCH_BOARD_KICKPI_K7
 
 if ARCH_BOARD_KICKPI_K7
 
-config KICKPI_K7_EMMC_PROBE
-	bool "eMMC (dwcmshc) bring-up probe"
-	default n
-	---help---
-		Run a bring-up self-test at boot (milestone M1) for the on-board
-		eMMC (mmc@2a330000, a Synopsys dwcmshc / SDHCI 3.0 host): read the
-		host version + capabilities, software-reset the host, bring up the
-		internal + card clock and bus power, and enumerate the device with
-		CMD0/CMD1.  Validates the SDHCI register map and controller clock on
-		real hardware before the full eMMC sdio_dev_s driver is used.
-
 endif # ARCH_BOARD_KICKPI_K7
