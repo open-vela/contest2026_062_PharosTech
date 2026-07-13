@@ -71,13 +71,4 @@
 
 #define RK3576_I2C_ADDR_LOW_VLD (1 << 24)         /* byte 0 (low) valid */
 
-/* CRU (0x27200000) helpers for the I2C functional/bus clocks.  16-bit
- * write-mask registers; offset formulas verified against the RK3576 TRM.
- * Source cross-checked with mainline drivers/clk/rockchip/clk-rk3576.c.
- */
-
-#define RK3576_CRU_BASE         0x27200000
-#define RK3576_CRU_CLKSEL(n)    (RK3576_CRU_BASE + 0x0300 + ((n) * 4))
-#define RK3576_CRU_GATE(n)      (RK3576_CRU_BASE + 0x0800 + ((n) * 4))
-
 #endif /* __ARCH_ARM64_SRC_RK3576_HARDWARE_RK3576_I2C_H */

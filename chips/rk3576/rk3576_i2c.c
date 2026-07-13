@@ -52,6 +52,7 @@
 #include "hardware/rk3576_i2c.h"
 #include "hardware/rk3576_memorymap.h"
 #include "rk3576_i2c.h"
+#include "rk3576_cru.h"
 
 #ifdef CONFIG_RK3576_I2C
 
@@ -131,42 +132,6 @@ static inline void i2c_putreg(struct rk3576_i2c_priv_s *priv,
                               unsigned int off, uint32_t val)
 {
   putreg32(val, priv->base + off);
-}
-
-/****************************************************************************
- * Name: rk3576_i2c_clk_enable
- *
- * Description:
- *   Ungate the controller's bus + functional clock in the CRU.
- ****************************************************************************/
-
-static void rk3576_i2c_clk_enable(struct rk3576_i2c_priv_s *priv, int bus)
-{
-  /* TODO: move CRU clock-gate knowledge into a proper cru driver.  This
-   * switch is a temporary stop-gap until rk3576_cru provides a public
-   * clk_enable("i2cXX_pclk") / clk_enable("i2cXX_cclk") API.
-   */
-
-  uint8_t  gate;
-  uint16_t pclk;
-  uint16_t cclk;
-
-  switch (bus)
-    {
-      case 0:  gate = 10; pclk = 1 << 0;  cclk = 1 << 8;  break;
-      case 1:  gate = 12; pclk = 1 << 0;  cclk = 1 << 12; break;
-      case 2:  gate = 12; pclk = 1 << 1;  cclk = 1 << 13; break;
-      case 3:  gate = 12; pclk = 1 << 2;  cclk = 1 << 14; break;
-      case 4:  gate = 12; pclk = 1 << 3;  cclk = 1 << 15; break;
-      case 5:  gate = 13; pclk = 1 << 12; cclk = 1 << 13; break;
-      case 6:  gate = 13; pclk = 1 << 0;  cclk = 1 << 1;  break;
-      case 7:  gate = 13; pclk = 1 << 2;  cclk = 1 << 3;  break;
-      case 8:  gate = 13; pclk = 1 << 4;  cclk = 1 << 14; break;
-      case 9:  gate = 13; pclk = 1 << 5;  cclk = 1 << 15; break;
-      default: return;
-    }
-
-  putreg32((uint32_t)(pclk | cclk) << 16, RK3576_CRU_GATE(gate));
 }
 
 /****************************************************************************
@@ -550,7 +515,7 @@ struct i2c_master_s *rk3576_i2c_initialize(int bus)
       priv->base     = g_rk3576_i2c_base[bus];
       priv->clkin    = RK3576_I2C_CLKIN;
       nxmutex_init(&priv->lock);
-      rk3576_i2c_clk_enable(priv, bus);
+      rk3576_cru_set_i2c_clock_gate(bus, true, true);
       i2c_putreg(priv, RK3576_I2C_CON, 0);
     }
 
