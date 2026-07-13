@@ -21,7 +21,7 @@
 include common/Make.defs
 
 # Rockchip RK3576 specific C source files
-CHIP_CSRCS  = rk3576_boot.c rk3576_serial.c
+CHIP_CSRCS  = rk3576_boot.c rk3576_serial.c rk3576_cru.c
 
 ifeq ($(CONFIG_RK3576_GPIO),y)
 CHIP_CSRCS += rk3576_gpio.c
