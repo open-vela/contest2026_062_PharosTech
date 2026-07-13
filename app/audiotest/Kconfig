@@ -1,0 +1,29 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config EXAMPLES_AUDIOTEST
+	tristate "KICKPI-K7 ES8388/SAI1 audio bring-up command"
+	default n
+	depends on KICKPI_K7_AUDIO
+	---help---
+		On-demand trigger for the on-board ES8388 (SAI1 / I2C3) audio
+		bring-up.  Kept off the boot path so a stall in SAI/codec clock
+		bring-up only blocks this command, never the boot to NSH.
+
+if EXAMPLES_AUDIOTEST
+
+config EXAMPLES_AUDIOTEST_PROGNAME
+	string "Program name"
+	default "audiotest"
+
+config EXAMPLES_AUDIOTEST_PRIORITY
+	int "audiotest task priority"
+	default 100
+
+config EXAMPLES_AUDIOTEST_STACKSIZE
+	int "audiotest stack size"
+	default 4096
+
+endif

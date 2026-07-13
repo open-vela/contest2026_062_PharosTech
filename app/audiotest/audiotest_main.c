@@ -1,5 +1,5 @@
 /****************************************************************************
- * boards/arm64/rk3576/kickpi_k7/src/kickpi_k7.h
+ * apps/examples/audiotest/audiotest_main.c
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -20,33 +20,34 @@
  *
  ****************************************************************************/
 
-#ifndef __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H
-#define __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H
+/****************************************************************************
+ * On-demand ES8388 / SAI1 audio bring-up trigger.  Runs the on-board audio
+ * initialisation (see kickpi_k7_audio.c) from the NSH prompt so a stall in
+ * SAI/codec clock bring-up only blocks this command, never the boot path.
+ * After it reports success, /dev/audio/pcm0 is ready for nxplayer.
+ ****************************************************************************/
 
 /****************************************************************************
  * Included Files
  ****************************************************************************/
 
 #include <nuttx/config.h>
-#include <stdint.h>
-#ifndef __ASSEMBLY__
+#include <stdio.h>
 
-/****************************************************************************
- * Public Functions Definitions
- ****************************************************************************/
-
-#ifdef CONFIG_KICKPI_K7_AUDIO
-/****************************************************************************
- * Name: kickpi_k7_audio_initialize
- *
- * Description:
- *   Bring up the on-board ES8388 codec on SAI1/I2C3 and register
- *   /dev/audio/pcm0 (see kickpi_k7_audio.c).
- *
- ****************************************************************************/
+/* Board bring-up entry (boards/rk3576/kickpi-k7/src/kickpi_k7_audio.c). */
 
 int kickpi_k7_audio_initialize(void);
-#endif
 
-#endif /* __ASSEMBLY__ */
-#endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */
+/****************************************************************************
+ * Public Functions
+ ****************************************************************************/
+
+int main(int argc, char *argv[])
+{
+  int ret;
+
+  printf("audiotest: bringing up ES8388 on SAI1 / I2C3 ...\n");
+  ret = kickpi_k7_audio_initialize();
+  printf("audiotest: kickpi_k7_audio_initialize returned %d\n", ret);
+  return ret < 0 ? 1 : 0;
+}

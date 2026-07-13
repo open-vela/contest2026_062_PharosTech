@@ -1,5 +1,5 @@
 ############################################################################
-# boards/arm64/rk3576/kickpi_k7/src/Makefile
+# apps/examples/audiotest/Makefile
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -20,18 +20,13 @@
 #
 ############################################################################
 
-include $(TOPDIR)/Make.defs
+include $(APPDIR)/Make.defs
 
-CSRCS = kickpi_k7_boardinit.c
-CSRCS += kickpi_k7_appinit.c
-CSRCS += kickpi_k7_reset.c
+PROGNAME  = $(CONFIG_EXAMPLES_AUDIOTEST_PROGNAME)
+PRIORITY  = $(CONFIG_EXAMPLES_AUDIOTEST_PRIORITY)
+STACKSIZE = $(CONFIG_EXAMPLES_AUDIOTEST_STACKSIZE)
+MODULE    = $(CONFIG_EXAMPLES_AUDIOTEST)
 
-ifeq ($(CONFIG_KICKPI_K7_AUDIO),y)
-CSRCS += kickpi_k7_audio.c
-endif
+MAINSRC = audiotest_main.c
 
-ifeq ($(CONFIG_ETC_ROMFS),y)
-  RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS
-endif
-
-include $(TOPDIR)/boards/Board.mk
+include $(APPDIR)/Application.mk
