@@ -17,4 +17,8 @@ if(CONFIG_RK3576_I2C)
   list(APPEND SRCS rk3576_i2c.c)
 endif()
 
+if(CONFIG_RK3576_SAI)
+  list(APPEND SRCS rk3576_sai.c)
+endif()
+
 target_sources(arch PRIVATE ${SRCS})
