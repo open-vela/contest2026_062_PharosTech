@@ -37,4 +37,8 @@ if(CONFIG_RK3576_DMA_ALLOC)
   list(APPEND SRCS rk3576_dma_alloc.c)
 endif()
 
+if(CONFIG_RK3576_SAI)
+  list(APPEND SRCS rk3576_sai.c)
+endif()
+
 target_sources(arch PRIVATE ${SRCS})

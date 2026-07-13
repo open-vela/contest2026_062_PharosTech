@@ -144,6 +144,18 @@ config RK3576_DMA
 		Chief consumer is the SAI/I2S audio driver.  Cyclic and
 		scatter/gather transfers are not yet implemented.
 
+config RK3576_SAI
+	bool "SAI (I2S audio, sai-v1)"
+	default n
+	depends on RK3576_DMA
+	select I2S
+	select AUDIO
+	---help---
+		Enable the RK3576 SAI1 I2S audio driver (sai@2a610000, sai-v1), an
+		i2s_dev_s lower-half that streams PCM to/from the SAI FIFO over the
+		PL330 DMA (RK3576_DMA).  I2S master mode; drives an on-board ES8388
+		codec (codec control is over I2C, board-registered separately).
+
 endmenu # Rockchip RK3576 Peripheral Selection
 
 config RK3576_OSC_FREQ

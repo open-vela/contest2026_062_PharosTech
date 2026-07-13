@@ -58,3 +58,7 @@ endif
 ifeq ($(CONFIG_RK3576_DMA_ALLOC),y)
 CHIP_CSRCS += rk3576_dma_alloc.c
 endif
+
+ifeq ($(CONFIG_RK3576_SAI),y)
+CHIP_CSRCS += rk3576_sai.c
+endif
