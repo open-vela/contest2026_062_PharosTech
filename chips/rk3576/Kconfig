@@ -76,3 +76,12 @@ config RK3576_I2C
 endmenu # Rockchip RK3576 Peripheral Selection
 
 endif # ARCH_CHIP_RK3576
+
+config RK3576_USBDEV
+	bool "RK3576 USB OTG0 device controller (DWC3)"
+	default n
+	select USBDEV
+	---help---
+		USB peripheral controller driver for the RK3576 OTG0 port
+		(Synopsys DWC3 at 0x23000000), USB 2.0 high-speed, device
+		mode only.
