@@ -1,0 +1,32 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config EXAMPLES_USBSW
+	tristate "RK3576 USB soft connect/disconnect switch"
+	default n
+		---help---
+		Toggle the OTG0 device controller soft-connect (DCTL.RunStop), so the
+		board can drop off the USB bus without unplugging the cable.
+
+if EXAMPLES_USBSW
+
+config EXAMPLES_USBSW_PROGNAME
+	string "Program name"
+	default "usbsw"
+
+config EXAMPLES_USBSW_PRIORITY
+	int "usbsw task priority"
+	default 100
+
+config EXAMPLES_USBSW_STACKSIZE
+	int "usbsw stack size"
+	default 4096
+
+config EXAMPLES_USBSW_HEAPSIZE
+	int "usbsw heap size"
+	depends on MM_TASK_HEAP
+	default MM_TASK_HEAP_DEFAULT_SIZE
+
+endif
