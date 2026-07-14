@@ -1,16 +1,17 @@
-# KICKPI-K7 板上固件热更新 架构
+# KICKPI-K7 板上固件热更新 架构 (K7 OTA Pro)
 
 > 目标:板上运行的 NuttX 接收新固件 → 写 SD 卡 uboot 槽 → 重启生效。**不拔卡**。
-> 置信:设计(未上板)。写路径(SDMMC 写)改了 DMABEFOREWRITE 待上板验(sd_wr4.img)。
+> Pro 版(2026-07-14): 传输主通道换 **ADB(USB 高速,~3.7MB/s 实测)**,串口 Ymodem 降为备用。
 
 ## 0. 一图
 ```
 PC 端                              板上 (NuttX)
 --------                           -----------------
 build_sd 出 uboot_nuttx.img(FIT)
-  │ 串口 Ymodem (sb / k7_ota.py)
-  └───────────────────────────────► rb 收到 /tmp/fw.img (tmpfs)
-                                       │
+  │ 主: adb push (USB, ~3.7MB/s)
+  │ 备: 串口 Ymodem (rb / 1.5Mbaud)
+  └───────────────────────────────► /tmp/fw.img (tmpfs)
+                                       │ 主: adb shell k7flash  备: 串口触发
                                      k7flash /tmp/fw.img   ← 自研核心
                                        ├ 校验: FIT magic + 大小
                                        ├ 护栏: 目标写死 /dev/mmcsd0 @sector 16384
@@ -18,7 +19,16 @@ build_sd 出 uboot_nuttx.img(FIT)
                                        ├ 读回逐扇区校验
                                        └ boardctl(BOARDIOC_RESET) → PSCI 重启
                                                                      └► 新固件启动
+  刷完若给 --port,自动经串口拉起 adbd → 下一轮 OTA 继续走 ADB(全闭环)。
+
+## 0.1 用法
 ```
+python k7_ota.py --img uboot_nuttx.img                  # ADB 优先,无设备回落 Ymodem(需 --port)
+python k7_ota.py --img uboot_nuttx.img --port COM4      # 同上 + 刷完自动拉 adbd
+python k7_ota.py --img uboot_nuttx.img --port COM4 --ymodem   # 强制串口 Ymodem
+```
+坑(实测): 走 Ymodem 时板上 USB 必须下线——host 的 CDC/ADB 控制请求日志会搅坏
+传输;工具已自动 `usbsw off` + PC 侧 `adb kill-server`。
 
 ## 1. 分层与复用
 | 层 | 用什么 | 状态 |
