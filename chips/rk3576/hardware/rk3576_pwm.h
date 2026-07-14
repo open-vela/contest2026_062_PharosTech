@@ -86,17 +86,26 @@
 
 /* PWM_CLK_CTRL (0x08) ************************************************/
 
-#define PWM_CLK_PRESCALE_SHIFT  0         /* [2:0]  input /= 2^prescale  */
-#define PWM_CLK_SCALE_SHIFT     4         /* [12:4] then /= 2*scale      */
-#define PWM_CLK_SRC_SEL_SHIFT   13        /* [14:13] 0=PLL 1=osc 2=RC    */
-#define PWM_CLK_SRC_OSC         1
+#define PWM_CLK_PRESCALE_MASK   0x0007  /* [2:0]  input /= 2^prescale  */
+#define PWM_CLK_PRESCALE_SHIFT  0
+
+#define PWM_CLK_SCALE_MASK      0x1ff0  /* [12:4] then /= 2*scale      */  
+#define PWM_CLK_SCALE_SHIFT     4
+
+#define PWM_CLK_SRC_SEL_MASK    0x6000 /* [14:13] 0=PLL 1=osc 2=RC    */
+#define PWM_CLK_SRC_SEL_SHIFT   13
+# define PWM_CLK_SRC_SEL_CLK       (0 << PWM_CLK_SRC_SEL_SHIFT)
+# define PWM_CLK_SRC_SEL_CLK_OSC   (1 << PWM_CLK_SRC_SEL_SHIFT)
+# define PWM_CLK_SRC_SEL_CLK_RC    (2 << PWM_CLK_SRC_SEL_SHIFT)
 
 /* PWM_CTRL (0x0c) ***************************************************/
 
-#define PWM_CTRL_MODE_MASK       (0b11 << 0) /* bit mask, not a mode */
-#define PWM_CTRL_MODE_ONESHOT    (0b00 << 0)
-#define PWM_CTRL_MODE_CONTINUOUS (0b01 << 0)
-#define PWM_CTRL_MODE_CAPTURE    (0b10 << 0)
+#define PWM_CTRL_MODE_MASK        0x0003 /* [1:0]*/
+#define PWM_CTRL_MODE_SHIFT       0
+# define PWM_CTRL_MODE_ONESHOT    (0b00 << PWM_CTRL_MODE_SHIFT)
+# define PWM_CTRL_MODE_CONTINUOUS (0b01 << PWM_CTRL_MODE_SHIFT)
+# define PWM_CTRL_MODE_CAPTURE    (0b10 << PWM_CTRL_MODE_SHIFT)
+
 #define PWM_CTRL_DUTY_POL        (1 << 2)  /* duty-cycle output polarity  */
 #define PWM_CTRL_INACTIVE_POL    (1 << 3)  /* inactive output polarity    */
 #define PWM_CTRL_OUTPUT_MODE     (1 << 4)  /* 0=left-aligned 1=center-aligned */

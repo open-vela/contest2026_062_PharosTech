@@ -55,11 +55,6 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Counting clock = osc (24 MHz) with prescale = 0 (/1) and scale = 1 (/2). */
-
-#define RK3576_PWM_SCALE        1
-#define RK3576_PWM_CLK_HZ       (RK3576_PWM_OSC_HZ / (2 * RK3576_PWM_SCALE))
-
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -173,6 +168,13 @@ static int rk3576_pwm_setup(struct pwm_lowerhalf_s *dev)
   /* Ungate pclk + osc_clk for this controller via the CRU driver.
    * PLL clock (clk_pwm) and RC clock are left gated — only the 24 MHz
    * oscillator is used as the counting-clock source.
+   *
+   * The clock divisor (prescale/scale) is computed per-start in
+   * rk3576_pwm_start() based on the requested frequency.
+   */
+
+  /* TODO: don't use hard-coded clock sel
+   * allow users to select clock
    */
 
   rk3576_cru_set_pwm_clock_gate(priv->ctrl,
@@ -180,12 +182,6 @@ static int rk3576_pwm_setup(struct pwm_lowerhalf_s *dev)
                                 false, /* clk_pwm */
                                 false, /* rc_clk  */
                                 true); /* osc_clk */
-
-  /* Clock control: oscillator source, prescale = 0, scale = 1 (-> 12 MHz). */
-
-  rk3576_pwm_putreg(priv, RK3576_PWM_CLK_CTRL,
-                    PWM_HIWORD((PWM_CLK_SRC_OSC << PWM_CLK_SRC_SEL_SHIFT) |
-                               (RK3576_PWM_SCALE << PWM_CLK_SCALE_SHIFT)));
 
   pwminfo("PWM%u setup base=%08" PRIxPTR " version=%08" PRIx32 "\n",
           priv->ctrl, priv->base,
@@ -203,6 +199,129 @@ static int rk3576_pwm_shutdown(struct pwm_lowerhalf_s *dev)
 }
 
 /****************************************************************************
+ * Name: _pwm_auto_scale
+ *
+ * Description:
+ *   Find the (prescale, scale, period) combination that best approximates
+ *   the target output frequency for a given input clock.
+ *
+ *   The PWM counting clock is derived as:
+ *
+ *     f_cnt = f_clk / (2^prescale * 2 * scale)          (1)
+ *
+ *   and the output waveform frequency is:
+ *
+ *     f_target = f_cnt / period                         (2)
+ *
+ *   Substituting (1) into (2) and rearranging gives the error term
+ *   minimised by this function:
+ *
+ *     |f_clk - f_target * 2^(prescale+1) * scale * period|
+ *
+ *   The search iterates over all valid (prescale, scale) pairs — from
+ *   the fastest clock (prescale=0, scale=1) to the slowest — and picks
+ *   the combination whose rounded period yields the smallest absolute
+ *   frequency error.  Because the outer loop starts at the fastest clock
+ *   and diff is strictly decreasing, ties are broken in favour of higher
+ *   counting-clock resolution, which gives better duty-cycle accuracy.
+ *
+ * Input Parameters:
+ *   target_freq     - Desired PWM output frequency in Hz.
+ *   clk_freq        - Input clock frequency before the pre-scaler (Hz).
+ *   p_best_prescale - [out] Optimal prescale value (0..7).
+ *   p_best_scale    - [out] Optimal scale value (1..256).
+ *   p_best_period   - [out] Optimal PWM_PERIOD register value.
+ *
+ * Returned Value:
+ *   OK on success; -ERANGE if no valid configuration exists.
+ *
+ ****************************************************************************/
+static int _pwm_auto_scale(
+  uint32_t target_freq, 
+  uint32_t clk_freq,
+  uint32_t *p_best_prescale,
+  uint32_t *p_best_scale,
+  uint32_t *p_best_period
+)
+{
+  uint32_t best_period, best_scale, best_prescale;
+  bool best_valid = false;
+  uint64_t best_diff = UINT64_MAX;
+  const uint64_t max_period = 0xFFFFFFFFu;
+
+  if (target_freq == 0 || clk_freq == 0)
+    {
+      goto out_of_range;
+    }
+
+  for (uint8_t pre = 0; pre <= 7; pre++) 
+    {
+      uint32_t shift = (1u << (pre + 1));
+      for (uint32_t sc = 1; sc <= 256; sc++)
+        {
+          uint64_t div = (uint64_t)shift * sc;
+          uint64_t denom = (uint64_t)target_freq * div;
+          if (denom == 0) 
+            {
+              continue;
+            }
+
+          uint64_t per = (uint64_t)clk_freq / denom;
+
+          /* Check candidates: per and per+1.
+           * per directly represents the PWM_PERIOD register value,
+           * i.e. the number of counting-clock ticks per output cycle. */
+          for (int adj = 0; adj <= 1; adj++) 
+            {
+              uint64_t per_cand = per + adj;
+              if (per_cand < 1 || per_cand > max_period)
+                {
+                  continue;
+                }
+
+              uint64_t actual = (uint64_t)target_freq * div * per_cand;
+              uint64_t diff = (clk_freq > actual) ? 
+                              (clk_freq - actual) : (actual - clk_freq);
+              if (diff < best_diff) 
+                {
+                  best_diff = diff;
+                  best_period   = (uint32_t)per_cand;
+                  best_scale    = (uint8_t)sc;
+                  best_prescale = pre;
+                  best_valid    = true;
+                }
+            }
+        }
+    }
+
+  if (!best_valid)
+    {
+      out_of_range:
+      pwmerr("Unable to generate pwm freq %u with pwm clock freq %u",
+             target_freq, clk_freq);
+      return -ERANGE;
+    }
+  
+
+  if (p_best_prescale)
+    {
+      *p_best_prescale = best_prescale;
+    }
+
+  if (p_best_scale)
+    {
+      *p_best_scale = best_scale;
+    }
+  
+  if (p_best_period)
+    {
+      *p_best_period = best_period;
+    }
+
+  return OK;
+}
+
+/****************************************************************************
  * Name: rk3576_pwm_start
  *
  * Description:
@@ -215,34 +334,43 @@ static int rk3576_pwm_start(struct pwm_lowerhalf_s *dev,
                             const struct pwm_info_s *info)
 {
   struct rk3576_pwm_s *priv = (struct rk3576_pwm_s *)dev;
-  uint32_t period;
-  uint32_t duty;
+  uint32_t prescale, scale, period, duty;
+  uint32_t clk_ctrl_reg_bits = 0;
 
-  if (info->frequency == 0)
+  int ret = _pwm_auto_scale(
+    info->frequency, RK3576_PWM_OSC_HZ,
+    &prescale, &scale, &period
+  );
+  if (ret < 0)
     {
-      return -EINVAL;
-    }
-
-  period = RK3576_PWM_CLK_HZ / info->frequency;
-  if (period < 2)
-    {
-      pwmerr("ERROR: frequency %" PRIu32 " too high for %u Hz clock\n",
-             info->frequency, RK3576_PWM_CLK_HZ);
-      return -ERANGE;
+      return ret;
     }
 
   duty = (uint32_t)(((uint64_t)period * info->duty) >> 16);
 
-  /* Step 1 (TRM §34.6.3): Disable the channel before reconfiguration.
-   * Clear pwm_en + clk_en.  Skip this if the channel hasn't been started
-   * yet (the initial state after setup already has pwm_en=0).
-   */
+  /* Step 1 (TRM §34.6.3): Disable the channel before reconfiguration. */
 
   if (priv->started)
     {
       rk3576_pwm_putreg(priv, RK3576_PWM_ENABLE,
                         PWM_HIWORD_CLR(PWM_ENABLE_EN | PWM_ENABLE_CLK_EN));
     }
+
+  /* Step 2: Program clock divisor.  */
+
+  clk_ctrl_reg_bits |= (prescale << PWM_CLK_PRESCALE_SHIFT);
+  clk_ctrl_reg_bits |= (PWM_CLK_PRESCALE_MASK << 16);
+
+  clk_ctrl_reg_bits |= (scale << PWM_CLK_SCALE_SHIFT);
+  clk_ctrl_reg_bits |= (PWM_CLK_SCALE_MASK << 16);
+
+  /* TODO: don't use hard-coded clock sel
+   * allow users to select clock
+   */
+  clk_ctrl_reg_bits |= PWM_CLK_SRC_SEL_CLK_OSC;
+  clk_ctrl_reg_bits |= (PWM_CLK_SRC_SEL_MASK << 16);
+
+  rk3576_pwm_putreg(priv, RK3576_PWM_CLK_CTRL, clk_ctrl_reg_bits);
 
   /* Step 3: Select output mode (left-aligned), duty polarity (active-
    * high), and inactive polarity (active-low — safe default for most
