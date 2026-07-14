@@ -93,13 +93,44 @@
 
 /* PWM_CTRL (0x0c) ***************************************************/
 
-#define PWM_CTRL_MODE_SHIFT     0         /* [1:0]                       */
-#define PWM_CTRL_MODE_ONESHOT   0
-#define PWM_CTRL_MODE_CONTINUOUS 1
-#define PWM_CTRL_DUTY_POL       (1 << 2)  /* duty-cycle output polarity  */
-#define PWM_CTRL_INACTIVE_POL   (1 << 3)  /* inactive output polarity    */
+#define PWM_CTRL_MODE_MASK       (0b11 << 0) /* bit mask, not a mode */
+#define PWM_CTRL_MODE_ONESHOT    (0b00 << 0)
+#define PWM_CTRL_MODE_CONTINUOUS (0b01 << 0)
+#define PWM_CTRL_MODE_CAPTURE    (0b10 << 0)
+#define PWM_CTRL_DUTY_POL        (1 << 2)  /* duty-cycle output polarity  */
+#define PWM_CTRL_INACTIVE_POL    (1 << 3)  /* inactive output polarity    */
+#define PWM_CTRL_OUTPUT_MODE     (1 << 4)  /* 0=left-aligned 1=center-aligned */
+#define PWM_CTRL_ALIGNED_VLD     (1 << 5)  /* 0=aligned valid 1=invalid   */
+#define PWM_CTRL_PWM_IN_SEL_SHIFT 6       /* [8:6] input channel select  */
 
-/* HIWORD write helper: set the given low-16 bits with their write mask. */
+/* HIWORD write helper: the upper 16 bits are a per-bit write-enable mask
+ * for the lower 16 bits.  Three usage patterns:
+ *
+ *   1) PWM_HIWORD(bits)
+ *      Set bits.  Lower 16 bits = value to set, upper 16 bits = mask
+ *      (copied from lower).  Only bits that are 1 in BOTH halves are
+ *      touched — a 0 in the lower half means that bit is left alone.
+ *
+ *   2) PWM_HIWORD_CLR(bits)
+ *      Clear bits.  Upper 16 bits = mask, lower 16 bits = 0.
+ *      Every bit whose mask bit is 1 gets cleared to 0.
+ *
+ *   3) PWM_HIWORD(set_bits) | PWM_HIWORD_CLR(clr_bits)
+ *      Set some bits while clearing others in a single write.
+ *      The set_bits and clr_bits must not overlap — they target
+ *      different bit positions.
+ *
+ * WARNING: PWM_HIWORD(bits) copies the low 16 bits verbatim into the
+ * upper 16-bit write-enable mask.  If any target bit in 'bits' is 0,
+ * the corresponding mask bit is also 0 — meaning the hardware will NOT
+ * touch that bit, and a previously-set '1' cannot be cleared.
+ *
+ * To safely update a multi-bit field that may contain zero-valued bits
+ * (e.g. mode select, clock source), use pattern (3) to clear the field
+ * mask first, then set the desired value:
+ *
+ *   PWM_HIWORD(value) | PWM_HIWORD_CLR(field_mask)
+ */
 
 #define PWM_HIWORD(bits)        (((uint32_t)(bits) << 16) | (uint32_t)(bits))
 #define PWM_HIWORD_CLR(bits)    ((uint32_t)(bits) << 16)

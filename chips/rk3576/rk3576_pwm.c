@@ -233,21 +233,60 @@ static int rk3576_pwm_start(struct pwm_lowerhalf_s *dev,
 
   duty = (uint32_t)(((uint64_t)period * info->duty) >> 16);
 
-  /* Program period/duty, select continuous mode (active-high output), then
-   * enable the clock + channel and latch the new settings (ctrl_update).
+  /* Step 1 (TRM §34.6.3): Disable the channel before reconfiguration.
+   * Clear pwm_en + clk_en.  Skip this if the channel hasn't been started
+   * yet (the initial state after setup already has pwm_en=0).
    */
+
+  if (priv->started)
+    {
+      rk3576_pwm_putreg(priv, RK3576_PWM_ENABLE,
+                        PWM_HIWORD_CLR(PWM_ENABLE_EN | PWM_ENABLE_CLK_EN));
+    }
+
+  /* Step 3: Select output mode (left-aligned), duty polarity (active-
+   * high), and inactive polarity (active-low — safe default for most
+   * peripherals).  pwm_mode is not set here — that comes in step 6.
+   *
+   * Explicitly clear output_mode, aligned_vld_n and mode bits rather
+   * than relying on reset values, so the channel is forced back to
+   * left-aligned mode after stop/start cycles.
+   */
+
+  rk3576_pwm_putreg(priv, RK3576_PWM_CTRL,
+    PWM_HIWORD(
+      PWM_CTRL_DUTY_POL | 
+      PWM_CTRL_INACTIVE_POL
+    ) | 
+    PWM_HIWORD_CLR(
+      PWM_CTRL_OUTPUT_MODE | 
+      PWM_CTRL_ALIGNED_VLD |
+      PWM_CTRL_MODE_MASK
+    )
+  );
+
+  /* Step 4: Write period and duty registers. */
 
   rk3576_pwm_putreg(priv, RK3576_PWM_PERIOD, period);
   rk3576_pwm_putreg(priv, RK3576_PWM_DUTY, duty);
-  rk3576_pwm_putreg(priv, RK3576_PWM_CTRL,
-                    PWM_HIWORD(PWM_CTRL_MODE_CONTINUOUS | PWM_CTRL_DUTY_POL));
+
+  /* Step 5: rpt_first_dimensional — not used (no reload support). */
+
+  /* Step 6: Select continuous mode. */
+
+  rk3576_pwm_putreg(priv, RK3576_PWM_CTRL, 
+    PWM_CTRL_MODE_CONTINUOUS | (PWM_CTRL_MODE_MASK << 16)
+  );
+
+  /* Step 7: Enable clock and channel together.  CTRL_UPDATE is a W1T
+   * pulse (auto-cleared) and MUST be set in a separate write AFTER
+   * pwm_en/clk_en, per the TRM standard flow.
+   */
+
   rk3576_pwm_putreg(priv, RK3576_PWM_ENABLE,
-                    PWM_HIWORD(PWM_ENABLE_CLK_EN | PWM_ENABLE_EN |
-                               PWM_ENABLE_CTRL_UPDATE));
+                    PWM_HIWORD(PWM_ENABLE_CLK_EN | PWM_ENABLE_EN));
 
   priv->started = true;
-  pwminfo("start freq=%" PRIu32 " duty=%04x period=%" PRIu32 " dutyc=%"
-          PRIu32 "\n", info->frequency, info->duty, period, duty);
   return OK;
 }
 
@@ -259,7 +298,9 @@ static int rk3576_pwm_stop(struct pwm_lowerhalf_s *dev)
 {
   struct rk3576_pwm_s *priv = (struct rk3576_pwm_s *)dev;
 
-  /* Clear pwm_en + clk_en (leaves the output at the inactive polarity). */
+  /* TRM §34.6.3 step 9: Clear pwm_en + clk_en to disable the channel.
+   * The output reverts to the inactive polarity (PWM_CTRL.inactive_pol).
+   */
 
   rk3576_pwm_putreg(priv, RK3576_PWM_ENABLE,
                     PWM_HIWORD_CLR(PWM_ENABLE_EN | PWM_ENABLE_CLK_EN));
