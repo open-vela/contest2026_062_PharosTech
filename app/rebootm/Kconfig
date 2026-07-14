@@ -1,0 +1,33 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config EXAMPLES_REBOOTM
+	tristate "RK3576 reboot-mode utility (rockusb loader entry)"
+	default n
+	depends on BOARDCTL_RESET
+	---help---
+		Write the Rockchip boot-mode magic into the PMU0_GRF OS register and
+		reboot, so the loader enters the rockusb USB download mode.
+
+if EXAMPLES_REBOOTM
+
+config EXAMPLES_REBOOTM_PROGNAME
+	string "Program name"
+	default "rebootm"
+
+config EXAMPLES_REBOOTM_PRIORITY
+	int "rebootm task priority"
+	default 100
+
+config EXAMPLES_REBOOTM_STACKSIZE
+	int "rebootm stack size"
+	default 4096
+
+config EXAMPLES_REBOOTM_HEAPSIZE
+	int "rebootm heap size"
+	depends on MM_TASK_HEAP
+	default MM_TASK_HEAP_DEFAULT_SIZE
+
+endif

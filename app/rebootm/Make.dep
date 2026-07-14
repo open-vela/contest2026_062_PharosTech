@@ -1,0 +1,50 @@
+# Gen Make.dep automatically
+rebootm_main.c.root.openvela.src.vela.apps.examples.rebootm.o: \
+ rebootm_main.c /root/openvela/src/vela/nuttx/include/nuttx/config.h \
+ /root/openvela/src/vela/nuttx/include/stdint.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/compiler.h \
+ /root/openvela/src/vela/nuttx/include/arch/types.h \
+ /root/openvela/src/vela/nuttx/include/arch/inttypes.h \
+ /root/openvela/src/vela/nuttx/include/limits.h \
+ /root/openvela/src/vela/nuttx/include/arch/limits.h \
+ /root/openvela/src/vela/nuttx/include/stdio.h \
+ /root/openvela/src/vela/nuttx/include/sys/types.h \
+ /root/openvela/src/vela/prebuilts/gcc/linux-x86_64/aarch64-none-elf/lib/gcc/aarch64-none-elf/13.4.0/include/stdarg.h \
+ /root/openvela/src/vela/nuttx/include/time.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/fs/fs.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/fs/ioctl.h \
+ /root/openvela/src/vela/nuttx/include/stdbool.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/serial/tioctl.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/fs/uio.h \
+ /root/openvela/src/vela/nuttx/include/sys/uio.h \
+ /root/openvela/src/vela/nuttx/include/dirent.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/mm/map.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/queue.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/mutex_type.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/semaphore_type.h \
+ /root/openvela/src/vela/nuttx/include/errno.h \
+ /root/openvela/src/vela/nuttx/include/semaphore.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/mm/gran.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/spawn.h \
+ /root/openvela/src/vela/nuttx/include/spawn.h \
+ /root/openvela/src/vela/nuttx/include/sched.h \
+ /root/openvela/src/vela/nuttx/include/strings.h \
+ /root/openvela/src/vela/nuttx/include/string.h \
+ /root/openvela/src/vela/nuttx/include/stddef.h \
+ /root/openvela/src/vela/nuttx/include/alloca.h \
+ /root/openvela/src/vela/nuttx/include/signal.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/irq.h \
+ /root/openvela/src/vela/nuttx/include/arch/irq.h \
+ /root/openvela/src/vela/nuttx/include/arch/syscall.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/percpu.h \
+ /root/openvela/src/vela/nuttx/include/arch/arch.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/macro.h \
+ /root/openvela/src/vela/nuttx/include/arch/barriers.h \
+ /root/openvela/src/vela/nuttx/include/arch/chip/irq.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/spinlock_type.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/atomic.h \
+ /root/openvela/src/vela/nuttx/include/nuttx/lib/lib.h \
+ /root/openvela/src/vela/nuttx/include/stdlib.h \
+ /root/openvela/src/vela/nuttx/include/sys/boardctl.h
+# No files specified for dependency generation
+# No files specified for dependency generation
