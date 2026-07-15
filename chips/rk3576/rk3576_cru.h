@@ -43,9 +43,9 @@
  * Public Types
  ****************************************************************************/
 
-typedef enum
-{
-  RK3576_CLOCK_SOURCE_XIN_OSC0_FUNC = 0x000,
+typedef enum {
+  RK3576_CLOCK_SOURCE_INVALID = 0x000,
+  RK3576_CLOCK_SOURCE_XIN_OSC0_FUNC,
 
   RK3576_CLOCK_SOURCE_GPLL_MUX = 0x100,
   RK3576_CLOCK_SOURCE_GPLL_DIV2_SRC,
@@ -157,6 +157,51 @@ int rk3576_cru_set_i2c_clock_gate(uint16_t i2c_bus_id, bool pclk_en,
 
 int rk3576_cru_get_i2c_clock_gate(uint16_t i2c_bus_id, bool *p_pclk_en,
                                   bool *p_clk_en);
+
+/****************************************************************************
+ * Name: rk3576_cru_set_pwm_clock_selection
+ *
+ * Description:
+ *   Program the clock source selection for a given PWM controller.
+ *
+ * Input Parameters:
+ *   pwm_controller_id - PWM controller index (0 ~ 2).
+ *   sel               - Desired clock source, one of:
+ *                       RK3576_CLOCK_SOURCE_CPLL_DIV10_SRC (00b)
+ *                       RK3576_CLOCK_SOURCE_CPLL_DIV20_SRC (01b)
+ *                       RK3576_CLOCK_SOURCE_XIN_OSC0_FUNC  (10b)
+ *
+ * Returned Value:
+ *   OK (0) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int rk3576_cru_set_pwm_clock_selection(
+  uint16_t pwm_controller_id, 
+  rk3576_clock_source_t sel
+);
+
+/****************************************************************************
+ * Name: rk3576_cru_get_pwm_clock_selection
+ *
+ * Description:
+ *   Read back the currently configured clock source selection for a given
+ *   PWM controller.
+ *
+ * Input Parameters:
+ *   pwm_controller_id - PWM controller index (0 ~ 2).
+ *   p_sel             - [out] Receives the current clock source selection.
+ *                       May be NULL.
+ *
+ * Returned Value:
+ *   OK (0) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int rk3576_cru_get_pwm_clock_selection(
+  uint16_t pwm_controller_id, 
+  rk3576_clock_source_t *p_sel
+);
 
 /****************************************************************************
  * Name: rk3576_cru_set_pwm_clock_gate

@@ -277,6 +277,74 @@ static int _get_i2c_clock_sel_register(uint16_t i2c_bus_id,
 }
 
 /****************************************************************************
+ * Name: _get_pwm_clock_sel_reg
+ *
+ * Description:
+ *   Resolve the CRU clock source selection register address and bit-offset
+ *   for a given PWM controller.  Each PWM controller has a 2-bit field in
+ *   the CLKSEL_CON registers that selects among three possible clock
+ *   sources (CPLL/10, CPLL/20, or XIN_OSC0).
+ *
+ *   PWM0 lives in the PMU1 CRU power domain (PMU1CRU_CLKSEL_CON(5)).
+ *   PWM1 uses CLKSEL_CON(71), PWM2 uses CLKSEL_CON(74).
+ *
+ * Input Parameters:
+ *   pwm_controller_id - PWM controller index (0 ~ 2).  Out-of-range
+ *                        returns -EINVAL.
+ *   p_sel_reg         - [out] Absolute address of the clock selection
+ *                        register.  May be NULL.
+ *   p_sel_offset      - [out] Bit position of the 2-bit selector field
+ *                        within the register.  May be NULL.
+ *
+ * Returned Value:
+ *   OK (0) on success; -EINVAL if the PWM controller ID is not recognized.
+ *
+ ****************************************************************************/
+
+static int _get_pwm_clock_sel_reg(
+  uint16_t pwm_controller_id,
+  unsigned long *p_sel_reg,
+  uint8_t *p_sel_offset
+)
+{
+  unsigned long base = RK3576_CRU_ADDR;
+  unsigned long sel_reg_offset;
+  uint8_t sel_offset;
+
+  switch (pwm_controller_id)
+    {
+      case 0:
+        base = RK3576_PMU1_CRU_ADDR;
+        sel_reg_offset = RK3576_PMU1CRU_CLKSEL_CON(5);
+        sel_offset = 2;
+        break;
+      case 1:
+        sel_reg_offset = RK3576_CRU_CLKSEL_CON(71);
+        sel_offset = 8;
+        break;
+      case 2:
+        sel_reg_offset = RK3576_CRU_CLKSEL_CON(74);
+        sel_offset = 6;
+        break;
+      default:
+        _err("CRU: Invalid pwm controller id %u", pwm_controller_id);
+        return -EINVAL;
+    }
+
+  if (p_sel_reg)
+    {
+      *p_sel_reg = sel_reg_offset + base;
+    }
+  
+  if (p_sel_offset)
+    {
+      *p_sel_offset = sel_offset;
+    }
+
+  return OK;
+}
+
+/****************************************************************************
  * Name: _get_pwm_clock_gate_reg
  *
  * Description:
@@ -503,6 +571,9 @@ int rk3576_cru_get_i2c_clock_selection(uint16_t i2c_bus_id,
       case 0b11:
         sel = RK3576_CLOCK_SOURCE_XIN_OSC0_FUNC;
         break;
+      default:
+        sel = RK3576_CLOCK_SOURCE_INVALID;
+        break;
     }
 
   if (p_sel)
@@ -611,6 +682,132 @@ int rk3576_cru_get_i2c_clock_gate(uint16_t i2c_bus_id, bool *p_pclk_en,
   if (p_clk_en)
     {
       *p_clk_en = (getreg32(clk_reg) & (1 << clk_offset)) == 0;
+    }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_cru_set_pwm_clock_selection
+ *
+ * Description:
+ *   Program the clock source selection for a given PWM controller.
+ *
+ * Input Parameters:
+ *   pwm_controller_id - PWM controller index (0 ~ 2).
+ *   sel               - Desired clock source, one of:
+ *                       RK3576_CLOCK_SOURCE_CPLL_DIV10_SRC (00b)
+ *                       RK3576_CLOCK_SOURCE_CPLL_DIV20_SRC (01b)
+ *                       RK3576_CLOCK_SOURCE_XIN_OSC0_FUNC  (10b)
+ *
+ * Returned Value:
+ *   OK (0) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int rk3576_cru_set_pwm_clock_selection(
+  uint16_t pwm_controller_id, 
+  rk3576_clock_source_t sel
+)
+{
+  unsigned long sel_reg;
+  uint8_t sel_offset;
+  uint32_t sel_bits;
+
+  int ret = _get_pwm_clock_sel_reg(
+    pwm_controller_id,
+    &sel_reg,
+    &sel_offset
+  );
+
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  switch (sel)
+    {
+      case RK3576_CLOCK_SOURCE_CPLL_DIV10_SRC:
+        sel_bits = 0b00;
+        break;
+      case RK3576_CLOCK_SOURCE_CPLL_DIV20_SRC:
+        sel_bits = 0b01;
+        break;
+      case RK3576_CLOCK_SOURCE_XIN_OSC0_FUNC:
+        sel_bits = 0b10;
+        break;
+      default:
+        _err("CRU: Invalid pwm clock selection %u", sel);
+        return -EINVAL;
+    }
+  
+  sel_bits <<= sel_offset;
+  sel_bits |= (0b11 << (16 + sel_offset)); /* WE bits */
+
+  putreg32(sel_bits, sel_reg);
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_cru_get_pwm_clock_selection
+ *
+ * Description:
+ *   Read back the currently configured clock source selection for a given
+ *   PWM controller.
+ *
+ * Input Parameters:
+ *   pwm_controller_id - PWM controller index (0 ~ 2).
+ *   p_sel             - [out] Receives the current clock source selection.
+ *                       May be NULL.
+ *
+ * Returned Value:
+ *   OK (0) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int rk3576_cru_get_pwm_clock_selection(
+  uint16_t pwm_controller_id, 
+  rk3576_clock_source_t *p_sel
+)
+{
+  unsigned long sel_reg;
+  uint8_t sel_offset;
+  uint32_t sel_bits;
+  rk3576_clock_source_t sel;
+
+  int ret = _get_pwm_clock_sel_reg(
+    pwm_controller_id,
+    &sel_reg,
+    &sel_offset
+  );
+
+  if (ret < 0)
+    {
+      return ret;
+    }
+  
+  sel_bits = (getreg32(sel_reg) >> sel_offset) & 0b11;
+
+  switch (sel_bits)
+    {
+      case 0b00:
+        sel = RK3576_CLOCK_SOURCE_CPLL_DIV10_SRC;
+        break;
+      case 0b01:
+        sel = RK3576_CLOCK_SOURCE_CPLL_DIV20_SRC;
+        break;
+      case 0b10:
+        sel = RK3576_CLOCK_SOURCE_XIN_OSC0_FUNC;
+        break;
+      default:
+        sel = RK3576_CLOCK_SOURCE_INVALID;
+        break;
+    }
+
+  if (p_sel)
+    {
+      *p_sel = sel;
     }
 
   return OK;
