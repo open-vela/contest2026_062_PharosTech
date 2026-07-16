@@ -1,0 +1,26 @@
+name: clang-format-check
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  push:
+    branches:
+      - dev-ai-contest-2026
+
+jobs:
+  clang-format-check:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:12
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y clang-format-14 git
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run clang-format check
+        run: |
+          ./tools/format.sh --check
