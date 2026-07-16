@@ -1,0 +1,45 @@
+BasedOnStyle: GNU
+
+# align macros
+AlignConsecutiveMacros: AcrossEmptyLines
+
+# align backslash
+AlignEscapedNewlines: Left
+
+# extend from GNU style
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel:  true
+  AfterClass:      true
+  AfterControlStatement: Always
+  AfterEnum:       true
+  AfterFunction:   true
+  AfterNamespace:  true
+  AfterObjCDeclaration: true
+  AfterStruct:     true
+  AfterUnion:      true
+  AfterExternBlock: true
+  BeforeCatch:     true
+  BeforeElse:      true
+  BeforeLambdaBody: false
+  BeforeWhile:     true
+  IndentBraces:    true
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+  SplitEmptyNamespace: true
+
+  # no indent in extern "C"
+  AfterExternBlock: false
+
+# indent before case label
+IndentCaseLabels: true
+
+# do not add space between function name and parens
+SpaceBeforeParens: ControlStatements
+
+# do not break after return type
+AlwaysBreakAfterReturnType: None
+AlwaysBreakAfterDefinitionReturnType: None
+
+# biop on end of line
+BreakBeforeBinaryOperators: None
