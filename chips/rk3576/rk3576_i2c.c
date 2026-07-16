@@ -191,237 +191,263 @@ static int rk3576_i2c_poll(struct rk3576_i2c_priv_s *priv, uint32_t mask)
 }
 
 /****************************************************************************
- * Name: rk3576_i2c_write_chunk
+ * Name: rk3576_i2c_tx
  *
  * Description:
- *   Transmit len payload bytes.  The first chunk includes START + device
- *   address; subsequent chunks are pure data (no START, no address) and
- *   ride on the same I2C transaction.
+ *   Handle tx.
+ *   Returns OK on success, negated errno on failure.
+ *
  ****************************************************************************/
 
-static int rk3576_i2c_write_chunk(struct rk3576_i2c_priv_s *priv,
-                                  uint16_t addr, FAR const uint8_t *buf,
-                                  uint32_t len, bool first)
+static int rk3576_i2c_tx(struct rk3576_i2c_priv_s *priv,
+                         struct i2c_msg_s *p_msg)
 {
-  uint32_t fifo[8] = { 0 };
-  uint32_t total;
-  uint32_t i;
+  int ret;
+  const uint32_t length = (uint32_t)p_msg->length;
+  uint32_t remaining = length;
 
-  if (first)
-    {
-      /* First chunk: address byte + len payload bytes */
+  /* first byte initiallized with device addr */
+  uint8_t tx_byte_cnt = 1;
+  uint32_t pack = (p_msg->addr << 1) << 0;
+  uint8_t byte_offset;
 
-      total = len + 1;
-      DEBUGASSERT(total <= RK3576_I2C_FIFO_BYTES && len > 0);
+  /* enable i2c and start tx */
 
-      fifo[0] = (uint32_t)(addr << 1); /* addr | W */
-      for (i = 0; i < len; i++)
-        {
-          fifo[(i + 1) >> 2] |= (uint32_t)buf[i] << (((i + 1) & 3) * 8);
-        }
-    }
-  else
-    {
-      /* Subsequent chunk: pure data, no address byte */
-
-      total = len;
-      DEBUGASSERT(total <= RK3576_I2C_FIFO_BYTES && len > 0);
-
-      for (i = 0; i < len; i++)
-        {
-          fifo[i >> 2] |= (uint32_t)buf[i] << ((i & 3) * 8);
-        }
-    }
-
-  for (i = 0; i < ((total + 3) >> 2); i++)
-    {
-      i2c_putreg(priv, RK3576_I2C_TXDATA0 + i * 4, fifo[i]);
-    }
-
-  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
   i2c_putreg(priv, RK3576_I2C_CON,
-             RK3576_I2C_CON_EN | (first ? RK3576_I2C_CON_START : 0) |
+             RK3576_I2C_CON_EN | RK3576_I2C_CON_START |
+                 /* stop tx if NACK received */
+                 RK3576_I2C_CON_ACT_TO_NAK |
+                 /* tx-only mode */
                  RK3576_I2C_CON_MODE_TX);
-  i2c_putreg(priv, RK3576_I2C_MTXCNT, total);
 
-  return rk3576_i2c_poll(priv, RK3576_I2C_INT_MBTF);
-}
-
-/****************************************************************************
- * Name: rk3576_i2c_write_msg
- *
- * Description:
- *   Transmit msg->buffer bytes.  If the payload exceeds the 32-byte FIFO
- *   the transfer is split into chunks internally; all but the first chunk
- *   use a repeated START without STOP.
- ****************************************************************************/
-
-static int rk3576_i2c_write_msg(struct rk3576_i2c_priv_s *priv,
-                                struct i2c_msg_s *msg)
-{
-  uint32_t remaining = (uint32_t)msg->length;
-  uint32_t offset = 0;
-  bool first = true;
-  int ret;
-
-  if (remaining == 0)
-    {
-      return -EINVAL;
-    }
-
-  while (remaining > 0)
-    {
-      uint32_t limit =
-          first ? (RK3576_I2C_FIFO_BYTES - 1) : RK3576_I2C_FIFO_BYTES;
-      uint32_t chunk = remaining;
-
-      if (chunk > limit)
-        {
-          chunk = limit;
-        }
-
-      ret = rk3576_i2c_write_chunk(priv, msg->addr, msg->buffer + offset,
-                                   chunk, first);
-      if (ret < 0)
-        {
-          i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
-          return ret;
-        }
-
-      i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
-      first = false;
-      remaining -= chunk;
-      offset += chunk;
-    }
-
-  return OK;
-}
-
-/****************************************************************************
- * Name: rk3576_i2c_read_chunk
- *
- * Description:
- *   Receive a chunk of up to 32 bytes.  The first chunk uses TRX mode
- *   (START + MRXADDR + MRXRADDR + restart + receive).  Subsequent chunks
- *   switch to RX-only mode and continue receiving without a new START or
- *   address, as documented in TRM §32.6 Fig.32-8 (mix mode flow chart).
- ****************************************************************************/
-
-static int rk3576_i2c_read_chunk(struct rk3576_i2c_priv_s *priv, uint16_t addr,
-                                 FAR uint8_t *buf, uint32_t len, bool first)
-{
-  uint32_t i;
-  int ret;
-
-  DEBUGASSERT(len > 0 && len <= RK3576_I2C_FIFO_BYTES);
-
-  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
-
-  if (first)
-    {
-      /* TRX mode: START + send MRXADDR[M] + MRXRADDR + restart +
-       * send MRXADDR[R] + receive len bytes.
-       */
-
-      i2c_putreg(priv, RK3576_I2C_MRXADDR,
-                 (uint32_t)((addr << 1) | 1) | RK3576_I2C_ADDR_LOW_VLD);
-      i2c_putreg(priv, RK3576_I2C_MRXRADDR, 0);
-
-      i2c_putreg(priv, RK3576_I2C_CON,
-                 RK3576_I2C_CON_EN | RK3576_I2C_CON_START |
-                     RK3576_I2C_CON_MODE_TRX);
-    }
-  else
-    {
-      /* RX-only mode: continue receiving on the same transaction, no
-       * new START, no address.  Set LASTACK=0 so the controller sends
-       * ACK after the last byte (not NAK), keeping the bus alive for
-       * the next chunk.
-       */
-
-      i2c_putreg(priv, RK3576_I2C_CON,
-                 RK3576_I2C_CON_EN | RK3576_I2C_CON_MODE_RX);
-    }
-
-  i2c_putreg(priv, RK3576_I2C_MRXCNT, len);
-
-  ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_MBRF);
-  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_MBRF);
+  ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_START);
+  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_START);
   if (ret < 0)
     {
       return ret;
     }
 
-  for (i = 0; i < len; i++)
+  while (remaining >= 32)
     {
-      uint32_t w = i2c_getreg(priv, RK3576_I2C_RXDATA0 + (i >> 2) * 4);
-      buf[i] = (uint8_t)(w >> ((i & 3) * 8));
-    }
-
-  return OK;
-}
-
-/****************************************************************************
- * Name: rk3576_i2c_read_msg
- *
- * Description:
- *   Receive msg->length bytes in chunks of up to 32 bytes.  All but the
- *   first chunk use repeated START.
- ****************************************************************************/
-
-static int rk3576_i2c_read_msg(struct rk3576_i2c_priv_s *priv,
-                               struct i2c_msg_s *msg)
-{
-  uint32_t remaining = (uint32_t)msg->length;
-  uint32_t offset = 0;
-  bool first = true;
-  int ret;
-
-  if (remaining == 0)
-    {
-      return -EINVAL;
-    }
-
-  while (remaining > 0)
-    {
-      uint32_t chunk = remaining;
-      if (chunk > RK3576_I2C_FIFO_BYTES)
+      /* fill FIFO */
+      while (tx_byte_cnt < 32)
         {
-          chunk = RK3576_I2C_FIFO_BYTES;
+          byte_offset = tx_byte_cnt % 4;
+          pack |= (p_msg->buffer[length - remaining]) << (byte_offset * 8);
+          remaining--;
+          tx_byte_cnt++;
+          if (byte_offset == 3)
+            {
+              i2c_putreg(priv, RK3576_I2C_TXDATA0 + tx_byte_cnt - 4, pack);
+              pack = 0;
+            }
         }
 
-      /* First chunk: TRX mode.  Subsequent chunks: RX-only mode,
-       * continuing the same transaction per TRM §32.6 Fig.32-8.
-       */
+      /* FIFO full, send and poll */
 
-      ret = rk3576_i2c_read_chunk(priv, msg->addr, msg->buffer + offset, chunk,
-                                  first);
+      i2c_putreg(priv, RK3576_I2C_MTXCNT, 32);
+
+      ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_MBTF);
+      i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_MBTF);
       if (ret < 0)
         {
-          i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
           return ret;
         }
 
-      i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
-      first = false;
-      remaining -= chunk;
-      offset += chunk;
+      /* reset byte cnt */
+
+      tx_byte_cnt = 0;
+    }
+
+  /* send remaining bytes */
+
+  if (remaining)
+    {
+      while (remaining)
+        {
+          byte_offset = tx_byte_cnt % 4;
+          pack |= (p_msg->buffer[length - remaining]) << (byte_offset * 8);
+          remaining--;
+          if (!remaining || byte_offset == 3)
+            {
+              i2c_putreg(priv, RK3576_I2C_TXDATA0 + (tx_byte_cnt / 4) * 4,
+                         pack);
+              pack = 0;
+            }
+          tx_byte_cnt++;
+        }
+
+      i2c_putreg(priv, RK3576_I2C_MTXCNT, tx_byte_cnt);
+
+      ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_MBTF);
+      i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_MBTF);
+      if (ret < 0)
+        {
+          return ret;
+        }
+    }
+
+  /* send stop */
+
+  i2c_putreg(priv, RK3576_I2C_CON, RK3576_I2C_CON_EN | RK3576_I2C_CON_STOP);
+  ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_STOP);
+  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_STOP);
+  if (ret < 0)
+    {
+      return ret;
     }
 
   return OK;
 }
 
 /****************************************************************************
- * Name: rk3576_i2c_stop
+ * Name: rk3576_i2c_rx
+ *
+ * Description:
+ *   Handle rx.
+ *   Returns OK on success, negated errno on failure.
+ *
  ****************************************************************************/
 
-static void rk3576_i2c_stop(struct rk3576_i2c_priv_s *priv)
+static int rk3576_i2c_rx(struct rk3576_i2c_priv_s *priv,
+                         struct i2c_msg_s *p_msg)
 {
-  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
+  int ret;
+  const uint32_t length = (uint32_t)p_msg->length;
+  uint32_t remaining = length;
+  uint8_t rx_byte_cnt;
+  uint32_t pack;
+  uint8_t byte_offset;
+  bool first = true;
+
+  /* If the total request fits in one FIFO (≤32 bytes), the very first
+   * transfer is also the last — we must tell the controller to NACK the
+   * final byte so the slave releases the bus.
+   */
+  bool gen_nack = remaining <= 32;
+
+  /* enable i2c and start rx */
+
+  i2c_putreg(priv, RK3576_I2C_CON,
+             RK3576_I2C_CON_EN | RK3576_I2C_CON_START |
+                 (gen_nack ? RK3576_I2C_CON_LAST_BYTE_NACK : 0) |
+                 /* use TRX mode to send device address
+                  * and receive first chunk of data
+                  */
+                 RK3576_I2C_CON_MODE_TRX);
+
+  ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_START);
+  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_START);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  /* set device rx address */
+
+  i2c_putreg(priv, RK3576_I2C_MRXADDR,
+             (uint32_t)((p_msg->addr << 1) | 1) | RK3576_I2C_ADDR_LOW_VLD);
+
+  /* set mrxr to 0, do not send any register addresses */
+
+  i2c_putreg(priv, RK3576_I2C_MRXRADDR, 0);
+
+  /* receive from device */
+
+  while (remaining >= 32)
+    {
+      i2c_putreg(priv, RK3576_I2C_MRXCNT, 32);
+
+      ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_MBRF);
+      i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_MBRF);
+      if (ret < 0)
+        {
+          return ret;
+        }
+
+      for (uint8_t i = 0; i < 8; i++)
+        {
+          uint8_t *buffer = &(p_msg->buffer[length - remaining]);
+          pack = i2c_getreg(priv, RK3576_I2C_RXDATA0 + i * 4);
+          buffer[0] = (pack >> 0) & 0xff;
+          buffer[1] = (pack >> 8) & 0xff;
+          buffer[2] = (pack >> 16) & 0xff;
+          buffer[3] = (pack >> 24) & 0xff;
+          remaining -= 4;
+        }
+
+      /* If the total length was an exact multiple of 32, the FIFO
+       * loop above consumed everything — remaining == 0 now and the
+       * next iteration won't execute. Generate NACK.
+       *
+       * If this is the very first chunk
+       * we need to switch to rx-only mode
+       * to continue receving following chunk.
+       */
+
+      gen_nack = (remaining == 0);
+      if (first || gen_nack)
+        {
+          i2c_putreg(priv, RK3576_I2C_CON,
+                     RK3576_I2C_CON_EN |
+                         (gen_nack ? RK3576_I2C_CON_LAST_BYTE_NACK : 0) |
+                         RK3576_I2C_CON_MODE_RX);
+          first = false;
+        }
+    }
+
+  /* receive remaining bytes */
+
+  if (remaining)
+    {
+      /* If we reach here, remaining > 0 and gen_nack is false — the
+       * FIFO loop above didn't finish the transfer, so we haven't
+       * enabled LAST_BYTE_NACK yet.  Do it now for this final chunk.
+       */
+      if (!gen_nack)
+        {
+          /* enable nack gen*/
+          i2c_putreg(priv, RK3576_I2C_CON,
+                     RK3576_I2C_CON_EN | RK3576_I2C_CON_LAST_BYTE_NACK |
+                         RK3576_I2C_CON_MODE_RX);
+        }
+
+      i2c_putreg(priv, RK3576_I2C_MRXCNT, remaining);
+
+      ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_MBRF);
+      i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_MBRF);
+      if (ret < 0)
+        {
+          return ret;
+        }
+
+      rx_byte_cnt = 0;
+      pack = i2c_getreg(priv, RK3576_I2C_RXDATA0);
+      while (remaining)
+        {
+          byte_offset = rx_byte_cnt % 4;
+          p_msg->buffer[length - remaining] =
+              (pack >> (byte_offset * 8)) & 0xff;
+          remaining--;
+          rx_byte_cnt++;
+          if (remaining && byte_offset == 3)
+            {
+              pack = i2c_getreg(priv, RK3576_I2C_RXDATA0 + rx_byte_cnt);
+            }
+        }
+    }
+
+  /* send stop */
+
   i2c_putreg(priv, RK3576_I2C_CON, RK3576_I2C_CON_EN | RK3576_I2C_CON_STOP);
-  rk3576_i2c_poll(priv, RK3576_I2C_INT_STOP);
+  ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_STOP);
   i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_STOP);
-  i2c_putreg(priv, RK3576_I2C_CON, 0);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  return OK;
 }
 
 /****************************************************************************
@@ -433,39 +459,41 @@ static int rk3576_i2c_transfer(struct i2c_master_s *dev,
 {
   struct rk3576_i2c_priv_s *priv = (struct rk3576_i2c_priv_s *)dev;
   int ret = OK;
-  int attempt;
-  int i;
 
   nxmutex_lock(&priv->lock);
 
-  /* The controller drops the very first START it is asked to generate after
-   * power-up; a single retry (with a STOP + disable to reset the bus in
-   * between) makes that first transfer reliable and is harmless afterwards.
-   */
-
-  for (attempt = 0; attempt < 2; attempt++)
+  for (int i = 0; i < count; i++)
     {
-      for (i = 0; i < count; i++)
+      struct i2c_msg_s *msg = &msgs[i];
+
+      if (msg->length == 0)
         {
-          rk3576_i2c_setclk(priv, msgs[i].frequency);
-
-          if ((msgs[i].flags & I2C_M_READ) != 0)
-            {
-              ret = rk3576_i2c_read_msg(priv, &msgs[i]);
-            }
-          else
-            {
-              ret = rk3576_i2c_write_msg(priv, &msgs[i]);
-            }
-
-          if (ret < 0)
-            {
-              break;
-            }
+          ret = -EINVAL;
+          break;
         }
 
-      rk3576_i2c_stop(priv);
-      if (ret >= 0)
+      /* set i2c clock speed */
+
+      rk3576_i2c_setclk(priv, msg->frequency);
+
+      /* clear interrupts and configure CON for the transaction start. */
+
+      i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
+
+      if (msg->flags & I2C_M_READ)
+        {
+          ret = rk3576_i2c_rx(priv, msg);
+        }
+      else
+        {
+          ret = rk3576_i2c_tx(priv, msg);
+        }
+
+      /* disable i2c to reset all status */
+
+      i2c_putreg(priv, RK3576_I2C_CON, 0);
+
+      if (ret < 0)
         {
           break;
         }

@@ -43,16 +43,18 @@
 
 /* CON bits */
 
-#define RK3576_I2C_CON_EN         (1 << 0) /* Enable controller */
-#define RK3576_I2C_CON_MODE_SHIFT 1
-#define RK3576_I2C_CON_MODE_MASK  (0x3 << 1)
-#define RK3576_I2C_CON_MODE_TX    (0 << 1) /* Master transmit */
-#define RK3576_I2C_CON_MODE_TRX   (1 << 1) /* Tx addr then rx (reg read) */
-#define RK3576_I2C_CON_MODE_RX    (2 << 1) /* Master receive */
-#define RK3576_I2C_CON_START      (1 << 3) /* Generate START */
-#define RK3576_I2C_CON_STOP       (1 << 4) /* Generate STOP */
-#define RK3576_I2C_CON_LASTACK    (1 << 5) /* NAK the last rx byte */
-#define RK3576_I2C_CON_ACT2NAK    (1 << 6) /* Stop on slave NAK */
+#define RK3576_I2C_CON_EN             (1 << 0) /* Enable controller */
+
+#define RK3576_I2C_CON_MODE_SHIFT     1
+#define RK3576_I2C_CON_MODE_MASK      (0x3 << 1)
+#define RK3576_I2C_CON_MODE_TX        (0 << 1) /* Tx only */
+#define RK3576_I2C_CON_MODE_TRX       (1 << 1) /* Tx addr, reg (opt) then rx */
+#define RK3576_I2C_CON_MODE_RX        (2 << 1) /* Rx only */
+
+#define RK3576_I2C_CON_START          (1 << 3) /* Generate START */
+#define RK3576_I2C_CON_STOP           (1 << 4) /* Generate STOP */
+#define RK3576_I2C_CON_LAST_BYTE_NACK (1 << 5) /* NAK the last rx byte */
+#define RK3576_I2C_CON_ACT_TO_NAK     (1 << 6) /* Stop on slave NAK */
 
 /* IPD / IEN bits */
 
