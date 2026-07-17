@@ -44,8 +44,8 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define USBSW_DCTL       0x2300c704ul   /* OTG0 base + DWC3 DCTL */
-#define USBSW_RUNSTOP    (1ul << 31)
+#define USBSW_DCTL    0x2300c704ul /* OTG0 base + DWC3 DCTL */
+#define USBSW_RUNSTOP (1ul << 31)
 
 /****************************************************************************
  * Public Functions
@@ -77,7 +77,8 @@ int main(int argc, FAR char *argv[])
       printf("usage: usbsw on|off\n"
              "  off: soft-detach from the USB host (for serial Ymodem)\n"
              "  on:  reconnect, host re-enumerates\n"
-             "state: DCTL=%08lx (%s)\n", (unsigned long)val,
+             "state: DCTL=%08lx (%s)\n",
+             (unsigned long)val,
              (val & USBSW_RUNSTOP) ? "connected" : "disconnected");
       return 1;
     }

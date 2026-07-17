@@ -46,18 +46,18 @@
 
 #include <nuttx/config.h>
 
-#include <stdint.h>
-#include <stdbool.h>
-#include <string.h>
-#include <errno.h>
 #include <debug.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
 
 #include <nuttx/arch.h>
 #include <nuttx/cache.h>
-#include <nuttx/kmalloc.h>
 #include <nuttx/irq.h>
-#include <nuttx/spinlock.h>
+#include <nuttx/kmalloc.h>
 #include <nuttx/queue.h>
+#include <nuttx/spinlock.h>
 #include <nuttx/usb/usb.h>
 #include <nuttx/usb/usbdev.h>
 #include <nuttx/usb/usbdev_trace.h>
@@ -75,33 +75,33 @@
 
 /* Controller instance ****************************************************/
 
-#define RK3576_OTG_BASE         0x23000000ul
-#define RK3576_IRQ_OTG          (32 + 0x105)   /* GIC SPI 261 */
+#define RK3576_OTG_BASE 0x23000000ul
+#define RK3576_IRQ_OTG  (32 + 0x105) /* GIC SPI 261 */
 
 /* Global register block (xHCI-relative offsets, device-mode subset) ******/
 
-#define DWC3_GSBUSCFG0          0xc100
-#define DWC3_GCTL               0xc110
-#define DWC3_GSTS               0xc118
-#define DWC3_GSNPSID            0xc120
-#define DWC3_GUSB2PHYCFG        0xc200
-#define DWC3_GUSB3PIPECTL       0xc2c0
-#define DWC3_GTXFIFOSIZ(n)      (0xc300 + ((n) << 2))
-#define DWC3_GRXFIFOSIZ(n)      (0xc380 + ((n) << 2))
-#define DWC3_GEVNTADRLO         0xc400
-#define DWC3_GEVNTADRHI         0xc404
-#define DWC3_GEVNTSIZ           0xc408
-#define DWC3_GEVNTCOUNT         0xc40c
+#define DWC3_GSBUSCFG0     0xc100
+#define DWC3_GCTL          0xc110
+#define DWC3_GSTS          0xc118
+#define DWC3_GSNPSID       0xc120
+#define DWC3_GUSB2PHYCFG   0xc200
+#define DWC3_GUSB3PIPECTL  0xc2c0
+#define DWC3_GTXFIFOSIZ(n) (0xc300 + ((n) << 2))
+#define DWC3_GRXFIFOSIZ(n) (0xc380 + ((n) << 2))
+#define DWC3_GEVNTADRLO    0xc400
+#define DWC3_GEVNTADRHI    0xc404
+#define DWC3_GEVNTSIZ      0xc408
+#define DWC3_GEVNTCOUNT    0xc40c
 
-#define DWC3_DCFG               0xc700
-#define DWC3_DCTL               0xc704
-#define DWC3_DEVTEN             0xc708
-#define DWC3_DSTS               0xc70c
-#define DWC3_DALEPENA           0xc720
-#define DWC3_DEPCMDPAR2(n)      (0xc800 + ((n) * 0x10))
-#define DWC3_DEPCMDPAR1(n)      (0xc804 + ((n) * 0x10))
-#define DWC3_DEPCMDPAR0(n)      (0xc808 + ((n) * 0x10))
-#define DWC3_DEPCMD(n)          (0xc80c + ((n) * 0x10))
+#define DWC3_DCFG          0xc700
+#define DWC3_DCTL          0xc704
+#define DWC3_DEVTEN        0xc708
+#define DWC3_DSTS          0xc70c
+#define DWC3_DALEPENA      0xc720
+#define DWC3_DEPCMDPAR2(n) (0xc800 + ((n)*0x10))
+#define DWC3_DEPCMDPAR1(n) (0xc804 + ((n)*0x10))
+#define DWC3_DEPCMDPAR0(n) (0xc808 + ((n)*0x10))
+#define DWC3_DEPCMD(n)     (0xc80c + ((n)*0x10))
 
 /* Register fields ********************************************************/
 
@@ -121,7 +121,6 @@
 
 #define GUSB3PIPECTL_PHYSOFTRST (1u << 31)
 #define GUSB3PIPECTL_SUSPEND    (1u << 17)
-
 
 #define DCFG_DEVSPD_MASK        (7u << 0)
 #define DCFG_DEVSPD_HS          (0u << 0)
@@ -144,28 +143,28 @@
 
 /* Endpoint commands (DEPCMD.CmdTyp) **************************************/
 
-#define DEPCMD_SETEPCONFIG      1
+#define DEPCMD_SETEPCONFIG       1
 #define DEPCMD_SETTRANSFRESOURCE 2
-#define DEPCMD_SETSTALL         4
-#define DEPCMD_CLEARSTALL       5
-#define DEPCMD_STARTTRANSFER    6
-#define DEPCMD_UPDATETRANSFER   7
-#define DEPCMD_ENDTRANSFER      8
-#define DEPCMD_DEPSTARTCFG      9
+#define DEPCMD_SETSTALL          4
+#define DEPCMD_CLEARSTALL        5
+#define DEPCMD_STARTTRANSFER     6
+#define DEPCMD_UPDATETRANSFER    7
+#define DEPCMD_ENDTRANSFER       8
+#define DEPCMD_DEPSTARTCFG       9
 
-#define DEPCMD_CMDIOC           (1u << 8)
-#define DEPCMD_CMDACT           (1u << 10)
-#define DEPCMD_HIPRI_FORCERM    (1u << 11)
-#define DEPCMD_STATUS_SHIFT     12
-#define DEPCMD_STATUS_MASK      (0xfu << 12)
-#define DEPCMD_PARAM_SHIFT      16
-#define DEPCMD_PARAM_MASK       (0x7fffu << 16)
+#define DEPCMD_CMDIOC            (1u << 8)
+#define DEPCMD_CMDACT            (1u << 10)
+#define DEPCMD_HIPRI_FORCERM     (1u << 11)
+#define DEPCMD_STATUS_SHIFT      12
+#define DEPCMD_STATUS_MASK       (0xfu << 12)
+#define DEPCMD_PARAM_SHIFT       16
+#define DEPCMD_PARAM_MASK        (0x7fffu << 16)
 
 /* DEPCFG parameter fields ************************************************/
 
 #define DEPCFG_P0_ACTION_INIT   (0u << 30)
 #define DEPCFG_P0_ACTION_MODIFY (2u << 30)
-#define DEPCFG_P0_TYPE(t)       ((uint32_t)(t) << 1)   /* usb ep type */
+#define DEPCFG_P0_TYPE(t)       ((uint32_t)(t) << 1) /* usb ep type */
 #define DEPCFG_P0_MPS(m)        ((uint32_t)(m) << 3)
 #define DEPCFG_P0_FIFONUM(f)    ((uint32_t)(f) << 17)
 
@@ -176,66 +175,65 @@
 
 /* TRB descriptor *********************************************************/
 
-#define TRB_CTRL_HWO            (1u << 0)
-#define TRB_CTRL_LST            (1u << 1)
-#define TRB_CTRL_CSP            (1u << 3)
-#define TRB_CTRL_TYPE(t)        ((uint32_t)(t) << 4)
-#define TRB_CTRL_ISP_IMI        (1u << 10)
-#define TRB_CTRL_IOC            (1u << 11)
+#define TRB_CTRL_HWO         (1u << 0)
+#define TRB_CTRL_LST         (1u << 1)
+#define TRB_CTRL_CSP         (1u << 3)
+#define TRB_CTRL_TYPE(t)     ((uint32_t)(t) << 4)
+#define TRB_CTRL_ISP_IMI     (1u << 10)
+#define TRB_CTRL_IOC         (1u << 11)
 
-#define TRB_TYPE_NORMAL         1
-#define TRB_TYPE_CTL_SETUP      2
-#define TRB_TYPE_CTL_STATUS2    3   /* status, no data stage */
-#define TRB_TYPE_CTL_STATUS3    4   /* status, after data stage */
-#define TRB_TYPE_CTL_DATA       5
+#define TRB_TYPE_NORMAL      1
+#define TRB_TYPE_CTL_SETUP   2
+#define TRB_TYPE_CTL_STATUS2 3 /* status, no data stage */
+#define TRB_TYPE_CTL_STATUS3 4 /* status, after data stage */
+#define TRB_TYPE_CTL_DATA    5
 
-#define TRB_SIZE_MASK           0x00ffffffu
+#define TRB_SIZE_MASK        0x00ffffffu
 
 /* Events *****************************************************************/
 
-#define EVT_IS_DEVT(e)          (((e) & 1u) != 0)
+#define EVT_IS_DEVT(e)        (((e)&1u) != 0)
 
-#define DEVT_TYPE(e)            (((e) >> 8) & 0xfu)
-#define DEVT_DISCONN            0
-#define DEVT_USBRST             1
-#define DEVT_CONNECTDONE        2
-#define DEVT_ULSTCHNG           3
-#define DEVT_WKUPEVT            4
-#define DEVT_SUSPEND            6
+#define DEVT_TYPE(e)          (((e) >> 8) & 0xfu)
+#define DEVT_DISCONN          0
+#define DEVT_USBRST           1
+#define DEVT_CONNECTDONE      2
+#define DEVT_ULSTCHNG         3
+#define DEVT_WKUPEVT          4
+#define DEVT_SUSPEND          6
 
-#define DEPEVT_PHYEP(e)         (((e) >> 1) & 0x1fu)
-#define DEPEVT_TYPE(e)          (((e) >> 6) & 0xfu)
-#define DEPEVT_STATUS(e)        (((e) >> 12) & 0xfu)
-#define DEPEVT_XFERCOMPLETE     1
-#define DEPEVT_XFERINPROGRESS   2
-#define DEPEVT_XFERNOTREADY     3
-#define DEPEVT_EPCMDCMPLT       7
+#define DEPEVT_PHYEP(e)       (((e) >> 1) & 0x1fu)
+#define DEPEVT_TYPE(e)        (((e) >> 6) & 0xfu)
+#define DEPEVT_STATUS(e)      (((e) >> 12) & 0xfu)
+#define DEPEVT_XFERCOMPLETE   1
+#define DEPEVT_XFERINPROGRESS 2
+#define DEPEVT_XFERNOTREADY   3
+#define DEPEVT_EPCMDCMPLT     7
 
 /* XferNotReady status[1:0] for control endpoints */
 
-#define DEPEVT_NRDY_CTL_DATA    1
-#define DEPEVT_NRDY_CTL_STATUS  2
+#define DEPEVT_NRDY_CTL_DATA   1
+#define DEPEVT_NRDY_CTL_STATUS 2
 
 /* Driver geometry ********************************************************/
 
-#define RK3576_NPHYEPS          8              /* ep0out/in + 3 bulk pairs */
-#define RK3576_NLOGEPS          (RK3576_NPHYEPS / 2)
-#define RK3576_EVTBUF_SIZE      4096
-#define RK3576_EP0_MAXPACKET    64
-#define RK3576_BULK_MAXPACKET   512
-#define RK3576_EP0_BUFSIZE      512
-
+#define RK3576_NPHYEPS        8 /* ep0out/in + 3 bulk pairs */
+#define RK3576_NLOGEPS        (RK3576_NPHYEPS / 2)
+#define RK3576_EVTBUF_SIZE    4096
+#define RK3576_EP0_MAXPACKET  64
+#define RK3576_BULK_MAXPACKET 512
+#define RK3576_EP0_BUFSIZE    512
 
 /* EP0 control state */
 
 enum rk3576_ep0state_e
 {
-  EP0_IDLE = 0,       /* SETUP TRB armed, waiting for a setup packet */
-  EP0_SETUP,          /* Setup received, dispatched to the class */
-  EP0_DATA_IN,        /* IN data stage in flight */
-  EP0_DATA_OUT,       /* OUT data stage in flight */
-  EP0_STATUS_WAIT,    /* Waiting for XferNotReady(status) */
-  EP0_STATUS,         /* Status TRB in flight */
+  EP0_IDLE = 0,    /* SETUP TRB armed, waiting for a setup packet */
+  EP0_SETUP,       /* Setup received, dispatched to the class */
+  EP0_DATA_IN,     /* IN data stage in flight */
+  EP0_DATA_OUT,    /* OUT data stage in flight */
+  EP0_STATUS_WAIT, /* Waiting for XferNotReady(status) */
+  EP0_STATUS,      /* Status TRB in flight */
 };
 
 /****************************************************************************
@@ -254,16 +252,15 @@ struct rk3576_trb_s
 
 struct rk3576_req_s
 {
-  struct usbdev_req_s req;      /* Must be first */
-  struct sq_entry_s   node;
+  struct usbdev_req_s req; /* Must be first */
+  struct sq_entry_s node;
 };
 
 /* The queue links through the node member, NOT the struct start: every
  * dequeue must go through this, never a direct cast.
  */
 
-static inline struct rk3576_req_s *
-rk3576_req_from_node(struct sq_entry_s *e)
+static inline struct rk3576_req_s *rk3576_req_from_node(struct sq_entry_s *e)
 {
   return (e == NULL) ? NULL : container_of(e, struct rk3576_req_s, node);
 }
@@ -272,40 +269,40 @@ struct rk3576_usbdev_s;
 
 struct rk3576_ep_s
 {
-  struct usbdev_ep_s        ep; /* Must be first */
-  struct rk3576_usbdev_s   *dev;
-  sq_queue_t                reqq;
-  struct rk3576_trb_s      *trb;
-  uint8_t                   phyep;
-  uint8_t                   rscidx;
-  bool                      enabled;
-  bool                      stalled;
-  bool                      busy;    /* A TRB is owned by hardware */
+  struct usbdev_ep_s ep; /* Must be first */
+  struct rk3576_usbdev_s *dev;
+  sq_queue_t reqq;
+  struct rk3576_trb_s *trb;
+  uint8_t phyep;
+  uint8_t rscidx;
+  bool enabled;
+  bool stalled;
+  bool busy; /* A TRB is owned by hardware */
 };
 
 struct rk3576_usbdev_s
 {
-  struct usbdev_s              usbdev;  /* Must be first */
+  struct usbdev_s usbdev; /* Must be first */
   struct usbdevclass_driver_s *driver;
 
-  struct rk3576_ep_s           eps[RK3576_NPHYEPS];
+  struct rk3576_ep_s eps[RK3576_NPHYEPS];
 
-  uint32_t                    *evtbuf;
-  uint32_t                     evtoff;
+  uint32_t *evtbuf;
+  uint32_t evtoff;
 
   /* EP0 machinery */
 
-  enum rk3576_ep0state_e       ep0state;
-  struct usb_ctrlreq_s         ctrlreq;
-  uint8_t                     *setupbuf;   /* 8-byte setup bounce, aligned */
-  uint8_t                     *ep0buf;     /* data stage bounce, aligned */
-  uint16_t                     ep0datlen;  /* pending IN data length */
-  bool                         ep0threeStage;
-  bool                         ep0nrdy;    /* XferNotReady(data) seen */
-  bool                         ep0pend;    /* data TRB waiting for nrdy */
+  enum rk3576_ep0state_e ep0state;
+  struct usb_ctrlreq_s ctrlreq;
+  uint8_t *setupbuf;  /* 8-byte setup bounce, aligned */
+  uint8_t *ep0buf;    /* data stage bounce, aligned */
+  uint16_t ep0datlen; /* pending IN data length */
+  bool ep0threeStage;
+  bool ep0nrdy; /* XferNotReady(data) seen */
+  bool ep0pend; /* data TRB waiting for nrdy */
 
-  bool                         attached;
-  uint8_t                      devaddr;
+  bool attached;
+  uint8_t devaddr;
 };
 
 /****************************************************************************
@@ -323,9 +320,8 @@ static int rk3576_usbdev_epcmd(uint8_t phyep, uint32_t cmd, uint32_t p0,
 
 static int rk3576_usbdev_coreinit(struct rk3576_usbdev_s *priv);
 static void rk3576_usbdev_ep0out_arm_setup(struct rk3576_usbdev_s *priv);
-static int rk3576_usbdev_epconfig(struct rk3576_ep_s *privep,
-                                  uint8_t eptype, uint16_t maxpacket,
-                                  bool modify);
+static int rk3576_usbdev_epconfig(struct rk3576_ep_s *privep, uint8_t eptype,
+                                  uint16_t maxpacket, bool modify);
 
 /* Transfer engine */
 
@@ -338,12 +334,9 @@ static void rk3576_usbdev_epnext(struct rk3576_ep_s *privep);
 /* Event handling */
 
 static void rk3576_usbdev_ep0setup(struct rk3576_usbdev_s *priv);
-static void rk3576_usbdev_ep0event(struct rk3576_usbdev_s *priv,
-                                   uint32_t evt);
-static void rk3576_usbdev_epevent(struct rk3576_usbdev_s *priv,
-                                  uint32_t evt);
-static void rk3576_usbdev_devevent(struct rk3576_usbdev_s *priv,
-                                   uint32_t evt);
+static void rk3576_usbdev_ep0event(struct rk3576_usbdev_s *priv, uint32_t evt);
+static void rk3576_usbdev_epevent(struct rk3576_usbdev_s *priv, uint32_t evt);
+static void rk3576_usbdev_devevent(struct rk3576_usbdev_s *priv, uint32_t evt);
 static int rk3576_usbdev_interrupt(int irq, void *context, void *arg);
 
 /* Endpoint operations */
@@ -356,10 +349,8 @@ static void rk3576_ep_freereq(struct usbdev_ep_s *ep,
                               struct usbdev_req_s *req);
 static void *rk3576_ep_allocbuffer(struct usbdev_ep_s *ep, uint16_t nbytes);
 static void rk3576_ep_freebuffer(struct usbdev_ep_s *ep, void *buf);
-static int rk3576_ep_submit(struct usbdev_ep_s *ep,
-                            struct usbdev_req_s *req);
-static int rk3576_ep_cancel(struct usbdev_ep_s *ep,
-                            struct usbdev_req_s *req);
+static int rk3576_ep_submit(struct usbdev_ep_s *ep, struct usbdev_req_s *req);
+static int rk3576_ep_cancel(struct usbdev_ep_s *ep, struct usbdev_req_s *req);
 static int rk3576_ep_stall(struct usbdev_ep_s *ep, bool resume);
 
 /* Device operations */
@@ -367,8 +358,7 @@ static int rk3576_ep_stall(struct usbdev_ep_s *ep, bool resume);
 static struct usbdev_ep_s *rk3576_dev_allocep(struct usbdev_s *dev,
                                               uint8_t epno, bool in,
                                               uint8_t eptype);
-static void rk3576_dev_freeep(struct usbdev_s *dev,
-                              struct usbdev_ep_s *ep);
+static void rk3576_dev_freeep(struct usbdev_s *dev, struct usbdev_ep_s *ep);
 static int rk3576_dev_getframe(struct usbdev_s *dev);
 static int rk3576_dev_wakeup(struct usbdev_s *dev);
 static int rk3576_dev_selfpowered(struct usbdev_s *dev, bool selfpowered);
@@ -378,27 +368,25 @@ static int rk3576_dev_pullup(struct usbdev_s *dev, bool enable);
  * Private Data
  ****************************************************************************/
 
-static const struct usbdev_epops_s g_epops =
-{
-  .configure   = rk3576_ep_configure,
-  .disable     = rk3576_ep_disable,
-  .allocreq    = rk3576_ep_allocreq,
-  .freereq     = rk3576_ep_freereq,
+static const struct usbdev_epops_s g_epops = {
+  .configure = rk3576_ep_configure,
+  .disable = rk3576_ep_disable,
+  .allocreq = rk3576_ep_allocreq,
+  .freereq = rk3576_ep_freereq,
   .allocbuffer = rk3576_ep_allocbuffer,
-  .freebuffer  = rk3576_ep_freebuffer,
-  .submit      = rk3576_ep_submit,
-  .cancel      = rk3576_ep_cancel,
-  .stall       = rk3576_ep_stall,
+  .freebuffer = rk3576_ep_freebuffer,
+  .submit = rk3576_ep_submit,
+  .cancel = rk3576_ep_cancel,
+  .stall = rk3576_ep_stall,
 };
 
-static const struct usbdev_ops_s g_devops =
-{
-  .allocep     = rk3576_dev_allocep,
-  .freeep      = rk3576_dev_freeep,
-  .getframe    = rk3576_dev_getframe,
-  .wakeup      = rk3576_dev_wakeup,
+static const struct usbdev_ops_s g_devops = {
+  .allocep = rk3576_dev_allocep,
+  .freeep = rk3576_dev_freeep,
+  .getframe = rk3576_dev_getframe,
+  .wakeup = rk3576_dev_wakeup,
   .selfpowered = rk3576_dev_selfpowered,
-  .pullup      = rk3576_dev_pullup,
+  .pullup = rk3576_dev_pullup,
 };
 
 static struct rk3576_usbdev_s g_usbdev;
@@ -468,9 +456,8 @@ static int rk3576_usbdev_epcmd(uint8_t phyep, uint32_t cmd, uint32_t p0,
 
   if ((reg & DEPCMD_STATUS_MASK) != 0)
     {
-      uerr("epcmd %lu on phyep %u status %lu\n",
-           (unsigned long)(cmd & 0xf), phyep,
-           (unsigned long)((reg & DEPCMD_STATUS_MASK) >> 12));
+      uerr("epcmd %lu on phyep %u status %lu\n", (unsigned long)(cmd & 0xf),
+           phyep, (unsigned long)((reg & DEPCMD_STATUS_MASK) >> 12));
       return -EIO;
     }
 
@@ -490,9 +477,8 @@ static int rk3576_usbdev_epcmd(uint8_t phyep, uint32_t cmd, uint32_t p0,
  *
  ****************************************************************************/
 
-static int rk3576_usbdev_epconfig(struct rk3576_ep_s *privep,
-                                  uint8_t eptype, uint16_t maxpacket,
-                                  bool modify)
+static int rk3576_usbdev_epconfig(struct rk3576_ep_s *privep, uint8_t eptype,
+                                  uint16_t maxpacket, bool modify)
 {
   uint32_t p0;
   uint32_t p1;
@@ -511,15 +497,15 @@ static int rk3576_usbdev_epconfig(struct rk3576_ep_s *privep,
   p1 = DEPCFG_P1_XFERCMPLEN | DEPCFG_P1_XFERNRDYEN |
        DEPCFG_P1_EPNUM(privep->phyep);
 
-  ret = rk3576_usbdev_epcmd(privep->phyep, DEPCMD_SETEPCONFIG,
-                            p0, p1, 0, NULL);
+  ret =
+      rk3576_usbdev_epcmd(privep->phyep, DEPCMD_SETEPCONFIG, p0, p1, 0, NULL);
   if (ret < 0)
     {
       return ret;
     }
 
-  return rk3576_usbdev_epcmd(privep->phyep, DEPCMD_SETTRANSFRESOURCE,
-                             1, 0, 0, NULL);
+  return rk3576_usbdev_epcmd(privep->phyep, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0,
+                             NULL);
 }
 
 /****************************************************************************
@@ -539,8 +525,8 @@ static int rk3576_usbdev_starttrb(struct rk3576_ep_s *privep, void *buf,
   uint32_t rsc = 0;
   int ret;
 
-  trb->bpl  = (uint32_t)(pa & 0xffffffffu);
-  trb->bph  = (uint32_t)(pa >> 32);
+  trb->bpl = (uint32_t)(pa & 0xffffffffu);
+  trb->bph = (uint32_t)(pa >> 32);
   trb->size = len & TRB_SIZE_MASK;
   trb->ctrl = TRB_CTRL_TYPE(trbtype) | TRB_CTRL_LST | TRB_CTRL_IOC |
               TRB_CTRL_ISP_IMI | TRB_CTRL_HWO;
@@ -550,12 +536,11 @@ static int rk3576_usbdev_starttrb(struct rk3576_ep_s *privep, void *buf,
 
   ret = rk3576_usbdev_epcmd(privep->phyep, DEPCMD_STARTTRANSFER,
                             (uint32_t)((uintptr_t)trb >> 32),
-                            (uint32_t)((uintptr_t)trb & 0xffffffffu),
-                            0, &rsc);
+                            (uint32_t)((uintptr_t)trb & 0xffffffffu), 0, &rsc);
   if (ret == OK)
     {
       privep->rscidx = (uint8_t)rsc;
-      privep->busy   = true;
+      privep->busy = true;
     }
 
   return ret;
@@ -574,8 +559,7 @@ static void rk3576_usbdev_ep0out_arm_setup(struct rk3576_usbdev_s *priv)
 {
   up_invalidate_dcache((uintptr_t)priv->setupbuf,
                        (uintptr_t)priv->setupbuf + 64);
-  rk3576_usbdev_starttrb(&priv->eps[0], priv->setupbuf, 8,
-                         TRB_TYPE_CTL_SETUP);
+  rk3576_usbdev_starttrb(&priv->eps[0], priv->setupbuf, 8, TRB_TYPE_CTL_SETUP);
   priv->ep0state = EP0_IDLE;
 }
 
@@ -675,15 +659,15 @@ static void rk3576_usbdev_ep0setup(struct rk3576_usbdev_s *priv)
   memcpy(ctrl, priv->setupbuf, sizeof(struct usb_ctrlreq_s));
 
   value = GETUINT16(ctrl->value);
-  len   = GETUINT16(ctrl->len);
+  len = GETUINT16(ctrl->len);
 
-  uinfo("SETUP type=%02x req=%02x val=%04x len=%u\n",
-        ctrl->type, ctrl->req, value, len);
+  uinfo("SETUP type=%02x req=%02x val=%04x len=%u\n", ctrl->type, ctrl->req,
+        value, len);
 
   priv->ep0threeStage = (len != 0);
-  priv->ep0state      = EP0_SETUP;
-  priv->ep0nrdy       = false;
-  priv->ep0pend       = false;
+  priv->ep0state = EP0_SETUP;
+  priv->ep0nrdy = false;
+  priv->ep0pend = false;
 
   /* A new SETUP aborts whatever control transfer was in flight: kill a
    * stale ep0 IN data/status TRB or its transfer resource stays busy
@@ -692,10 +676,11 @@ static void rk3576_usbdev_ep0setup(struct rk3576_usbdev_s *priv)
 
   if (priv->eps[1].busy)
     {
-      rk3576_usbdev_epcmd(1, DEPCMD_ENDTRANSFER | DEPCMD_HIPRI_FORCERM |
-                          DEPCMD_CMDIOC |
-                          ((uint32_t)priv->eps[1].rscidx <<
-                           DEPCMD_PARAM_SHIFT), 0, 0, 0, NULL);
+      rk3576_usbdev_epcmd(
+          1,
+          DEPCMD_ENDTRANSFER | DEPCMD_HIPRI_FORCERM | DEPCMD_CMDIOC |
+              ((uint32_t)priv->eps[1].rscidx << DEPCMD_PARAM_SHIFT),
+          0, 0, 0, NULL);
       priv->eps[1].busy = false;
       while (sq_peek(&priv->eps[1].reqq) != NULL)
         {
@@ -712,7 +697,7 @@ static void rk3576_usbdev_ep0setup(struct rk3576_usbdev_s *priv)
       dcfg &= ~DCFG_DEVADDR_MASK;
       dcfg |= ((uint32_t)(value & 0x7f)) << DCFG_DEVADDR_SHIFT;
       rk3576_usbdev_putreg(dcfg, DWC3_DCFG);
-      priv->devaddr  = value & 0x7f;
+      priv->devaddr = value & 0x7f;
       priv->ep0state = EP0_STATUS_WAIT;
       return;
     }
@@ -727,12 +712,13 @@ static void rk3576_usbdev_ep0setup(struct rk3576_usbdev_s *priv)
        * Start Transfer for a control data stage the host has not begun.
        */
 
-      priv->ep0state  = EP0_DATA_OUT;
-      priv->ep0datlen = len < RK3576_EP0_BUFSIZE ?
-                        RK3576_EP0_MAXPACKET *
-                        ((len + RK3576_EP0_MAXPACKET - 1) /
-                         RK3576_EP0_MAXPACKET) : RK3576_EP0_BUFSIZE;
-      priv->ep0pend   = true;
+      priv->ep0state = EP0_DATA_OUT;
+      priv->ep0datlen =
+          len < RK3576_EP0_BUFSIZE
+              ? RK3576_EP0_MAXPACKET *
+                    ((len + RK3576_EP0_MAXPACKET - 1) / RK3576_EP0_MAXPACKET)
+              : RK3576_EP0_BUFSIZE;
+      priv->ep0pend = true;
       return;
     }
 
@@ -765,11 +751,10 @@ static void rk3576_usbdev_ep0setup(struct rk3576_usbdev_s *priv)
  *
  ****************************************************************************/
 
-static void rk3576_usbdev_ep0event(struct rk3576_usbdev_s *priv,
-                                   uint32_t evt)
+static void rk3576_usbdev_ep0event(struct rk3576_usbdev_s *priv, uint32_t evt)
 {
   uint8_t phyep = DEPEVT_PHYEP(evt);
-  uint8_t type  = DEPEVT_TYPE(evt);
+  uint8_t type = DEPEVT_TYPE(evt);
   uint8_t status = DEPEVT_STATUS(evt);
 
   if (type == DEPEVT_XFERCOMPLETE)
@@ -792,9 +777,9 @@ static void rk3576_usbdev_ep0event(struct rk3576_usbdev_s *priv,
 
               up_invalidate_dcache((uintptr_t)priv->ep0buf,
                                    (uintptr_t)priv->ep0buf +
-                                   RK3576_EP0_BUFSIZE);
-              CLASS_SETUP(priv->driver, &priv->usbdev, ctrl,
-                          priv->ep0buf, len);
+                                       RK3576_EP0_BUFSIZE);
+              CLASS_SETUP(priv->driver, &priv->usbdev, ctrl, priv->ep0buf,
+                          len);
               priv->ep0state = EP0_STATUS_WAIT;
             }
             break;
@@ -829,8 +814,8 @@ static void rk3576_usbdev_ep0event(struct rk3576_usbdev_s *priv,
            * polling, which is exactly where the status TRB belongs.
            */
 
-          uint32_t trbtype = priv->ep0threeStage ? TRB_TYPE_CTL_STATUS3 :
-                                                   TRB_TYPE_CTL_STATUS2;
+          uint32_t trbtype = priv->ep0threeStage ? TRB_TYPE_CTL_STATUS3
+                                                 : TRB_TYPE_CTL_STATUS2;
           priv->ep0state = EP0_STATUS;
           rk3576_usbdev_starttrb(&priv->eps[phyep], priv->setupbuf, 0,
                                  trbtype);
@@ -850,7 +835,7 @@ static void rk3576_usbdev_ep0event(struct rk3576_usbdev_s *priv,
               priv->ep0pend = false;
               up_invalidate_dcache((uintptr_t)priv->ep0buf,
                                    (uintptr_t)priv->ep0buf +
-                                   RK3576_EP0_BUFSIZE);
+                                       RK3576_EP0_BUFSIZE);
               rk3576_usbdev_starttrb(&priv->eps[0], priv->ep0buf,
                                      priv->ep0datlen, TRB_TYPE_CTL_DATA);
             }
@@ -870,8 +855,7 @@ static void rk3576_usbdev_ep0event(struct rk3576_usbdev_s *priv,
  *
  ****************************************************************************/
 
-static void rk3576_usbdev_epevent(struct rk3576_usbdev_s *priv,
-                                  uint32_t evt)
+static void rk3576_usbdev_epevent(struct rk3576_usbdev_s *priv, uint32_t evt)
 {
   uint8_t phyep = DEPEVT_PHYEP(evt);
   struct rk3576_ep_s *privep;
@@ -903,12 +887,12 @@ static void rk3576_usbdev_epevent(struct rk3576_usbdev_s *priv,
 
               up_invalidate_dcache((uintptr_t)privep->trb,
                                    (uintptr_t)privep->trb +
-                                   sizeof(struct rk3576_trb_s));
+                                       sizeof(struct rk3576_trb_s));
               up_invalidate_dcache((uintptr_t)privreq->req.buf,
                                    (uintptr_t)privreq->req.buf +
-                                   privreq->req.len);
-              privreq->req.xfrd = privreq->req.len -
-                                  (privep->trb->size & TRB_SIZE_MASK);
+                                       privreq->req.len);
+              privreq->req.xfrd =
+                  privreq->req.len - (privep->trb->size & TRB_SIZE_MASK);
             }
           else
             {
@@ -930,8 +914,7 @@ static void rk3576_usbdev_epevent(struct rk3576_usbdev_s *priv,
  *
  ****************************************************************************/
 
-static void rk3576_usbdev_devevent(struct rk3576_usbdev_s *priv,
-                                   uint32_t evt)
+static void rk3576_usbdev_devevent(struct rk3576_usbdev_s *priv, uint32_t evt)
 {
   switch (DEVT_TYPE(evt))
     {
@@ -958,10 +941,12 @@ static void rk3576_usbdev_devevent(struct rk3576_usbdev_s *priv,
               if (priv->eps[i].busy)
                 {
                   rk3576_usbdev_epcmd((uint8_t)i,
-                      DEPCMD_ENDTRANSFER | DEPCMD_HIPRI_FORCERM |
-                      DEPCMD_CMDIOC |
-                      ((uint32_t)priv->eps[i].rscidx <<
-                       DEPCMD_PARAM_SHIFT), 0, 0, 0, NULL);
+                                      DEPCMD_ENDTRANSFER |
+                                          DEPCMD_HIPRI_FORCERM |
+                                          DEPCMD_CMDIOC |
+                                          ((uint32_t)priv->eps[i].rscidx
+                                           << DEPCMD_PARAM_SHIFT),
+                                      0, 0, 0, NULL);
                   priv->eps[i].busy = false;
                 }
             }
@@ -973,7 +958,7 @@ static void rk3576_usbdev_devevent(struct rk3576_usbdev_s *priv,
               struct rk3576_ep_s *privep = &priv->eps[i];
 
               privep->stalled = false;
-              privep->busy    = false;
+              privep->busy = false;
               while (sq_peek(&privep->reqq) != NULL)
                 {
                   rk3576_usbdev_reqcomplete(privep, -ESHUTDOWN);
@@ -989,21 +974,21 @@ static void rk3576_usbdev_devevent(struct rk3576_usbdev_s *priv,
 
       case DEVT_CONNECTDONE:
         {
-          uint32_t speed = rk3576_usbdev_getreg(DWC3_DSTS) &
-                           DSTS_CONNECTSPD_MASK;
+          uint32_t speed =
+              rk3576_usbdev_getreg(DWC3_DSTS) & DSTS_CONNECTSPD_MASK;
           uint16_t mps = (speed == DSTS_SPEED_FS) ? 64 : 64;
 
           uinfo("connect done, speed=%lu\n", (unsigned long)speed);
 
-          priv->usbdev.speed = (speed == DSTS_SPEED_HS) ? USB_SPEED_HIGH :
-                                                          USB_SPEED_FULL;
+          priv->usbdev.speed =
+              (speed == DSTS_SPEED_HS) ? USB_SPEED_HIGH : USB_SPEED_FULL;
 
           /* Re-issue ep0 config with the final control MPS (modify) */
 
-          rk3576_usbdev_epconfig(&priv->eps[0], USB_EP_ATTR_XFER_CONTROL,
-                                 mps, true);
-          rk3576_usbdev_epconfig(&priv->eps[1], USB_EP_ATTR_XFER_CONTROL,
-                                 mps, true);
+          rk3576_usbdev_epconfig(&priv->eps[0], USB_EP_ATTR_XFER_CONTROL, mps,
+                                 true);
+          rk3576_usbdev_epconfig(&priv->eps[1], USB_EP_ATTR_XFER_CONTROL, mps,
+                                 true);
 
           /* (Re-)arm for the first SETUP of the new connection */
 
@@ -1270,8 +1255,9 @@ static int rk3576_usbdev_coreinit(struct rk3576_usbdev_s *priv)
   /* Device event interrupts */
 
   rk3576_usbdev_putreg(DEVTEN_DISCONNEVTEN | DEVTEN_USBRSTEN |
-                       DEVTEN_CONNECTDONEEN | DEVTEN_WKUPEVTEN |
-                       DEVTEN_U3L2L1SUSPEN, DWC3_DEVTEN);
+                           DEVTEN_CONNECTDONEEN | DEVTEN_WKUPEVTEN |
+                           DEVTEN_U3L2L1SUSPEN,
+                       DWC3_DEVTEN);
 
   return OK;
 }
@@ -1332,8 +1318,8 @@ static int rk3576_ep_disable(struct usbdev_ep_s *ep)
     {
       rk3576_usbdev_epcmd(privep->phyep,
                           DEPCMD_ENDTRANSFER | DEPCMD_HIPRI_FORCERM |
-                          DEPCMD_CMDIOC |
-                          ((uint32_t)privep->rscidx << DEPCMD_PARAM_SHIFT),
+                              DEPCMD_CMDIOC |
+                              ((uint32_t)privep->rscidx << DEPCMD_PARAM_SHIFT),
                           0, 0, 0, NULL);
       privep->busy = false;
     }
@@ -1370,8 +1356,7 @@ static struct usbdev_req_s *rk3576_ep_allocreq(struct usbdev_ep_s *ep)
   return &privreq->req;
 }
 
-static void rk3576_ep_freereq(struct usbdev_ep_s *ep,
-                              struct usbdev_req_s *req)
+static void rk3576_ep_freereq(struct usbdev_ep_s *ep, struct usbdev_req_s *req)
 {
   kmm_free(req);
 }
@@ -1399,8 +1384,7 @@ static void rk3576_ep_freebuffer(struct usbdev_ep_s *ep, void *buf)
  * Name: rk3576_ep_submit
  ****************************************************************************/
 
-static int rk3576_ep_submit(struct usbdev_ep_s *ep,
-                            struct usbdev_req_s *req)
+static int rk3576_ep_submit(struct usbdev_ep_s *ep, struct usbdev_req_s *req)
 {
   struct rk3576_ep_s *privep = (struct rk3576_ep_s *)ep;
   struct rk3576_usbdev_s *priv = privep->dev;
@@ -1408,7 +1392,7 @@ static int rk3576_ep_submit(struct usbdev_ep_s *ep,
   irqstate_t flags;
 
   req->result = -EINPROGRESS;
-  req->xfrd   = 0;
+  req->xfrd = 0;
 
   flags = enter_critical_section();
 
@@ -1422,7 +1406,7 @@ static int rk3576_ep_submit(struct usbdev_ep_s *ep,
   if (privep->phyep < 2 && req->len == 0)
     {
       req->result = OK;
-      req->xfrd   = 0;
+      req->xfrd = 0;
       leave_critical_section(flags);
       if (req->callback != NULL)
         {
@@ -1448,7 +1432,7 @@ static int rk3576_ep_submit(struct usbdev_ep_s *ep,
                       (uintptr_t)priv->ep0buf + RK3576_EP0_BUFSIZE);
 
       sq_addlast(&privreq->node, &privep->reqq);
-      priv->ep0state  = EP0_DATA_IN;
+      priv->ep0state = EP0_DATA_IN;
       priv->ep0datlen = len;
 
       /* Start the data TRB only once the host has begun the data stage
@@ -1458,8 +1442,7 @@ static int rk3576_ep_submit(struct usbdev_ep_s *ep,
       if (priv->ep0nrdy)
         {
           priv->ep0nrdy = false;
-          rk3576_usbdev_starttrb(privep, priv->ep0buf, len,
-                                 TRB_TYPE_CTL_DATA);
+          rk3576_usbdev_starttrb(privep, priv->ep0buf, len, TRB_TYPE_CTL_DATA);
         }
       else
         {
@@ -1481,8 +1464,7 @@ static int rk3576_ep_submit(struct usbdev_ep_s *ep,
  * Name: rk3576_ep_cancel
  ****************************************************************************/
 
-static int rk3576_ep_cancel(struct usbdev_ep_s *ep,
-                            struct usbdev_req_s *req)
+static int rk3576_ep_cancel(struct usbdev_ep_s *ep, struct usbdev_req_s *req)
 {
   struct rk3576_ep_s *privep = (struct rk3576_ep_s *)ep;
   irqstate_t flags;
@@ -1493,8 +1475,8 @@ static int rk3576_ep_cancel(struct usbdev_ep_s *ep,
     {
       rk3576_usbdev_epcmd(privep->phyep,
                           DEPCMD_ENDTRANSFER | DEPCMD_HIPRI_FORCERM |
-                          DEPCMD_CMDIOC |
-                          ((uint32_t)privep->rscidx << DEPCMD_PARAM_SHIFT),
+                              DEPCMD_CMDIOC |
+                              ((uint32_t)privep->rscidx << DEPCMD_PARAM_SHIFT),
                           0, 0, 0, NULL);
       privep->busy = false;
     }
@@ -1519,15 +1501,14 @@ static int rk3576_ep_stall(struct usbdev_ep_s *ep, bool resume)
 
   if (resume)
     {
-      ret = rk3576_usbdev_epcmd(privep->phyep, DEPCMD_CLEARSTALL,
-                                0, 0, 0, NULL);
+      ret =
+          rk3576_usbdev_epcmd(privep->phyep, DEPCMD_CLEARSTALL, 0, 0, 0, NULL);
       privep->stalled = false;
       rk3576_usbdev_epnext(privep);
     }
   else
     {
-      ret = rk3576_usbdev_epcmd(privep->phyep, DEPCMD_SETSTALL,
-                                0, 0, 0, NULL);
+      ret = rk3576_usbdev_epcmd(privep->phyep, DEPCMD_SETSTALL, 0, 0, 0, NULL);
       privep->stalled = true;
     }
 
@@ -1542,9 +1523,8 @@ static int rk3576_ep_stall(struct usbdev_ep_s *ep, bool resume)
  * Name: rk3576_dev_allocep
  ****************************************************************************/
 
-static struct usbdev_ep_s *rk3576_dev_allocep(struct usbdev_s *dev,
-                                              uint8_t epno, bool in,
-                                              uint8_t eptype)
+static struct usbdev_ep_s *
+rk3576_dev_allocep(struct usbdev_s *dev, uint8_t epno, bool in, uint8_t eptype)
 {
   struct rk3576_usbdev_s *priv = (struct rk3576_usbdev_s *)dev;
   uint8_t log = epno & USB_EPNO_MASK;
@@ -1601,10 +1581,7 @@ static int rk3576_dev_getframe(struct usbdev_s *dev)
   return (int)((rk3576_usbdev_getreg(DWC3_DSTS) >> 3) & 0x3fffu);
 }
 
-static int rk3576_dev_wakeup(struct usbdev_s *dev)
-{
-  return -ENOSYS;
-}
+static int rk3576_dev_wakeup(struct usbdev_s *dev) { return -ENOSYS; }
 
 static int rk3576_dev_selfpowered(struct usbdev_s *dev, bool selfpowered)
 {
@@ -1654,13 +1631,13 @@ int rk3576_usbdev_initialize(void)
 
   if (priv->evtbuf != NULL)
     {
-      return OK;   /* Already initialized */
+      return OK; /* Already initialized */
     }
 
   memset(priv, 0, sizeof(*priv));
 
-  priv->usbdev.ops   = &g_devops;
-  priv->usbdev.ep0   = &priv->eps[1].ep;
+  priv->usbdev.ops = &g_devops;
+  priv->usbdev.ep0 = &priv->eps[1].ep;
   priv->usbdev.speed = USB_SPEED_HIGH;
   priv->usbdev.dualspeed = 1;
 
@@ -1688,8 +1665,8 @@ int rk3576_usbdev_initialize(void)
 
       privep->ep.ops = &g_epops;
       privep->ep.eplog = (uint8_t)((i >> 1) | ((i & 1) ? USB_DIR_IN : 0));
-      privep->ep.maxpacket = (i < 2) ? RK3576_EP0_MAXPACKET :
-                                       RK3576_BULK_MAXPACKET;
+      privep->ep.maxpacket =
+          (i < 2) ? RK3576_EP0_MAXPACKET : RK3576_BULK_MAXPACKET;
       privep->dev = priv;
       privep->phyep = (uint8_t)i;
       privep->trb = (struct rk3576_trb_s *)((uintptr_t)trbs + i * 64);
@@ -1712,13 +1689,9 @@ int rk3576_usbdev_initialize(void)
  *
  ****************************************************************************/
 
-void arm64_usbinitialize(void)
-{
-}
+void arm64_usbinitialize(void) {}
 
-void arm64_usbuninitialize(void)
-{
-}
+void arm64_usbuninitialize(void) {}
 
 /****************************************************************************
  * Name: usbdev_register

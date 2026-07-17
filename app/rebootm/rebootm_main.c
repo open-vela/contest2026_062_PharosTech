@@ -49,12 +49,12 @@
  * offset 0x40, from the vendor device tree syscon-reboot-mode node).
  */
 
-#define REBOOTM_PMU0_GRF_OS_REG  0x26024040ul
+#define REBOOTM_PMU0_GRF_OS_REG 0x26024040ul
 
 /* Rockchip boot mode magics ("RK" 0x5242C3xx, vendor device tree). */
 
-#define REBOOTM_MODE_NORMAL      0x5242c300u
-#define REBOOTM_MODE_LOADER      0x5242c301u
+#define REBOOTM_MODE_NORMAL 0x5242c300u
+#define REBOOTM_MODE_LOADER 0x5242c301u
 
 /****************************************************************************
  * Public Functions
@@ -87,7 +87,8 @@ int main(int argc, FAR char *argv[])
 
   *osreg = mode;
   printf("rebootm: boot mode 0x%08lx written (readback 0x%08lx), "
-         "rebooting ...\n", (unsigned long)mode, (unsigned long)*osreg);
+         "rebooting ...\n",
+         (unsigned long)mode, (unsigned long)*osreg);
   fflush(stdout);
 
 #ifdef CONFIG_BOARDCTL_RESET
