@@ -388,10 +388,7 @@ static int rk3576_pwm_start(struct pwm_lowerhalf_s *dev,
   rk3576_pwm_putreg(priv, RK3576_PWM_CTRL,
                     PWM_CTRL_MODE_CONTINUOUS | (PWM_CTRL_MODE_MASK << 16));
 
-  /* Step 7: Enable clock and channel together.  CTRL_UPDATE is a W1T
-   * pulse (auto-cleared) and MUST be set in a separate write AFTER
-   * pwm_en/clk_en, per the TRM standard flow.
-   */
+  /* Step 7: Enable clock and channel together. */
 
   rk3576_pwm_putreg(priv, RK3576_PWM_ENABLE,
                     PWM_HIWORD(PWM_ENABLE_CLK_EN | PWM_ENABLE_EN));
