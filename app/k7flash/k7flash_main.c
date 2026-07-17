@@ -23,34 +23,35 @@
  * SPDX-License-Identifier: Apache-2.0
  ****************************************************************************/
 
+#include <errno.h>
+#include <fcntl.h>
+#include <malloc.h>
 #include <nuttx/config.h>
-#include <sys/boardctl.h>
-#include <sys/stat.h>
+#include <nuttx/fs/fs.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <malloc.h>
-#include <stdint.h>
 #include <string.h>
-#include <fcntl.h>
+#include <sys/boardctl.h>
+#include <sys/stat.h>
 #include <unistd.h>
-#include <errno.h>
-#include <nuttx/fs/fs.h>
 
 #ifdef CONFIG_FS_TMPFS
-#  include <sys/mount.h>
+#include <sys/mount.h>
 #endif
 
 /****************************************************************************
  * Guardrail constants (hardcoded, not overridable from command line)
  ****************************************************************************/
 
-#define K7_TARGET_DEV   "/dev/mmcsd0"   /* Write SD card only, never eMMC */
-#define K7_UBOOT_SECTOR 16384           /* uboot slot start sector */
-#define K7_TRUST_SECTOR 24576           /* trust slot start (write must
-                                         * not cross this) */
-#define K7_SECTOR_SIZE  512
-#define K7_FIT_MAGIC    0xd00dfeedu      /* Rockchip/U-Boot FIT(FDT) magic */
-#define K7_MAX_BYTES    ((K7_TRUST_SECTOR - K7_UBOOT_SECTOR) * K7_SECTOR_SIZE)
+#define K7_TARGET_DEV   "/dev/mmcsd0" /* Write SD card only, never eMMC */
+#define K7_UBOOT_SECTOR 16384         /* uboot slot start sector */
+#define K7_TRUST_SECTOR                 \
+  24576 /* trust slot start (write must \
+         * not cross this) */
+#define K7_SECTOR_SIZE 512
+#define K7_FIT_MAGIC   0xd00dfeedu /* Rockchip/U-Boot FIT(FDT) magic */
+#define K7_MAX_BYTES   ((K7_TRUST_SECTOR - K7_UBOOT_SECTOR) * K7_SECTOR_SIZE)
 
 /****************************************************************************
  * Private Functions
@@ -59,7 +60,7 @@
 static uint32_t k7_be32(const uint8_t *p)
 {
   return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
-         ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
+         ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
 /****************************************************************************
@@ -87,10 +88,10 @@ int main(int argc, char *argv[])
       return 1;
     }
 
-  /* Mount tmpfs at /tmp so this tool is self-contained: the Ymodem receiver
-   * (rb) drops the firmware here and k7flash reads it back.  The mount is
-   * idempotent, so a re-run (or a board that already mounted it) is fine.
-   */
+    /* Mount tmpfs at /tmp so this tool is self-contained: the Ymodem receiver
+     * (rb) drops the firmware here and k7flash reads it back.  The mount is
+     * idempotent, so a re-run (or a board that already mounted it) is fine.
+     */
 
 #ifdef CONFIG_FS_TMPFS
   mount(NULL, "/tmp", "tmpfs", 0, NULL);
@@ -124,7 +125,7 @@ int main(int argc, char *argv[])
    * just slower).
    */
 
-  buf  = memalign(64, nsectors * K7_SECTOR_SIZE);
+  buf = memalign(64, nsectors * K7_SECTOR_SIZE);
   vbuf = memalign(64, nsectors * K7_SECTOR_SIZE);
   if (buf == NULL || vbuf == NULL)
     {
@@ -132,7 +133,7 @@ int main(int argc, char *argv[])
       goto errout;
     }
 
-  memset(buf, 0, nsectors * K7_SECTOR_SIZE);   /* zero-pad last sector */
+  memset(buf, 0, nsectors * K7_SECTOR_SIZE); /* zero-pad last sector */
   fd = open(path, O_RDONLY);
   if (fd < 0)
     {
@@ -166,8 +167,7 @@ int main(int argc, char *argv[])
   if (ret < 0 || bnode->u.i_bops->write == NULL ||
       bnode->u.i_bops->read == NULL)
     {
-      fprintf(stderr,
-              "error: no readable/writable block device %s\n",
+      fprintf(stderr, "error: no readable/writable block device %s\n",
               K7_TARGET_DEV);
       goto errout;
     }
@@ -183,9 +183,8 @@ int main(int argc, char *argv[])
   rn = bnode->u.i_bops->write(bnode, buf, K7_UBOOT_SECTOR, nsectors);
   if (rn != (ssize_t)nsectors)
     {
-      fprintf(stderr,
-              "error: write failed (rn=%zd, expected %zu)\n",
-              rn, nsectors);
+      fprintf(stderr, "error: write failed (rn=%zd, expected %zu)\n", rn,
+              nsectors);
       goto errout;
     }
 
@@ -196,7 +195,8 @@ int main(int argc, char *argv[])
     {
       fprintf(stderr,
               "error: verification failed (rn=%zd) -- not rebooting, "
-              "please retry\n", rn);
+              "please retry\n",
+              rn);
       goto errout;
     }
 

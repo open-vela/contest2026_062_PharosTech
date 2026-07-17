@@ -41,10 +41,10 @@
  * Included Files
  ****************************************************************************/
 
+#include <debug.h>
+#include <errno.h>
 #include <nuttx/config.h>
 #include <stdint.h>
-#include <errno.h>
-#include <debug.h>
 
 #include <nuttx/arch.h>
 
@@ -98,13 +98,11 @@
  *
  ****************************************************************************/
 
-static int _get_i2c_clock_gate_register(
-  uint16_t i2c_bus_id, 
-  unsigned long *p_pclk_reg,
-  unsigned long *p_clk_reg,
-  uint8_t *p_pclk_offset,
-  uint8_t *p_clk_offset
-) 
+static int _get_i2c_clock_gate_register(uint16_t i2c_bus_id,
+                                        unsigned long *p_pclk_reg,
+                                        unsigned long *p_clk_reg,
+                                        uint8_t *p_pclk_offset,
+                                        uint8_t *p_clk_offset)
 {
   uint8_t clk_offset, pclk_offset;
   unsigned long pclk_reg_offset = RK3576_CRU_GATE_CON(12);
@@ -114,8 +112,8 @@ static int _get_i2c_clock_gate_register(
   switch (i2c_bus_id)
     {
       case 0:
-        /* unlike others, 
-         * i2c0 clock register is in PMU1 CRU 
+        /* unlike others,
+         * i2c0 clock register is in PMU1 CRU
          */
         base = RK3576_PMU1_CRU_ADDR;
         pclk_reg_offset = RK3576_PMU1CRU_GATE_CON(5);
@@ -169,7 +167,7 @@ static int _get_i2c_clock_gate_register(
         return -EINVAL;
     }
 
-  if (p_pclk_reg) 
+  if (p_pclk_reg)
     {
       *p_pclk_reg = pclk_reg_offset + base;
     }
@@ -217,11 +215,9 @@ static int _get_i2c_clock_gate_register(
  *
  ****************************************************************************/
 
-static int _get_i2c_clock_sel_register(
-  uint16_t i2c_bus_id, 
-  unsigned long *p_sel_reg,
-  uint8_t *p_sel_offset
-) 
+static int _get_i2c_clock_sel_register(uint16_t i2c_bus_id,
+                                       unsigned long *p_sel_reg,
+                                       uint8_t *p_sel_offset)
 {
   uint8_t sel_offset;
   unsigned long sel_reg_offset = RK3576_CRU_CLKSEL_CON(57);
@@ -306,10 +302,11 @@ static int _get_i2c_clock_sel_register(
  *
  * Returned Value:
  *   OK (0) on success; a negated errno value on failure.
- * 
+ *
  ****************************************************************************/
 
-int rk3576_cru_set_i2c_clock_selection(uint16_t i2c_bus_id, rk3576_clock_source_t sel)
+int rk3576_cru_set_i2c_clock_selection(uint16_t i2c_bus_id,
+                                       rk3576_clock_source_t sel)
 {
   unsigned long sel_reg;
   uint8_t sel_offset;
@@ -340,7 +337,7 @@ int rk3576_cru_set_i2c_clock_selection(uint16_t i2c_bus_id, rk3576_clock_source_
         _err("CRU: Invalid i2c bus clock selection %u", sel);
         return -EINVAL;
     }
-  
+
   sel_bits <<= sel_offset;
   sel_bits |= (0b11 << (sel_offset + 16)); /* WE bits */
 
@@ -368,7 +365,8 @@ int rk3576_cru_set_i2c_clock_selection(uint16_t i2c_bus_id, rk3576_clock_source_
  *
  ****************************************************************************/
 
-int rk3576_cru_get_i2c_clock_selection(uint16_t i2c_bus_id, rk3576_clock_source_t *p_sel)
+int rk3576_cru_get_i2c_clock_selection(uint16_t i2c_bus_id,
+                                       rk3576_clock_source_t *p_sel)
 {
   unsigned long sel_reg;
   uint8_t sel_offset;
@@ -399,12 +397,12 @@ int rk3576_cru_get_i2c_clock_selection(uint16_t i2c_bus_id, rk3576_clock_source_
         sel = RK3576_CLOCK_SOURCE_XIN_OSC0_FUNC;
         break;
     }
-  
+
   if (p_sel)
     {
       *p_sel = sel;
     }
-  
+
   return OK;
 }
 
@@ -430,25 +428,21 @@ int rk3576_cru_get_i2c_clock_selection(uint16_t i2c_bus_id, rk3576_clock_source_
  *
  ****************************************************************************/
 
-int rk3576_cru_set_i2c_clock_gate(uint16_t i2c_bus_id, bool pclk_en, bool clk_en)
+int rk3576_cru_set_i2c_clock_gate(uint16_t i2c_bus_id, bool pclk_en,
+                                  bool clk_en)
 {
   unsigned long pclk_reg, clk_reg;
   uint8_t pclk_offset, clk_offset;
   uint32_t pclk, clk;
 
-  int ret = _get_i2c_clock_gate_register(
-    i2c_bus_id,
-    &pclk_reg,
-    &clk_reg,
-    &pclk_offset,
-    &clk_offset
-  );
+  int ret = _get_i2c_clock_gate_register(i2c_bus_id, &pclk_reg, &clk_reg,
+                                         &pclk_offset, &clk_offset);
 
-  if (ret < 0) 
+  if (ret < 0)
     {
       return ret;
     }
-  
+
   /* write 0 to enable clock, write 1 to disable */
 
   pclk = pclk_en ? 0 : (1 << pclk_offset);
@@ -456,7 +450,6 @@ int rk3576_cru_set_i2c_clock_gate(uint16_t i2c_bus_id, bool pclk_en, bool clk_en
 
   clk = clk_en ? 0 : (1 << clk_offset);
   clk |= (1 << (clk_offset + 16)); /* WE bits */
-  
 
   /* if register is the same, merge write operation */
   if (pclk_reg == clk_reg)
@@ -468,7 +461,7 @@ int rk3576_cru_set_i2c_clock_gate(uint16_t i2c_bus_id, bool pclk_en, bool clk_en
       putreg32(pclk, pclk_reg);
       putreg32(clk, clk_reg);
     }
-    
+
   return OK;
 }
 
@@ -493,20 +486,16 @@ int rk3576_cru_set_i2c_clock_gate(uint16_t i2c_bus_id, bool pclk_en, bool clk_en
  *
  ****************************************************************************/
 
-int rk3576_cru_get_i2c_clock_gate(uint16_t i2c_bus_id, bool *p_pclk_en, bool *p_clk_en)
+int rk3576_cru_get_i2c_clock_gate(uint16_t i2c_bus_id, bool *p_pclk_en,
+                                  bool *p_clk_en)
 {
   unsigned long pclk_reg, clk_reg;
   uint8_t pclk_offset, clk_offset;
 
-  int ret = _get_i2c_clock_gate_register(
-    i2c_bus_id,
-    &pclk_reg,
-    &clk_reg,
-    &pclk_offset,
-    &clk_offset
-  );
+  int ret = _get_i2c_clock_gate_register(i2c_bus_id, &pclk_reg, &clk_reg,
+                                         &pclk_offset, &clk_offset);
 
-  if (ret < 0) 
+  if (ret < 0)
     {
       return ret;
     }
@@ -516,13 +505,11 @@ int rk3576_cru_get_i2c_clock_gate(uint16_t i2c_bus_id, bool *p_pclk_en, bool *p_
       /* 0 -> enabled ; 1 -> disabled */
       *p_pclk_en = (getreg32(pclk_reg) & (1 << pclk_offset)) == 0;
     }
-  
-  if (p_clk_en) 
+
+  if (p_clk_en)
     {
       *p_clk_en = (getreg32(clk_reg) & (1 << clk_offset)) == 0;
     }
 
   return OK;
 }
-
-

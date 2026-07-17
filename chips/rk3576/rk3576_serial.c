@@ -31,37 +31,37 @@
  * Included Files
  ***************************************************************************/
 
-#include <nuttx/config.h>
-#include <sys/types.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <unistd.h>
-#include <string.h>
 #include <assert.h>
-#include <errno.h>
 #include <debug.h>
+#include <errno.h>
+#include <nuttx/config.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #ifdef CONFIG_SERIAL_TERMIOS
-#  include <termios.h>
+#include <termios.h>
 #endif
 
-#include <nuttx/irq.h>
 #include <nuttx/arch.h>
-#include <nuttx/spinlock.h>
-#include <nuttx/init.h>
 #include <nuttx/fs/ioctl.h>
+#include <nuttx/init.h>
+#include <nuttx/irq.h>
+#include <nuttx/kmalloc.h>
 #include <nuttx/semaphore.h>
 #include <nuttx/serial/serial.h>
-#include <nuttx/kmalloc.h>
+#include <nuttx/spinlock.h>
 
 #include "arm64_arch.h"
-#include "arm64_internal.h"
-#include "rk3576_serial.h"
 #include "arm64_arch_timer.h"
-#include "rk3576_boot.h"
 #include "arm64_gic.h"
+#include "arm64_internal.h"
 #include "hardware/rk3576_memorymap.h"
 #include "hardware/rk3576_serial.h"
+#include "rk3576_boot.h"
+#include "rk3576_serial.h"
 
 #ifdef USE_SERIALDRIVER
 
@@ -73,8 +73,8 @@
 
 /* UART0 is console and ttyS0, follows U-Boot Bootloader */
 
-#define CONSOLE_DEV     g_uart0port         /* UART0 is console */
-#define TTYS0_DEV       g_uart0port         /* UART0 is ttyS0 */
+#define CONSOLE_DEV g_uart0port /* UART0 is console */
+#define TTYS0_DEV   g_uart0port /* UART0 is ttyS0 */
 
 /* UART SCLK is the UART Input Clock.  Through experimentation, it has
  * been found that the serial clock is OSC24M
@@ -105,18 +105,18 @@
 
 struct rk3576_uart_config
 {
-  unsigned long uart;  /* UART Base Address */
+  unsigned long uart; /* UART Base Address */
 };
 
 /* UART Device Data */
 
 struct rk3576_uart_data
 {
-  uint32_t baud_rate;  /* UART Baud Rate */
-  uint32_t ier;        /* Saved IER value */
-  uint8_t  parity;     /* 0=none, 1=odd, 2=even */
-  uint8_t  bits;       /* Number of bits (7 or 8) */
-  bool     stopbits2;  /* true: Configure with 2 stop bits instead of 1 */
+  uint32_t baud_rate; /* UART Baud Rate */
+  uint32_t ier;       /* Saved IER value */
+  uint8_t parity;     /* 0=none, 1=odd, 2=even */
+  uint8_t bits;       /* Number of bits (7 or 8) */
+  bool stopbits2;     /* true: Configure with 2 stop bits instead of 1 */
 };
 
 /* UART Port */
@@ -125,8 +125,8 @@ struct rk3576_uart_port_s
 {
   struct rk3576_uart_data data;     /* UART Device Data */
   struct rk3576_uart_config config; /* UART Configuration */
-  unsigned int irq_num;          /* UART IRQ Number */
-  bool is_console;               /* 1 if this UART is console */
+  unsigned int irq_num;             /* UART IRQ Number */
+  bool is_console;                  /* 1 if this UART is console */
 };
 
 /***************************************************************************
@@ -181,7 +181,8 @@ static uint32_t rk3576_uart_divisor(uint32_t baud)
 static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
 {
   struct uart_dev_s *dev = (struct uart_dev_s *)arg;
-  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_port_s *port =
+      (struct rk3576_uart_port_s *)dev->priv;
   const struct rk3576_uart_config *config = &port->config;
   uint32_t status;
   int passes;
@@ -202,7 +203,7 @@ static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
 
       switch (status & RK3576_UART_IIR_IID_MASK)
         {
-          /* Handle incoming, receive bytes (with or without timeout) */
+            /* Handle incoming, receive bytes (with or without timeout) */
 
           case RK3576_UART_IIR_IID_RECV:
           case RK3576_UART_IIR_IID_TIMEOUT:
@@ -211,7 +212,7 @@ static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
               break;
             }
 
-          /* Handle outgoing, transmit bytes */
+            /* Handle outgoing, transmit bytes */
 
           case RK3576_UART_IIR_IID_TXEMPTY:
             {
@@ -219,7 +220,7 @@ static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
               break;
             }
 
-          /* Just clear modem status interrupts (UART1 only) */
+            /* Just clear modem status interrupts (UART1 only) */
 
           case RK3576_UART_IIR_IID_MODEM:
             {
@@ -229,7 +230,7 @@ static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
               break;
             }
 
-          /* Just clear any line status interrupts */
+            /* Just clear any line status interrupts */
 
           case RK3576_UART_IIR_IID_LINESTATUS:
             {
@@ -239,10 +240,10 @@ static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
               break;
             }
 
-          /* Busy detect.
-           * Just ignore.
-           * Cleared by reading the status register
-           */
+            /* Busy detect.
+             * Just ignore.
+             * Cleared by reading the status register
+             */
 
           case RK3576_UART_IIR_IID_BUSY:
             {
@@ -254,7 +255,7 @@ static int rk3576_uart_irq_handler(int irq, void *context, void *arg)
               break;
             }
 
-          /* No further interrupts pending... return now */
+            /* No further interrupts pending... return now */
 
           case RK3576_UART_IIR_IID_NONE:
             {
@@ -341,11 +342,13 @@ static int rk3576_uart_setup(struct uart_dev_s *dev)
 
   /* Clear fifos */
 
-  putreg32(RK3576_UART_FCR_RFIFOR | RK3576_UART_FCR_XFIFOR, RK3576_UART_FCR(config->uart));
+  putreg32(RK3576_UART_FCR_RFIFOR | RK3576_UART_FCR_XFIFOR,
+           RK3576_UART_FCR(config->uart));
 
   /* Set trigger */
 
-  putreg32(RK3576_UART_FCR_FIFOE | RK3576_UART_FCR_RT_HALF, RK3576_UART_FCR(config->uart));
+  putreg32(RK3576_UART_FCR_FIFOE | RK3576_UART_FCR_RT_HALF,
+           RK3576_UART_FCR(config->uart));
 
   /* Set up the IER */
 
@@ -357,22 +360,22 @@ static int rk3576_uart_setup(struct uart_dev_s *dev)
 
   switch (data->bits)
     {
-    case 5:
-      lcr |= RK3576_UART_LCR_DLS_5BITS;
-      break;
+      case 5:
+        lcr |= RK3576_UART_LCR_DLS_5BITS;
+        break;
 
-    case 6:
-      lcr |= RK3576_UART_LCR_DLS_6BITS;
-      break;
+      case 6:
+        lcr |= RK3576_UART_LCR_DLS_6BITS;
+        break;
 
-    case 7:
-      lcr |= RK3576_UART_LCR_DLS_7BITS;
-      break;
+      case 7:
+        lcr |= RK3576_UART_LCR_DLS_7BITS;
+        break;
 
-    case 8:
-    default:
-      lcr |= RK3576_UART_LCR_DLS_8BITS;
-      break;
+      case 8:
+      default:
+        lcr |= RK3576_UART_LCR_DLS_8BITS;
+        break;
     }
 
   if (data->stopbits2)
@@ -412,7 +415,7 @@ static int rk3576_uart_setup(struct uart_dev_s *dev)
   /* Set the BAUD divisor */
 
   dl = rk3576_uart_divisor(data->baud_rate);
-  putreg8(dl >> 8,   RK3576_UART_DLH(config->uart));
+  putreg8(dl >> 8, RK3576_UART_DLH(config->uart));
   putreg8(dl & 0xff, RK3576_UART_DLL(config->uart));
 
   /* Check the BAUD divisor */
@@ -430,13 +433,14 @@ static int rk3576_uart_setup(struct uart_dev_s *dev)
 
   /* Configure the FIFOs */
 
-  putreg32(RK3576_UART_FCR_RT_HALF | RK3576_UART_FCR_XFIFOR | RK3576_UART_FCR_RFIFOR |
-           RK3576_UART_FCR_FIFOE, RK3576_UART_FCR(config->uart));
+  putreg32(RK3576_UART_FCR_RT_HALF | RK3576_UART_FCR_XFIFOR |
+               RK3576_UART_FCR_RFIFOR | RK3576_UART_FCR_FIFOE,
+           RK3576_UART_FCR(config->uart));
 
   /* Enable Auto-Flow Control in the Modem Control Register */
 
 #if defined(CONFIG_SERIAL_IFLOWCONTROL) || defined(CONFIG_SERIAL_OFLOWCONTROL)
-#  warning Missing logic
+#warning Missing logic
 #endif
 
 #endif /* CONFIG_SUPPRESS_UART_CONFIG */
@@ -492,7 +496,8 @@ static void rk3576_uart_shutdown(struct uart_dev_s *dev)
 static int rk3576_uart_attach(struct uart_dev_s *dev)
 {
   int ret;
-  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_port_s *port =
+      (struct rk3576_uart_port_s *)dev->priv;
 
   DEBUGASSERT(port != NULL);
 
@@ -537,7 +542,8 @@ static int rk3576_uart_attach(struct uart_dev_s *dev)
 
 static void rk3576_uart_detach(struct uart_dev_s *dev)
 {
-  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_port_s *port =
+      (struct rk3576_uart_port_s *)dev->priv;
 
   DEBUGASSERT(port != NULL);
 
@@ -575,8 +581,8 @@ static int rk3576_uart_ioctl(struct file *filep, int cmd, unsigned long arg)
 
   switch (cmd)
     {
-      case TIOCSBRK:  /* BSD compatibility: Turn break on, unconditionally */
-      case TIOCCBRK:  /* BSD compatibility: Turn break off, unconditionally */
+      case TIOCSBRK: /* BSD compatibility: Turn break on, unconditionally */
+      case TIOCCBRK: /* BSD compatibility: Turn break off, unconditionally */
       default:
         {
           ret = -ENOTTY;
@@ -611,7 +617,7 @@ static int rk3576_uart_receive(struct uart_dev_s *dev, unsigned int *status)
   uint32_t rbr;
 
   *status = getreg8(RK3576_UART_LSR(config->uart));
-  rbr     = getreg8(RK3576_UART_RBR(config->uart));
+  rbr = getreg8(RK3576_UART_RBR(config->uart));
   return rbr;
 }
 
@@ -632,7 +638,8 @@ static int rk3576_uart_receive(struct uart_dev_s *dev, unsigned int *status)
 
 static void rk3576_uart_rxint(struct uart_dev_s *dev, bool enable)
 {
-  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_port_s *port =
+      (struct rk3576_uart_port_s *)dev->priv;
   const struct rk3576_uart_config *config = &port->config;
 
   /* Write to Interrupt Enable Register (UART_IER) */
@@ -641,7 +648,8 @@ static void rk3576_uart_rxint(struct uart_dev_s *dev, bool enable)
     {
       /* Set ERBFI bit (Enable Rx Data Available Interrupt) */
 
-      modreg8(RK3576_UART_IER_ERBFI, RK3576_UART_IER_ERBFI, RK3576_UART_IER(config->uart));
+      modreg8(RK3576_UART_IER_ERBFI, RK3576_UART_IER_ERBFI,
+              RK3576_UART_IER(config->uart));
     }
   else
     {
@@ -667,7 +675,8 @@ static void rk3576_uart_rxint(struct uart_dev_s *dev, bool enable)
 
 static bool rk3576_uart_rxavailable(struct uart_dev_s *dev)
 {
-  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_port_s *port =
+      (struct rk3576_uart_port_s *)dev->priv;
   const struct rk3576_uart_config *config = &port->config;
 
   /* Data Ready Bit (Line Status Register) is 1 if Rx Data is ready */
@@ -692,7 +701,8 @@ static bool rk3576_uart_rxavailable(struct uart_dev_s *dev)
 
 static void rk3576_uart_send(struct uart_dev_s *dev, int ch)
 {
-  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_port_s *port =
+      (struct rk3576_uart_port_s *)dev->priv;
   const struct rk3576_uart_config *config = &port->config;
 
   /* Write char to Transmit Holding Register (UART_THR) */
@@ -717,7 +727,8 @@ static void rk3576_uart_send(struct uart_dev_s *dev, int ch)
 
 static void rk3576_uart_txint(struct uart_dev_s *dev, bool enable)
 {
-  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_port_s *port =
+      (struct rk3576_uart_port_s *)dev->priv;
   const struct rk3576_uart_config *config = &port->config;
 
   /* Write to Interrupt Enable Register (UART_IER) */
@@ -726,7 +737,8 @@ static void rk3576_uart_txint(struct uart_dev_s *dev, bool enable)
     {
       /* Set ETBEI bit (Enable Tx Holding Register Empty Interrupt) */
 
-      modreg8(RK3576_UART_IER_ETBEI, RK3576_UART_IER_ETBEI, RK3576_UART_IER(config->uart));
+      modreg8(RK3576_UART_IER_ETBEI, RK3576_UART_IER_ETBEI,
+              RK3576_UART_IER(config->uart));
     }
   else
     {
@@ -752,7 +764,8 @@ static void rk3576_uart_txint(struct uart_dev_s *dev, bool enable)
 
 static bool rk3576_uart_txready(struct uart_dev_s *dev)
 {
-  const struct rk3576_uart_port_s *port = (struct rk3576_uart_port_s *)dev->priv;
+  const struct rk3576_uart_port_s *port =
+      (struct rk3576_uart_port_s *)dev->priv;
   const struct rk3576_uart_config *config = &port->config;
 
   /* Tx FIFO is ready if THRE Bit is 1 (Tx Holding Register Empty) */
@@ -800,7 +813,8 @@ static bool rk3576_uart_txempty(struct uart_dev_s *dev)
 static void rk3576_uart_wait_send(struct uart_dev_s *dev, int ch)
 {
   DEBUGASSERT(dev != NULL);
-  while (!rk3576_uart_txready(dev));
+  while (!rk3576_uart_txready(dev))
+    ;
   rk3576_uart_send(dev, ch);
 }
 
@@ -810,69 +824,61 @@ static void rk3576_uart_wait_send(struct uart_dev_s *dev, int ch)
 
 /* UART Operations for Serial Driver */
 
-static const struct uart_ops_s g_uart_ops =
-{
-  .setup    = rk3576_uart_setup,
+static const struct uart_ops_s g_uart_ops = {
+  .setup = rk3576_uart_setup,
   .shutdown = rk3576_uart_shutdown,
-  .attach   = rk3576_uart_attach,
-  .detach   = rk3576_uart_detach,
-  .ioctl    = rk3576_uart_ioctl,
-  .receive  = rk3576_uart_receive,
-  .rxint    = rk3576_uart_rxint,
+  .attach = rk3576_uart_attach,
+  .detach = rk3576_uart_detach,
+  .ioctl = rk3576_uart_ioctl,
+  .receive = rk3576_uart_receive,
+  .rxint = rk3576_uart_rxint,
   .rxavailable = rk3576_uart_rxavailable,
 #ifdef CONFIG_SERIAL_IFLOWCONTROL
-  .rxflowcontrol    = NULL,
+  .rxflowcontrol = NULL,
 #endif
-  .send     = rk3576_uart_send,
-  .txint    = rk3576_uart_txint,
-  .txready  = rk3576_uart_txready,
-  .txempty  = rk3576_uart_txempty,
+  .send = rk3576_uart_send,
+  .txint = rk3576_uart_txint,
+  .txready = rk3576_uart_txready,
+  .txempty = rk3576_uart_txempty,
 };
 
 /* UART0 Port State (Console) */
 
 #ifndef CONFIG_UART0_BAUD
-#  define CONFIG_UART0_BAUD 115200
+#define CONFIG_UART0_BAUD 115200
 #endif
 
 #ifndef CONFIG_UART0_BITS
-#  define CONFIG_UART0_BITS 8
+#define CONFIG_UART0_BITS 8
 #endif
 
 #ifndef CONFIG_UART0_PARITY
-#  define CONFIG_UART0_PARITY 0
+#define CONFIG_UART0_PARITY 0
 #endif
 
 #ifndef CONFIG_UART0_2STOP
-#  define CONFIG_UART0_2STOP 0
+#define CONFIG_UART0_2STOP 0
 #endif
 
 #ifndef CONFIG_UART0_RXBUFSIZE
-#  define CONFIG_UART0_RXBUFSIZE 256
+#define CONFIG_UART0_RXBUFSIZE 256
 #endif
 
 #ifndef CONFIG_UART0_TXBUFSIZE
-#  define CONFIG_UART0_TXBUFSIZE 256
+#define CONFIG_UART0_TXBUFSIZE 256
 #endif
 
 #ifdef CONFIG_RK3576_UART
-static struct rk3576_uart_port_s g_uart0priv =
-{
-  .data   =
-    {
-      .baud_rate  = CONFIG_UART0_BAUD,
-      .parity     = CONFIG_UART0_PARITY,
-      .bits       = CONFIG_UART0_BITS,
-      .stopbits2  = CONFIG_UART0_2STOP
-    },
+static struct rk3576_uart_port_s g_uart0priv = {
+  .data = { .baud_rate = CONFIG_UART0_BAUD,
+            .parity = CONFIG_UART0_PARITY,
+            .bits = CONFIG_UART0_BITS,
+            .stopbits2 = CONFIG_UART0_2STOP },
 
-  .config =
-    {
-      .uart       = RK3576_UART0_ADDR
-    },
+  .config = { .uart = RK3576_UART0_ADDR },
 
-    .irq_num      = RK3576_IRQ_UART0,
-    .is_console   = 1
+  .irq_num = RK3576_IRQ_UART0,
+  .is_console = 1
 };
 
 /* UART0 I/O Buffers (Console) */
@@ -910,21 +916,20 @@ static struct uart_dev_s g_uart0port =
 
 struct rk3576_uart_hwdesc_s
 {
-  uintptr_t base;     /* Register base address */
-  unsigned int irq;   /* IRQ number */
+  uintptr_t base;   /* Register base address */
+  unsigned int irq; /* IRQ number */
 };
 
-static const struct rk3576_uart_hwdesc_s g_uart_hwdesc[UART_PORT_MAX + 1] =
-{
-  [UART_PORT_1]  = { .base = RK3576_UART1_ADDR,  .irq = RK3576_IRQ_UART1  },
-  [UART_PORT_2]  = { .base = RK3576_UART2_ADDR,  .irq = RK3576_IRQ_UART2  },
-  [UART_PORT_3]  = { .base = RK3576_UART3_ADDR,  .irq = RK3576_IRQ_UART3  },
-  [UART_PORT_4]  = { .base = RK3576_UART4_ADDR,  .irq = RK3576_IRQ_UART4  },
-  [UART_PORT_5]  = { .base = RK3576_UART5_ADDR,  .irq = RK3576_IRQ_UART5  },
-  [UART_PORT_6]  = { .base = RK3576_UART6_ADDR,  .irq = RK3576_IRQ_UART6  },
-  [UART_PORT_7]  = { .base = RK3576_UART7_ADDR,  .irq = RK3576_IRQ_UART7  },
-  [UART_PORT_8]  = { .base = RK3576_UART8_ADDR,  .irq = RK3576_IRQ_UART8  },
-  [UART_PORT_9]  = { .base = RK3576_UART9_ADDR,  .irq = RK3576_IRQ_UART9  },
+static const struct rk3576_uart_hwdesc_s g_uart_hwdesc[UART_PORT_MAX + 1] = {
+  [UART_PORT_1] = { .base = RK3576_UART1_ADDR, .irq = RK3576_IRQ_UART1 },
+  [UART_PORT_2] = { .base = RK3576_UART2_ADDR, .irq = RK3576_IRQ_UART2 },
+  [UART_PORT_3] = { .base = RK3576_UART3_ADDR, .irq = RK3576_IRQ_UART3 },
+  [UART_PORT_4] = { .base = RK3576_UART4_ADDR, .irq = RK3576_IRQ_UART4 },
+  [UART_PORT_5] = { .base = RK3576_UART5_ADDR, .irq = RK3576_IRQ_UART5 },
+  [UART_PORT_6] = { .base = RK3576_UART6_ADDR, .irq = RK3576_IRQ_UART6 },
+  [UART_PORT_7] = { .base = RK3576_UART7_ADDR, .irq = RK3576_IRQ_UART7 },
+  [UART_PORT_8] = { .base = RK3576_UART8_ADDR, .irq = RK3576_IRQ_UART8 },
+  [UART_PORT_9] = { .base = RK3576_UART9_ADDR, .irq = RK3576_IRQ_UART9 },
   [UART_PORT_10] = { .base = RK3576_UART10_ADDR, .irq = RK3576_IRQ_UART10 },
   [UART_PORT_11] = { .base = RK3576_UART11_ADDR, .irq = RK3576_IRQ_UART11 },
 };
@@ -1047,9 +1052,8 @@ void arm64_serialinit(void)
  *
  ***************************************************************************/
 
-int rk3576_serial_register(uint8_t port_id, uint32_t baud,
-                           uint8_t bits, uint8_t parity, bool stop2,
-                           uint16_t rx_buffer_size,
+int rk3576_serial_register(uint8_t port_id, uint32_t baud, uint8_t bits,
+                           uint8_t parity, bool stop2, uint16_t rx_buffer_size,
                            uint16_t tx_buffer_size)
 {
   struct rk3576_uart_port_s *priv;
@@ -1124,21 +1128,21 @@ int rk3576_serial_register(uint8_t port_id, uint32_t baud,
   /* Fill port private data */
 
   priv->data.baud_rate = baud;
-  priv->data.parity    = parity;
-  priv->data.bits      = bits;
+  priv->data.parity = parity;
+  priv->data.bits = bits;
   priv->data.stopbits2 = stop2;
-  priv->config.uart    = hw->base;
-  priv->irq_num        = hw->irq;
-  priv->is_console     = false;
+  priv->config.uart = hw->base;
+  priv->irq_num = hw->irq;
+  priv->is_console = false;
 
   /* Fill uart_dev_s */
 
-  dev->recv.size   = rx_buffer_size;
+  dev->recv.size = rx_buffer_size;
   dev->recv.buffer = rxbuf;
-  dev->xmit.size   = tx_buffer_size;
+  dev->xmit.size = tx_buffer_size;
   dev->xmit.buffer = txbuf;
-  dev->ops         = &g_uart_ops;
-  dev->priv        = priv;
+  dev->ops = &g_uart_ops;
+  dev->priv = priv;
 
   /* Register the device as /dev/ttySx (x = port_id) */
 
@@ -1146,8 +1150,7 @@ int rk3576_serial_register(uint8_t port_id, uint32_t baud,
   ret = uart_register(devname, dev);
   if (ret < 0)
     {
-      _err("UART%u: uart_register %s failed, ret=%d\n",
-           port_id, devname, ret);
+      _err("UART%u: uart_register %s failed, ret=%d\n", port_id, devname, ret);
       kmm_free(txbuf);
       kmm_free(rxbuf);
       kmm_free(dev);

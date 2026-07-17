@@ -28,7 +28,7 @@
 #include <nuttx/config.h>
 
 #ifndef __ASSEMBLY__
-#  include <nuttx/arch.h>
+#include <nuttx/arch.h>
 #endif
 
 /****************************************************************************

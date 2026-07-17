@@ -25,14 +25,14 @@
  * Included Files
  ****************************************************************************/
 
-#include <nuttx/config.h>
-#include <nuttx/compiler.h>
-#include <sys/types.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <arch/chip/chip.h>
-#include "arm64_internal.h"
 #include "arm64_arch.h"
+#include "arm64_internal.h"
+#include <arch/chip/chip.h>
+#include <nuttx/compiler.h>
+#include <nuttx/config.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <sys/types.h>
 
 /****************************************************************************
  * Public Function Prototypes
@@ -43,8 +43,7 @@
 #undef EXTERN
 #if defined(__cplusplus)
 #define EXTERN extern "C"
-extern "C"
-{
+extern "C" {
 #else
 #define EXTERN extern
 #endif

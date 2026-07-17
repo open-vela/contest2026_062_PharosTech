@@ -24,19 +24,19 @@
 
 #include <nuttx/config.h>
 
-#include <sys/types.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <errno.h>
 #include <debug.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <sys/types.h>
 
-#include <nuttx/irq.h>
-#include <nuttx/spinlock.h>
-#include <nuttx/kmalloc.h>
 #include <nuttx/ioexpander/gpio.h>
+#include <nuttx/irq.h>
+#include <nuttx/kmalloc.h>
+#include <nuttx/spinlock.h>
 
-#include "chip.h"
 #include "arm64_internal.h"
+#include "chip.h"
 #include "hardware/rk3576_gpio.h"
 #include "rk3576_gpio.h"
 
@@ -88,13 +88,9 @@
  * than GPIO1-4. Use this lookup table instead of arithmetic.
  */
 
-const uint32_t g_gpio_base[RK3576_GPIO_NPORTS] =
-{
-  RK3576_GPIO0_ADDR,
-  RK3576_GPIO1_ADDR,
-  RK3576_GPIO2_ADDR,
-  RK3576_GPIO3_ADDR,
-  RK3576_GPIO4_ADDR,
+const uint32_t g_gpio_base[RK3576_GPIO_NPORTS] = {
+  RK3576_GPIO0_ADDR, RK3576_GPIO1_ADDR, RK3576_GPIO2_ADDR,
+  RK3576_GPIO3_ADDR, RK3576_GPIO4_ADDR,
 };
 
 /* IOMUX register base offsets for each 8-pin group per bank. */
@@ -149,7 +145,6 @@ const struct rk3576_iomux_group
 
 static spinlock_t g_gpio_lock = SP_UNLOCKED;
 
-
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -201,7 +196,7 @@ static inline void rk3576_gpio_dirin(unsigned int port, unsigned int pin)
  ****************************************************************************/
 
 static void rk3576_iomux_set(uint32_t ioc_base, unsigned int port,
-                              unsigned int pin, unsigned int mux)
+                             unsigned int pin, unsigned int mux)
 {
   unsigned int group = pin / 8;
   uint32_t reg;
@@ -214,7 +209,7 @@ static void rk3576_iomux_set(uint32_t ioc_base, unsigned int port,
   /* GPIO0B (bank 0, pins 8-15): pins >= 12 (B4-B7) use extra offset */
   if (port == 0 && pin >= RK_PIN_B4 && pin <= RK_PIN_B7)
     {
-      reg += 0x1ff4;  /* GPIO0_IOC_GPIO0B_IOMUX_SEL_H */
+      reg += 0x1ff4; /* GPIO0_IOC_GPIO0B_IOMUX_SEL_H */
     }
 
   /* Each 8-pin group: pins 0-3 in first reg, pins 4-7 in reg+4 */
@@ -255,7 +250,7 @@ static void rk3576_iomux_set(uint32_t ioc_base, unsigned int port,
  ****************************************************************************/
 
 static void rk3576_pull_set(uint32_t ioc_base, unsigned int port,
-                             unsigned int pin, unsigned int pull)
+                            unsigned int pin, unsigned int pull)
 {
   uint32_t reg;
   unsigned int reg_offset;
@@ -265,11 +260,11 @@ static void rk3576_pull_set(uint32_t ioc_base, unsigned int port,
   /* Determine the pull register offset for this bank/pin. */
   if (port == 0 && pin < RK_PIN_B4)
     {
-      reg_offset = 0x0020;  /* GPIO0_AH */
+      reg_offset = 0x0020; /* GPIO0_AH */
     }
   else if (port == 0)
     {
-      reg_offset = 0x2028 - 0x4;  /* GPIO0_BH, offset adjusted */
+      reg_offset = 0x2028 - 0x4; /* GPIO0_BH, offset adjusted */
     }
   else if (port == 1)
     {
@@ -350,10 +345,18 @@ static bool rk3576_drive_level_to_hw(bool is_4level, unsigned int level,
       /* 4-level GPIO: only levels 0, 2, 4, 5 are valid */
       switch (level)
         {
-          case 0:  *hw_val = 0x0; return true;  /* 0b0000 — 100 ohms */
-          case 2:  *hw_val = 0x2; return true;  /* 0b0010 —  50 ohms */
-          case 4:  *hw_val = 0x1; return true;  /* 0b0001 —  33 ohms */
-          case 5:  *hw_val = 0x3; return true;  /* 0b0011 —  25 ohms */
+          case 0:
+            *hw_val = 0x0;
+            return true; /* 0b0000 — 100 ohms */
+          case 2:
+            *hw_val = 0x2;
+            return true; /* 0b0010 —  50 ohms */
+          case 4:
+            *hw_val = 0x1;
+            return true; /* 0b0001 —  33 ohms */
+          case 5:
+            *hw_val = 0x3;
+            return true; /* 0b0011 —  25 ohms */
           default:
             gpioerr("ERROR: drive level %u not supported on 4-level GPIO\n",
                     level);
@@ -365,12 +368,24 @@ static bool rk3576_drive_level_to_hw(bool is_4level, unsigned int level,
       /* 6-level GPIO */
       switch (level)
         {
-          case 0:  *hw_val = 0x0; return true;  /* 0b0000 — 100 ohms */
-          case 1:  *hw_val = 0x4; return true;  /* 0b0100 —  66 ohms */
-          case 2:  *hw_val = 0x2; return true;  /* 0b0010 —  50 ohms */
-          case 3:  *hw_val = 0x6; return true;  /* 0b0110 —  40 ohms */
-          case 4:  *hw_val = 0x1; return true;  /* 0b0001 —  33 ohms */
-          case 5:  *hw_val = 0x5; return true;  /* 0b0101 —  25 ohms */
+          case 0:
+            *hw_val = 0x0;
+            return true; /* 0b0000 — 100 ohms */
+          case 1:
+            *hw_val = 0x4;
+            return true; /* 0b0100 —  66 ohms */
+          case 2:
+            *hw_val = 0x2;
+            return true; /* 0b0010 —  50 ohms */
+          case 3:
+            *hw_val = 0x6;
+            return true; /* 0b0110 —  40 ohms */
+          case 4:
+            *hw_val = 0x1;
+            return true; /* 0b0001 —  33 ohms */
+          case 5:
+            *hw_val = 0x5;
+            return true; /* 0b0101 —  25 ohms */
           default:
             gpioerr("ERROR: invalid drive level %u\n", level);
             return false;
@@ -400,7 +415,7 @@ static bool rk3576_drive_level_to_hw(bool is_4level, unsigned int level,
  ****************************************************************************/
 
 static int rk3576_drive_set(uint32_t ioc_base, unsigned int port,
-                             unsigned int pin, unsigned int level)
+                            unsigned int pin, unsigned int level)
 {
   uint32_t reg;
   unsigned int reg_offset;
@@ -412,11 +427,11 @@ static int rk3576_drive_set(uint32_t ioc_base, unsigned int port,
   /* Determine the drive register offset for this bank/pin. */
   if (port == 0 && pin < RK_PIN_B4)
     {
-      reg_offset = 0x0010;  /* GPIO0_A + GPIO0_B[0:3]: pins 0-11 */
+      reg_offset = 0x0010; /* GPIO0_A + GPIO0_B[0:3]: pins 0-11 */
     }
   else if (port == 0)
     {
-      reg_offset = 0x2008;  /* GPIO0_B[4:7] + GPIO0_C + GPIO0_D: pins 12-31 */
+      reg_offset = 0x2008; /* GPIO0_B[4:7] + GPIO0_C + GPIO0_D: pins 12-31 */
     }
   else if (port == 1)
     {
@@ -432,15 +447,15 @@ static int rk3576_drive_set(uint32_t ioc_base, unsigned int port,
     }
   else if (port == 4 && pin < RK_PIN_C0)
     {
-      reg_offset = 0x6080;  /* GPIO4_A + GPIO4_B: pins 0-15 */
+      reg_offset = 0x6080; /* GPIO4_A + GPIO4_B: pins 0-15 */
     }
   else if (port == 4 && pin < RK_PIN_D0)
     {
-      reg_offset = 0xA080;  /* GPIO4_C: pins 16-23 */
+      reg_offset = 0xA080; /* GPIO4_C: pins 16-23 */
     }
   else /* port == 4, pin >= RK_PIN_D0 */
     {
-      reg_offset = 0xB080;  /* GPIO4_D: pins 24-31 */
+      reg_offset = 0xB080; /* GPIO4_D: pins 24-31 */
     }
 
   /* 4 pins per register, 4 bits per pin */
@@ -481,7 +496,7 @@ static int rk3576_drive_set(uint32_t ioc_base, unsigned int port,
  ****************************************************************************/
 
 static void rk3576_schmitt_set(uint32_t ioc_base, unsigned int port,
-                                unsigned int pin, bool enable)
+                               unsigned int pin, bool enable)
 {
   uint32_t reg;
   unsigned int reg_offset;
@@ -491,11 +506,11 @@ static void rk3576_schmitt_set(uint32_t ioc_base, unsigned int port,
   /* Determine the schmitt register offset for this bank/pin. */
   if (port == 0 && pin < RK_PIN_B4)
     {
-      reg_offset = 0x0030;  /* GPIO0_AL */
+      reg_offset = 0x0030; /* GPIO0_AL */
     }
   else if (port == 0)
     {
-      reg_offset = 0x2040 - 0x4;  /* GPIO0_BH */
+      reg_offset = 0x2040 - 0x4; /* GPIO0_BH */
     }
   else if (port == 1)
     {
@@ -570,7 +585,7 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
   /* Extract port and pin from the configuration */
 
   port = (pinset & GPIO_PORT_MASK) >> GPIO_PORT_SHIFT;
-  pin  = (pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
+  pin = (pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
   mode = pinset & GPIO_MODE_MASK;
 
   /* Map pinset drive strength bits to RK3576 drive level.
@@ -583,7 +598,7 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
   switch (drv)
     {
       case GPIO_DRV_STRENGTH_100OHM:
-        drive_level = RK3576_DRIVE_LEVEL_0; 
+        drive_level = RK3576_DRIVE_LEVEL_0;
         break;
       case GPIO_DRV_STRENGTH_66OHM:
         drive_level = RK3576_DRIVE_LEVEL_1;
@@ -605,8 +620,8 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
          * 4-level reset = 50 ohms, 6-level reset = 40 ohms.
          */
         drive_level = RK3576_DRIVE_IS_4LEVEL(port, pin)
-                        ? RK3576_DRIVE_LEVEL_2   /* 50 ohms */
-                        : RK3576_DRIVE_LEVEL_3;  /* 40 ohms */
+                          ? RK3576_DRIVE_LEVEL_2  /* 50 ohms */
+                          : RK3576_DRIVE_LEVEL_3; /* 40 ohms */
         break;
       default:
         gpioerr("ERROR: Invalid GPIO drive strength: 0x%lx\n",
@@ -643,7 +658,8 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
            * Bootloader may have left IOMUX in a non-GPIO state.
            */
 
-          rk3576_iomux_set(RK3576_IOC_ADDR, port, pin, (GPIO_AF0 >> GPIO_AF_SHIFT));
+          rk3576_iomux_set(RK3576_IOC_ADDR, port, pin,
+                           (GPIO_AF0 >> GPIO_AF_SHIFT));
 
           /* Configure as input */
 
@@ -658,18 +674,15 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
 
           if ((pinset & GPIO_PUPD_MASK) == GPIO_PULLUP)
             {
-              rk3576_pull_set(RK3576_IOC_ADDR, port, pin,
-                              RK3576_PULL_UP);
+              rk3576_pull_set(RK3576_IOC_ADDR, port, pin, RK3576_PULL_UP);
             }
           else if ((pinset & GPIO_PUPD_MASK) == GPIO_PULLDOWN)
             {
-              rk3576_pull_set(RK3576_IOC_ADDR, port, pin,
-                              RK3576_PULL_DOWN);
+              rk3576_pull_set(RK3576_IOC_ADDR, port, pin, RK3576_PULL_DOWN);
             }
           else
             {
-              rk3576_pull_set(RK3576_IOC_ADDR, port, pin,
-                              RK3576_PULL_DISABLE);
+              rk3576_pull_set(RK3576_IOC_ADDR, port, pin, RK3576_PULL_DISABLE);
             }
         }
         break;
@@ -680,7 +693,8 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
            * Bootloader may have left IOMUX in a non-GPIO state.
            */
 
-          rk3576_iomux_set(RK3576_IOC_ADDR, port, pin, (GPIO_AF0 >> GPIO_AF_SHIFT));
+          rk3576_iomux_set(RK3576_IOC_ADDR, port, pin,
+                           (GPIO_AF0 >> GPIO_AF_SHIFT));
 
           /* Set the initial output value before changing direction */
 
@@ -706,13 +720,11 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
 
           if ((pinset & GPIO_PUPD_MASK) == GPIO_PULLUP)
             {
-              rk3576_pull_set(RK3576_IOC_ADDR, port, pin,
-                              RK3576_PULL_UP);
+              rk3576_pull_set(RK3576_IOC_ADDR, port, pin, RK3576_PULL_UP);
             }
           else if ((pinset & GPIO_PUPD_MASK) == GPIO_PULLDOWN)
             {
-              rk3576_pull_set(RK3576_IOC_ADDR, port, pin,
-                              RK3576_PULL_DOWN);
+              rk3576_pull_set(RK3576_IOC_ADDR, port, pin, RK3576_PULL_DOWN);
             }
         }
         break;
@@ -766,18 +778,20 @@ int rk3576_config_gpio(gpio_pinset_t pinset)
        * All GPIO registers use hiword-mask writes.
        */
 
-      RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INTTYPE_LEVEL(port), pin,
-               (pinset & GPIO_INTTYPE_MASK) == GPIO_INT_EDGE ? 1 : 0);
+      RK3576_GPIO_V2_WRITE_BIT(
+          RK3576_GPIO_INTTYPE_LEVEL(port), pin,
+          (pinset & GPIO_INTTYPE_MASK) == GPIO_INT_EDGE ? 1 : 0);
 
       /* Set interrupt polarity (only meaningful when BOTHEDGE is not set) */
 
-      RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INT_POLARITY(port), pin,
-               (pinset & GPIO_INTPOL_MASK) == GPIO_INT_HIGH_RISING ? 1 : 0);
+      RK3576_GPIO_V2_WRITE_BIT(
+          RK3576_GPIO_INT_POLARITY(port), pin,
+          (pinset & GPIO_INTPOL_MASK) == GPIO_INT_HIGH_RISING ? 1 : 0);
 
       /* Set both-edge trigger if requested (for edge interrupts only) */
 
       RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INT_BOTHEDGE(port), pin,
-               (pinset & GPIO_INT_BOTHEDGE) != 0 ? 1 : 0);
+                               (pinset & GPIO_INT_BOTHEDGE) != 0 ? 1 : 0);
 
       /* Clear any pending interrupt before enabling */
 
@@ -811,7 +825,7 @@ void rk3576_gpio_write(gpio_pinset_t pinset, bool value)
   unsigned int pin;
 
   port = (pinset & GPIO_PORT_MASK) >> GPIO_PORT_SHIFT;
-  pin  = (pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
+  pin = (pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
 
   if (port >= RK3576_GPIO_NPORTS)
     {
@@ -819,7 +833,6 @@ void rk3576_gpio_write(gpio_pinset_t pinset, bool value)
     }
 
   RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_SWPORTA_DR(port), pin, value);
-
 }
 
 /****************************************************************************
@@ -836,14 +849,15 @@ bool rk3576_gpio_read(gpio_pinset_t pinset)
   unsigned int pin;
 
   port = (pinset & GPIO_PORT_MASK) >> GPIO_PORT_SHIFT;
-  pin  = (pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
+  pin = (pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
 
   if (port >= RK3576_GPIO_NPORTS)
     {
       return false;
     }
 
-  return (getreg32(RK3576_GPIO_EXT_PORT(port)) & RK3576_GPIO_PIN_BIT(pin)) != 0;
+  return (getreg32(RK3576_GPIO_EXT_PORT(port)) & RK3576_GPIO_PIN_BIT(pin)) !=
+         0;
 }
 
 #ifdef CONFIG_DEV_GPIO
@@ -855,22 +869,21 @@ bool rk3576_gpio_read(gpio_pinset_t pinset)
 struct rk3576_gpio_dev_s
 {
   struct gpio_dev_s gpio;
-  gpio_pinset_t     pinset;
+  gpio_pinset_t pinset;
 };
 
 struct rk3576_gpint_dev_s
 {
   struct rk3576_gpio_dev_s dev;
   pin_interrupt_t callback;
-  bool enabled;         /* Interrupt currently enabled */
+  bool enabled; /* Interrupt currently enabled */
 };
 
 /****************************************************************************
  * Private Function Prototypes
  ****************************************************************************/
 
-static int rk3576_gpio_read_cb(FAR struct gpio_dev_s *dev,
-                               FAR bool *value);
+static int rk3576_gpio_read_cb(FAR struct gpio_dev_s *dev, FAR bool *value);
 static int rk3576_gpio_write_cb(FAR struct gpio_dev_s *dev, bool value);
 static int rk3576_gpio_setpintype(FAR struct gpio_dev_s *dev,
                                   enum gpio_pintype_e pintype);
@@ -883,52 +896,47 @@ static int rk3576_gpio_setmask(FAR struct gpio_dev_s *dev, bool enable);
  * Private Data
  ****************************************************************************/
 
-static int g_gpio_global_minor = 0;  /* /dev/gpioN minor, globally unique */
+static int g_gpio_global_minor = 0; /* /dev/gpioN minor, globally unique */
 
 /* O(1) interrupt device lookup: irq_map[port][pin] -> registered device.
  * Each (port, pin) slot can hold at most one interrupt device.
  */
 
 static struct rk3576_gpint_dev_s
-  *g_gpio_irq_map[RK3576_GPIO_NPORTS][RK3576_GPIO_NPINS];
+    *g_gpio_irq_map[RK3576_GPIO_NPORTS][RK3576_GPIO_NPINS];
 
-static const struct gpio_operations_s g_gpin_ops =
-{
-  .go_read       = rk3576_gpio_read_cb,
-  .go_write      = NULL,
-  .go_attach     = NULL,
-  .go_enable     = NULL,
+static const struct gpio_operations_s g_gpin_ops = {
+  .go_read = rk3576_gpio_read_cb,
+  .go_write = NULL,
+  .go_attach = NULL,
+  .go_enable = NULL,
   .go_setpintype = rk3576_gpio_setpintype,
 };
 
-static const struct gpio_operations_s g_gpout_ops =
-{
-  .go_read       = rk3576_gpio_read_cb,
-  .go_write      = rk3576_gpio_write_cb,
-  .go_attach     = NULL,
-  .go_enable     = NULL,
+static const struct gpio_operations_s g_gpout_ops = {
+  .go_read = rk3576_gpio_read_cb,
+  .go_write = rk3576_gpio_write_cb,
+  .go_attach = NULL,
+  .go_enable = NULL,
   .go_setpintype = rk3576_gpio_setpintype,
 };
 
-static const struct gpio_operations_s g_gpint_ops =
-{
-  .go_read       = rk3576_gpio_read_cb,
-  .go_write      = NULL,
-  .go_attach     = rk3576_gpio_attach,
-  .go_enable     = rk3576_gpio_enable,
+static const struct gpio_operations_s g_gpint_ops = {
+  .go_read = rk3576_gpio_read_cb,
+  .go_write = NULL,
+  .go_attach = rk3576_gpio_attach,
+  .go_enable = rk3576_gpio_enable,
   .go_setpintype = rk3576_gpio_setpintype,
-  .go_setmask    = rk3576_gpio_setmask,
+  .go_setmask = rk3576_gpio_setmask,
 };
 
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
 
-static int rk3576_gpio_read_cb(FAR struct gpio_dev_s *dev,
-                               FAR bool *value)
+static int rk3576_gpio_read_cb(FAR struct gpio_dev_s *dev, FAR bool *value)
 {
-  FAR struct rk3576_gpio_dev_s *rdev =
-    (FAR struct rk3576_gpio_dev_s *)dev;
+  FAR struct rk3576_gpio_dev_s *rdev = (FAR struct rk3576_gpio_dev_s *)dev;
 
   DEBUGASSERT(rdev != NULL && value != NULL);
 
@@ -938,8 +946,7 @@ static int rk3576_gpio_read_cb(FAR struct gpio_dev_s *dev,
 
 static int rk3576_gpio_write_cb(FAR struct gpio_dev_s *dev, bool value)
 {
-  FAR struct rk3576_gpio_dev_s *rdev =
-    (FAR struct rk3576_gpio_dev_s *)dev;
+  FAR struct rk3576_gpio_dev_s *rdev = (FAR struct rk3576_gpio_dev_s *)dev;
 
   DEBUGASSERT(rdev != NULL);
 
@@ -950,8 +957,7 @@ static int rk3576_gpio_write_cb(FAR struct gpio_dev_s *dev, bool value)
 static int rk3576_gpio_setpintype(FAR struct gpio_dev_s *dev,
                                   enum gpio_pintype_e pintype)
 {
-  FAR struct rk3576_gpio_dev_s *rdev =
-    (FAR struct rk3576_gpio_dev_s *)dev;
+  FAR struct rk3576_gpio_dev_s *rdev = (FAR struct rk3576_gpio_dev_s *)dev;
   gpio_pinset_t pinset;
 
   DEBUGASSERT(rdev != NULL);
@@ -980,51 +986,51 @@ static int rk3576_gpio_setpintype(FAR struct gpio_dev_s *dev,
         dev->gp_ops = &g_gpout_ops;
         break;
 
-      /* Level-triggered interrupts */
+        /* Level-triggered interrupts */
 
       case GPIO_INTERRUPT_HIGH_PIN:
       case GPIO_INTERRUPT_HIGH_PIN_WAKEUP:
-        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
-               |  GPIO_INT_LEVEL | GPIO_INT_HIGH_RISING;
+        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI |
+                  GPIO_INT_LEVEL | GPIO_INT_HIGH_RISING;
         dev->gp_ops = &g_gpint_ops;
         break;
 
       case GPIO_INTERRUPT_LOW_PIN:
       case GPIO_INTERRUPT_LOW_PIN_WAKEUP:
-        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
-               |  GPIO_INT_LEVEL | GPIO_INT_LOW_FALLING;
+        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI |
+                  GPIO_INT_LEVEL | GPIO_INT_LOW_FALLING;
         dev->gp_ops = &g_gpint_ops;
         break;
 
-      /* Edge-triggered interrupts */
+        /* Edge-triggered interrupts */
 
       case GPIO_INTERRUPT_RISING_PIN:
       case GPIO_INTERRUPT_RISING_PIN_WAKEUP:
-        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
-               |  GPIO_INT_EDGE | GPIO_INT_HIGH_RISING;
+        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI |
+                  GPIO_INT_EDGE | GPIO_INT_HIGH_RISING;
         dev->gp_ops = &g_gpint_ops;
         break;
 
       case GPIO_INTERRUPT_FALLING_PIN:
       case GPIO_INTERRUPT_FALLING_PIN_WAKEUP:
-        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
-               |  GPIO_INT_EDGE | GPIO_INT_LOW_FALLING;
+        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI |
+                  GPIO_INT_EDGE | GPIO_INT_LOW_FALLING;
         dev->gp_ops = &g_gpint_ops;
         break;
 
       case GPIO_INTERRUPT_BOTH_PIN:
       case GPIO_INTERRUPT_BOTH_PIN_WAKEUP:
-        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
-               |  GPIO_INT_EDGE | GPIO_INT_BOTHEDGE;
+        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI |
+                  GPIO_INT_EDGE | GPIO_INT_BOTHEDGE;
         dev->gp_ops = &g_gpint_ops;
         break;
 
-      /* Default interrupt: edge-triggered, rising */
+        /* Default interrupt: edge-triggered, rising */
 
       case GPIO_INTERRUPT_PIN:
       case GPIO_INTERRUPT_PIN_WAKEUP:
-        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI
-               |  GPIO_INT_EDGE | GPIO_INT_HIGH_RISING;
+        pinset |= GPIO_INPUT | GPIO_FLOAT | GPIO_SCHMITT | GPIO_EXTI |
+                  GPIO_INT_EDGE | GPIO_INT_HIGH_RISING;
         dev->gp_ops = &g_gpint_ops;
         break;
 
@@ -1044,8 +1050,7 @@ static int rk3576_gpio_setpintype(FAR struct gpio_dev_s *dev,
 static int rk3576_gpio_attach(FAR struct gpio_dev_s *dev,
                               pin_interrupt_t callback)
 {
-  FAR struct rk3576_gpint_dev_s *rdev =
-    (FAR struct rk3576_gpint_dev_s *)dev;
+  FAR struct rk3576_gpint_dev_s *rdev = (FAR struct rk3576_gpint_dev_s *)dev;
 
   DEBUGASSERT(rdev != NULL);
 
@@ -1056,15 +1061,14 @@ static int rk3576_gpio_attach(FAR struct gpio_dev_s *dev,
 
 static int rk3576_gpio_enable(FAR struct gpio_dev_s *dev, bool enable)
 {
-  FAR struct rk3576_gpint_dev_s *rdev =
-    (FAR struct rk3576_gpint_dev_s *)dev;
+  FAR struct rk3576_gpint_dev_s *rdev = (FAR struct rk3576_gpint_dev_s *)dev;
   unsigned int port;
   unsigned int pin;
 
   DEBUGASSERT(rdev != NULL);
 
   port = (rdev->dev.pinset & GPIO_PORT_MASK) >> GPIO_PORT_SHIFT;
-  pin  = (rdev->dev.pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
+  pin = (rdev->dev.pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
 
   /* All GPIO registers use hiword-mask writes.
    * INTMASK: 0 = unmasked (enabled), 1 = masked (disabled).
@@ -1102,15 +1106,14 @@ static int rk3576_gpio_enable(FAR struct gpio_dev_s *dev, bool enable)
 
 static int rk3576_gpio_setmask(FAR struct gpio_dev_s *dev, bool enable)
 {
-  FAR struct rk3576_gpint_dev_s *rdev =
-    (FAR struct rk3576_gpint_dev_s *)dev;
+  FAR struct rk3576_gpint_dev_s *rdev = (FAR struct rk3576_gpint_dev_s *)dev;
   unsigned int port;
   unsigned int pin;
 
   DEBUGASSERT(rdev != NULL);
 
   port = (rdev->dev.pinset & GPIO_PORT_MASK) >> GPIO_PORT_SHIFT;
-  pin  = (rdev->dev.pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
+  pin = (rdev->dev.pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
 
   bool masked = !enable;
   RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INTMASK(port), pin, masked);
@@ -1135,8 +1138,8 @@ static int rk3576_gpio_setmask(FAR struct gpio_dev_s *dev, bool enable)
 static int rk3576_gpio_isr(int irq, void *context, void *arg)
 {
   unsigned int encoded = (unsigned int)(uintptr_t)arg;
-  unsigned int port    = encoded & 0x7;
-  unsigned int group   = (encoded >> 3) & 0x3;
+  unsigned int port = encoded & 0x7;
+  unsigned int group = (encoded >> 3) & 0x3;
   unsigned int pin_start;
   unsigned int pin_end;
   uint32_t status;
@@ -1157,7 +1160,7 @@ static int rk3576_gpio_isr(int irq, void *context, void *arg)
   /* Limit processing to this group's pin range */
 
   pin_start = group * 8;
-  pin_end   = pin_start + 8;
+  pin_end = pin_start + 8;
 
   /* Mask out pins outside our group */
 
@@ -1203,7 +1206,7 @@ int rk3576_gpio_register(gpio_pinset_t pinset)
   FAR struct rk3576_gpint_dev_s *idev;
   unsigned int mode = pinset & GPIO_MODE_MASK;
   unsigned int port = (pinset & GPIO_PORT_MASK) >> GPIO_PORT_SHIFT;
-  unsigned int pin  = (pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
+  unsigned int pin = (pinset & GPIO_PIN_MASK) >> GPIO_PIN_SHIFT;
   enum gpio_pintype_e pintype;
   FAR const struct gpio_operations_s *ops;
   bool is_interrupt;
@@ -1237,24 +1240,23 @@ int rk3576_gpio_register(gpio_pinset_t pinset)
   if (mode == GPIO_OUTPUT)
     {
       pintype = GPIO_OUTPUT_PIN;
-      ops     = &g_gpout_ops;
+      ops = &g_gpout_ops;
     }
   else if (is_interrupt)
     {
       pintype = GPIO_INTERRUPT_PIN;
-      ops     = &g_gpint_ops;
+      ops = &g_gpint_ops;
       pinset |= GPIO_INPUT;
     }
   /* input mode check shall not be prior than interrupt check */
   else if (mode == GPIO_INPUT)
     {
       pintype = GPIO_INPUT_PIN;
-      ops     = &g_gpin_ops;
+      ops = &g_gpin_ops;
     }
   else
     {
-      gpioerr("ERROR: Unsupported pin mode: 0x%lx\n",
-              (unsigned long)pinset);
+      gpioerr("ERROR: Unsupported pin mode: 0x%lx\n", (unsigned long)pinset);
       return -EINVAL;
     }
 
@@ -1262,8 +1264,8 @@ int rk3576_gpio_register(gpio_pinset_t pinset)
 
   if (is_interrupt && g_gpio_irq_map[port][pin] != NULL)
     {
-      gpioerr("ERROR: GPIO%u_P%u already registered for interrupts\n",
-              port, pin);
+      gpioerr("ERROR: GPIO%u_P%u already registered for interrupts\n", port,
+              pin);
       return -EBUSY;
     }
 
@@ -1280,9 +1282,9 @@ int rk3576_gpio_register(gpio_pinset_t pinset)
       return -ENOMEM;
     }
 
-  dev->pinset          = pinset;
+  dev->pinset = pinset;
   dev->gpio.gp_pintype = pintype;
-  dev->gpio.gp_ops     = ops;
+  dev->gpio.gp_ops = ops;
 
   /* Interrupt-only: init callback/enabled, then cast for irq_map */
 
@@ -1290,9 +1292,9 @@ int rk3576_gpio_register(gpio_pinset_t pinset)
     {
       idev = (FAR struct rk3576_gpint_dev_s *)dev;
       idev->callback = NULL;
-      idev->enabled  = false;
+      idev->enabled = false;
     }
-  
+
   minor = g_gpio_global_minor++;
   ret = gpio_pin_register(&dev->gpio, minor);
   if (ret < 0)
@@ -1302,7 +1304,7 @@ int rk3576_gpio_register(gpio_pinset_t pinset)
     }
 
   ret = rk3576_config_gpio(pinset);
-  if (ret < 0) 
+  if (ret < 0)
     {
       gpio_pin_unregister(&dev->gpio, minor);
       kmm_free(dev);
@@ -1330,18 +1332,17 @@ int rk3576_gpio_init(void)
    * This allows the ISR to limit its scan to the relevant 8-pin range.
    */
 
-  static const unsigned int g_gpio_irqs[RK3576_GPIO_NPORTS][4] =
-  {
-    { RK3576_IRQ_GPIO0_0, RK3576_IRQ_GPIO0_1,
-      RK3576_IRQ_GPIO0_2, RK3576_IRQ_GPIO0_3 },
-    { RK3576_IRQ_GPIO1_0, RK3576_IRQ_GPIO1_1,
-      RK3576_IRQ_GPIO1_2, RK3576_IRQ_GPIO1_3 },
-    { RK3576_IRQ_GPIO2_0, RK3576_IRQ_GPIO2_1,
-      RK3576_IRQ_GPIO2_2, RK3576_IRQ_GPIO2_3 },
-    { RK3576_IRQ_GPIO3_0, RK3576_IRQ_GPIO3_1,
-      RK3576_IRQ_GPIO3_2, RK3576_IRQ_GPIO3_3 },
-    { RK3576_IRQ_GPIO4_0, RK3576_IRQ_GPIO4_1,
-      RK3576_IRQ_GPIO4_2, RK3576_IRQ_GPIO4_3 },
+  static const unsigned int g_gpio_irqs[RK3576_GPIO_NPORTS][4] = {
+    { RK3576_IRQ_GPIO0_0, RK3576_IRQ_GPIO0_1, RK3576_IRQ_GPIO0_2,
+      RK3576_IRQ_GPIO0_3 },
+    { RK3576_IRQ_GPIO1_0, RK3576_IRQ_GPIO1_1, RK3576_IRQ_GPIO1_2,
+      RK3576_IRQ_GPIO1_3 },
+    { RK3576_IRQ_GPIO2_0, RK3576_IRQ_GPIO2_1, RK3576_IRQ_GPIO2_2,
+      RK3576_IRQ_GPIO2_3 },
+    { RK3576_IRQ_GPIO3_0, RK3576_IRQ_GPIO3_1, RK3576_IRQ_GPIO3_2,
+      RK3576_IRQ_GPIO3_3 },
+    { RK3576_IRQ_GPIO4_0, RK3576_IRQ_GPIO4_1, RK3576_IRQ_GPIO4_2,
+      RK3576_IRQ_GPIO4_3 },
   };
 
   unsigned int port;
@@ -1362,8 +1363,7 @@ int rk3576_gpio_init(void)
       /* Clear any stale pending interrupts */
 
       putreg32(0xffffffff, RK3576_GPIO_PORTA_EOI(port));
-      putreg32(0xffffffff,
-               RK3576_GPIO_PORTA_EOI(port) + 4);
+      putreg32(0xffffffff, RK3576_GPIO_PORTA_EOI(port) + 4);
     }
 
   /* Attach GIC interrupt handlers for all groups */
@@ -1379,8 +1379,8 @@ int rk3576_gpio_init(void)
           ret = irq_attach(irq, rk3576_gpio_isr, (void *)arg);
           if (ret < 0)
             {
-              gpioerr("ERROR: Failed to attach IRQ %u (GPIO%u_%u): %d\n",
-                      irq, port, group, ret);
+              gpioerr("ERROR: Failed to attach IRQ %u (GPIO%u_%u): %d\n", irq,
+                      port, group, ret);
               return ret;
             }
 

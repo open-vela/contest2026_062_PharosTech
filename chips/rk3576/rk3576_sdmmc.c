@@ -34,25 +34,25 @@
 
 #include <nuttx/config.h>
 
-#include <sys/types.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <inttypes.h>
 #include <assert.h>
-#include <errno.h>
 #include <debug.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <sys/types.h>
 
 #include <nuttx/arch.h>
+#include <nuttx/cache.h>
+#include <nuttx/clock.h>
 #include <nuttx/irq.h>
+#include <nuttx/mmcsd.h>
+#include <nuttx/mutex.h>
+#include <nuttx/sdio.h>
+#include <nuttx/semaphore.h>
 #include <nuttx/spinlock.h>
 #include <nuttx/wdog.h>
-#include <nuttx/clock.h>
-#include <nuttx/mutex.h>
-#include <nuttx/semaphore.h>
-#include <nuttx/sdio.h>
-#include <nuttx/mmcsd.h>
 #include <nuttx/wqueue.h>
-#include <nuttx/cache.h>
 
 #include "arm64_arch.h"
 #include "arm64_internal.h"
@@ -68,18 +68,18 @@
  ***************************************************************************/
 
 /* Base clock frequency (the bootloader has configured the ciu clock source).
- * RK dw-mshc commonly uses 50MHz; this value is only used to compute the CLKDIV
- * divider, the actual frequency follows the loader.
+ * RK dw-mshc commonly uses 50MHz; this value is only used to compute the
+ * CLKDIV divider, the actual frequency follows the loader.
  */
 
-#define RK3576_SDMMC_CLKIN      50000000
+#define RK3576_SDMMC_CLKIN 50000000
 
 /* Target card clock for each stage */
 
-#define RK3576_SDMMC_ID_FREQ    400000     /* ID mode <400KHz */
-#define RK3576_SDMMC_MMC_FREQ   25000000   /* Normal transfer */
-#define RK3576_SDMMC_SD1_FREQ   25000000   /* SD 1-bit */
-#define RK3576_SDMMC_SD4_FREQ   50000000   /* SD 4-bit */
+#define RK3576_SDMMC_ID_FREQ  400000   /* ID mode <400KHz */
+#define RK3576_SDMMC_MMC_FREQ 25000000 /* Normal transfer */
+#define RK3576_SDMMC_SD1_FREQ 25000000 /* SD 1-bit */
+#define RK3576_SDMMC_SD4_FREQ 50000000 /* SD 4-bit */
 
 /* FIFO depth (HCON[10:7]*2).  RK3576 dw-mshc is typically 256 x 32bit; the
  * value is used to derive the half-full trigger threshold.
@@ -88,67 +88,70 @@
 #define RK3576_SDMMC_FIFO_DEPTH 256
 #define RK3576_SDMMC_FIFO_HALF  (RK3576_SDMMC_FIFO_DEPTH / 2)
 
-/* IDMAC descriptor table entry count: 256 entries x 4KB = 1MB max per DMA transfer */
+/* IDMAC descriptor table entry count: 256 entries x 4KB = 1MB max per DMA
+ * transfer */
 
-#define RK3576_IDMAC_NDESC      256
+#define RK3576_IDMAC_NDESC 256
 
 /* Polling timeout (busy-wait loop limit) */
 
-#define RK3576_SDMMC_SPIN       1000000
+#define RK3576_SDMMC_SPIN 1000000
 
 /* Command/data interrupt combinations */
 
-#define SDMMC_CMDDONE_INTS      (SDMMC_INT_CMD_DONE)
-#define SDMMC_RESPERR_INTS      (SDMMC_INT_RE | SDMMC_INT_RCRC | SDMMC_INT_RTO)
-#define SDMMC_XFRDONE_INTS      (SDMMC_INT_DTO)
-#define SDMMC_DATAERR_INTS      (SDMMC_INT_DCRC | SDMMC_INT_DRTO | \
-                                 SDMMC_INT_SBE | SDMMC_INT_EBE | \
-                                 SDMMC_INT_FRUN | SDMMC_INT_HLE)
+#define SDMMC_CMDDONE_INTS (SDMMC_INT_CMD_DONE)
+#define SDMMC_RESPERR_INTS (SDMMC_INT_RE | SDMMC_INT_RCRC | SDMMC_INT_RTO)
+#define SDMMC_XFRDONE_INTS (SDMMC_INT_DTO)
+#define SDMMC_DATAERR_INTS                                           \
+  (SDMMC_INT_DCRC | SDMMC_INT_DRTO | SDMMC_INT_SBE | SDMMC_INT_EBE | \
+   SDMMC_INT_FRUN | SDMMC_INT_HLE)
 
 /***************************************************************************
  * Private Types
  ***************************************************************************/
 
-/* RK3576 SDMMC host private state.  The first member is sdio_dev_s for upcasting. */
+/* RK3576 SDMMC host private state.  The first member is sdio_dev_s for
+ * upcasting. */
 
 struct rk3576_sdmmc_dev_s
 {
-  struct sdio_dev_s  dev;        /* Standard SDIO interface (must be first member) */
+  struct sdio_dev_s dev; /* Standard SDIO interface (must be first member) */
 
-  uintptr_t          base;       /* Controller register base address */
-  int                irq;        /* Controller interrupt number */
+  uintptr_t base; /* Controller register base address */
+  int irq;        /* Controller interrupt number */
 
   /* Event wait support */
 
-  sem_t              waitsem;    /* Semaphore to wait for interrupt events */
-  struct wdog_s      waitwdog;   /* Wait timeout watchdog */
-  volatile sdio_eventset_t waitevents;  /* Enabled wait event set */
-  volatile sdio_eventset_t wkupevent;   /* Wakeup event set */
+  sem_t waitsem;          /* Semaphore to wait for interrupt events */
+  struct wdog_s waitwdog; /* Wait timeout watchdog */
+  volatile sdio_eventset_t waitevents; /* Enabled wait event set */
+  volatile sdio_eventset_t wkupevent;  /* Wakeup event set */
 
   /* Media change callback */
 
-  sdio_eventset_t    cbevents;   /* Enabled callback event set */
-  worker_t           callback;   /* Registered callback function */
-  void              *cbarg;      /* Callback argument */
-  struct work_s      cbwork;     /* Callback work queue item */
+  sdio_eventset_t cbevents; /* Enabled callback event set */
+  worker_t callback;        /* Registered callback function */
+  void *cbarg;              /* Callback argument */
+  struct work_s cbwork;     /* Callback work queue item */
 
   /* Data transfer (PIO) state */
 
-  uint32_t          *buffer;     /* Transfer buffer (32bit aligned) */
-  volatile size_t    remaining;  /* Remaining byte count */
-  volatile uint32_t  xfrints;    /* Interrupts enabled during data transfer */
-  bool               widebus;    /* 4-bit bus */
+  uint32_t *buffer;          /* Transfer buffer (32bit aligned) */
+  volatile size_t remaining; /* Remaining byte count */
+  volatile uint32_t xfrints; /* Interrupts enabled during data transfer */
+  bool widebus;              /* 4-bit bus */
 
 #ifdef CONFIG_SDIO_DMA
   /* IDMAC (internal DMA) state */
 
-  volatile bool      dmamode;    /* Current transfer uses IDMAC */
-  bool               dmaread;    /* DMA direction: true=read (DMA writes memory) */
-  uintptr_t          dmabuf;     /* DMA buffer start address */
-  size_t             dmalen;     /* DMA buffer length */
-  struct rk3576_sdmmc_idmac_desc_s *descs;  /* Descriptor table (points to static aligned array) */
+  volatile bool dmamode; /* Current transfer uses IDMAC */
+  bool dmaread;          /* DMA direction: true=read (DMA writes memory) */
+  uintptr_t dmabuf;      /* DMA buffer start address */
+  size_t dmalen;         /* DMA buffer length */
+  struct rk3576_sdmmc_idmac_desc_s
+      *descs; /* Descriptor table (points to static aligned array) */
 #endif
-  uint32_t           blocksize;  /* Current block size (recorded by blocksetup) */
+  uint32_t blocksize; /* Current block size (recorded by blocksetup) */
 };
 
 /***************************************************************************
@@ -158,22 +161,24 @@ struct rk3576_sdmmc_dev_s
 /* Register access */
 
 static inline uint32_t rk3576_sdmmc_getreg(struct rk3576_sdmmc_dev_s *priv,
-                                     unsigned int offset);
+                                           unsigned int offset);
 static inline void rk3576_sdmmc_putreg(struct rk3576_sdmmc_dev_s *priv,
-                                 unsigned int offset, uint32_t value);
+                                       unsigned int offset, uint32_t value);
 
 /* Low-level helpers */
 
-static int  rk3576_sdmmc_ciu_update(struct rk3576_sdmmc_dev_s *priv, uint32_t cmdflags);
-static void rk3576_sdmmc_setclock(struct rk3576_sdmmc_dev_s *priv, uint32_t freq);
+static int rk3576_sdmmc_ciu_update(struct rk3576_sdmmc_dev_s *priv,
+                                   uint32_t cmdflags);
+static void rk3576_sdmmc_setclock(struct rk3576_sdmmc_dev_s *priv,
+                                  uint32_t freq);
 static void rk3576_sdmmc_configwaitints(struct rk3576_sdmmc_dev_s *priv,
-                                  uint32_t waitints,
-                                  sdio_eventset_t waitevents,
-                                  sdio_eventset_t wkupevent);
+                                        uint32_t waitints,
+                                        sdio_eventset_t waitevents,
+                                        sdio_eventset_t wkupevent);
 static void rk3576_sdmmc_configxfrints(struct rk3576_sdmmc_dev_s *priv,
-                                 uint32_t xfrints);
+                                       uint32_t xfrints);
 static void rk3576_sdmmc_endwait(struct rk3576_sdmmc_dev_s *priv,
-                           sdio_eventset_t wkupevent);
+                                 sdio_eventset_t wkupevent);
 static void rk3576_sdmmc_eventtimeout(wdparm_t arg);
 static void rk3576_sdmmc_recvfifo(struct rk3576_sdmmc_dev_s *priv);
 static void rk3576_sdmmc_sendfifo(struct rk3576_sdmmc_dev_s *priv);
@@ -182,28 +187,29 @@ static void rk3576_sdmmc_callback(struct rk3576_sdmmc_dev_s *priv);
 #ifdef CONFIG_SDIO_DMA
 static void rk3576_sdmmc_dma_disable(struct rk3576_sdmmc_dev_s *priv);
 static bool rk3576_sdmmc_dma_ok(const uint8_t *buffer, size_t buflen);
-static int  rk3576_sdmmc_dma_build(struct rk3576_sdmmc_dev_s *priv,
-                             const uint8_t *buffer, size_t buflen);
-static int  rk3576_sdmmc_dma_common(struct rk3576_sdmmc_dev_s *priv,
-                              const uint8_t *buffer, size_t buflen,
-                              bool write);
+static int rk3576_sdmmc_dma_build(struct rk3576_sdmmc_dev_s *priv,
+                                  const uint8_t *buffer, size_t buflen);
+static int rk3576_sdmmc_dma_common(struct rk3576_sdmmc_dev_s *priv,
+                                   const uint8_t *buffer, size_t buflen,
+                                   bool write);
 #ifdef CONFIG_ARCH_HAVE_SDIO_PREFLIGHT
-static int  rk3576_sdmmc_dmapreflight(struct sdio_dev_s *dev,
-                                const uint8_t *buffer, size_t buflen);
+static int rk3576_sdmmc_dmapreflight(struct sdio_dev_s *dev,
+                                     const uint8_t *buffer, size_t buflen);
 #endif
-static int  rk3576_sdmmc_dmarecvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
-                                size_t buflen);
-static int  rk3576_sdmmc_dmasendsetup(struct sdio_dev_s *dev,
-                                const uint8_t *buffer, size_t buflen);
+static int rk3576_sdmmc_dmarecvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
+                                     size_t buflen);
+static int rk3576_sdmmc_dmasendsetup(struct sdio_dev_s *dev,
+                                     const uint8_t *buffer, size_t buflen);
 #endif
 #ifdef CONFIG_SDIO_BLOCKSETUP
 static void rk3576_sdmmc_blocksetup(struct sdio_dev_s *dev,
-                              unsigned int blocklen, unsigned int nblocks);
+                                    unsigned int blocklen,
+                                    unsigned int nblocks);
 #endif
 
 /* Interrupt handling */
 
-static int  rk3576_sdmmc_interrupt(int irq, void *context, void *arg);
+static int rk3576_sdmmc_interrupt(int irq, void *context, void *arg);
 
 /* sdio_dev_s methods */
 
@@ -212,33 +218,34 @@ static sdio_capset_t rk3576_sdmmc_capabilities(struct sdio_dev_s *dev);
 static sdio_statset_t rk3576_sdmmc_status(struct sdio_dev_s *dev);
 static void rk3576_sdmmc_widebus(struct sdio_dev_s *dev, bool enable);
 static void rk3576_sdmmc_clock(struct sdio_dev_s *dev, enum sdio_clock_e rate);
-static int  rk3576_sdmmc_attach(struct sdio_dev_s *dev);
+static int rk3576_sdmmc_attach(struct sdio_dev_s *dev);
 
-static int  rk3576_sdmmc_sendcmd(struct sdio_dev_s *dev, uint32_t cmd,
-                           uint32_t arg);
-static int  rk3576_sdmmc_recvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
-                             size_t nbytes);
-static int  rk3576_sdmmc_sendsetup(struct sdio_dev_s *dev,
-                             const uint8_t *buffer, size_t nbytes);
-static int  rk3576_sdmmc_cancel(struct sdio_dev_s *dev);
+static int rk3576_sdmmc_sendcmd(struct sdio_dev_s *dev, uint32_t cmd,
+                                uint32_t arg);
+static int rk3576_sdmmc_recvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
+                                  size_t nbytes);
+static int rk3576_sdmmc_sendsetup(struct sdio_dev_s *dev,
+                                  const uint8_t *buffer, size_t nbytes);
+static int rk3576_sdmmc_cancel(struct sdio_dev_s *dev);
 
-static int  rk3576_sdmmc_waitresponse(struct sdio_dev_s *dev, uint32_t cmd);
-static int  rk3576_sdmmc_recvshort(struct sdio_dev_s *dev, uint32_t cmd,
-                             uint32_t *rshort);
-static int  rk3576_sdmmc_recvlong(struct sdio_dev_s *dev, uint32_t cmd,
-                            uint32_t rlong[4]);
+static int rk3576_sdmmc_waitresponse(struct sdio_dev_s *dev, uint32_t cmd);
+static int rk3576_sdmmc_recvshort(struct sdio_dev_s *dev, uint32_t cmd,
+                                  uint32_t *rshort);
+static int rk3576_sdmmc_recvlong(struct sdio_dev_s *dev, uint32_t cmd,
+                                 uint32_t rlong[4]);
 
 static void rk3576_sdmmc_waitenable(struct sdio_dev_s *dev,
-                              sdio_eventset_t eventset, uint32_t timeout);
+                                    sdio_eventset_t eventset,
+                                    uint32_t timeout);
 static sdio_eventset_t rk3576_sdmmc_eventwait(struct sdio_dev_s *dev);
 static void rk3576_sdmmc_callbackenable(struct sdio_dev_s *dev,
-                                  sdio_eventset_t eventset);
+                                        sdio_eventset_t eventset);
 #if defined(CONFIG_SCHED_WORKQUEUE) && defined(CONFIG_SCHED_HPWORK)
-static int  rk3576_sdmmc_registercallback(struct sdio_dev_s *dev,
-                                    worker_t callback, void *arg);
+static int rk3576_sdmmc_registercallback(struct sdio_dev_s *dev,
+                                         worker_t callback, void *arg);
 #endif
 static void rk3576_sdmmc_gotextcsd(struct sdio_dev_s *dev,
-                             const uint8_t *buffer);
+                                   const uint8_t *buffer);
 
 /***************************************************************************
  * Private Data
@@ -248,7 +255,7 @@ static void rk3576_sdmmc_gotextcsd(struct sdio_dev_s *dev,
 /* IDMAC descriptor table: cache-line (64B) aligned, shared by CPU and DMA */
 
 static struct rk3576_sdmmc_idmac_desc_s
-  g_idmac_descs[RK3576_IDMAC_NDESC] aligned_data(64);
+    g_idmac_descs[RK3576_IDMAC_NDESC] aligned_data(64);
 #endif
 
 /* Single instance: RK3576 has only one SD card slot (SDMMC0). */
@@ -309,13 +316,13 @@ static struct rk3576_sdmmc_dev_s g_sdmmcdev =
  ***************************************************************************/
 
 static inline uint32_t rk3576_sdmmc_getreg(struct rk3576_sdmmc_dev_s *priv,
-                                     unsigned int offset)
+                                           unsigned int offset)
 {
   return getreg32(priv->base + offset);
 }
 
 static inline void rk3576_sdmmc_putreg(struct rk3576_sdmmc_dev_s *priv,
-                                 unsigned int offset, uint32_t value)
+                                       unsigned int offset, uint32_t value)
 {
   putreg32(value, priv->base + offset);
 }
@@ -325,14 +332,15 @@ static inline void rk3576_sdmmc_putreg(struct rk3576_sdmmc_dev_s *priv,
  *
  * Description:
  *   Issue a "clock update only" command (SDMMC_CMD_UPD_CLK) and wait for the
- *   CMD_START bit to self-clear.  On dw-mshc, after modifying CLKDIV/CLKENA this
- *   command must be sent for the clock change to take effect.
+ *   CMD_START bit to self-clear.  On dw-mshc, after modifying CLKDIV/CLKENA
+ *this command must be sent for the clock change to take effect.
  ***************************************************************************/
 
-static int rk3576_sdmmc_ciu_update(struct rk3576_sdmmc_dev_s *priv, uint32_t cmdflags)
+static int rk3576_sdmmc_ciu_update(struct rk3576_sdmmc_dev_s *priv,
+                                   uint32_t cmdflags)
 {
-  uint32_t cmd = SDMMC_CMD_START | SDMMC_CMD_UPD_CLK |
-                 SDMMC_CMD_WAIT_PRV | cmdflags;
+  uint32_t cmd =
+      SDMMC_CMD_START | SDMMC_CMD_UPD_CLK | SDMMC_CMD_WAIT_PRV | cmdflags;
   int i;
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_CMD, cmd);
@@ -353,12 +361,13 @@ static int rk3576_sdmmc_ciu_update(struct rk3576_sdmmc_dev_s *priv, uint32_t cmd
  * Name: rk3576_sdmmc_setclock
  *
  * Description:
- *   Set the card clock frequency.  Disable card clock -> change CLKDIV -> enable
- *   card clock, sending UPD_CLK after each step.  On dw-mshc the actual card clock
- *   = ciu_clk / (2 * CLKDIV) (CLKDIV=0 means bypass).
+ *   Set the card clock frequency.  Disable card clock -> change CLKDIV ->
+ *enable card clock, sending UPD_CLK after each step.  On dw-mshc the actual
+ *card clock = ciu_clk / (2 * CLKDIV) (CLKDIV=0 means bypass).
  ***************************************************************************/
 
-static void rk3576_sdmmc_setclock(struct rk3576_sdmmc_dev_s *priv, uint32_t freq)
+static void rk3576_sdmmc_setclock(struct rk3576_sdmmc_dev_s *priv,
+                                  uint32_t freq)
 {
   uint32_t div;
 
@@ -372,7 +381,8 @@ static void rk3576_sdmmc_setclock(struct rk3576_sdmmc_dev_s *priv, uint32_t freq
       return;
     }
 
-  /* 2) Compute divider: div = ceil(clkin / (2*freq)), 0 means bypass (=clkin) */
+  /* 2) Compute divider: div = ceil(clkin / (2*freq)), 0 means bypass (=clkin)
+   */
 
   if (freq >= RK3576_SDMMC_CLKIN)
     {
@@ -393,7 +403,7 @@ static void rk3576_sdmmc_setclock(struct rk3576_sdmmc_dev_s *priv, uint32_t freq
   /* 3) Enable card clock (low-power bit: auto-stop clock when idle) */
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_CLKENA,
-                SDMMC_CLKENA_ENABLE | SDMMC_CLKENA_LOWPWR);
+                      SDMMC_CLKENA_ENABLE | SDMMC_CLKENA_LOWPWR);
   rk3576_sdmmc_ciu_update(priv, 0);
 }
 
@@ -406,15 +416,15 @@ static void rk3576_sdmmc_setclock(struct rk3576_sdmmc_dev_s *priv, uint32_t freq
  ***************************************************************************/
 
 static void rk3576_sdmmc_configwaitints(struct rk3576_sdmmc_dev_s *priv,
-                                  uint32_t waitints,
-                                  sdio_eventset_t waitevents,
-                                  sdio_eventset_t wkupevent)
+                                        uint32_t waitints,
+                                        sdio_eventset_t waitevents,
+                                        sdio_eventset_t wkupevent)
 {
   irqstate_t flags;
 
   flags = enter_critical_section();
   priv->waitevents = waitevents;
-  priv->wkupevent  = wkupevent;
+  priv->wkupevent = wkupevent;
 
   /* Merge in the data-transfer interrupts and write INTMASK together */
 
@@ -430,29 +440,31 @@ static void rk3576_sdmmc_configwaitints(struct rk3576_sdmmc_dev_s *priv,
  ***************************************************************************/
 
 static void rk3576_sdmmc_configxfrints(struct rk3576_sdmmc_dev_s *priv,
-                                 uint32_t xfrints)
+                                       uint32_t xfrints)
 {
   irqstate_t flags;
 
   flags = enter_critical_section();
   priv->xfrints = xfrints;
 
-  /* Keep the current wait interrupts (deriving them from waitevents is tedious,
-   * so we just OR in the full set here): simplification -- during a transfer the
-   * wait interrupts are set by configwaitints, here we only add xfrints.
+  /* Keep the current wait interrupts (deriving them from waitevents is
+   * tedious, so we just OR in the full set here): simplification -- during a
+   * transfer the wait interrupts are set by configwaitints, here we only add
+   * xfrints.
    */
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_INTMASK,
-                rk3576_sdmmc_getreg(priv, RK3576_SDMMC_INTMASK) | xfrints);
+                      rk3576_sdmmc_getreg(priv, RK3576_SDMMC_INTMASK) |
+                          xfrints);
   if (xfrints == 0)
     {
       /* Disable data-transfer interrupts (other bits such as the SDIO card
        * interrupt are not handled here and are left untouched) */
 
       rk3576_sdmmc_putreg(priv, RK3576_SDMMC_INTMASK,
-                    rk3576_sdmmc_getreg(priv, RK3576_SDMMC_INTMASK) &
-                    ~(SDMMC_XFRDONE_INTS | SDMMC_DATAERR_INTS |
-                      SDMMC_INT_TXDR | SDMMC_INT_RXDR));
+                          rk3576_sdmmc_getreg(priv, RK3576_SDMMC_INTMASK) &
+                              ~(SDMMC_XFRDONE_INTS | SDMMC_DATAERR_INTS |
+                                SDMMC_INT_TXDR | SDMMC_INT_RXDR));
     }
 
   leave_critical_section(flags);
@@ -467,11 +479,12 @@ static void rk3576_sdmmc_configxfrints(struct rk3576_sdmmc_dev_s *priv,
  ***************************************************************************/
 
 static void rk3576_sdmmc_endwait(struct rk3576_sdmmc_dev_s *priv,
-                           sdio_eventset_t wkupevent)
+                                 sdio_eventset_t wkupevent)
 {
   wd_cancel(&priv->waitwdog);
 
-  /* Disable the interrupts of interest for this wait and record the wakeup event */
+  /* Disable the interrupts of interest for this wait and record the wakeup
+   * event */
 
   rk3576_sdmmc_configwaitints(priv, 0, 0, wkupevent);
   nxsem_post(&priv->waitsem);
@@ -509,7 +522,7 @@ static void rk3576_sdmmc_recvfifo(struct rk3576_sdmmc_dev_s *priv)
          (rk3576_sdmmc_getreg(priv, RK3576_SDMMC_STATUS) &
           SDMMC_STATUS_FIFO_EMPTY) == 0)
     {
-      *priv->buffer++  = rk3576_sdmmc_getreg(priv, RK3576_SDMMC_DATA);
+      *priv->buffer++ = rk3576_sdmmc_getreg(priv, RK3576_SDMMC_DATA);
       priv->remaining -= sizeof(uint32_t);
     }
 }
@@ -518,8 +531,8 @@ static void rk3576_sdmmc_recvfifo(struct rk3576_sdmmc_dev_s *priv)
  * Name: rk3576_sdmmc_sendfifo
  *
  * Description:
- *   Write data from the send buffer into the FIFO (PIO), until the FIFO is full
- *   or the buffer is empty.
+ *   Write data from the send buffer into the FIFO (PIO), until the FIFO is
+ *full or the buffer is empty.
  ***************************************************************************/
 
 static void rk3576_sdmmc_sendfifo(struct rk3576_sdmmc_dev_s *priv)
@@ -537,8 +550,8 @@ static void rk3576_sdmmc_sendfifo(struct rk3576_sdmmc_dev_s *priv)
  * Name: rk3576_sdmmc_callback
  *
  * Description:
- *   If the conditions are met, schedule the media-change callback onto the work
- *   queue for execution.
+ *   If the conditions are met, schedule the media-change callback onto the
+ *work queue for execution.
  ***************************************************************************/
 
 static void rk3576_sdmmc_callback(struct rk3576_sdmmc_dev_s *priv)
@@ -549,8 +562,8 @@ static void rk3576_sdmmc_callback(struct rk3576_sdmmc_dev_s *priv)
       sdio_statset_t status = rk3576_sdmmc_status(&priv->dev);
       bool present = (status & SDIO_STATUS_PRESENT) != 0;
 
-      if (( present && (priv->cbevents & SDIOMEDIA_INSERTED) != 0) ||
-          (!present && (priv->cbevents & SDIOMEDIA_EJECTED)  != 0))
+      if ((present && (priv->cbevents & SDIOMEDIA_INSERTED) != 0) ||
+          (!present && (priv->cbevents & SDIOMEDIA_EJECTED) != 0))
         {
           priv->cbevents = 0;
           work_queue(HPWORK, &priv->cbwork, priv->callback, priv->cbarg, 0);
@@ -563,8 +576,8 @@ static void rk3576_sdmmc_callback(struct rk3576_sdmmc_dev_s *priv)
  * Name: rk3576_sdmmc_interrupt
  *
  * Description:
- *   Controller interrupt handler: handles command done/response errors, PIO data
- *   movement, transfer done/errors, and card detection.
+ *   Controller interrupt handler: handles command done/response errors, PIO
+ *data movement, transfer done/errors, and card detection.
  ***************************************************************************/
 
 static int rk3576_sdmmc_interrupt(int irq, void *context, void *arg)
@@ -583,24 +596,25 @@ static int rk3576_sdmmc_interrupt(int irq, void *context, void *arg)
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_RINTSTS, pending);
 
 #ifdef CONFIG_SDIO_DMA
-  /* --- IDMAC status: handle DMA errors (RX/TX completion is finalized by DTO below) --- */
+  /* --- IDMAC status: handle DMA errors (RX/TX completion is finalized by DTO
+   * below) --- */
 
   if (priv->dmamode)
     {
       uint32_t idsts = rk3576_sdmmc_getreg(priv, RK3576_SDMMC_IDSTS);
 
       rk3576_sdmmc_putreg(priv, RK3576_SDMMC_IDSTS,
-                    idsts & SDMMC_IDMAC_INT_ALL);
+                          idsts & SDMMC_IDMAC_INT_ALL);
 
       if ((idsts & SDMMC_IDMAC_INT_ERR) != 0)
         {
           rk3576_sdmmc_dma_disable(priv);
           priv->remaining = 0;
-          priv->buffer    = NULL;
+          priv->buffer = NULL;
           rk3576_sdmmc_configxfrints(priv, 0);
 
-          if ((priv->waitevents &
-               (SDIOWAIT_TRANSFERDONE | SDIOWAIT_ERROR)) != 0)
+          if ((priv->waitevents & (SDIOWAIT_TRANSFERDONE | SDIOWAIT_ERROR)) !=
+              0)
             {
               rk3576_sdmmc_endwait(priv, SDIOWAIT_ERROR);
             }
@@ -631,7 +645,7 @@ static int rk3576_sdmmc_interrupt(int irq, void *context, void *arg)
         }
 #endif
       priv->remaining = 0;
-      priv->buffer    = NULL;
+      priv->buffer = NULL;
       rk3576_sdmmc_configxfrints(priv, 0);
 
       if ((priv->waitevents & (SDIOWAIT_TRANSFERDONE | SDIOWAIT_ERROR)) != 0)
@@ -647,13 +661,13 @@ static int rk3576_sdmmc_interrupt(int irq, void *context, void *arg)
 #ifdef CONFIG_SDIO_DMA
       if (priv->dmamode)
         {
-          /* DMA read: invalidate once more after DTO to make sure the CPU reads
-           * the fresh data DMA wrote into memory (not stale cache lines). */
+          /* DMA read: invalidate once more after DTO to make sure the CPU
+           * reads the fresh data DMA wrote into memory (not stale cache
+           * lines). */
 
           if (priv->dmaread)
             {
-              up_invalidate_dcache(priv->dmabuf,
-                                   priv->dmabuf + priv->dmalen);
+              up_invalidate_dcache(priv->dmabuf, priv->dmabuf + priv->dmalen);
             }
 
           rk3576_sdmmc_dma_disable(priv);
@@ -667,7 +681,7 @@ static int rk3576_sdmmc_interrupt(int irq, void *context, void *arg)
         }
 
       priv->remaining = 0;
-      priv->buffer    = NULL;
+      priv->buffer = NULL;
       rk3576_sdmmc_configxfrints(priv, 0);
 
       if ((priv->waitevents & SDIOWAIT_TRANSFERDONE) != 0)
@@ -680,8 +694,8 @@ static int rk3576_sdmmc_interrupt(int irq, void *context, void *arg)
 
   if ((pending & SDMMC_RESPERR_INTS) != 0)
     {
-      if ((priv->waitevents & (SDIOWAIT_CMDDONE | SDIOWAIT_RESPONSEDONE |
-                               SDIOWAIT_ERROR)) != 0)
+      if ((priv->waitevents &
+           (SDIOWAIT_CMDDONE | SDIOWAIT_RESPONSEDONE | SDIOWAIT_ERROR)) != 0)
         {
           rk3576_sdmmc_endwait(priv, SDIOWAIT_ERROR);
         }
@@ -691,11 +705,11 @@ static int rk3576_sdmmc_interrupt(int irq, void *context, void *arg)
 
   else if ((pending & SDMMC_INT_CMD_DONE) != 0)
     {
-      if ((priv->waitevents & (SDIOWAIT_CMDDONE | SDIOWAIT_RESPONSEDONE))
-          != 0)
+      if ((priv->waitevents & (SDIOWAIT_CMDDONE | SDIOWAIT_RESPONSEDONE)) != 0)
         {
-          rk3576_sdmmc_endwait(priv, priv->waitevents &
-                         (SDIOWAIT_CMDDONE | SDIOWAIT_RESPONSEDONE));
+          rk3576_sdmmc_endwait(priv,
+                               priv->waitevents &
+                                   (SDIOWAIT_CMDDONE | SDIOWAIT_RESPONSEDONE));
         }
     }
 
@@ -751,10 +765,11 @@ static void rk3576_sdmmc_reset(struct sdio_dev_s *dev)
   /* FIFO thresholds: RX/TX half-full trigger, burst length 1 (DW_MSHC FIFOTH
    * format: [30:28]=DW_MSIZE, [27:16]=RX_WMARK, [11:0]=TX_WMARK). */
 
-  rk3576_sdmmc_putreg(priv, RK3576_SDMMC_FIFOTH,
-                (2 << SDMMC_FIFOTH_MSIZE_SHIFT) |
-                ((RK3576_SDMMC_FIFO_HALF - 1) << SDMMC_FIFOTH_RXWMARK_SHIFT) |
-                (RK3576_SDMMC_FIFO_HALF << SDMMC_FIFOTH_TXWMARK_SHIFT));
+  rk3576_sdmmc_putreg(
+      priv, RK3576_SDMMC_FIFOTH,
+      (2 << SDMMC_FIFOTH_MSIZE_SHIFT) |
+          ((RK3576_SDMMC_FIFO_HALF - 1) << SDMMC_FIFOTH_RXWMARK_SHIFT) |
+          (RK3576_SDMMC_FIFO_HALF << SDMMC_FIFOTH_TXWMARK_SHIFT));
 
   /* Set data/response timeout to maximum */
 
@@ -768,16 +783,16 @@ static void rk3576_sdmmc_reset(struct sdio_dev_s *dev)
   /* Global interrupt enable (controller level) */
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_CTRL,
-                rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) |
-                SDMMC_CTRL_INT_ENABLE);
+                      rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) |
+                          SDMMC_CTRL_INT_ENABLE);
 
   /* Reset the driver software state */
 
-  priv->buffer     = NULL;
-  priv->remaining  = 0;
-  priv->xfrints    = 0;
+  priv->buffer = NULL;
+  priv->remaining = 0;
+  priv->xfrints = 0;
   priv->waitevents = 0;
-  priv->wkupevent  = 0;
+  priv->wkupevent = 0;
 
 #ifdef CONFIG_SDIO_DMA
   /* Initialize IDMAC: soft-reset and wait for self-clear, clear status, enable
@@ -825,11 +840,12 @@ static sdio_capset_t rk3576_sdmmc_capabilities(struct sdio_dev_s *dev)
 
   /* DMABEFOREWRITE must be set (both for the PIO and IDMAC paths): it makes
    * mmcsd defer the write command
-   * (CMD24/25) until after SENDSETUP.  Otherwise mmcsd would issue CMD24 before
-   * SENDSETUP, and when the controller enters the write-data state the TX FIFO
-   * is still empty -> underrun -> data error (SENDSETUP prefill may even collide
-   * with the buffer cleared by the error interrupt and crash).  With it set:
-   * SENDSETUP prefills the FIFO -> then CMD24 is issued -> no underrun. */
+   * (CMD24/25) until after SENDSETUP.  Otherwise mmcsd would issue CMD24
+   * before SENDSETUP, and when the controller enters the write-data state the
+   * TX FIFO is still empty -> underrun -> data error (SENDSETUP prefill may
+   * even collide with the buffer cleared by the error interrupt and crash).
+   * With it set: SENDSETUP prefills the FIFO -> then CMD24 is issued -> no
+   * underrun. */
 
   caps |= SDIO_CAPS_DMABEFOREWRITE;
 
@@ -860,7 +876,7 @@ static sdio_statset_t rk3576_sdmmc_status(struct sdio_dev_s *dev)
   if ((rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CDETECT) &
        SDMMC_CDETECT_NOCARD) == 0)
     {
-      status |= SDIO_STATUS_PRESENT;   /* bit0=0 => card present */
+      status |= SDIO_STATUS_PRESENT; /* bit0=0 => card present */
     }
 
   if ((rk3576_sdmmc_getreg(priv, RK3576_SDMMC_WRTPRT) &
@@ -881,7 +897,7 @@ static void rk3576_sdmmc_widebus(struct sdio_dev_s *dev, bool enable)
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_CTYPE,
-                enable ? SDMMC_CTYPE_4BIT : SDMMC_CTYPE_1BIT);
+                      enable ? SDMMC_CTYPE_4BIT : SDMMC_CTYPE_1BIT);
   priv->widebus = enable;
 }
 
@@ -959,7 +975,7 @@ static int rk3576_sdmmc_attach(struct sdio_dev_s *dev)
  ***************************************************************************/
 
 static int rk3576_sdmmc_sendcmd(struct sdio_dev_s *dev, uint32_t cmd,
-                          uint32_t arg)
+                                uint32_t arg)
 {
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
   uint32_t regval;
@@ -967,8 +983,8 @@ static int rk3576_sdmmc_sendcmd(struct sdio_dev_s *dev, uint32_t cmd,
   int i;
 
   cmdidx = (cmd & MMCSD_CMDIDX_MASK) >> MMCSD_CMDIDX_SHIFT;
-  regval = (cmdidx << SDMMC_CMD_INDEX_SHIFT) |
-           SDMMC_CMD_START | SDMMC_CMD_USE_HOLD_REG | SDMMC_CMD_WAIT_PRV;
+  regval = (cmdidx << SDMMC_CMD_INDEX_SHIFT) | SDMMC_CMD_START |
+           SDMMC_CMD_USE_HOLD_REG | SDMMC_CMD_WAIT_PRV;
 
   /* Response type */
 
@@ -980,8 +996,8 @@ static int rk3576_sdmmc_sendcmd(struct sdio_dev_s *dev, uint32_t cmd,
       case MMCSD_R2_RESPONSE:
         /* Long response (136-bit), check CRC */
 
-        regval |= SDMMC_CMD_RESP_EXPECT | SDMMC_CMD_RESP_LONG |
-                  SDMMC_CMD_RESP_CRC;
+        regval |=
+            SDMMC_CMD_RESP_EXPECT | SDMMC_CMD_RESP_LONG | SDMMC_CMD_RESP_CRC;
         break;
 
       case MMCSD_R3_RESPONSE:
@@ -1023,10 +1039,11 @@ static int rk3576_sdmmc_sendcmd(struct sdio_dev_s *dev, uint32_t cmd,
       regval |= SDMMC_CMD_INIT;
     }
 
-  /* Write the argument, clear command-done/response status bits, then start the command */
+  /* Write the argument, clear command-done/response status bits, then start
+   * the command */
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_RINTSTS,
-                SDMMC_INT_CMD_DONE | SDMMC_RESPERR_INTS);
+                      SDMMC_INT_CMD_DONE | SDMMC_RESPERR_INTS);
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_CMDARG, arg);
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_CMD, regval);
 
@@ -1048,38 +1065,38 @@ static int rk3576_sdmmc_sendcmd(struct sdio_dev_s *dev, uint32_t cmd,
  * Name: rk3576_sdmmc_recvsetup
  *
  * Description:
- *   PIO receive setup: reset FIFO, set block size/byte count, register the buffer
- *   and enable the RX interrupt.
+ *   PIO receive setup: reset FIFO, set block size/byte count, register the
+ *buffer and enable the RX interrupt.
  ***************************************************************************/
 
 static int rk3576_sdmmc_recvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
-                            size_t nbytes)
+                                  size_t nbytes)
 {
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
 
   DEBUGASSERT(buffer != NULL && nbytes > 0);
-  DEBUGASSERT(((uintptr_t)buffer & 3) == 0);   /* 32bit aligned */
+  DEBUGASSERT(((uintptr_t)buffer & 3) == 0); /* 32bit aligned */
 
   /* Reset FIFO */
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_CTRL,
-                rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) |
-                SDMMC_CTRL_FIFO_RESET);
+                      rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) |
+                          SDMMC_CTRL_FIFO_RESET);
 
-  priv->buffer    = (uint32_t *)buffer;
+  priv->buffer = (uint32_t *)buffer;
   priv->remaining = nbytes;
 
   /* Set block size and byte count: block size uses the value recorded by
    * blocksetup (defaults to nbytes) */
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_BLKSIZ,
-                priv->blocksize ? priv->blocksize : nbytes);
+                      priv->blocksize ? priv->blocksize : nbytes);
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_BYTCNT, nbytes);
 
   /* Enable data-receive interrupts: RXDR + DTO + errors */
 
   rk3576_sdmmc_configxfrints(priv, SDMMC_INT_RXDR | SDMMC_XFRDONE_INTS |
-                       SDMMC_DATAERR_INTS);
+                                       SDMMC_DATAERR_INTS);
   return OK;
 }
 
@@ -1091,8 +1108,8 @@ static int rk3576_sdmmc_recvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
  *   and enable the TX interrupt.
  ***************************************************************************/
 
-static int rk3576_sdmmc_sendsetup(struct sdio_dev_s *dev, const uint8_t *buffer,
-                            size_t nbytes)
+static int rk3576_sdmmc_sendsetup(struct sdio_dev_s *dev,
+                                  const uint8_t *buffer, size_t nbytes)
 {
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
   int i;
@@ -1104,8 +1121,8 @@ static int rk3576_sdmmc_sendsetup(struct sdio_dev_s *dev, const uint8_t *buffer,
    * prefilled data would be wiped out by the reset */
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_CTRL,
-                rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) |
-                SDMMC_CTRL_FIFO_RESET);
+                      rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) |
+                          SDMMC_CTRL_FIFO_RESET);
   for (i = 0; i < RK3576_SDMMC_SPIN; i++)
     {
       if ((rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) &
@@ -1115,27 +1132,29 @@ static int rk3576_sdmmc_sendsetup(struct sdio_dev_s *dev, const uint8_t *buffer,
         }
     }
 
-  priv->buffer    = (uint32_t *)buffer;
+  priv->buffer = (uint32_t *)buffer;
   priv->remaining = nbytes;
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_BLKSIZ,
-                priv->blocksize ? priv->blocksize : nbytes);
+                      priv->blocksize ? priv->blocksize : nbytes);
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_BYTCNT, nbytes);
 
-  /* Prefill TX FIFO: on DW-MSHC, a PIO write must push data into the FIFO before
-   * issuing the command, otherwise after CMD24 the TX FIFO is empty -> controller
-   * underrun (FRUN) -> data error -> write fails.  A single block (<= FIFO
-   * capacity) is filled at once; larger transfers are continued by later TXDR
-   * interrupts.  The prefill must happen BEFORE enabling interrupts: otherwise
-   * once TXDR is enabled an empty FIFO immediately raises an interrupt, and the
-   * sendfifo in the ISR would race with this prefill over priv->buffer/remaining. */
+  /* Prefill TX FIFO: on DW-MSHC, a PIO write must push data into the FIFO
+   * before issuing the command, otherwise after CMD24 the TX FIFO is empty ->
+   * controller underrun (FRUN) -> data error -> write fails.  A single block
+   * (<= FIFO capacity) is filled at once; larger transfers are continued by
+   * later TXDR interrupts.  The prefill must happen BEFORE enabling
+   * interrupts: otherwise once TXDR is enabled an empty FIFO immediately
+   * raises an interrupt, and the sendfifo in the ISR would race with this
+   * prefill over priv->buffer/remaining. */
 
   rk3576_sdmmc_sendfifo(priv);
 
-  /* After prefilling, enable data-send interrupts: TXDR (refill) + DTO + errors */
+  /* After prefilling, enable data-send interrupts: TXDR (refill) + DTO +
+   * errors */
 
   rk3576_sdmmc_configxfrints(priv, SDMMC_INT_TXDR | SDMMC_XFRDONE_INTS |
-                       SDMMC_DATAERR_INTS);
+                                       SDMMC_DATAERR_INTS);
   return OK;
 }
 
@@ -1143,8 +1162,8 @@ static int rk3576_sdmmc_sendsetup(struct sdio_dev_s *dev, const uint8_t *buffer,
  * Name: rk3576_sdmmc_cancel
  *
  * Description:
- *   Cancel an outstanding data transfer: disable interrupts, stop the watchdog,
- *   clear software state.
+ *   Cancel an outstanding data transfer: disable interrupts, stop the
+ *watchdog, clear software state.
  ***************************************************************************/
 
 static int rk3576_sdmmc_cancel(struct sdio_dev_s *dev)
@@ -1155,7 +1174,7 @@ static int rk3576_sdmmc_cancel(struct sdio_dev_s *dev)
   rk3576_sdmmc_configwaitints(priv, 0, 0, 0);
   wd_cancel(&priv->waitwdog);
 
-  priv->buffer    = NULL;
+  priv->buffer = NULL;
   priv->remaining = 0;
   return OK;
 }
@@ -1208,12 +1227,13 @@ static int rk3576_sdmmc_waitresponse(struct sdio_dev_s *dev, uint32_t cmd)
  *
  * Description:
  *   Read the command response.  Short response reads RESP0; long response (R2)
- *   reads RESP0..3.  On dw-mshc the long-response RESP0 is the lowest word while
- *   NuttX expects rlong[0] to be the highest word, so we fill in reverse order.
+ *   reads RESP0..3.  On dw-mshc the long-response RESP0 is the lowest word
+ *while NuttX expects rlong[0] to be the highest word, so we fill in reverse
+ *order.
  ***************************************************************************/
 
 static int rk3576_sdmmc_recvshort(struct sdio_dev_s *dev, uint32_t cmd,
-                            uint32_t *rshort)
+                                  uint32_t *rshort)
 {
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
   uint32_t status = rk3576_sdmmc_getreg(priv, RK3576_SDMMC_RINTSTS);
@@ -1239,7 +1259,7 @@ static int rk3576_sdmmc_recvshort(struct sdio_dev_s *dev, uint32_t cmd,
 }
 
 static int rk3576_sdmmc_recvlong(struct sdio_dev_s *dev, uint32_t cmd,
-                           uint32_t rlong[4])
+                                 uint32_t rlong[4])
 {
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
   uint32_t status = rk3576_sdmmc_getreg(priv, RK3576_SDMMC_RINTSTS);
@@ -1275,7 +1295,7 @@ static int rk3576_sdmmc_recvlong(struct sdio_dev_s *dev, uint32_t cmd,
  ***************************************************************************/
 
 static void rk3576_sdmmc_waitenable(struct sdio_dev_s *dev,
-                              sdio_eventset_t eventset, uint32_t timeout)
+                                    sdio_eventset_t eventset, uint32_t timeout)
 {
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
   uint32_t waitints = 0;
@@ -1294,7 +1314,8 @@ static void rk3576_sdmmc_waitenable(struct sdio_dev_s *dev,
 
   rk3576_sdmmc_configwaitints(priv, waitints, eventset, 0);
 
-  /* Start the timeout watchdog (only when TIMEOUT is of interest and timeout>0) */
+  /* Start the timeout watchdog (only when TIMEOUT is of interest and
+   * timeout>0) */
 
   if ((eventset & SDIOWAIT_TIMEOUT) != 0 && timeout > 0)
     {
@@ -1322,7 +1343,7 @@ static sdio_eventset_t rk3576_sdmmc_eventwait(struct sdio_dev_s *dev)
 
   /* Wait for an interrupt to post waitsem (done in endwait) */
 
-  for (; ; )
+  for (;;)
     {
       nxsem_wait_uninterruptible(&priv->waitsem);
 
@@ -1349,7 +1370,7 @@ static sdio_eventset_t rk3576_sdmmc_eventwait(struct sdio_dev_s *dev)
  ***************************************************************************/
 
 static void rk3576_sdmmc_callbackenable(struct sdio_dev_s *dev,
-                                  sdio_eventset_t eventset)
+                                        sdio_eventset_t eventset)
 {
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
 
@@ -1363,12 +1384,12 @@ static void rk3576_sdmmc_callbackenable(struct sdio_dev_s *dev,
  ***************************************************************************/
 
 static int rk3576_sdmmc_registercallback(struct sdio_dev_s *dev,
-                                    worker_t callback, void *arg)
+                                         worker_t callback, void *arg)
 {
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
 
   priv->cbevents = 0;
-  priv->cbarg    = arg;
+  priv->cbarg = arg;
   priv->callback = callback;
   return OK;
 }
@@ -1383,7 +1404,7 @@ static int rk3576_sdmmc_registercallback(struct sdio_dev_s *dev,
  ***************************************************************************/
 
 static void rk3576_sdmmc_gotextcsd(struct sdio_dev_s *dev,
-                             const uint8_t *buffer)
+                                   const uint8_t *buffer)
 {
   UNUSED(dev);
   UNUSED(buffer);
@@ -1395,17 +1416,18 @@ static void rk3576_sdmmc_gotextcsd(struct sdio_dev_s *dev,
  * Name: rk3576_sdmmc_dma_disable
  *
  * Description:
- *   Disable IDMAC: clear the DE bit in BMOD and USE_IDMAC in CTRL, exit DMA mode.
+ *   Disable IDMAC: clear the DE bit in BMOD and USE_IDMAC in CTRL, exit DMA
+ *mode.
  ***************************************************************************/
 
 static void rk3576_sdmmc_dma_disable(struct rk3576_sdmmc_dev_s *priv)
 {
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_CTRL,
-                rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) &
-                ~SDMMC_CTRL_USE_IDMAC);
+                      rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) &
+                          ~SDMMC_CTRL_USE_IDMAC);
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_BMOD,
-                rk3576_sdmmc_getreg(priv, RK3576_SDMMC_BMOD) &
-                ~SDMMC_IDMAC_ENABLE);
+                      rk3576_sdmmc_getreg(priv, RK3576_SDMMC_BMOD) &
+                          ~SDMMC_IDMAC_ENABLE);
   priv->dmamode = false;
 }
 
@@ -1414,14 +1436,14 @@ static void rk3576_sdmmc_dma_disable(struct rk3576_sdmmc_dev_s *priv)
  *
  * Description:
  *   Split [buffer, buffer+buflen) into <=4KB segments and fill the static
- *   descriptor chain (32-bit chained mode).  The first segment gets FD, the last
- *   gets LD, non-last segments get DIC (only the last raises a completion
- *   interrupt).  After filling, clean the descriptor table's dcache so IDMAC reads
- *   the descriptors written by the CPU.
+ *   descriptor chain (32-bit chained mode).  The first segment gets FD, the
+ *last gets LD, non-last segments get DIC (only the last raises a completion
+ *   interrupt).  After filling, clean the descriptor table's dcache so IDMAC
+ *reads the descriptors written by the CPU.
  ***************************************************************************/
 
 static int rk3576_sdmmc_dma_build(struct rk3576_sdmmc_dev_s *priv,
-                            const uint8_t *buffer, size_t buflen)
+                                  const uint8_t *buffer, size_t buflen)
 {
   struct rk3576_sdmmc_idmac_desc_s *desc = priv->descs;
   uintptr_t addr = (uintptr_t)buffer;
@@ -1437,12 +1459,12 @@ static int rk3576_sdmmc_dma_build(struct rk3576_sdmmc_dev_s *priv,
 
   for (i = 0; i < n; i++)
     {
-      size_t seg = remaining > RK3576_IDMAC_BUFSZ ?
-                   RK3576_IDMAC_BUFSZ : remaining;
+      size_t seg =
+          remaining > RK3576_IDMAC_BUFSZ ? RK3576_IDMAC_BUFSZ : remaining;
       uint32_t ctrl = IDMAC_DES0_OWN | IDMAC_DES0_CH;
 
       desc[i].des1 = IDMAC_DES1_BS1(seg);
-      desc[i].des2 = (uint32_t)addr;      /* buffer1 physical address (low 4G) */
+      desc[i].des2 = (uint32_t)addr; /* buffer1 physical address (low 4G) */
 
       if (i == 0)
         {
@@ -1451,18 +1473,19 @@ static int rk3576_sdmmc_dma_build(struct rk3576_sdmmc_dev_s *priv,
 
       if (i == n - 1)
         {
-          ctrl |= IDMAC_DES0_LD;          /* Last segment: stop after completion */
+          ctrl |= IDMAC_DES0_LD; /* Last segment: stop after completion */
           desc[i].des3 = 0;
         }
       else
         {
-          ctrl |= IDMAC_DES0_DIC;         /* Non-last segment raises no completion interrupt */
+          ctrl |= IDMAC_DES0_DIC; /* Non-last segment raises no completion
+                                     interrupt */
           desc[i].des3 = (uint32_t)(uintptr_t)&desc[i + 1];
         }
 
       desc[i].des0 = ctrl;
 
-      addr      += seg;
+      addr += seg;
       remaining -= seg;
     }
 
@@ -1470,7 +1493,8 @@ static int rk3576_sdmmc_dma_build(struct rk3576_sdmmc_dev_s *priv,
    * table must be flushed back to memory */
 
   up_clean_dcache((uintptr_t)desc,
-                  (uintptr_t)desc + n * sizeof(struct rk3576_sdmmc_idmac_desc_s));
+                  (uintptr_t)desc +
+                      n * sizeof(struct rk3576_sdmmc_idmac_desc_s));
   return OK;
 }
 
@@ -1484,28 +1508,28 @@ static int rk3576_sdmmc_dma_build(struct rk3576_sdmmc_dev_s *priv,
  ***************************************************************************/
 
 static int rk3576_sdmmc_dma_common(struct rk3576_sdmmc_dev_s *priv,
-                             const uint8_t *buffer, size_t buflen,
-                             bool write)
+                                   const uint8_t *buffer, size_t buflen,
+                                   bool write)
 {
   uint32_t blksz;
   int ret;
   int i;
 
-  /* Enter DMA mode: clear the PIO buffer pointer so the ISR does not go through
-   * recvfifo/sendfifo */
+  /* Enter DMA mode: clear the PIO buffer pointer so the ISR does not go
+   * through recvfifo/sendfifo */
 
-  priv->buffer    = NULL;
+  priv->buffer = NULL;
   priv->remaining = 0;
-  priv->dmabuf    = (uintptr_t)buffer;
-  priv->dmalen    = buflen;
-  priv->dmaread   = !write;
-  priv->dmamode   = true;
+  priv->dmabuf = (uintptr_t)buffer;
+  priv->dmalen = buflen;
+  priv->dmaread = !write;
+  priv->dmamode = true;
 
   /* Reset FIFO + DMA and wait for self-clear */
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_CTRL,
-                rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) |
-                SDMMC_CTRL_FIFO_RESET | SDMMC_CTRL_DMA_RESET);
+                      rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) |
+                          SDMMC_CTRL_FIFO_RESET | SDMMC_CTRL_DMA_RESET);
   for (i = 0; i < RK3576_SDMMC_SPIN; i++)
     {
       if ((rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) &
@@ -1539,8 +1563,8 @@ static int rk3576_sdmmc_dma_common(struct rk3576_sdmmc_dev_s *priv,
   /* Cache coherency:
    *   send (DMA reads memory) -> clean, flush CPU cache to memory;
    *   receive (DMA writes memory) -> invalidate, to avoid dirty lines writing
-   *                        back over DMA data; after DTO the ISR invalidates once
-   *                        more so the CPU reads the fresh data. */
+   *                        back over DMA data; after DTO the ISR invalidates
+   * once more so the CPU reads the fresh data. */
 
   if (write)
     {
@@ -1558,23 +1582,26 @@ static int rk3576_sdmmc_dma_common(struct rk3576_sdmmc_dev_s *priv,
 
   /* Descriptor base address -> DBADDR */
 
-  rk3576_sdmmc_putreg(priv, RK3576_SDMMC_DBADDR, (uint32_t)(uintptr_t)priv->descs);
+  rk3576_sdmmc_putreg(priv, RK3576_SDMMC_DBADDR,
+                      (uint32_t)(uintptr_t)priv->descs);
 
   /* CTRL selects internal DMA; BMOD enables DE (+ fixed burst) */
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_CTRL,
-                rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) |
-                SDMMC_CTRL_USE_IDMAC);
+                      rk3576_sdmmc_getreg(priv, RK3576_SDMMC_CTRL) |
+                          SDMMC_CTRL_USE_IDMAC);
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_BMOD,
-                SDMMC_IDMAC_FB | SDMMC_IDMAC_ENABLE);
+                      SDMMC_IDMAC_FB | SDMMC_IDMAC_ENABLE);
 
-  /* Block size/byte count: blocksize recorded by blocksetup, defaults to 512 */
+  /* Block size/byte count: blocksize recorded by blocksetup, defaults to 512
+   */
 
   blksz = priv->blocksize ? priv->blocksize : buflen;
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_BLKSIZ, blksz);
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_BYTCNT, buflen);
 
-  /* Data completion uses DTO, errors use DATAERR; DMA mode does not enable RXDR/TXDR */
+  /* Data completion uses DTO, errors use DATAERR; DMA mode does not enable
+   * RXDR/TXDR */
 
   rk3576_sdmmc_configxfrints(priv, SDMMC_XFRDONE_INTS | SDMMC_DATAERR_INTS);
   return OK;
@@ -1596,7 +1623,7 @@ static bool rk3576_sdmmc_dma_ok(const uint8_t *buffer, size_t buflen)
 
   if (line == 0)
     {
-      line = 64;   /* armv8-a L1 D-cache line */
+      line = 64; /* armv8-a L1 D-cache line */
     }
 
   return (addr & (line - 1)) == 0 && (buflen & (line - 1)) == 0 &&
@@ -1614,13 +1641,13 @@ static bool rk3576_sdmmc_dma_ok(const uint8_t *buffer, size_t buflen)
 
 #ifdef CONFIG_ARCH_HAVE_SDIO_PREFLIGHT
 static int rk3576_sdmmc_dmapreflight(struct sdio_dev_s *dev,
-                               const uint8_t *buffer, size_t buflen)
+                                     const uint8_t *buffer, size_t buflen)
 {
   /* Always return OK: mmcsd does NOT fall back to PIO on preflight failure (it
-   * returns EFAULT directly), so we must not reject any buffer here.  Whether DMA
-   * is actually usable is decided in the setup below; when not satisfied
-   * (misaligned/over-capacity/above 4G) the driver itself falls back to PIO, so
-   * any buffer can be read/written. */
+   * returns EFAULT directly), so we must not reject any buffer here.  Whether
+   * DMA is actually usable is decided in the setup below; when not satisfied
+   * (misaligned/over-capacity/above 4G) the driver itself falls back to PIO,
+   * so any buffer can be read/written. */
 
   UNUSED(dev);
   UNUSED(buffer);
@@ -1634,14 +1661,14 @@ static int rk3576_sdmmc_dmapreflight(struct sdio_dev_s *dev,
  ***************************************************************************/
 
 static int rk3576_sdmmc_dmarecvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
-                               size_t buflen)
+                                     size_t buflen)
 {
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
 
   DEBUGASSERT(buffer != NULL && buflen > 0);
 
-  /* Buffer unsuitable for DMA -> the driver falls back to PIO itself (mmcsd will
-   * not fall back for us) */
+  /* Buffer unsuitable for DMA -> the driver falls back to PIO itself (mmcsd
+   * will not fall back for us) */
 
   if (!rk3576_sdmmc_dma_ok(buffer, buflen))
     {
@@ -1653,7 +1680,7 @@ static int rk3576_sdmmc_dmarecvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
 }
 
 static int rk3576_sdmmc_dmasendsetup(struct sdio_dev_s *dev,
-                               const uint8_t *buffer, size_t buflen)
+                                     const uint8_t *buffer, size_t buflen)
 {
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
 
@@ -1675,12 +1702,13 @@ static int rk3576_sdmmc_dmasendsetup(struct sdio_dev_s *dev,
  * Name: rk3576_sdmmc_blocksetup
  *
  * Description:
- *   Record the block size and preset BLKSIZ/BYTCNT.  Both the DMA and PIO paths
- *   set the block size based on this.
+ *   Record the block size and preset BLKSIZ/BYTCNT.  Both the DMA and PIO
+ *paths set the block size based on this.
  ***************************************************************************/
 
 static void rk3576_sdmmc_blocksetup(struct sdio_dev_s *dev,
-                              unsigned int blocklen, unsigned int nblocks)
+                                    unsigned int blocklen,
+                                    unsigned int nblocks)
 {
   struct rk3576_sdmmc_dev_s *priv = (struct rk3576_sdmmc_dev_s *)dev;
 
@@ -1690,7 +1718,6 @@ static void rk3576_sdmmc_blocksetup(struct sdio_dev_s *dev,
 }
 #endif
 
-
 /***************************************************************************
  * Public Functions
  ***************************************************************************/
@@ -1699,8 +1726,8 @@ static void rk3576_sdmmc_blocksetup(struct sdio_dev_s *dev,
  * Name: rk3576_sdmmc_initialize
  *
  * Description:
- *   Initialize the RK3576 SDMMC (SD card) host and return an sdio_dev_s for the
- *   mmcsd layer to mount.
+ *   Initialize the RK3576 SDMMC (SD card) host and return an sdio_dev_s for
+ *the mmcsd layer to mount.
  *
  * Input Parameters:
  *   slotno - Slot number (RK3576 has only one SD card slot, use 0).

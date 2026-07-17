@@ -24,10 +24,10 @@
  * Included Files
  ****************************************************************************/
 
+#include "kickpi_k7.h"
+#include <nuttx/board.h>
 #include <nuttx/config.h>
 #include <sys/types.h>
-#include <nuttx/board.h>
-#include "kickpi_k7.h"
 
 /****************************************************************************
  * Public Functions

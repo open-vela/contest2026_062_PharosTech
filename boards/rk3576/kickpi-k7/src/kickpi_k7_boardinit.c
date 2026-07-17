@@ -24,21 +24,21 @@
  * Included Files
  ****************************************************************************/
 
+#include "kickpi_k7.h"
+#include "rk3576_gpio.h"
+#include <nuttx/board.h>
 #include <nuttx/config.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <syslog.h>
-#include <nuttx/board.h>
-#include "rk3576_gpio.h"
-#include "kickpi_k7.h"
 
 #ifdef CONFIG_RK3576_SDMMC
-#  include <nuttx/mmcsd.h>
-#  include "rk3576_sdmmc.h"
+#include "rk3576_sdmmc.h"
+#include <nuttx/mmcsd.h>
 #endif
 
 #if defined(CONFIG_RK3576_SDMMC) && defined(CONFIG_GPT_PARTITION)
-#  include <nuttx/fs/partition.h>
+#include <nuttx/fs/partition.h>
 #endif
 
 /****************************************************************************

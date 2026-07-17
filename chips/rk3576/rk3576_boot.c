@@ -24,13 +24,13 @@
 
 #include <nuttx/config.h>
 
-#include <stdint.h>
 #include <assert.h>
 #include <debug.h>
+#include <stdint.h>
 
 #include <nuttx/cache.h>
 #ifdef CONFIG_LEGACY_PAGING
-#  include <nuttx/page.h>
+#include <nuttx/page.h>
 #endif
 
 #include <arch/chip/chip.h>
@@ -50,19 +50,16 @@
  * Private Data
  ****************************************************************************/
 
-static const struct arm_mmu_region g_mmu_regions[] =
-{
-  MMU_REGION_FLAT_ENTRY("DEVICE_REGION",
-                        CONFIG_DEVICEIO_BASEADDR, CONFIG_DEVICEIO_SIZE,
+static const struct arm_mmu_region g_mmu_regions[] = {
+  MMU_REGION_FLAT_ENTRY("DEVICE_REGION", CONFIG_DEVICEIO_BASEADDR,
+                        CONFIG_DEVICEIO_SIZE,
                         MT_DEVICE_NGNRNE | MT_RW | MT_SECURE),
 
-  MMU_REGION_FLAT_ENTRY("DRAM0_S0",
-                        CONFIG_RAMBANK1_ADDR, CONFIG_RAMBANK1_SIZE,
+  MMU_REGION_FLAT_ENTRY("DRAM0_S0", CONFIG_RAMBANK1_ADDR, CONFIG_RAMBANK1_SIZE,
                         MT_NORMAL | MT_RW | MT_SECURE),
 };
 
-const struct arm_mmu_config g_mmu_config =
-{
+const struct arm_mmu_config g_mmu_config = {
   .num_regions = nitems(g_mmu_regions),
   .mmu_regions = g_mmu_regions,
 };
@@ -138,7 +135,6 @@ void arm64_chip_boot(void)
 
 #if defined(CONFIG_NET) && !defined(CONFIG_NETDEV_LATEINIT)
 void arm64_netinitialize(void)
-{
-  /* TODO: Support net initialize */
+{ /* TODO: Support net initialize */
 }
 #endif

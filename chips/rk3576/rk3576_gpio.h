@@ -27,8 +27,8 @@
 
 #include <nuttx/config.h>
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -54,72 +54,74 @@
  *   RK_GPIO4_D7 = GPIO_PORT4 | GPIO_PIN_D7
  */
 
-/* Pin encoding ***************************************************************/
+/* Pin encoding
+ * ***************************************************************/
 
-#define GPIO_PIN_SHIFT         (0)           /* Bits 0-4: GPIO pin number */
-#define GPIO_PIN_MASK          (0x1f << GPIO_PIN_SHIFT)
+#define GPIO_PIN_SHIFT (0) /* Bits 0-4: GPIO pin number */
+#define GPIO_PIN_MASK  (0x1f << GPIO_PIN_SHIFT)
 /* Group A (pins 0-7) */
-#  define GPIO_PIN_A0          (0 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_A1          (1 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_A2          (2 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_A3          (3 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_A4          (4 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_A5          (5 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_A6          (6 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_A7          (7 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_A0 (0 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_A1 (1 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_A2 (2 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_A3 (3 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_A4 (4 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_A5 (5 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_A6 (6 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_A7 (7 << GPIO_PIN_SHIFT)
 /* Group B (pins 8-15) */
-#  define GPIO_PIN_B0          (8 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_B1          (9 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_B2          (10 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_B3          (11 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_B4          (12 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_B5          (13 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_B6          (14 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_B7          (15 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_B0 (8 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_B1 (9 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_B2 (10 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_B3 (11 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_B4 (12 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_B5 (13 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_B6 (14 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_B7 (15 << GPIO_PIN_SHIFT)
 /* Group C (pins 16-23) */
-#  define GPIO_PIN_C0          (16 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_C1          (17 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_C2          (18 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_C3          (19 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_C4          (20 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_C5          (21 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_C6          (22 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_C7          (23 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_C0 (16 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_C1 (17 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_C2 (18 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_C3 (19 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_C4 (20 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_C5 (21 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_C6 (22 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_C7 (23 << GPIO_PIN_SHIFT)
 /* Group D (pins 24-31) */
-#  define GPIO_PIN_D0          (24 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_D1          (25 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_D2          (26 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_D3          (27 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_D4          (28 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_D5          (29 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_D6          (30 << GPIO_PIN_SHIFT)
-#  define GPIO_PIN_D7          (31 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_D0 (24 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_D1 (25 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_D2 (26 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_D3 (27 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_D4 (28 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_D5 (29 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_D6 (30 << GPIO_PIN_SHIFT)
+#define GPIO_PIN_D7 (31 << GPIO_PIN_SHIFT)
 
 /* Port encoding *************************************************************/
 
-#define GPIO_PORT_SHIFT        (5)           /* Bits 5-7: GPIO port number */
-#define GPIO_PORT_MASK         (0x7 << GPIO_PORT_SHIFT)
-#  define GPIO_PORT0           (0 << GPIO_PORT_SHIFT)  /* GPIO0 */
-#  define GPIO_PORT1           (1 << GPIO_PORT_SHIFT)  /* GPIO1 */
-#  define GPIO_PORT2           (2 << GPIO_PORT_SHIFT)  /* GPIO2 */
-#  define GPIO_PORT3           (3 << GPIO_PORT_SHIFT)  /* GPIO3 */
-#  define GPIO_PORT4           (4 << GPIO_PORT_SHIFT)  /* GPIO4 */
+#define GPIO_PORT_SHIFT (5) /* Bits 5-7: GPIO port number */
+#define GPIO_PORT_MASK  (0x7 << GPIO_PORT_SHIFT)
+#define GPIO_PORT0      (0 << GPIO_PORT_SHIFT) /* GPIO0 */
+#define GPIO_PORT1      (1 << GPIO_PORT_SHIFT) /* GPIO1 */
+#define GPIO_PORT2      (2 << GPIO_PORT_SHIFT) /* GPIO2 */
+#define GPIO_PORT3      (3 << GPIO_PORT_SHIFT) /* GPIO3 */
+#define GPIO_PORT4      (4 << GPIO_PORT_SHIFT) /* GPIO4 */
 
 /* Mode encoding *************************************************************/
 
-#define GPIO_MODE_SHIFT        (8)           /* Bits 8-9: Pin mode */
-#define GPIO_MODE_MASK         (0x3 << GPIO_MODE_SHIFT)
-#  define GPIO_INPUT           (0 << GPIO_MODE_SHIFT)  /* Input mode */
-#  define GPIO_OUTPUT          (1 << GPIO_MODE_SHIFT)  /* Output mode */
-#  define GPIO_ALT             (2 << GPIO_MODE_SHIFT)  /* Alternate function */
+#define GPIO_MODE_SHIFT (8) /* Bits 8-9: Pin mode */
+#define GPIO_MODE_MASK  (0x3 << GPIO_MODE_SHIFT)
+#define GPIO_INPUT      (0 << GPIO_MODE_SHIFT) /* Input mode */
+#define GPIO_OUTPUT     (1 << GPIO_MODE_SHIFT) /* Output mode */
+#define GPIO_ALT        (2 << GPIO_MODE_SHIFT) /* Alternate function */
 
-/* Pull-up/Pull-down **********************************************************/
+/* Pull-up/Pull-down
+ * **********************************************************/
 
-#define GPIO_PUPD_SHIFT        (10)          /* Bits 10-11: Pull-up/pull-down */
-#define GPIO_PUPD_MASK         (0x3 << GPIO_PUPD_SHIFT)
-#  define GPIO_FLOAT           (0 << GPIO_PUPD_SHIFT)  /* No pull */
-#  define GPIO_PULLUP          (1 << GPIO_PUPD_SHIFT)  /* Pull-up */
-#  define GPIO_PULLDOWN        (2 << GPIO_PUPD_SHIFT)  /* Pull-down */
+#define GPIO_PUPD_SHIFT (10) /* Bits 10-11: Pull-up/pull-down */
+#define GPIO_PUPD_MASK  (0x3 << GPIO_PUPD_SHIFT)
+#define GPIO_FLOAT      (0 << GPIO_PUPD_SHIFT) /* No pull */
+#define GPIO_PULLUP     (1 << GPIO_PUPD_SHIFT) /* Pull-up */
+#define GPIO_PULLDOWN   (2 << GPIO_PUPD_SHIFT) /* Pull-down */
 
 /* Drive strength encoding — 3-bit field (for output and AF pins)
  *
@@ -129,76 +131,86 @@
  *   GPIO_DRV_STRENGTH_DEFAULT (0) — hardware reset value (50Ω for 4-level,
  *                                    40Ω for 6-level GPIOs)
  *   GPIO_DRV_STRENGTH_100OHM  (1) — 100 ohms — both 4-level and 6-level GPIOs
- *   GPIO_DRV_STRENGTH_66OHM   (2) —  66 ohms — 6-level GPIOs only (error on 4-level)
- *   GPIO_DRV_STRENGTH_50OHM   (3) —  50 ohms — both 4-level and 6-level GPIOs
- *   GPIO_DRV_STRENGTH_40OHM   (4) —  40 ohms — 6-level GPIOs only (error on 4-level)
- *   GPIO_DRV_STRENGTH_33OHM   (5) —  33 ohms — both 4-level and 6-level GPIOs
- *   GPIO_DRV_STRENGTH_25OHM   (6) —  25 ohms — both 4-level and 6-level GPIOs
+ *   GPIO_DRV_STRENGTH_66OHM   (2) —  66 ohms — 6-level GPIOs only (error on
+ * 4-level) GPIO_DRV_STRENGTH_50OHM   (3) —  50 ohms — both 4-level and 6-level
+ * GPIOs GPIO_DRV_STRENGTH_40OHM   (4) —  40 ohms — 6-level GPIOs only (error
+ * on 4-level) GPIO_DRV_STRENGTH_33OHM   (5) —  33 ohms — both 4-level and
+ * 6-level GPIOs GPIO_DRV_STRENGTH_25OHM   (6) —  25 ohms — both 4-level and
+ * 6-level GPIOs
  *
  */
 
-#define GPIO_DRV_STRENGTH_SHIFT    (12)          /* Bits 12-14: Drive strength */
-#define GPIO_DRV_STRENGTH_MASK     (0x7 << GPIO_DRV_STRENGTH_SHIFT)
-#  define GPIO_DRV_STRENGTH_DEFAULT (0 << GPIO_DRV_STRENGTH_SHIFT)  /* hw reset: 50Ω(4-lv) / 40Ω(6-lv) */
-#  define GPIO_DRV_STRENGTH_100OHM (1 << GPIO_DRV_STRENGTH_SHIFT)  /* 100 ohms */
-#  define GPIO_DRV_STRENGTH_66OHM  (2 << GPIO_DRV_STRENGTH_SHIFT)  /*  66 ohms — 6-level only */
-#  define GPIO_DRV_STRENGTH_50OHM  (3 << GPIO_DRV_STRENGTH_SHIFT)  /*  50 ohms */
-#  define GPIO_DRV_STRENGTH_40OHM  (4 << GPIO_DRV_STRENGTH_SHIFT)  /*  40 ohms — 6-level only */
-#  define GPIO_DRV_STRENGTH_33OHM  (5 << GPIO_DRV_STRENGTH_SHIFT)  /*  33 ohms */
-#  define GPIO_DRV_STRENGTH_25OHM  (6 << GPIO_DRV_STRENGTH_SHIFT)  /*  25 ohms */
+#define GPIO_DRV_STRENGTH_SHIFT (12) /* Bits 12-14: Drive strength */
+#define GPIO_DRV_STRENGTH_MASK  (0x7 << GPIO_DRV_STRENGTH_SHIFT)
+#define GPIO_DRV_STRENGTH_DEFAULT \
+  (0 << GPIO_DRV_STRENGTH_SHIFT) /* hw reset: 50Ω(4-lv) / 40Ω(6-lv) */
+#define GPIO_DRV_STRENGTH_100OHM             \
+  (1 << GPIO_DRV_STRENGTH_SHIFT) /* 100 ohms \
+                                  */
+#define GPIO_DRV_STRENGTH_66OHM \
+  (2 << GPIO_DRV_STRENGTH_SHIFT) /*  66 ohms — 6-level only */
+#define GPIO_DRV_STRENGTH_50OHM (3 << GPIO_DRV_STRENGTH_SHIFT) /*  50 ohms */
+#define GPIO_DRV_STRENGTH_40OHM \
+  (4 << GPIO_DRV_STRENGTH_SHIFT) /*  40 ohms — 6-level only */
+#define GPIO_DRV_STRENGTH_33OHM (5 << GPIO_DRV_STRENGTH_SHIFT) /*  33 ohms */
+#define GPIO_DRV_STRENGTH_25OHM (6 << GPIO_DRV_STRENGTH_SHIFT) /*  25 ohms */
 
-/* Alternate function encoding ************************************************/
+/* Alternate function encoding
+ * ************************************************/
 
-#define GPIO_AF_SHIFT          (15)          /* Bits 15-18: AF number (0-15) */
-#define GPIO_AF_MASK           (0xf << GPIO_AF_SHIFT)
-#  define GPIO_AF0             (0 << GPIO_AF_SHIFT)
-#  define GPIO_AF1             (1 << GPIO_AF_SHIFT)
-#  define GPIO_AF2             (2 << GPIO_AF_SHIFT)
-#  define GPIO_AF3             (3 << GPIO_AF_SHIFT)
-#  define GPIO_AF4             (4 << GPIO_AF_SHIFT)
-#  define GPIO_AF5             (5 << GPIO_AF_SHIFT)
-#  define GPIO_AF6             (6 << GPIO_AF_SHIFT)
-#  define GPIO_AF7             (7 << GPIO_AF_SHIFT)
-#  define GPIO_AF8             (8 << GPIO_AF_SHIFT)
-#  define GPIO_AF9             (9 << GPIO_AF_SHIFT)
-#  define GPIO_AF10            (10 << GPIO_AF_SHIFT)
-#  define GPIO_AF11            (11 << GPIO_AF_SHIFT)
-#  define GPIO_AF12            (12 << GPIO_AF_SHIFT)
-#  define GPIO_AF13            (13 << GPIO_AF_SHIFT)
-#  define GPIO_AF14            (14 << GPIO_AF_SHIFT)
-#  define GPIO_AF15            (15 << GPIO_AF_SHIFT)
+#define GPIO_AF_SHIFT (15) /* Bits 15-18: AF number (0-15) */
+#define GPIO_AF_MASK  (0xf << GPIO_AF_SHIFT)
+#define GPIO_AF0      (0 << GPIO_AF_SHIFT)
+#define GPIO_AF1      (1 << GPIO_AF_SHIFT)
+#define GPIO_AF2      (2 << GPIO_AF_SHIFT)
+#define GPIO_AF3      (3 << GPIO_AF_SHIFT)
+#define GPIO_AF4      (4 << GPIO_AF_SHIFT)
+#define GPIO_AF5      (5 << GPIO_AF_SHIFT)
+#define GPIO_AF6      (6 << GPIO_AF_SHIFT)
+#define GPIO_AF7      (7 << GPIO_AF_SHIFT)
+#define GPIO_AF8      (8 << GPIO_AF_SHIFT)
+#define GPIO_AF9      (9 << GPIO_AF_SHIFT)
+#define GPIO_AF10     (10 << GPIO_AF_SHIFT)
+#define GPIO_AF11     (11 << GPIO_AF_SHIFT)
+#define GPIO_AF12     (12 << GPIO_AF_SHIFT)
+#define GPIO_AF13     (13 << GPIO_AF_SHIFT)
+#define GPIO_AF14     (14 << GPIO_AF_SHIFT)
+#define GPIO_AF15     (15 << GPIO_AF_SHIFT)
 
-/* Initial output value *******************************************************/
+/* Initial output value
+ * *******************************************************/
 
-#define GPIO_OUTPUT_SET        (1 << 19)     /* Bit 19: Initial output high */
+#define GPIO_OUTPUT_SET (1 << 19) /* Bit 19: Initial output high */
 
-/* Interrupt configuration ****************************************************/
+/* Interrupt configuration
+ * ****************************************************/
 
-#define GPIO_EXTI              (1 << 20)     /* Bit 20: Enable EXTI interrupt */
+#define GPIO_EXTI            (1 << 20) /* Bit 20: Enable EXTI interrupt */
 
-#define GPIO_INTTYPE_SHIFT     (21)          /* Bit 21: Interrupt type */
-#define GPIO_INTTYPE_MASK      (0x1 << GPIO_INTTYPE_SHIFT)
-#  define GPIO_INT_LEVEL       (0 << GPIO_INTTYPE_SHIFT)  /* Level triggered */
-#  define GPIO_INT_EDGE        (1 << GPIO_INTTYPE_SHIFT)  /* Edge triggered */
+#define GPIO_INTTYPE_SHIFT   (21) /* Bit 21: Interrupt type */
+#define GPIO_INTTYPE_MASK    (0x1 << GPIO_INTTYPE_SHIFT)
+#define GPIO_INT_LEVEL       (0 << GPIO_INTTYPE_SHIFT) /* Level triggered */
+#define GPIO_INT_EDGE        (1 << GPIO_INTTYPE_SHIFT) /* Edge triggered */
 
-#define GPIO_INTPOL_SHIFT      (22)          /* Bit 22: Interrupt polarity */
-#define GPIO_INTPOL_MASK       (0x1 << GPIO_INTPOL_SHIFT)
-#  define GPIO_INT_LOW_FALLING (0 << GPIO_INTPOL_SHIFT)
-#  define GPIO_INT_HIGH_RISING (1 << GPIO_INTPOL_SHIFT)
+#define GPIO_INTPOL_SHIFT    (22) /* Bit 22: Interrupt polarity */
+#define GPIO_INTPOL_MASK     (0x1 << GPIO_INTPOL_SHIFT)
+#define GPIO_INT_LOW_FALLING (0 << GPIO_INTPOL_SHIFT)
+#define GPIO_INT_HIGH_RISING (1 << GPIO_INTPOL_SHIFT)
 
 /* Schmitt trigger (kernel-internal use, automatically set by config_gpio
  * based on pin mode; user programs use GPIOC_SETPINTYPE ioctl instead)
  */
 
-#define GPIO_SCHMITT           (1 << 23)     /* Bit 23: Enable schmitt trigger */
+#define GPIO_SCHMITT      (1 << 23) /* Bit 23: Enable schmitt trigger */
 
-#define GPIO_INT_BOTHEDGE      (1 << 24)     /* Bit 24: Both-edge trigger */
+#define GPIO_INT_BOTHEDGE (1 << 24) /* Bit 24: Both-edge trigger */
 
-/* Convenience macros for common pin configurations ***************************/
+/* Convenience macros for common pin configurations
+ * ***************************/
 
-#define GPIO_INPUT_PULLUP      (GPIO_INPUT | GPIO_PULLUP)
-#define GPIO_INPUT_PULLDOWN    (GPIO_INPUT | GPIO_PULLDOWN)
-#define GPIO_OUTPUT_PUSHPULL   (GPIO_OUTPUT)
+#define GPIO_INPUT_PULLUP    (GPIO_INPUT | GPIO_PULLUP)
+#define GPIO_INPUT_PULLDOWN  (GPIO_INPUT | GPIO_PULLDOWN)
+#define GPIO_OUTPUT_PUSHPULL (GPIO_OUTPUT)
 
 /****************************************************************************
  * Public Types

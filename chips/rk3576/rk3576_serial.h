@@ -1,6 +1,6 @@
 /****************************************************************************
  * vendor/rockchip/chips/rk3576/rk3576_serial.h
- * 
+ *
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed to the Apache Software Foundation (ASF) under one or more
@@ -29,8 +29,8 @@
 
 #include <nuttx/config.h>
 
-#include "arm64_internal.h"
 #include "arm64_gic.h"
+#include "arm64_internal.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -53,7 +53,7 @@
 #define UART_PORT_10  10
 #define UART_PORT_11  11
 
-#define UART_PORT_MAX  UART_PORT_11
+#define UART_PORT_MAX UART_PORT_11
 
 /****************************************************************************
  * Public Types
@@ -66,7 +66,6 @@
 /****************************************************************************
  * Public Data
  ****************************************************************************/
-
 
 /****************************************************************************
  * Public Function Prototypes
@@ -98,9 +97,8 @@
  *
  ****************************************************************************/
 
-int rk3576_serial_register(uint8_t port_id, uint32_t baud,
-                           uint8_t bits, uint8_t parity, bool stop2,
-                           uint16_t rx_buffer_size,
+int rk3576_serial_register(uint8_t port_id, uint32_t baud, uint8_t bits,
+                           uint8_t parity, bool stop2, uint16_t rx_buffer_size,
                            uint16_t tx_buffer_size);
 
 #endif /* __ARCH_ARM64_SRC_RK3576_RK3576_SERIAL_H */

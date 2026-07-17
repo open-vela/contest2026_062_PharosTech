@@ -32,8 +32,8 @@
  ****************************************************************************/
 
 #include <nuttx/config.h>
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -43,23 +43,24 @@
  * Public Types
  ****************************************************************************/
 
-typedef enum {
-    RK3576_CLOCK_SOURCE_XIN_OSC0_FUNC = 0x000,
+typedef enum
+{
+  RK3576_CLOCK_SOURCE_XIN_OSC0_FUNC = 0x000,
 
-    RK3576_CLOCK_SOURCE_GPLL_MUX = 0x100,
-    RK3576_CLOCK_SOURCE_GPLL_DIV2_SRC,
-    RK3576_CLOCK_SOURCE_GPLL_DIV3_SRC,
-    RK3576_CLOCK_SOURCE_GPLL_DIV4_SRC,
-    RK3576_CLOCK_SOURCE_GPLL_DIV6_SRC,
-    RK3576_CLOCK_SOURCE_GPLL_DIV8_SRC,
+  RK3576_CLOCK_SOURCE_GPLL_MUX = 0x100,
+  RK3576_CLOCK_SOURCE_GPLL_DIV2_SRC,
+  RK3576_CLOCK_SOURCE_GPLL_DIV3_SRC,
+  RK3576_CLOCK_SOURCE_GPLL_DIV4_SRC,
+  RK3576_CLOCK_SOURCE_GPLL_DIV6_SRC,
+  RK3576_CLOCK_SOURCE_GPLL_DIV8_SRC,
 
-    RK3576_CLOCK_SOURCE_CPLL_MUX = 0x200,
-    RK3576_CLOCK_SOURCE_CPLL_DIV2_SRC,
-    RK3576_CLOCK_SOURCE_CPLL_DIV4_SRC,
-    RK3576_CLOCK_SOURCE_CPLL_DIV10_SRC,
-    RK3576_CLOCK_SOURCE_CPLL_DIV20_SRC,
+  RK3576_CLOCK_SOURCE_CPLL_MUX = 0x200,
+  RK3576_CLOCK_SOURCE_CPLL_DIV2_SRC,
+  RK3576_CLOCK_SOURCE_CPLL_DIV4_SRC,
+  RK3576_CLOCK_SOURCE_CPLL_DIV10_SRC,
+  RK3576_CLOCK_SOURCE_CPLL_DIV20_SRC,
 
-    /* TODO: add more when needed */
+  /* TODO: add more when needed */
 
 } rk3576_clock_source_t;
 
@@ -68,8 +69,7 @@ typedef enum {
  ****************************************************************************/
 
 #ifdef __cplusplus
-extern "C"
-{
+extern "C" {
 #endif
 
 /****************************************************************************
@@ -94,10 +94,11 @@ extern "C"
  *
  * Returned Value:
  *   OK (0) on success; a negated errno value on failure.
- * 
+ *
  ****************************************************************************/
 
-int rk3576_cru_set_i2c_clock_selection(uint16_t i2c_bus_id, rk3576_clock_source_t sel);
+int rk3576_cru_set_i2c_clock_selection(uint16_t i2c_bus_id,
+                                       rk3576_clock_source_t sel);
 
 /****************************************************************************
  * Name: rk3576_cru_get_i2c_clock_selection
@@ -118,7 +119,8 @@ int rk3576_cru_set_i2c_clock_selection(uint16_t i2c_bus_id, rk3576_clock_source_
  *
  ****************************************************************************/
 
-int rk3576_cru_get_i2c_clock_selection(uint16_t i2c_bus_id, rk3576_clock_source_t *p_sel);
+int rk3576_cru_get_i2c_clock_selection(uint16_t i2c_bus_id,
+                                       rk3576_clock_source_t *p_sel);
 
 /****************************************************************************
  * Name: rk3576_cru_set_i2c_clock_gate
@@ -142,7 +144,8 @@ int rk3576_cru_get_i2c_clock_selection(uint16_t i2c_bus_id, rk3576_clock_source_
  *
  ****************************************************************************/
 
-int rk3576_cru_set_i2c_clock_gate(uint16_t i2c_bus_id, bool pclk_en, bool clk_en);
+int rk3576_cru_set_i2c_clock_gate(uint16_t i2c_bus_id, bool pclk_en,
+                                  bool clk_en);
 
 /****************************************************************************
  * Name: rk3576_cru_get_i2c_clock_gate
@@ -165,7 +168,8 @@ int rk3576_cru_set_i2c_clock_gate(uint16_t i2c_bus_id, bool pclk_en, bool clk_en
  *
  ****************************************************************************/
 
-int rk3576_cru_get_i2c_clock_gate(uint16_t i2c_bus_id, bool *p_pclk_en, bool *p_clk_en);
+int rk3576_cru_get_i2c_clock_gate(uint16_t i2c_bus_id, bool *p_pclk_en,
+                                  bool *p_clk_en);
 
 #ifdef __cplusplus
 }

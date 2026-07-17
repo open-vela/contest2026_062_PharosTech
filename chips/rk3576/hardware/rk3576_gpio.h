@@ -37,53 +37,78 @@
 
 /* Number of GPIO banks and pins ********************************************/
 
-#define RK3576_GPIO_NPORTS      5       /* GPIO0 - GPIO4 */
-#define RK3576_GPIO_NPINS       32      /* 32 pins per port */
+#define RK3576_GPIO_NPORTS 5  /* GPIO0 - GPIO4 */
+#define RK3576_GPIO_NPINS  32 /* 32 pins per port */
 
 /* GPIO per-bank register offsets (Rockchip GPIO v2 controller) */
 
-#define RK3576_GPIO_SWPORTA_DR_OFFSET      0x0000  /* port_dr: Data register */
-#define RK3576_GPIO_SWPORTA_DDR_OFFSET     0x0008  /* port_ddr: Data direction (0=in, 1=out) */
-#define RK3576_GPIO_INTEN_OFFSET           0x0010  /* int_en: Interrupt enable */
-#define RK3576_GPIO_INTMASK_OFFSET         0x0018  /* int_mask: Interrupt mask */
-#define RK3576_GPIO_INTTYPE_LEVEL_OFFSET   0x0020  /* int_type: Interrupt type (0=level, 1=edge) */
-#define RK3576_GPIO_INT_POLARITY_OFFSET    0x0028  /* int_polarity: Interrupt polarity */
-#define RK3576_GPIO_INT_BOTHEDGE_OFFSET    0x0030  /* int_bothedge: Both-edge trigger */
-#define RK3576_GPIO_DEBOUNCE_OFFSET        0x0038  /* debounce: Debounce enable */
-#define RK3576_GPIO_DBCLK_DIV_EN_OFFSET    0x0040  /* dbclk_div_en: Debounce clk divider enable / port_eoi */
-#define RK3576_GPIO_DBCLK_DIV_CON_OFFSET   0x0048  /* dbclk_div_con: Debounce clk divider config */
-#define RK3576_GPIO_INT_STATUS_OFFSET      0x0050  /* int_status: Interrupt status (masked) */
-#define RK3576_GPIO_INT_RAWSTATUS_OFFSET   0x0058  /* int_rawstatus: Raw interrupt status */
-#define RK3576_GPIO_PORTA_EOI_OFFSET       0x0060  /* port_eoi: End-of-interrupt (write-1-clear) */
-#define RK3576_GPIO_EXT_PORT_OFFSET        0x0070  /* ext_port: External port data (actual pin level) */
-#define RK3576_GPIO_VERSION_ID_OFFSET      0x0078  /* version_id: Controller version */
-
+#define RK3576_GPIO_SWPORTA_DR_OFFSET 0x0000 /* port_dr: Data register */
+#define RK3576_GPIO_SWPORTA_DDR_OFFSET \
+  0x0008 /* port_ddr: Data direction (0=in, 1=out) */
+#define RK3576_GPIO_INTEN_OFFSET   0x0010 /* int_en: Interrupt enable */
+#define RK3576_GPIO_INTMASK_OFFSET 0x0018 /* int_mask: Interrupt mask */
+#define RK3576_GPIO_INTTYPE_LEVEL_OFFSET \
+  0x0020 /* int_type: Interrupt type (0=level, 1=edge) */
+#define RK3576_GPIO_INT_POLARITY_OFFSET \
+  0x0028 /* int_polarity: Interrupt polarity */
+#define RK3576_GPIO_INT_BOTHEDGE_OFFSET \
+  0x0030 /* int_bothedge: Both-edge trigger */
+#define RK3576_GPIO_DEBOUNCE_OFFSET 0x0038 /* debounce: Debounce enable */
+#define RK3576_GPIO_DBCLK_DIV_EN_OFFSET \
+  0x0040 /* dbclk_div_en: Debounce clk divider enable / port_eoi */
+#define RK3576_GPIO_DBCLK_DIV_CON_OFFSET \
+  0x0048 /* dbclk_div_con: Debounce clk divider config */
+#define RK3576_GPIO_INT_STATUS_OFFSET \
+  0x0050 /* int_status: Interrupt status (masked) */
+#define RK3576_GPIO_INT_RAWSTATUS_OFFSET \
+  0x0058 /* int_rawstatus: Raw interrupt status */
+#define RK3576_GPIO_PORTA_EOI_OFFSET \
+  0x0060 /* port_eoi: End-of-interrupt (write-1-clear) */
+#define RK3576_GPIO_EXT_PORT_OFFSET \
+  0x0070 /* ext_port: External port data (actual pin level) */
+#define RK3576_GPIO_VERSION_ID_OFFSET \
+  0x0078 /* version_id: Controller version */
 
 /* GPIO base address table. Banks NOT uniformly spaced. */
 
 extern const uint32_t g_gpio_base[RK3576_GPIO_NPORTS];
 
-/* Register address macros (use lookup table — banks are NOT uniformly spaced) */
+/* Register address macros (use lookup table — banks are NOT uniformly spaced)
+ */
 
-#define RK3576_GPIO_SWPORTA_DR(port)       (g_gpio_base[port] + RK3576_GPIO_SWPORTA_DR_OFFSET)
-#define RK3576_GPIO_SWPORTA_DDR(port)      (g_gpio_base[port] + RK3576_GPIO_SWPORTA_DDR_OFFSET)
-#define RK3576_GPIO_INTEN(port)            (g_gpio_base[port] + RK3576_GPIO_INTEN_OFFSET)
-#define RK3576_GPIO_INTMASK(port)          (g_gpio_base[port] + RK3576_GPIO_INTMASK_OFFSET)
-#define RK3576_GPIO_INTTYPE_LEVEL(port)    (g_gpio_base[port] + RK3576_GPIO_INTTYPE_LEVEL_OFFSET)
-#define RK3576_GPIO_INT_POLARITY(port)     (g_gpio_base[port] + RK3576_GPIO_INT_POLARITY_OFFSET)
-#define RK3576_GPIO_INT_BOTHEDGE(port)     (g_gpio_base[port] + RK3576_GPIO_INT_BOTHEDGE_OFFSET)
-#define RK3576_GPIO_DEBOUNCE(port)         (g_gpio_base[port] + RK3576_GPIO_DEBOUNCE_OFFSET)
-#define RK3576_GPIO_DBCLK_DIV_EN(port)     (g_gpio_base[port] + RK3576_GPIO_DBCLK_DIV_EN_OFFSET)
-#define RK3576_GPIO_DBCLK_DIV_CON(port)    (g_gpio_base[port] + RK3576_GPIO_DBCLK_DIV_CON_OFFSET)
-#define RK3576_GPIO_INT_STATUS(port)       (g_gpio_base[port] + RK3576_GPIO_INT_STATUS_OFFSET)
-#define RK3576_GPIO_INT_RAWSTATUS(port)    (g_gpio_base[port] + RK3576_GPIO_INT_RAWSTATUS_OFFSET)
-#define RK3576_GPIO_PORTA_EOI(port)        (g_gpio_base[port] + RK3576_GPIO_PORTA_EOI_OFFSET)
-#define RK3576_GPIO_EXT_PORT(port)         (g_gpio_base[port] + RK3576_GPIO_EXT_PORT_OFFSET)
-#define RK3576_GPIO_VERSION_ID(port)       (g_gpio_base[port] + RK3576_GPIO_VERSION_ID_OFFSET)
+#define RK3576_GPIO_SWPORTA_DR(port) \
+  (g_gpio_base[port] + RK3576_GPIO_SWPORTA_DR_OFFSET)
+#define RK3576_GPIO_SWPORTA_DDR(port) \
+  (g_gpio_base[port] + RK3576_GPIO_SWPORTA_DDR_OFFSET)
+#define RK3576_GPIO_INTEN(port) (g_gpio_base[port] + RK3576_GPIO_INTEN_OFFSET)
+#define RK3576_GPIO_INTMASK(port) \
+  (g_gpio_base[port] + RK3576_GPIO_INTMASK_OFFSET)
+#define RK3576_GPIO_INTTYPE_LEVEL(port) \
+  (g_gpio_base[port] + RK3576_GPIO_INTTYPE_LEVEL_OFFSET)
+#define RK3576_GPIO_INT_POLARITY(port) \
+  (g_gpio_base[port] + RK3576_GPIO_INT_POLARITY_OFFSET)
+#define RK3576_GPIO_INT_BOTHEDGE(port) \
+  (g_gpio_base[port] + RK3576_GPIO_INT_BOTHEDGE_OFFSET)
+#define RK3576_GPIO_DEBOUNCE(port) \
+  (g_gpio_base[port] + RK3576_GPIO_DEBOUNCE_OFFSET)
+#define RK3576_GPIO_DBCLK_DIV_EN(port) \
+  (g_gpio_base[port] + RK3576_GPIO_DBCLK_DIV_EN_OFFSET)
+#define RK3576_GPIO_DBCLK_DIV_CON(port) \
+  (g_gpio_base[port] + RK3576_GPIO_DBCLK_DIV_CON_OFFSET)
+#define RK3576_GPIO_INT_STATUS(port) \
+  (g_gpio_base[port] + RK3576_GPIO_INT_STATUS_OFFSET)
+#define RK3576_GPIO_INT_RAWSTATUS(port) \
+  (g_gpio_base[port] + RK3576_GPIO_INT_RAWSTATUS_OFFSET)
+#define RK3576_GPIO_PORTA_EOI(port) \
+  (g_gpio_base[port] + RK3576_GPIO_PORTA_EOI_OFFSET)
+#define RK3576_GPIO_EXT_PORT(port) \
+  (g_gpio_base[port] + RK3576_GPIO_EXT_PORT_OFFSET)
+#define RK3576_GPIO_VERSION_ID(port) \
+  (g_gpio_base[port] + RK3576_GPIO_VERSION_ID_OFFSET)
 
 /* Bit manipulation macros */
 
-#define RK3576_GPIO_PIN_BIT(pin)           (1u << (pin))
+#define RK3576_GPIO_PIN_BIT(pin) (1u << (pin))
 
 /* Hiword-mask write helpers.
  *
@@ -100,8 +125,7 @@ extern const uint32_t g_gpio_base[RK3576_GPIO_NPORTS];
   ((((1u << ((h) - (l) + 1)) - 1) << (l)) << 16 | ((v) << (l)))
 
 /* Write 'v' into a single bit */
-#define RK3576_WRITE_BIT(bit, v) \
-  ((1u << ((bit) + 16)) | ((v) << (bit)))
+#define RK3576_WRITE_BIT(bit, v) ((1u << ((bit) + 16)) | ((v) << (bit)))
 
 /* GPIO v2 single-bit write with 16-bit split register handling.
  *
@@ -113,28 +137,30 @@ extern const uint32_t g_gpio_base[RK3576_GPIO_NPORTS];
  * IOC registers do NOT use this; they cover ≤8 pins per reg
  * with bit offsets always < 16.  Use RK3576_WRITE_BIT directly.
  */
-#define RK3576_GPIO_V2_WRITE_BIT(reg_base, pin, v) \
-  do { \
-    if ((pin) >= 16) \
-      putreg32(RK3576_WRITE_BIT((pin) - 16, (v)), (reg_base) + 4); \
-    else \
-      putreg32(RK3576_WRITE_BIT((pin), (v)), (reg_base)); \
-  } while (0)
+#define RK3576_GPIO_V2_WRITE_BIT(reg_base, pin, v)                 \
+  do                                                               \
+    {                                                              \
+      if ((pin) >= 16)                                             \
+        putreg32(RK3576_WRITE_BIT((pin)-16, (v)), (reg_base) + 4); \
+      else                                                         \
+        putreg32(RK3576_WRITE_BIT((pin), (v)), (reg_base));        \
+    }                                                              \
+  while (0)
 
 /* GPIO_SWPORTA_DDR: data direction register */
 
-#define RK3576_GPIO_DDR_INPUT              0
-#define RK3576_GPIO_DDR_OUTPUT             1
+#define RK3576_GPIO_DDR_INPUT  0
+#define RK3576_GPIO_DDR_OUTPUT 1
 
 /* GPIO_INTTYPE_LEVEL: interrupt trigger type (register bit values) */
 
-#define RK3576_GPIO_INTTYPE_LEVEL_VAL      0
-#define RK3576_GPIO_INTTYPE_EDGE_VAL       1
+#define RK3576_GPIO_INTTYPE_LEVEL_VAL 0
+#define RK3576_GPIO_INTTYPE_EDGE_VAL  1
 
 /* GPIO_INT_POLARITY: interrupt polarity */
 
-#define RK3576_GPIO_INTPOL_LOW_FALLING     0
-#define RK3576_GPIO_INTPOL_HIGH_RISING     1
+#define RK3576_GPIO_INTPOL_LOW_FALLING 0
+#define RK3576_GPIO_INTPOL_HIGH_RISING 1
 
 /* =========================================================================
  * IOMUX register layout (4-bit width per pin, IOMUX_WIDTH_4BIT)
@@ -153,11 +179,10 @@ extern const uint32_t g_gpio_base[RK3576_GPIO_NPORTS];
 /* Per 8-pin group IOMUX register info */
 struct rk3576_iomux_group
 {
-  uint32_t offset;  /* First register offset for this 8-pin group */
+  uint32_t offset; /* First register offset for this 8-pin group */
 };
 
-extern const struct rk3576_iomux_group
-  g_iomux_groups[RK3576_GPIO_NPORTS][4];
+extern const struct rk3576_iomux_group g_iomux_groups[RK3576_GPIO_NPORTS][4];
 
 /* =========================================================================
  * Pull-up/down register layout (2 bits/pin, 8 pins/reg, PULL_TYPE_IO_1V8_ONLY)
@@ -178,12 +203,12 @@ extern const struct rk3576_iomux_group
  *   3 = pull-up
  * ========================================================================= */
 
-#define RK3576_PULL_DISABLE          0
-#define RK3576_PULL_DOWN             1
-#define RK3576_PULL_UP               3
+#define RK3576_PULL_DISABLE      0
+#define RK3576_PULL_DOWN         1
+#define RK3576_PULL_UP           3
 
-#define RK3576_PULL_BITS_PER_PIN     2
-#define RK3576_PULL_PINS_PER_REG     8
+#define RK3576_PULL_BITS_PER_PIN 2
+#define RK3576_PULL_PINS_PER_REG 8
 
 /* =========================================================================
  * Drive-strength register layout (4 bits/pin, 4 pins/reg)
@@ -191,7 +216,8 @@ extern const struct rk3576_iomux_group
  * RK3576 has two classes of GPIO drive strength:
  *
  *   4-level GPIOs: GPIO0_A[0:7], GPIO0_B[0:3], GPIO4_D[0:1]
- *     Lv0=0b0000(100 ohms), Lv1=0b0010(50 ohms), Lv2=0b0001(33 ohms), Lv3=0b0011(25 ohms)
+ *     Lv0=0b0000(100 ohms), Lv1=0b0010(50 ohms), Lv2=0b0001(33 ohms),
+ * Lv3=0b0011(25 ohms)
  *
  *   6-level GPIOs: GPIO0_B[4:7], GPIO1, GPIO2, GPIO3, GPIO4_A/B/C
  *     Lv0=0b0000(100 ohms), Lv1=0b0100(66 ohms),  Lv2=0b0010(50 ohms),
@@ -209,23 +235,27 @@ extern const struct rk3576_iomux_group
  *   GPIO4DL(pin 24-31): offset 0xB080
  * ========================================================================= */
 
-#define RK3576_DRV_BITS_PER_PIN      4
-#define RK3576_DRV_PINS_PER_REG      4
+#define RK3576_DRV_BITS_PER_PIN 4
+#define RK3576_DRV_PINS_PER_REG 4
 
 /* Common drive strength levels (logical level, NOT hardware register value).
  * Use rk3576_drive_level_to_hw() to convert to hardware format.
  */
-#define RK3576_DRIVE_LEVEL_0        0   /* 100 ohms */
-#define RK3576_DRIVE_LEVEL_1        1   /*  66 ohms (6-level only; error on 4-level) */
-#define RK3576_DRIVE_LEVEL_2        2   /*  50 ohms */
-#define RK3576_DRIVE_LEVEL_3        3   /*  40 ohms (6-level only; error on 4-level) */
-#define RK3576_DRIVE_LEVEL_4        4   /*  33 ohms */
-#define RK3576_DRIVE_LEVEL_5        5   /*  25 ohms */
+#define RK3576_DRIVE_LEVEL_0 0 /* 100 ohms */
+#define RK3576_DRIVE_LEVEL_1                                                \
+  1                            /*  66 ohms (6-level only; error on 4-level) \
+                                */
+#define RK3576_DRIVE_LEVEL_2 2 /*  50 ohms */
+#define RK3576_DRIVE_LEVEL_3                                                \
+  3                            /*  40 ohms (6-level only; error on 4-level) \
+                                */
+#define RK3576_DRIVE_LEVEL_4 4 /*  33 ohms */
+#define RK3576_DRIVE_LEVEL_5 5 /*  25 ohms */
 
 /* Determine whether a GPIO uses 4-level or 6-level drive strength */
-#define RK3576_DRIVE_IS_4LEVEL(port, pin) \
-  (((port) == 0 && (pin) < 12) ||          /* GPIO0_A[0:7] + GPIO0_B[0:3] */ \
-   ((port) == 4 && (pin) >= 24 && (pin) <= 25))  /* GPIO4_D[0:1] */
+#define RK3576_DRIVE_IS_4LEVEL(port, pin)                           \
+  (((port) == 0 && (pin) < 12) || /* GPIO0_A[0:7] + GPIO0_B[0:3] */ \
+   ((port) == 4 && (pin) >= 24 && (pin) <= 25)) /* GPIO4_D[0:1] */
 
 /* =========================================================================
  * Schmitt-trigger register layout (1 bit/pin, 8 pins/reg)
@@ -240,10 +270,10 @@ extern const struct rk3576_iomux_group
  *   GPIO4DL(pin 24-31): offset 0xB240
  * ========================================================================= */
 
-#define RK3576_SMT_BITS_PER_PIN      1
-#define RK3576_SMT_PINS_PER_REG      8
+#define RK3576_SMT_BITS_PER_PIN        1
+#define RK3576_SMT_PINS_PER_REG        8
 
-#define RK3576_GPIO_INTPOL_LOW_FALLING     0
-#define RK3576_GPIO_INTPOL_HIGH_RISING     1
+#define RK3576_GPIO_INTPOL_LOW_FALLING 0
+#define RK3576_GPIO_INTPOL_HIGH_RISING 1
 
 #endif /* __VENDOR_ROCKCHIP_RK3576_HARDWARE_RK3576_GPIO_H */

@@ -38,21 +38,21 @@
  * Included Files
  ****************************************************************************/
 
+#include <debug.h>
+#include <errno.h>
 #include <nuttx/config.h>
 #include <stdint.h>
-#include <errno.h>
-#include <debug.h>
 
 #include <nuttx/arch.h>
+#include <nuttx/i2c/i2c_master.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/mutex.h>
-#include <nuttx/i2c/i2c_master.h>
 
 #include "arm64_internal.h"
 #include "hardware/rk3576_i2c.h"
 #include "hardware/rk3576_memorymap.h"
-#include "rk3576_i2c.h"
 #include "rk3576_cru.h"
+#include "rk3576_i2c.h"
 
 #ifdef CONFIG_RK3576_I2C
 
@@ -60,31 +60,23 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define RK3576_I2C_FIFO_BYTES   32
-#define RK3576_I2C_POLL_LIMIT   1000000       /* busy-wait iterations */
-#define RK3576_I2C_NUM           10            /* I2C0 .. I2C9 */
+#define RK3576_I2C_FIFO_BYTES 32
+#define RK3576_I2C_POLL_LIMIT 1000000 /* busy-wait iterations */
+#define RK3576_I2C_NUM        10      /* I2C0 .. I2C9 */
 
 /* Default functional clock into the divider (Hz).
  * TODO: calculate clock frequency automatically
  * after cru driver is ready
  */
 
-#define RK3576_I2C_CLKIN         200000000
+#define RK3576_I2C_CLKIN 200000000
 
 /* I2C controller base addresses (TRM §32.4.1). */
 
-static const uintptr_t g_rk3576_i2c_base[RK3576_I2C_NUM] =
-{
-  RK3576_I2C0_ADDR,
-  RK3576_I2C1_ADDR,
-  RK3576_I2C2_ADDR,
-  RK3576_I2C3_ADDR,
-  RK3576_I2C4_ADDR,
-  RK3576_I2C5_ADDR,
-  RK3576_I2C6_ADDR,
-  RK3576_I2C7_ADDR,
-  RK3576_I2C8_ADDR,
-  RK3576_I2C9_ADDR,
+static const uintptr_t g_rk3576_i2c_base[RK3576_I2C_NUM] = {
+  RK3576_I2C0_ADDR, RK3576_I2C1_ADDR, RK3576_I2C2_ADDR, RK3576_I2C3_ADDR,
+  RK3576_I2C4_ADDR, RK3576_I2C5_ADDR, RK3576_I2C6_ADDR, RK3576_I2C7_ADDR,
+  RK3576_I2C8_ADDR, RK3576_I2C9_ADDR,
 };
 
 /****************************************************************************
@@ -93,10 +85,10 @@ static const uintptr_t g_rk3576_i2c_base[RK3576_I2C_NUM] =
 
 struct rk3576_i2c_priv_s
 {
-  struct i2c_master_s  dev;      /* Base class (must be first) */
-  uintptr_t            base;     /* Controller base address */
-  uint32_t             clkin;    /* Functional clock into the divider (Hz) */
-  mutex_t              lock;      /* Serialize bus access */
+  struct i2c_master_s dev; /* Base class (must be first) */
+  uintptr_t base;          /* Controller base address */
+  uint32_t clkin;          /* Functional clock into the divider (Hz) */
+  mutex_t lock;            /* Serialize bus access */
 };
 
 /****************************************************************************
@@ -110,8 +102,7 @@ static int rk3576_i2c_transfer(struct i2c_master_s *dev,
  * Private Data
  ****************************************************************************/
 
-static const struct i2c_ops_s g_rk3576_i2c_ops =
-{
+static const struct i2c_ops_s g_rk3576_i2c_ops = {
   .transfer = rk3576_i2c_transfer,
 };
 
@@ -128,8 +119,8 @@ static inline uint32_t i2c_getreg(struct rk3576_i2c_priv_s *priv,
   return getreg32(priv->base + off);
 }
 
-static inline void i2c_putreg(struct rk3576_i2c_priv_s *priv,
-                              unsigned int off, uint32_t val)
+static inline void i2c_putreg(struct rk3576_i2c_priv_s *priv, unsigned int off,
+                              uint32_t val)
 {
   putreg32(val, priv->base + off);
 }
@@ -162,9 +153,9 @@ static void rk3576_i2c_setclk(struct rk3576_i2c_priv_s *priv,
       div = 2;
     }
 
-  div  -= 2;
-  divh  = div / 2;
-  divl  = div - divh;
+  div -= 2;
+  divh = div / 2;
+  divl = div - divh;
 
   i2c_putreg(priv, RK3576_I2C_CLKDIV, (divh << 16) | divl);
 }
@@ -209,9 +200,8 @@ static int rk3576_i2c_poll(struct rk3576_i2c_priv_s *priv, uint32_t mask)
  ****************************************************************************/
 
 static int rk3576_i2c_write_chunk(struct rk3576_i2c_priv_s *priv,
-                                  uint16_t addr,
-                                  FAR const uint8_t *buf, uint32_t len,
-                                  bool first)
+                                  uint16_t addr, FAR const uint8_t *buf,
+                                  uint32_t len, bool first)
 {
   uint32_t fifo[8] = { 0 };
   uint32_t total;
@@ -224,7 +214,7 @@ static int rk3576_i2c_write_chunk(struct rk3576_i2c_priv_s *priv,
       total = len + 1;
       DEBUGASSERT(total <= RK3576_I2C_FIFO_BYTES && len > 0);
 
-      fifo[0] = (uint32_t)(addr << 1);            /* addr | W */
+      fifo[0] = (uint32_t)(addr << 1); /* addr | W */
       for (i = 0; i < len; i++)
         {
           fifo[(i + 1) >> 2] |= (uint32_t)buf[i] << (((i + 1) & 3) * 8);
@@ -250,9 +240,8 @@ static int rk3576_i2c_write_chunk(struct rk3576_i2c_priv_s *priv,
 
   i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
   i2c_putreg(priv, RK3576_I2C_CON,
-             RK3576_I2C_CON_EN |
-             (first ? RK3576_I2C_CON_START : 0) |
-             RK3576_I2C_CON_MODE_TX);
+             RK3576_I2C_CON_EN | (first ? RK3576_I2C_CON_START : 0) |
+                 RK3576_I2C_CON_MODE_TX);
   i2c_putreg(priv, RK3576_I2C_MTXCNT, total);
 
   return rk3576_i2c_poll(priv, RK3576_I2C_INT_MBTF);
@@ -282,8 +271,8 @@ static int rk3576_i2c_write_msg(struct rk3576_i2c_priv_s *priv,
 
   while (remaining > 0)
     {
-      uint32_t limit = first ? (RK3576_I2C_FIFO_BYTES - 1)
-                             : RK3576_I2C_FIFO_BYTES;
+      uint32_t limit =
+          first ? (RK3576_I2C_FIFO_BYTES - 1) : RK3576_I2C_FIFO_BYTES;
       uint32_t chunk = remaining;
 
       if (chunk > limit)
@@ -291,8 +280,8 @@ static int rk3576_i2c_write_msg(struct rk3576_i2c_priv_s *priv,
           chunk = limit;
         }
 
-      ret = rk3576_i2c_write_chunk(priv, msg->addr,
-                                   msg->buffer + offset, chunk, first);
+      ret = rk3576_i2c_write_chunk(priv, msg->addr, msg->buffer + offset,
+                                   chunk, first);
       if (ret < 0)
         {
           i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
@@ -302,7 +291,7 @@ static int rk3576_i2c_write_msg(struct rk3576_i2c_priv_s *priv,
       i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
       first = false;
       remaining -= chunk;
-      offset    += chunk;
+      offset += chunk;
     }
 
   return OK;
@@ -318,10 +307,8 @@ static int rk3576_i2c_write_msg(struct rk3576_i2c_priv_s *priv,
  *   address, as documented in TRM §32.6 Fig.32-8 (mix mode flow chart).
  ****************************************************************************/
 
-static int rk3576_i2c_read_chunk(struct rk3576_i2c_priv_s *priv,
-                                 uint16_t addr,
-                                 FAR uint8_t *buf, uint32_t len,
-                                 bool first)
+static int rk3576_i2c_read_chunk(struct rk3576_i2c_priv_s *priv, uint16_t addr,
+                                 FAR uint8_t *buf, uint32_t len, bool first)
 {
   uint32_t i;
   int ret;
@@ -342,7 +329,7 @@ static int rk3576_i2c_read_chunk(struct rk3576_i2c_priv_s *priv,
 
       i2c_putreg(priv, RK3576_I2C_CON,
                  RK3576_I2C_CON_EN | RK3576_I2C_CON_START |
-                 RK3576_I2C_CON_MODE_TRX);
+                     RK3576_I2C_CON_MODE_TRX);
     }
   else
     {
@@ -407,8 +394,8 @@ static int rk3576_i2c_read_msg(struct rk3576_i2c_priv_s *priv,
        * continuing the same transaction per TRM §32.6 Fig.32-8.
        */
 
-      ret = rk3576_i2c_read_chunk(priv, msg->addr,
-                                  msg->buffer + offset, chunk, first);
+      ret = rk3576_i2c_read_chunk(priv, msg->addr, msg->buffer + offset, chunk,
+                                  first);
       if (ret < 0)
         {
           i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
@@ -418,7 +405,7 @@ static int rk3576_i2c_read_msg(struct rk3576_i2c_priv_s *priv,
       i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_ALL);
       first = false;
       remaining -= chunk;
-      offset    += chunk;
+      offset += chunk;
     }
 
   return OK;
@@ -511,9 +498,9 @@ struct i2c_master_s *rk3576_i2c_initialize(int bus)
   if (!g_rk3576_i2c_inited[bus])
     {
       g_rk3576_i2c_inited[bus] = true;
-      priv->dev.ops  = &g_rk3576_i2c_ops;
-      priv->base     = g_rk3576_i2c_base[bus];
-      priv->clkin    = RK3576_I2C_CLKIN;
+      priv->dev.ops = &g_rk3576_i2c_ops;
+      priv->base = g_rk3576_i2c_base[bus];
+      priv->clkin = RK3576_I2C_CLKIN;
       nxmutex_init(&priv->lock);
       rk3576_cru_set_i2c_clock_gate(bus, true, true);
       i2c_putreg(priv, RK3576_I2C_CON, 0);
