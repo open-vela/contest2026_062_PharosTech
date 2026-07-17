@@ -1,0 +1,10 @@
+# Build artifacts (NuttX out-of-tree apps/chips build outputs)
+*.o
+*.obj
+*.a
+*.d
+*.map
+*.elf
+.depend
+.built
+Make.dep
