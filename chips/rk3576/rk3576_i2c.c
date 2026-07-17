@@ -287,16 +287,6 @@ static int rk3576_i2c_tx(struct rk3576_i2c_priv_s *priv,
         }
     }
 
-  /* send stop */
-
-  i2c_putreg(priv, RK3576_I2C_CON, RK3576_I2C_CON_EN | RK3576_I2C_CON_STOP);
-  ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_STOP);
-  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_STOP);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
   return OK;
 }
 
@@ -437,16 +427,6 @@ static int rk3576_i2c_rx(struct rk3576_i2c_priv_s *priv,
         }
     }
 
-  /* send stop */
-
-  i2c_putreg(priv, RK3576_I2C_CON, RK3576_I2C_CON_EN | RK3576_I2C_CON_STOP);
-  ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_STOP);
-  i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_STOP);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
   return OK;
 }
 
@@ -488,6 +468,15 @@ static int rk3576_i2c_transfer(struct i2c_master_s *dev,
         {
           ret = rk3576_i2c_tx(priv, msg);
         }
+
+      /* TODO: support I2C_M_NOSTOP */
+
+      /* send stop */
+
+      i2c_putreg(priv, RK3576_I2C_CON,
+                 RK3576_I2C_CON_EN | RK3576_I2C_CON_STOP);
+      ret = rk3576_i2c_poll(priv, RK3576_I2C_INT_STOP);
+      i2c_putreg(priv, RK3576_I2C_IPD, RK3576_I2C_INT_STOP);
 
       /* disable i2c to reset all status */
 
