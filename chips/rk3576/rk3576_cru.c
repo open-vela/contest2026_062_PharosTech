@@ -301,11 +301,9 @@ static int _get_i2c_clock_sel_register(uint16_t i2c_bus_id,
  *
  ****************************************************************************/
 
-static int _get_pwm_clock_sel_reg(
-  uint16_t pwm_controller_id,
-  unsigned long *p_sel_reg,
-  uint8_t *p_sel_offset
-)
+static int _get_pwm_clock_sel_reg(uint16_t pwm_controller_id,
+                                  unsigned long *p_sel_reg,
+                                  uint8_t *p_sel_offset)
 {
   unsigned long base = RK3576_CRU_ADDR;
   unsigned long sel_reg_offset;
@@ -335,7 +333,7 @@ static int _get_pwm_clock_sel_reg(
     {
       *p_sel_reg = sel_reg_offset + base;
     }
-  
+
   if (p_sel_offset)
     {
       *p_sel_offset = sel_offset;
@@ -705,20 +703,14 @@ int rk3576_cru_get_i2c_clock_gate(uint16_t i2c_bus_id, bool *p_pclk_en,
  *
  ****************************************************************************/
 
-int rk3576_cru_set_pwm_clock_selection(
-  uint16_t pwm_controller_id, 
-  rk3576_clock_source_t sel
-)
+int rk3576_cru_set_pwm_clock_selection(uint16_t pwm_controller_id,
+                                       rk3576_clock_source_t sel)
 {
   unsigned long sel_reg;
   uint8_t sel_offset;
   uint32_t sel_bits;
 
-  int ret = _get_pwm_clock_sel_reg(
-    pwm_controller_id,
-    &sel_reg,
-    &sel_offset
-  );
+  int ret = _get_pwm_clock_sel_reg(pwm_controller_id, &sel_reg, &sel_offset);
 
   if (ret < 0)
     {
@@ -740,7 +732,7 @@ int rk3576_cru_set_pwm_clock_selection(
         _err("CRU: Invalid pwm clock selection %u", sel);
         return -EINVAL;
     }
-  
+
   sel_bits <<= sel_offset;
   sel_bits |= (0b11 << (16 + sel_offset)); /* WE bits */
 
@@ -766,27 +758,21 @@ int rk3576_cru_set_pwm_clock_selection(
  *
  ****************************************************************************/
 
-int rk3576_cru_get_pwm_clock_selection(
-  uint16_t pwm_controller_id, 
-  rk3576_clock_source_t *p_sel
-)
+int rk3576_cru_get_pwm_clock_selection(uint16_t pwm_controller_id,
+                                       rk3576_clock_source_t *p_sel)
 {
   unsigned long sel_reg;
   uint8_t sel_offset;
   uint32_t sel_bits;
   rk3576_clock_source_t sel;
 
-  int ret = _get_pwm_clock_sel_reg(
-    pwm_controller_id,
-    &sel_reg,
-    &sel_offset
-  );
+  int ret = _get_pwm_clock_sel_reg(pwm_controller_id, &sel_reg, &sel_offset);
 
   if (ret < 0)
     {
       return ret;
     }
-  
+
   sel_bits = (getreg32(sel_reg) >> sel_offset) & 0b11;
 
   switch (sel_bits)

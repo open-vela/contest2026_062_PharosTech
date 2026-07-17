@@ -36,11 +36,11 @@
 
 #include <nuttx/config.h>
 
-#include <stdint.h>
-#include <stdbool.h>
-#include <inttypes.h>
-#include <errno.h>
 #include <debug.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdint.h>
 
 #include <nuttx/arch.h>
 #include <nuttx/timers/pwm.h>
@@ -63,8 +63,8 @@
 
 struct rk3576_pwm_ctrl_desc_s
 {
-  uintptr_t base_addr;       /* Controller register base (PWMn_ADDR)      */
-  unsigned int nchan;        /* Number of channels                        */
+  uintptr_t base_addr; /* Controller register base (PWMn_ADDR)      */
+  unsigned int nchan;  /* Number of channels                        */
 };
 
 /* One PWM channel.  The first member is the lower-half ops pointer so a
@@ -73,10 +73,10 @@ struct rk3576_pwm_ctrl_desc_s
 
 struct rk3576_pwm_s
 {
-  const struct pwm_ops_s    *ops;  /* Lower-half operations (must be first) */
-  uintptr_t                  base;  /* Channel register base address          */
-  unsigned int               ctrl;  /* Parent controller index (0..2)         */
-  bool                       started;/* Output currently running              */
+  const struct pwm_ops_s *ops; /* Lower-half operations (must be first) */
+  uintptr_t base;              /* Channel register base address          */
+  unsigned int ctrl;           /* Parent controller index (0..2)         */
+  bool started;                /* Output currently running              */
 };
 
 /****************************************************************************
@@ -87,25 +87,24 @@ static uint32_t rk3576_pwm_getreg(struct rk3576_pwm_s *priv, unsigned int off);
 static void rk3576_pwm_putreg(struct rk3576_pwm_s *priv, unsigned int off,
                               uint32_t val);
 
-static int  rk3576_pwm_setup(struct pwm_lowerhalf_s *dev);
-static int  rk3576_pwm_shutdown(struct pwm_lowerhalf_s *dev);
-static int  rk3576_pwm_start(struct pwm_lowerhalf_s *dev,
-                             const struct pwm_info_s *info);
-static int  rk3576_pwm_stop(struct pwm_lowerhalf_s *dev);
-static int  rk3576_pwm_ioctl(struct pwm_lowerhalf_s *dev, int cmd,
-                             unsigned long arg);
+static int rk3576_pwm_setup(struct pwm_lowerhalf_s *dev);
+static int rk3576_pwm_shutdown(struct pwm_lowerhalf_s *dev);
+static int rk3576_pwm_start(struct pwm_lowerhalf_s *dev,
+                            const struct pwm_info_s *info);
+static int rk3576_pwm_stop(struct pwm_lowerhalf_s *dev);
+static int rk3576_pwm_ioctl(struct pwm_lowerhalf_s *dev, int cmd,
+                            unsigned long arg);
 
 /****************************************************************************
  * Private Data
  ****************************************************************************/
 
-static const struct pwm_ops_s g_rk3576_pwm_ops =
-{
-  .setup    = rk3576_pwm_setup,
+static const struct pwm_ops_s g_rk3576_pwm_ops = {
+  .setup = rk3576_pwm_setup,
   .shutdown = rk3576_pwm_shutdown,
-  .start    = rk3576_pwm_start,
-  .stop     = rk3576_pwm_stop,
-  .ioctl    = rk3576_pwm_ioctl,
+  .start = rk3576_pwm_start,
+  .stop = rk3576_pwm_stop,
+  .ioctl = rk3576_pwm_ioctl,
 };
 
 /* Per-controller static descriptor table (PWM0, PWM1, PWM2). */
@@ -134,8 +133,7 @@ static const struct rk3576_pwm_ctrl_desc_s g_pwm_ctrls[RK3576_PWM_NCTRL] =
  * (PWM2, 8 channels).
  */
 
-static struct rk3576_pwm_s
-  g_rk3576_pwm[RK3576_PWM_NCTRL][RK3576_PWM_NSLOTS];
+static struct rk3576_pwm_s g_rk3576_pwm[RK3576_PWM_NCTRL][RK3576_PWM_NSLOTS];
 
 /****************************************************************************
  * Private Functions
@@ -177,15 +175,13 @@ static int rk3576_pwm_setup(struct pwm_lowerhalf_s *dev)
    * allow users to select clock
    */
 
-  rk3576_cru_set_pwm_clock_gate(priv->ctrl,
-                                true,  /* pclk    */
-                                false, /* clk_pwm */
-                                false, /* rc_clk  */
-                                true); /* osc_clk */
+  rk3576_cru_set_pwm_clock_gate(priv->ctrl, true, /* pclk    */
+                                false,            /* clk_pwm */
+                                false,            /* rc_clk  */
+                                true);            /* osc_clk */
 
   pwminfo("PWM%u setup base=%08" PRIxPTR " version=%08" PRIx32 "\n",
-          priv->ctrl, priv->base,
-          rk3576_pwm_getreg(priv, RK3576_PWM_VERSION));
+          priv->ctrl, priv->base, rk3576_pwm_getreg(priv, RK3576_PWM_VERSION));
   return OK;
 }
 
@@ -236,13 +232,9 @@ static int rk3576_pwm_shutdown(struct pwm_lowerhalf_s *dev)
  *   OK on success; -ERANGE if no valid configuration exists.
  *
  ****************************************************************************/
-static int _pwm_auto_scale(
-  uint32_t target_freq, 
-  uint32_t clk_freq,
-  uint32_t *p_best_prescale,
-  uint32_t *p_best_scale,
-  uint32_t *p_best_period
-)
+static int _pwm_auto_scale(uint32_t target_freq, uint32_t clk_freq,
+                           uint32_t *p_best_prescale, uint32_t *p_best_scale,
+                           uint32_t *p_best_period)
 {
   uint32_t best_period, best_scale, best_prescale;
   bool best_valid = false;
@@ -254,14 +246,14 @@ static int _pwm_auto_scale(
       goto out_of_range;
     }
 
-  for (uint8_t pre = 0; pre <= 7; pre++) 
+  for (uint8_t pre = 0; pre <= 7; pre++)
     {
       uint32_t shift = (1u << (pre + 1));
       for (uint32_t sc = 1; sc <= 256; sc++)
         {
           uint64_t div = (uint64_t)shift * sc;
           uint64_t denom = (uint64_t)target_freq * div;
-          if (denom == 0) 
+          if (denom == 0)
             {
               continue;
             }
@@ -271,7 +263,7 @@ static int _pwm_auto_scale(
           /* Check candidates: per and per+1.
            * per directly represents the PWM_PERIOD register value,
            * i.e. the number of counting-clock ticks per output cycle. */
-          for (int adj = 0; adj <= 1; adj++) 
+          for (int adj = 0; adj <= 1; adj++)
             {
               uint64_t per_cand = per + adj;
               if (per_cand < 1 || per_cand > max_period)
@@ -280,15 +272,15 @@ static int _pwm_auto_scale(
                 }
 
               uint64_t actual = (uint64_t)target_freq * div * per_cand;
-              uint64_t diff = (clk_freq > actual) ? 
-                              (clk_freq - actual) : (actual - clk_freq);
-              if (diff < best_diff) 
+              uint64_t diff = (clk_freq > actual) ? (clk_freq - actual)
+                                                  : (actual - clk_freq);
+              if (diff < best_diff)
                 {
                   best_diff = diff;
-                  best_period   = (uint32_t)per_cand;
-                  best_scale    = (uint8_t)sc;
+                  best_period = (uint32_t)per_cand;
+                  best_scale = (uint8_t)sc;
                   best_prescale = pre;
-                  best_valid    = true;
+                  best_valid = true;
                 }
             }
         }
@@ -296,12 +288,11 @@ static int _pwm_auto_scale(
 
   if (!best_valid)
     {
-      out_of_range:
+    out_of_range:
       pwmerr("Unable to generate pwm freq %u with pwm clock freq %u",
              target_freq, clk_freq);
       return -ERANGE;
     }
-  
 
   if (p_best_prescale)
     {
@@ -312,7 +303,7 @@ static int _pwm_auto_scale(
     {
       *p_best_scale = best_scale;
     }
-  
+
   if (p_best_period)
     {
       *p_best_period = best_period;
@@ -337,10 +328,8 @@ static int rk3576_pwm_start(struct pwm_lowerhalf_s *dev,
   uint32_t prescale, scale, period, duty;
   uint32_t clk_ctrl_reg_bits = 0;
 
-  int ret = _pwm_auto_scale(
-    info->frequency, RK3576_PWM_OSC_HZ,
-    &prescale, &scale, &period
-  );
+  int ret = _pwm_auto_scale(info->frequency, RK3576_PWM_OSC_HZ, &prescale,
+                            &scale, &period);
   if (ret < 0)
     {
       return ret;
@@ -382,16 +371,10 @@ static int rk3576_pwm_start(struct pwm_lowerhalf_s *dev,
    */
 
   rk3576_pwm_putreg(priv, RK3576_PWM_CTRL,
-    PWM_HIWORD(
-      PWM_CTRL_DUTY_POL | 
-      PWM_CTRL_INACTIVE_POL
-    ) | 
-    PWM_HIWORD_CLR(
-      PWM_CTRL_OUTPUT_MODE | 
-      PWM_CTRL_ALIGNED_VLD |
-      PWM_CTRL_MODE_MASK
-    )
-  );
+                    PWM_HIWORD(PWM_CTRL_DUTY_POL | PWM_CTRL_INACTIVE_POL) |
+                        PWM_HIWORD_CLR(PWM_CTRL_OUTPUT_MODE |
+                                       PWM_CTRL_ALIGNED_VLD |
+                                       PWM_CTRL_MODE_MASK));
 
   /* Step 4: Write period and duty registers. */
 
@@ -402,9 +385,8 @@ static int rk3576_pwm_start(struct pwm_lowerhalf_s *dev,
 
   /* Step 6: Select continuous mode. */
 
-  rk3576_pwm_putreg(priv, RK3576_PWM_CTRL, 
-    PWM_CTRL_MODE_CONTINUOUS | (PWM_CTRL_MODE_MASK << 16)
-  );
+  rk3576_pwm_putreg(priv, RK3576_PWM_CTRL,
+                    PWM_CTRL_MODE_CONTINUOUS | (PWM_CTRL_MODE_MASK << 16));
 
   /* Step 7: Enable clock and channel together.  CTRL_UPDATE is a W1T
    * pulse (auto-cleared) and MUST be set in a separate write AFTER
@@ -470,7 +452,8 @@ static int rk3576_pwm_ioctl(struct pwm_lowerhalf_s *dev, int cmd,
  *   channel.
  ****************************************************************************/
 
-struct pwm_lowerhalf_s *rk3576_pwm_initialize(int pwm_controller_id, int channel)
+struct pwm_lowerhalf_s *rk3576_pwm_initialize(int pwm_controller_id,
+                                              int channel)
 {
   const struct rk3576_pwm_ctrl_desc_s *desc;
   struct rk3576_pwm_s *priv;
@@ -491,9 +474,9 @@ struct pwm_lowerhalf_s *rk3576_pwm_initialize(int pwm_controller_id, int channel
     }
 
   priv = &g_rk3576_pwm[pwm_controller_id][channel];
-  priv->ops     = &g_rk3576_pwm_ops;
-  priv->base    = desc->base_addr + channel * RK3576_PWM_CH_STRIDE;
-  priv->ctrl    = pwm_controller_id;
+  priv->ops = &g_rk3576_pwm_ops;
+  priv->base = desc->base_addr + channel * RK3576_PWM_CH_STRIDE;
+  priv->ctrl = pwm_controller_id;
   priv->started = false;
 
   return (struct pwm_lowerhalf_s *)priv;

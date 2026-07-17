@@ -43,7 +43,8 @@
  * Public Types
  ****************************************************************************/
 
-typedef enum {
+typedef enum
+{
   RK3576_CLOCK_SOURCE_INVALID = 0x000,
   RK3576_CLOCK_SOURCE_XIN_OSC0_FUNC,
 
@@ -176,10 +177,8 @@ int rk3576_cru_get_i2c_clock_gate(uint16_t i2c_bus_id, bool *p_pclk_en,
  *
  ****************************************************************************/
 
-int rk3576_cru_set_pwm_clock_selection(
-  uint16_t pwm_controller_id, 
-  rk3576_clock_source_t sel
-);
+int rk3576_cru_set_pwm_clock_selection(uint16_t pwm_controller_id,
+                                       rk3576_clock_source_t sel);
 
 /****************************************************************************
  * Name: rk3576_cru_get_pwm_clock_selection
@@ -198,10 +197,8 @@ int rk3576_cru_set_pwm_clock_selection(
  *
  ****************************************************************************/
 
-int rk3576_cru_get_pwm_clock_selection(
-  uint16_t pwm_controller_id, 
-  rk3576_clock_source_t *p_sel
-);
+int rk3576_cru_get_pwm_clock_selection(uint16_t pwm_controller_id,
+                                       rk3576_clock_source_t *p_sel);
 
 /****************************************************************************
  * Name: rk3576_cru_set_pwm_clock_gate

@@ -59,7 +59,8 @@
  *
  ****************************************************************************/
 
-struct pwm_lowerhalf_s *rk3576_pwm_initialize(int pwm_controller_id, int channel);
+struct pwm_lowerhalf_s *rk3576_pwm_initialize(int pwm_controller_id,
+                                              int channel);
 
 #endif /* CONFIG_RK3576_PWM */
 #endif /* __VENDOR_ROCKCHIP_CHIPS_RK3576_RK3576_PWM_H */
