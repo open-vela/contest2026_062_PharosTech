@@ -541,18 +541,241 @@ static void fspi_free(struct qspi_dev_s *dev, void *buffer)
 }
 
 /****************************************************************************
+ * Name: fspi_wait_tx_fifo_ready
+ *
+ * Description:
+ *   Poll FSR (FIFO Status Register) until TX FIFO has at least one free
+ *   slot, then return the number of available slots.
+ *
+ *   TXLV (TX FIFO Level) — FSR bits[12:8] indicates how many 32-bit words
+ *   the TX FIFO can still accept.
+ *
+ *   Returns:
+ *     > 0 — number of free TX FIFO slots
+ *     0 — timeout
+ ****************************************************************************/
+
+static int fspi_wait_tx_fifo_ready(struct rk3576_fspi_s *priv,
+                                   uint32_t timeout_us)
+{
+  uint32_t timeout = timeout_us * 10;
+  uint32_t status;
+
+  while (--timeout)
+    {
+      status = fspi_getreg(priv, RK3576_FSPI_FSR);
+      if (status & FSPI_FSR_TXLV_MASK)
+        {
+          return (status & FSPI_FSR_TXLV_MASK) >> FSPI_FSR_TXLV_SHIFT;
+        }
+    }
+
+  return 0;
+}
+
+/****************************************************************************
+ * Name: fspi_wait_rx_fifo_ready
+ *
+ * Description:
+ *   Poll FSR until RX FIFO has at least one word available, then return
+ *   the number of available words.
+ *
+ *   RXLV (RX FIFO Level) — FSR bits[20:16] indicates how many 32-bit words
+ *   are available in the RX FIFO.
+ ****************************************************************************/
+
+static int fspi_wait_rx_fifo_ready(struct rk3576_fspi_s *priv,
+                                   uint32_t timeout_us)
+{
+  uint32_t timeout = timeout_us * 10;
+  uint32_t status;
+
+  while (--timeout)
+    {
+      status = fspi_getreg(priv, RK3576_FSPI_FSR);
+      if (status & FSPI_FSR_RXLV_MASK)
+        {
+          return (status & FSPI_FSR_RXLV_MASK) >> FSPI_FSR_RXLV_SHIFT;
+        }
+    }
+
+  return 0;
+}
+
+/****************************************************************************
+ * Name: fspi_write_fifo
+ *
+ * Description:
+ *   Write len bytes from buf to the SFC_DATA register (TX FIFO).
+ *
+ *   The SFC controller requires 32-bit word-aligned access to SFC_DATA.
+ *   This function writes in 4-byte chunks via iowrite32-like loop, then
+ *   handles leftover 1–3 bytes by padding into a temporary 32-bit word.
+ *
+ *   Before each write, fspi_wait_tx_fifo_ready() is called to ensure the
+ *   TX FIFO has room.
+ ****************************************************************************/
+
+static int fspi_write_fifo(struct rk3576_fspi_s *priv, const uint8_t *buf,
+                           int len)
+{
+  uint8_t bytes = len & 0x3;
+  uint32_t dwords = len >> 2;
+  int tx_level;
+  uint32_t write_words;
+  uint32_t tmp = 0;
+
+  /* Write 4-byte aligned portion */
+
+  while (dwords)
+    {
+      tx_level = fspi_wait_tx_fifo_ready(priv, 1000);
+      if (tx_level <= 0)
+        {
+          spierr("FSPI TX FIFO wait timeout\n");
+          return -ETIMEDOUT;
+        }
+
+      write_words = dwords;
+      if ((uint32_t)tx_level < write_words)
+        {
+          write_words = (uint32_t)tx_level;
+        }
+
+      while (write_words--)
+        {
+          tmp = ((uint32_t)buf[0] << 0) | ((uint32_t)buf[1] << 8) |
+                ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+          fspi_putreg(priv, tmp, RK3576_FSPI_DATA);
+          buf += 4;
+          dwords--;
+        }
+    }
+
+  /* Write leftover 1–3 bytes */
+
+  if (bytes)
+    {
+      tx_level = fspi_wait_tx_fifo_ready(priv, 1000);
+      if (tx_level <= 0)
+        {
+          spierr("FSPI TX FIFO tail wait timeout\n");
+          return -ETIMEDOUT;
+        }
+
+      tmp = 0;
+      if (bytes > 0)
+        tmp |= (uint32_t)buf[0] << 0;
+      if (bytes > 1)
+        tmp |= (uint32_t)buf[1] << 8;
+      if (bytes > 2)
+        tmp |= (uint32_t)buf[2] << 16;
+      fspi_putreg(priv, tmp, RK3576_FSPI_DATA);
+    }
+
+  return len;
+}
+
+/****************************************************************************
+ * Name: fspi_read_fifo
+ *
+ * Description:
+ *   Read len bytes from the SFC_DATA register (RX FIFO) into buf.
+ *
+ *   Same 32-bit alignment rules as fspi_write_fifo: bulk reads in 4-byte
+ *   chunks, then handle the trailing 1–3 bytes with a temp variable.
+ ****************************************************************************/
+
+static int fspi_read_fifo(struct rk3576_fspi_s *priv, uint8_t *buf, int len)
+{
+  uint8_t bytes = len & 0x3;
+  uint32_t dwords = len >> 2;
+  int rx_level;
+  uint32_t read_words;
+  uint32_t tmp;
+
+  /* Read 4-byte aligned portion */
+
+  while (dwords)
+    {
+      rx_level = fspi_wait_rx_fifo_ready(priv, 1000);
+      if (rx_level <= 0)
+        {
+          spierr("FSPI RX FIFO wait timeout\n");
+          return -ETIMEDOUT;
+        }
+
+      read_words = dwords;
+      if ((uint32_t)rx_level < read_words)
+        {
+          read_words = (uint32_t)rx_level;
+        }
+
+      while (read_words--)
+        {
+          tmp = fspi_getreg(priv, RK3576_FSPI_DATA);
+          buf[0] = (uint8_t)(tmp >> 0);
+          buf[1] = (uint8_t)(tmp >> 8);
+          buf[2] = (uint8_t)(tmp >> 16);
+          buf[3] = (uint8_t)(tmp >> 24);
+          buf += 4;
+          dwords--;
+        }
+    }
+
+  /* Read leftover 1–3 bytes */
+
+  if (bytes)
+    {
+      rx_level = fspi_wait_rx_fifo_ready(priv, 1000);
+      if (rx_level <= 0)
+        {
+          spierr("FSPI RX FIFO tail wait timeout\n");
+          return -ETIMEDOUT;
+        }
+
+      tmp = fspi_getreg(priv, RK3576_FSPI_DATA);
+      if (bytes > 0)
+        buf[0] = (uint8_t)(tmp >> 0);
+      if (bytes > 1)
+        buf[1] = (uint8_t)(tmp >> 8);
+      if (bytes > 2)
+        buf[2] = (uint8_t)(tmp >> 16);
+    }
+
+  return len;
+}
+
+/****************************************************************************
+ * Name: fspi_xfer_done
+ *
+ * Description:
+ *   Poll the FSM Status Register (SR) until the controller goes idle.
+ ****************************************************************************/
+
+static int fspi_xfer_done(struct rk3576_fspi_s *priv)
+{
+  uint32_t timeout = FSPI_POLL_MAX;
+  uint32_t status;
+
+  while (--timeout)
+    {
+      status = fspi_getreg(priv, RK3576_FSPI_SR);
+      if (!(status & FSPI_SR_IS_BUSY))
+        {
+          return OK;
+        }
+    }
+
+  spierr("FSPI wait idle timeout\n");
+  return -ETIMEDOUT;
+}
+
+/****************************************************************************
  * Name: fspi_command
  *
  * Description:
  *   Perform one QSPI command transfer.
- *
- *   This is the CORE method for QSPI LCD driving.  It supports:
- *     - Command-only transfers (flags == 0 or QSPICMD_IQUAD)
- *     - Command + write data  (QSPICMD_WRITEDATA)
- *     - Command + read data   (QSPICMD_READDATA)
- *     - Command + address     (QSPICMD_ADDRESS)
- *     - 4-line instruction    (QSPICMD_IQUAD)
- *     - 2-line instruction    (QSPICMD_IDUAL)
  *
  * Input Parameters:
  *   dev     - Device-specific state data
@@ -562,19 +785,171 @@ static void fspi_free(struct qspi_dev_s *dev, void *buffer)
 
 static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
 {
-  UNUSED(dev);
-  UNUSED(cmdinfo);
+  struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
+  unsigned int ctrl_reg = RK3576_FSPI_CTRL(priv->cs);
+  uint32_t ctrl_rge_bits, cmd_reg_bits;
+  int ret;
 
-  return -ENOSYS;
+  ret = fspi_xfer_done(priv);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  uint32_t timeout = FSPI_POLL_MAX;
+  while (--timeout)
+    {
+      if (getreg32(RK3576_FSPI_SR) & FSPI_SR_IS_BUSY)
+        {
+          break;
+        }
+    }
+  if (timeout == 0)
+    {
+      return -ETIMEDOUT;
+    }
+
+  /* CTRL config begin */
+
+  ctrl_rge_bits = fspi_getreg(priv, ctrl_reg);
+  ctrl_rge_bits &=
+      ~(FSPI_CTRL_CMDB_MASK | FSPI_CTRL_ADDRB_MASK | FSPI_CTRL_DATAB_MASK);
+
+  /* The QSPICMD_IDUAL/IQUAD flags are ambiguous (upstream drivers read
+   * them as widening only the instruction phase, while others apply them
+   * to the whole transaction), so they are rejected outright.  Nearly all
+   * QSPI devices only accept a single-line command phase, so the command
+   * path always runs in the most compatible 1-1-1 mode: command, address
+   * and data all on a single line.  Callers that need dual/quad bulk
+   * transfers must use fspi_memory(), which exposes finer-grained control
+   * of the line widths through QSPIMEM_* flags.
+   */
+
+  if (cmdinfo->flags & (QSPICMD_IDUAL | QSPICMD_IQUAD))
+    {
+      spierr("QSPICMD_IDUAL/IQUAD unsupported in command()");
+      return -EINVAL;
+    }
+
+  ctrl_rge_bits |= FSPI_CTRL_CMDB_X1;
+  ctrl_rge_bits |= FSPI_CTRL_ADDRB_X1;
+  ctrl_rge_bits |= FSPI_CTRL_DATAB_X1;
+
+  fspi_putreg(priv, ctrl_rge_bits, ctrl_reg);
+
+  /* CTRL config end */
+
+  /* CMD config begin */
+
+  /* setup cs */
+  cmd_reg_bits = FSPI_CMD_CS(priv->cs);
+
+  /* setup data length */
+  if (cmdinfo->flags & (QSPICMD_READDATA | QSPICMD_WRITEDATA))
+    {
+      cmd_reg_bits |= (cmdinfo->buflen << FSPI_CMD_TRB_SHIFT);
+    }
+  else /* 0 data bytes will be transfered */
+    {
+      cmd_reg_bits |= (0 << FSPI_CMD_TRB_SHIFT);
+    }
+
+  /* setup addr length */
+  if (cmdinfo->flags & QSPICMD_ADDRESS)
+    {
+      switch (cmdinfo->addrlen)
+        {
+          case 0:
+            cmd_reg_bits |= FSPI_CMD_ADDR_0BITS;
+            break;
+          case 3:
+            cmd_reg_bits |= FSPI_CMD_ADDR_24BITS;
+            break;
+          case 4:
+            cmd_reg_bits |= FSPI_CMD_ADDR_32BITS;
+            break;
+          default:
+            spierr("Invalid qspi addr len (0, 3 or 4 bytes expected, got %u)",
+                   cmdinfo->addrlen);
+            return -EINVAL;
+        }
+    }
+  else
+    {
+      cmd_reg_bits |= FSPI_CMD_ADDR_0BITS;
+    }
+
+  /* setup WR */
+  if (cmdinfo->flags & QSPICMD_WRITEDATA)
+    {
+      cmd_reg_bits |= FSPI_CMD_DIR_WR;
+    }
+  else
+    {
+      cmd_reg_bits |= FSPI_CMD_DIR_RD;
+    }
+
+  /* 0 dummy cycles */
+  cmd_reg_bits |= (0 << FSPI_CMD_DUMMY_SHIFT);
+
+  /* non-continuous mode */
+  cmd_reg_bits |= FSPI_CMD_CONT_DISABLE;
+
+  /* setup cmd */
+  if (cmdinfo->cmd > 0xff)
+    {
+      /* TODO: support 16-bit cmd */
+      spierr("8-bit cmd expected, got 0x%X", cmdinfo->cmd);
+      return -EINVAL;
+    }
+  cmd_reg_bits |= (cmdinfo->cmd << FSPI_CMD_OPCODE_SHIFT);
+
+  fspi_putreg(priv, cmd_reg_bits, RK3576_FSPI_CMD);
+
+  /* CMD config end */
+
+  /* send addr*/
+  if (cmdinfo->flags & QSPICMD_ADDRESS)
+    {
+      fspi_putreg(priv, cmdinfo->addr, RK3576_FSPI_ADDR);
+    }
+
+  /* transfer data via FIFO */
+
+  if (cmdinfo->flags & QSPICMD_WRITEDATA)
+    {
+      ret = fspi_write_fifo(priv, cmdinfo->buffer, cmdinfo->buflen);
+      if (ret < 0)
+        {
+          return ret;
+        }
+    }
+  else if (cmdinfo->flags & QSPICMD_READDATA)
+    {
+      ret = fspi_read_fifo(priv, cmdinfo->buffer, cmdinfo->buflen);
+      if (ret < 0)
+        {
+          return ret;
+        }
+    }
+
+  /* wait for transfer to complete */
+
+  ret = fspi_xfer_done(priv);
+  if (ret < 0)
+    {
+      fspi_hw_reset(priv);
+      return ret;
+    }
+
+  return OK;
 }
 
 /****************************************************************************
  * Name: fspi_memory
  *
  * Description:
- *   Perform one QSPI memory transfer (for SPI NOR flash).
- *
- *   TODO: Implement when flash support is needed.
+ *   Perform one QSPI memory transfer
  ****************************************************************************/
 
 static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)

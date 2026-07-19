@@ -146,19 +146,6 @@
 #define FSPI_CTRL_DATAB_X2           (1 << FSPI_CTRL_DATAB_SHIFT)
 #define FSPI_CTRL_DATAB_X4           (2 << FSPI_CTRL_DATAB_SHIFT)
 
-/* --- Helper: build CTRL value from bus-width (0=1-line, 1=2-line, 2=4-line)
- */
-
-#define FSPI_CTRL_LINE_WIDTH(cmd_w, addr_w, data_w) \
-  (((cmd_w) << FSPI_CTRL_CMD_BITS_SHIFT) |          \
-   ((addr_w) << FSPI_CTRL_ADDR_BITS_SHIFT) |        \
-   ((data_w) << FSPI_CTRL_DATA_BITS_SHIFT))
-
-/* --- Bus-width encoded as CTRL field value --- */
-#define FSPI_LINE_X1 0
-#define FSPI_LINE_X2 1
-#define FSPI_LINE_X4 2
-
 /* =========================================================================
  * Interrupt bits (IMR / ICLR / ISR / RISR, offset 0x04/0x08/0x1c/0x28)
  * ========================================================================= */
@@ -199,16 +186,6 @@
 #define FSPI_SR_IS_BUSY 0x1
 
 /* =========================================================================
- * Version register, offset 0x2C
- * ========================================================================= */
-
-#define FSPI_VER_3 0x3
-#define FSPI_VER_4 0x4
-#define FSPI_VER_5 0x5
-#define FSPI_VER_6 0x6
-#define FSPI_VER_8 0x8
-
-/* =========================================================================
  * EXT_CTRL (Extended Control) register, offset 0x34
  * ========================================================================= */
 
@@ -225,22 +202,25 @@
  * CMD register bit-fields (offset 0x100)
  * ========================================================================= */
 
-#define FSPI_CMD_OPCODE_SHIFT     0
-#define FSPI_CMD_OPCODE_MASK      (0xff << FSPI_CMD_OPCODE_SHIFT)
-#define FSPI_CMD_DUMMY_SHIFT      8
-#define FSPI_CMD_DUMMY_MASK       (0xf << FSPI_CMD_DUMMY_SHIFT)
-#define FSPI_CMD_DIR_SHIFT        12
-#define FSPI_CMD_DIR_RD           (0 << FSPI_CMD_DIR_SHIFT)
-#define FSPI_CMD_DIR_WR           (1 << FSPI_CMD_DIR_SHIFT)
-#define FSPI_CMD_ADDR_SHIFT       14
-#define FSPI_CMD_ADDR_0BITS       (0 << FSPI_CMD_ADDR_SHIFT)
-#define FSPI_CMD_ADDR_24BITS      (1 << FSPI_CMD_ADDR_SHIFT)
-#define FSPI_CMD_ADDR_32BITS      (2 << FSPI_CMD_ADDR_SHIFT)
-#define FSPI_CMD_ADDR_XBITS       (3 << FSPI_CMD_ADDR_SHIFT)
-#define FSPI_CMD_TRAN_BYTES_SHIFT 16
-#define FSPI_CMD_TRAN_BYTES_MASK  (0x3fff << FSPI_CMD_TRAN_BYTES_SHIFT)
-#define FSPI_CMD_CS_SHIFT         30
-#define FSPI_CMD_CS_MASK          (0x3 << FSPI_CMD_CS_SHIFT)
+#define FSPI_CMD_OPCODE_SHIFT 0
+#define FSPI_CMD_OPCODE_MASK  (0xff << FSPI_CMD_OPCODE_SHIFT)
+#define FSPI_CMD_DUMMY_SHIFT  8
+#define FSPI_CMD_DUMMY_MASK   (0xf << FSPI_CMD_DUMMY_SHIFT)
+#define FSPI_CMD_DIR_SHIFT    12
+#define FSPI_CMD_DIR_RD       (0 << FSPI_CMD_DIR_SHIFT)
+#define FSPI_CMD_DIR_WR       (1 << FSPI_CMD_DIR_SHIFT)
+#define FSPI_CMD_CONT_SHIFT   13 /* continuous mode*/
+#define FSPI_CMD_CONT_DISABLE (0 << FSPI_CMD_CONT_SHIFT)
+#define FSPI_CMD_CONT_ENABLE  (1 << FSPI_CMD_CONT_SHIFT)
+#define FSPI_CMD_ADDR_SHIFT   14
+#define FSPI_CMD_ADDR_0BITS   (0 << FSPI_CMD_ADDR_SHIFT)
+#define FSPI_CMD_ADDR_24BITS  (1 << FSPI_CMD_ADDR_SHIFT)
+#define FSPI_CMD_ADDR_32BITS  (2 << FSPI_CMD_ADDR_SHIFT)
+#define FSPI_CMD_ADDR_XBITS   (3 << FSPI_CMD_ADDR_SHIFT)
+#define FSPI_CMD_TRB_SHIFT    16
+#define FSPI_CMD_TRB_MASK     (0x3fff << FSPI_CMD_TRB_SHIFT)
+#define FSPI_CMD_CS_SHIFT     30
+#define FSPI_CMD_CS_MASK      (0x3 << FSPI_CMD_CS_SHIFT)
 
 #define FSPI_CMD_CS(cs) \
   (((uint32_t)(cs) << FSPI_CMD_CS_SHIFT) & FSPI_CMD_CS_MASK)
