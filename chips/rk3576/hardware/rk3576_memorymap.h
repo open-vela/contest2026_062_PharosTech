@@ -99,6 +99,11 @@
 #define RK3576_SAI8_ADDR 0x27ee0000
 #define RK3576_SAI9_ADDR 0x27ef0000
 
+/* Rockchip FSPI (Flexible Serial Peripheral Interface) */
+
+#define RK3576_FSPI0_ADDR 0x2A340000
+#define RK3576_FSPI1_ADDR 0x2A300000
+
 /* Clock & Reset Unit */
 
 #define RK3576_CRU_ADDR         0x27200000

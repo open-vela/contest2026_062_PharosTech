@@ -62,3 +62,7 @@ endif
 ifeq ($(CONFIG_RK3576_SAI),y)
 CHIP_CSRCS += rk3576_sai.c
 endif
+
+ifeq ($(CONFIG_RK3576_FSPI),y)
+CHIP_CSRCS += rk3576_fspi.c
+endif

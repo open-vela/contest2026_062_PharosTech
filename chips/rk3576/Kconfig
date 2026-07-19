@@ -156,6 +156,20 @@ config RK3576_SAI
 		PL330 DMA (RK3576_DMA).  I2S master mode; drives an on-board ES8388
 		codec (codec control is over I2C, board-registered separately).
 
+config RK3576_FSPI
+	bool "FSPI (Flexible Serial Peripheral Interface) / QSPI"
+	default n
+	select ARCH_HAVE_SPI
+	---help---
+		Enable the RK3576 FSPI (SFC) controller driver.
+		Implements the NuttX QSPI lower-half interface
+		(struct qspi_dev_s / struct qspi_ops_s) for the Rockchip
+		RK3576 SFC/FSPI controller.
+
+		The FSPI IP supports single/dual/quad data lanes and can be
+		used to drive QSPI peripherals such as LCD displays, SPI NOR
+		flash, and SPI NAND flash.
+
 endmenu # Rockchip RK3576 Peripheral Selection
 
 config RK3576_OSC_FREQ
