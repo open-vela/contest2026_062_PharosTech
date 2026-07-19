@@ -30,11 +30,13 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 
 #include <nuttx/arch.h>
+#include <nuttx/clk/clk.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/mutex.h>
 #include <nuttx/spi/qspi.h>
@@ -51,19 +53,6 @@
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
-
-/* Clock / reset CRU indices — TODO: verify CRU register offsets */
-
-#define RK3576_FSPI_FREQUENCY 100000000 /* Default 100 MHz */
-
-/* CRU clock gate index: hclk_fspi gate bit (shared for both FSPI0/FSPI1
- * in NVM domain).  TODO: resolve exact GATE_CON / SOFTRST_CON offsets
- * from TRM Chapter 5.
- *
- * Current placeholder: GATE_CON(28) hclk_fspi / sclk_fspi_x2.
- */
-
-/* TODO — enable once CRU gate/reset indices are confirmed */
 
 /* Number of register retries for polling loops */
 
@@ -85,6 +74,8 @@ struct rk3576_fspi_s
   uint8_t mode;           /* CPOL/CPHA mode (0-3) */
   int8_t nbits;           /* Bits per word (typically 8) */
   mutex_t *fspi_mutex;    /* Pointer to shared controller-level mutex */
+  struct clk_s *sclk_x2;  /* sclk_fspiX_x2_en gate (2x actual SCLK rate) */
+  struct clk_s *hclk;     /* hclk_fspiX_en gate (CLK framework handle) */
 };
 
 /****************************************************************************
@@ -115,6 +106,10 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo);
 static void *fspi_alloc(struct qspi_dev_s *dev, size_t buflen);
 static void fspi_free(struct qspi_dev_s *dev, void *buffer);
 
+/* Internal helpers */
+
+static void fspi_hw_update_clock_div(struct rk3576_fspi_s *priv);
+
 /****************************************************************************
  * Private Data
  ****************************************************************************/
@@ -142,6 +137,19 @@ static const struct qspi_ops_s g_fspi_qspi_ops = {
 static mutex_t g_fspi_mutex[RK3576_FSPI_NUM_CONTROLLERS] = {
   NXMUTEX_INITIALIZER,
   NXMUTEX_INITIALIZER,
+};
+
+/* Controller-level hardware frequency cache.
+ *
+ * The SCLK_x2 divider is per-controller (shared by CS0 and CS1).  We
+ * cache the last-written actual frequency here to avoid calling into the
+ * CLK framework (clk_set_rate) when the requested frequency has not
+ * changed.  A sentinel value of 0 means "never written / unknown".
+ */
+
+static uint32_t g_fspi_hw_freq[RK3576_FSPI_NUM_CONTROLLERS] = {
+  0,
+  0,
 };
 
 /* FSPI instance array: [controller_id][cs_index] */
@@ -261,24 +269,46 @@ static int fspi_hw_reset(struct rk3576_fspi_s *priv)
 static int fspi_hw_init(struct rk3576_fspi_s *priv)
 {
   int ret;
+  char name[32];
 
-  /* TODO: Enable clocks via CRU
-   *
-   * 1. Enable hclk_fspi gate   (hclk_fspi_en)  — APB bus clock
-   * 2. Enable sclk_fspi_x2 gate (sclk_fspi_x2_en) — core clock
-   *
-   * These are in the NVM clock domain.  Exact GATE_CON register offsets
-   * need to be confirmed from TRM Chapter 5.
-   *
-   * Pseudocode:
-   *   rk3576_cru_gate_enable(RK3576_CRU_GATE_HCLK_FSPI, true);
-   *   rk3576_cru_gate_enable(RK3576_CRU_GATE_SCLK_FSPI_X2, true);
-   *
-   * TODO: De-assert resets via CRU
-   *
-   * Pseudocode:
-   *   rk3576_cru_softreset_deassert(RK3576_CRU_SOFTRST_FSPI);
+  /* Get HCLK gate via CLK framework.
+   * NuttX CLK framework uses platform_device-style name matching, so
+   * clk_get() uses the exact name registered in clk_tree.
    */
+
+  snprintf(name, sizeof(name), "hclk_fspi%u_en", priv->id);
+  priv->hclk = clk_get(name);
+  if (!priv->hclk)
+    {
+      spierr("FSPI%u: failed to get %s\n", priv->id, name);
+      return -ENODEV;
+    }
+
+  snprintf(name, sizeof(name), "sclk_fspi%u_x2_en", priv->id);
+  priv->sclk_x2 = clk_get(name);
+  if (!priv->sclk_x2)
+    {
+      spierr("FSPI%u: failed to get %s\n", priv->id, name);
+      return -ENODEV;
+    }
+
+  /* Enable both HCLK (AHB bus) and SCLK (functional) clocks */
+
+  ret = clk_enable(priv->hclk);
+  if (ret < 0)
+    {
+      spierr("FSPI%u: failed to enable hclk, ret=%d\n", priv->id, ret);
+      return ret;
+    }
+
+  ret = clk_enable(priv->sclk_x2);
+  if (ret < 0)
+    {
+      spierr("FSPI%u: failed to enable sclk, ret=%d\n", priv->id, ret);
+      return ret;
+    }
+
+  /* TODO: make the clock source configurable.*/
 
   /* Reset the SFC FSM and FIFOs */
 
@@ -296,13 +326,45 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
   fspi_putreg(priv, 0, RK3576_FSPI_CTRL(0));
   fspi_putreg(priv, 0, RK3576_FSPI_CTRL(1));
 
-  /* Reset all interrupts */
+  /* Mask all interrupts */
 
   fspi_putreg(priv, 0xffffffff, RK3576_FSPI_IMR);
 
-  /* TODO: VER >= 4: set SFC_LEN_CTRL_TRB_SEL */
-
   return OK;
+}
+
+/****************************************************************************
+ * Private Functions — Internal Helpers
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: fspi_hw_update_clock_div
+ *
+ * Description:
+ *   Apply the per-CS frequency request to the SCLK_x2 divider hardware.
+ *
+ *   The SCLK_x2 divider is per-controller (shared by CS0 and CS1), so
+ *   this function must only be called while the controller-level mutex
+ *   is held.  We cache the last-written actual frequency at the
+ *   controller level and skip the clk_set_rate() call (and the associated
+ *   CLK framework lock overhead) when the frequency has not changed.
+ ****************************************************************************/
+
+static void fspi_hw_update_clock_div(struct rk3576_fspi_s *priv)
+{
+  int ret;
+
+  if (priv->actual == g_fspi_hw_freq[priv->id])
+    {
+      return;
+    }
+
+  ret = clk_set_rate(priv->sclk_x2, priv->frequency * 2);
+  if (ret >= 0)
+    {
+      priv->actual = clk_get_rate(priv->sclk_x2) / 2;
+      g_fspi_hw_freq[priv->id] = priv->actual;
+    }
 }
 
 /****************************************************************************
@@ -318,6 +380,10 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
  *   Since CS0 and CS1 on the same FSPI controller share the FSM, FIFO and
  *   DMA engine, the lock is controller-wide.  Both CS instances on the same
  *   controller share a common mutex (g_fspi_mutex[id]).
+ *
+ *   On lock acquire, fspi_hw_update_clock_div() flushes the per-CS
+ *   frequency request to the CRU hardware if the divider differs from the
+ *   cached controller-level value.  This minimises CRU register access.
  ****************************************************************************/
 
 static int fspi_lock(struct qspi_dev_s *dev, bool lock)
@@ -328,6 +394,12 @@ static int fspi_lock(struct qspi_dev_s *dev, bool lock)
   if (lock)
     {
       ret = nxmutex_lock(priv->fspi_mutex);
+      if (ret < 0)
+        {
+          return ret;
+        }
+
+      fspi_hw_update_clock_div(priv);
     }
   else
     {
@@ -339,26 +411,30 @@ static int fspi_lock(struct qspi_dev_s *dev, bool lock)
 
 /****************************************************************************
  * Name: fspi_setfrequency
+ *
+ * Description:
+ *   Record the requested frequency for this CS instance.  The divider
+ *   computation and CRU register write are deferred to fspi_lock() when
+ *   this CS gains exclusive access to the shared controller hardware.
  ****************************************************************************/
 
 static uint32_t fspi_setfrequency(struct qspi_dev_s *dev, uint32_t frequency)
 {
   struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
 
-  /* TODO: Program SFC clock divider through CRU
-   *
-   * Frequency is set via CRU sclk_fspi_x2 clock:
-   *   target_rate = frequency * 2;
-   *   clk_set_rate(sfc->clk, target_rate);
-   *   actual = clk_get_rate(sfc->clk) / 2;
-   *
-   * For now just store and return the requested value.
+  /* Ask the CLK framework what rate the divider can actually achieve
+   * for the requested frequency.  clk_round_rate() walks the clock
+   * tree and applies the hardware divider constraints without writing
+   * any registers, giving us the nearest achievable rate.
    */
 
-  priv->frequency = frequency;
-  priv->actual = frequency;
+  DEBUGASSERT(priv->sclk_x2);
+  uint32_t achievable = clk_round_rate(priv->sclk_x2, frequency * 2) / 2;
 
-  return priv->actual;
+  priv->frequency = frequency;
+  priv->actual = achievable;
+
+  return achievable;
 }
 
 /****************************************************************************
@@ -368,56 +444,76 @@ static uint32_t fspi_setfrequency(struct qspi_dev_s *dev, uint32_t frequency)
 static void fspi_setmode(struct qspi_dev_s *dev, enum qspi_mode_e mode)
 {
   struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
-  unsigned int ctrl_off = RK3576_FSPI_CTRL(priv->cs);
+  unsigned int ctrl_reg = RK3576_FSPI_CTRL(priv->cs);
   uint32_t ctrl;
 
   priv->mode = mode;
 
-  /* TODO: Configure CPOL/CPHA in SFC CTRL register
-   *
-   * FSPI CTRL phase selection:
-   *   FSPI_CTRL_PHASE_SEL_NEGETIVE selects sampling edge.
-   *
-   * Current SFC IP may not support all SPI modes natively — verify with TRM.
-   * For QSPI LCD displays, mode 0 or mode 3 is typical.
-   */
-
-  ctrl = fspi_getreg(priv, ctrl_off);
+  ctrl = fspi_getreg(priv, ctrl_reg);
+  ctrl &= ~(FSPI_CTRL_SPIM_MASK | FSPI_CTRL_SHIFTPHASE_MASK);
 
   switch (mode)
     {
-      case QSPIDEV_MODE0: /* CPOL=0 CPHA=0 */
-        /* TODO: configure for MODE0 */
+      case QSPIDEV_MODE0:
+        ctrl |= FSPI_CTRL_SPIM_MODE_0;
+        ctrl |= FSPI_CTRL_SHIFTPHASE_POSEDGE;
         break;
-      case QSPIDEV_MODE1: /* CPOL=0 CPHA=1 */
-        ctrl |= FSPI_CTRL_PHASE_SEL_NEGETIVE;
+      case QSPIDEV_MODE3:
+        ctrl |= FSPI_CTRL_SPIM_MODE_3;
+        ctrl |= FSPI_CTRL_SHIFTPHASE_NEGEDGE;
         break;
-      case QSPIDEV_MODE2: /* CPOL=1 CPHA=0 */
-        /* TODO: configure for MODE2 */
-        break;
-      case QSPIDEV_MODE3: /* CPOL=1 CPHA=1 */
-        /* TODO: configure for MODE3 */
-        break;
+      case QSPIDEV_MODE1:
+      case QSPIDEV_MODE2:
+        spiwarn("rk3576 fspi peripheral does not support mode %d", mode);
+        return;
       default:
-        break;
+        spiwarn("unknown spi mode: %d", mode);
+        return;
     }
 
-  fspi_putreg(priv, ctrl, ctrl_off);
+  fspi_putreg(priv, ctrl, ctrl_reg);
 }
 
 /****************************************************************************
  * Name: fspi_setbits
+ *
+ * Description:
+ *   Set the number of bits per SPI word (frame width).
+ *
+ *   NOTE: This is a legacy API inherited from the traditional SPI subsystem.
+ *   In the traditional SPI model, nbits determines how the lower-half
+ *   driver interprets the tx/rx buffer in spi_exchange() — e.g. nbits > 8
+ *   means 16-bit words and the buffer is accessed as uint16_t*.
+ *
+ *   In the QSPI subsystem, data transfers use the command()/memory()
+ *   descriptor-based model instead of exchange().  The SFC controller
+ *   operates on a byte-stream basis with no per-word bit-width register;
+ *   the instruction/data line count is controlled per-transfer via
+ *   QSPICMD_IDUAL/IQUAD and QSPIMEM_DUALIO/QUADIO flags in cmdinfo/meminfo.
+ *
+ *   Therefore this function exists only for API compatibility.  It stores
+ *   the value but it is never consumed by any transfer logic.  All QSPI
+ *   Flash/lower-half upper-half drivers today pass nbits=8, which is the
+ *   only value accepted here.
+ *
+ * Input Parameters:
+ *   dev   - Device-specific state data
+ *   nbits - The number of bits per word.  Only 8 is supported.
+ *
+ * Returned Value:
+ *   None.
+ *
  ****************************************************************************/
 
 static void fspi_setbits(struct qspi_dev_s *dev, int nbits)
 {
   struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
 
-  /* For QSPI LCD, bits-per-word is typically 8.
-   * The SFC controller does not have a dedicated "bits per word" register;
-   * it operates on bytes.  For 16-bit QSPI LCD transfers, the upper layer
-   * packs pixel data into the buffer, and we transmit as byte stream.
-   */
+  if (nbits != 8)
+    {
+      spiinfo("unsupported nbits: %d\n", nbits);
+      DEBUGASSERT(FALSE);
+    }
 
   priv->nbits = nbits;
 }
@@ -571,9 +667,8 @@ struct qspi_dev_s *rk3576_fspi_initialize(int fspi_id, int cs)
 
   /* Set default frequency and mode for this CS instance */
 
-  fspi_setfrequency(&priv->qspi, RK3576_FSPI_FREQUENCY);
+  fspi_setfrequency(&priv->qspi, 10000000); /* 10MHz */
   fspi_setmode(&priv->qspi, QSPIDEV_MODE0);
-  fspi_setbits(&priv->qspi, 8);
 
   priv->initialized = true;
 

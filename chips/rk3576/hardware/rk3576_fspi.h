@@ -122,22 +122,29 @@
  * CTRL register bit-fields (offset 0x00)
  * ========================================================================= */
 
-#define FSPI_CTRL_PHASE_SEL_NEGETIVE BIT(1) /* Sample on falling edge */
-#define FSPI_CTRL_CMD_BITS_SHIFT     8      /* CMD line width */
-#define FSPI_CTRL_CMD_BITS_MASK      (0x3 << FSPI_CTRL_CMD_BITS_SHIFT)
-#define FSPI_CTRL_CMD_BITS_X1        (0 << FSPI_CTRL_CMD_BITS_SHIFT)
-#define FSPI_CTRL_CMD_BITS_X2        (1 << FSPI_CTRL_CMD_BITS_SHIFT)
-#define FSPI_CTRL_CMD_BITS_X4        (2 << FSPI_CTRL_CMD_BITS_SHIFT)
-#define FSPI_CTRL_ADDR_BITS_SHIFT    10 /* ADDR line width */
-#define FSPI_CTRL_ADDR_BITS_MASK     (0x3 << FSPI_CTRL_ADDR_BITS_SHIFT)
-#define FSPI_CTRL_ADDR_BITS_X1       (0 << FSPI_CTRL_ADDR_BITS_SHIFT)
-#define FSPI_CTRL_ADDR_BITS_X2       (1 << FSPI_CTRL_ADDR_BITS_SHIFT)
-#define FSPI_CTRL_ADDR_BITS_X4       (2 << FSPI_CTRL_ADDR_BITS_SHIFT)
-#define FSPI_CTRL_DATA_BITS_SHIFT    12 /* DATA line width */
-#define FSPI_CTRL_DATA_BITS_MASK     (0x3 << FSPI_CTRL_DATA_BITS_SHIFT)
-#define FSPI_CTRL_DATA_BITS_X1       (0 << FSPI_CTRL_DATA_BITS_SHIFT)
-#define FSPI_CTRL_DATA_BITS_X2       (1 << FSPI_CTRL_DATA_BITS_SHIFT)
-#define FSPI_CTRL_DATA_BITS_X4       (2 << FSPI_CTRL_DATA_BITS_SHIFT)
+#define FSPI_CTRL_SPIM_SHIFT         0 /* SPI mode */
+#define FSPI_CTRL_SPIM_MASK          (1 << FSPI_CTRL_SPIM_SHIFT)
+#define FSPI_CTRL_SPIM_MODE_0        (0 << FSPI_CTRL_SPIM_SHIFT)
+#define FSPI_CTRL_SPIM_MODE_3        (1 << FSPI_CTRL_SPIM_SHIFT)
+#define FSPI_CTRL_SHIFTPHASE_SHIFT   1 /* Shift phase of data input */
+#define FSPI_CTRL_SHIFTPHASE_MASK    (1 << FSPI_CTRL_SHIFTPHASE_SHIFT)
+#define FSPI_CTRL_SHIFTPHASE_POSEDGE (0 << FSPI_CTRL_SHIFTPHASE_SHIFT)
+#define FSPI_CTRL_SHIFTPHASE_NEGEDGE (1 << FSPI_CTRL_SHIFTPHASE_SHIFT)
+#define FSPI_CTRL_CMDB_SHIFT         8 /* CMD line width */
+#define FSPI_CTRL_CMDB_MASK          (0x3 << FSPI_CTRL_CMDB_SHIFT)
+#define FSPI_CTRL_CMDB_X1            (0 << FSPI_CTRL_CMDB_SHIFT)
+#define FSPI_CTRL_CMDB_X2            (1 << FSPI_CTRL_CMDB_SHIFT)
+#define FSPI_CTRL_CMDB_X4            (2 << FSPI_CTRL_CMDB_SHIFT)
+#define FSPI_CTRL_ADDRB_SHIFT        10 /* ADDR line width */
+#define FSPI_CTRL_ADDRB_MASK         (0x3 << FSPI_CTRL_ADDRB_SHIFT)
+#define FSPI_CTRL_ADDRB_X1           (0 << FSPI_CTRL_ADDRB_SHIFT)
+#define FSPI_CTRL_ADDRB_X2           (1 << FSPI_CTRL_ADDRB_SHIFT)
+#define FSPI_CTRL_ADDRB_X4           (2 << FSPI_CTRL_ADDRB_SHIFT)
+#define FSPI_CTRL_DATAB_SHIFT        12 /* DATA line width */
+#define FSPI_CTRL_DATAB_MASK         (0x3 << FSPI_CTRL_DATAB_SHIFT)
+#define FSPI_CTRL_DATAB_X1           (0 << FSPI_CTRL_DATAB_SHIFT)
+#define FSPI_CTRL_DATAB_X2           (1 << FSPI_CTRL_DATAB_SHIFT)
+#define FSPI_CTRL_DATAB_X4           (2 << FSPI_CTRL_DATAB_SHIFT)
 
 /* --- Helper: build CTRL value from bus-width (0=1-line, 1=2-line, 2=4-line)
  */
