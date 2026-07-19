@@ -33,6 +33,8 @@
 #include <nuttx/page.h>
 #endif
 
+#include <nuttx/kmalloc.h>
+
 #include <arch/chip/chip.h>
 
 #ifdef CONFIG_SMP
@@ -55,8 +57,11 @@ static const struct arm_mmu_region g_mmu_regions[] = {
                         CONFIG_DEVICEIO_SIZE,
                         MT_DEVICE_NGNRNE | MT_RW | MT_SECURE),
 
-  MMU_REGION_FLAT_ENTRY("DRAM0_S0", CONFIG_RAMBANK1_ADDR, CONFIG_RAMBANK1_SIZE,
-                        MT_NORMAL | MT_RW | MT_SECURE),
+  MMU_REGION_FLAT_ENTRY("DRAM0_BANK1", CONFIG_RAMBANK1_ADDR,
+                        CONFIG_RAMBANK1_SIZE, MT_NORMAL | MT_RW | MT_SECURE),
+
+  MMU_REGION_FLAT_ENTRY("DRAM0_BANK2", CONFIG_RAMBANK2_ADDR,
+                        CONFIG_RAMBANK2_SIZE, MT_NORMAL | MT_RW | MT_SECURE),
 };
 
 const struct arm_mmu_config g_mmu_config = {
@@ -136,5 +141,21 @@ void arm64_chip_boot(void)
 #if defined(CONFIG_NET) && !defined(CONFIG_NETDEV_LATEINIT)
 void arm64_netinitialize(void)
 { /* TODO: Support net initialize */
+}
+#endif
+
+/****************************************************************************
+ * Name: arm64_addregion
+ *
+ * Description:
+ *   Add the second DRAM bank (above OP-TEE) to the user heap.  This is
+ *   called from up_initialize() when CONFIG_MM_REGIONS > 1.
+ *
+ ****************************************************************************/
+
+#if CONFIG_MM_REGIONS > 1
+void arm64_addregion(void)
+{
+  kumm_addregion((void *)CONFIG_RAMBANK2_ADDR, CONFIG_RAMBANK2_SIZE);
 }
 #endif

@@ -31,11 +31,21 @@
  * DRAM0 MMU region: 0x40000000..0x48400000 (132MB) mapped normal secure, i.e.
  * up to the OP-TEE reservation. NuttX only allocates above RAM_START, so the
  * 2MB BL31 hole at the base is mapped but never touched by the allocator.
+ *
+ * DRAM1 MMU region: 0x49400000..0x140000000 (~3948MB), the remaining physical
+ * DRAM above OP-TEE.  Registered as a second heap region via
+ * arm64_addregion().
  */
 #define CONFIG_DEVICEIO_BASEADDR 0x20000000
 #define CONFIG_DEVICEIO_SIZE     MB(256)
 #define CONFIG_RAMBANK1_ADDR     0x40000000
 #define CONFIG_RAMBANK1_SIZE     MB(132) /* base..0x48400000 (OP-TEE) */
+
+/* Second DRAM bank: from after OP-TEE (0x49400000) to end of 4GB */
+#define CONFIG_RAMBANK2_ADDR 0x49400000
+#define CONFIG_RAMBANK2_SIZE (GB(4) - MB(16) - MB(132))
+/* 4GB - OP-TEE(16MB) - bank1(132MB);
+ * note: BL31 hole is inside bank1 */
 
 #define MPID_TO_CLUSTER_ID(mpid) ((mpid) & ~0xff)
 
