@@ -1,5 +1,5 @@
 /****************************************************************************
- * chips/rk3576/rk3576_usbdev.h
+ * chips/rk3576/rk3576_usb.h
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -20,8 +20,8 @@
  *
  ****************************************************************************/
 
-#ifndef __VENDOR_ROCKCHIP_CHIPS_RK3576_RK3576_USBDEV_H
-#define __VENDOR_ROCKCHIP_CHIPS_RK3576_RK3576_USBDEV_H
+#ifndef __ARCH_ARM64_SRC_RK3576_RK3576_USB_H
+#define __ARCH_ARM64_SRC_RK3576_RK3576_USB_H
 
 /****************************************************************************
  * Included Files
@@ -43,7 +43,7 @@ extern "C" {
 #endif
 
 /****************************************************************************
- * Name: rk3576_usbdev_initialize
+ * Name: rk3576_usb_initialize
  *
  * Description:
  *   Bring up the RK3576 USB OTG0 controller (Synopsys DWC3 at 0x23000000)
@@ -57,7 +57,7 @@ extern "C" {
  *
  ****************************************************************************/
 
-int rk3576_usbdev_initialize(void);
+int rk3576_usb_initialize(void);
 
 #undef EXTERN
 #ifdef __cplusplus
@@ -65,4 +65,4 @@ int rk3576_usbdev_initialize(void);
 #endif
 
 #endif /* __ASSEMBLY__ */
-#endif /* __VENDOR_ROCKCHIP_CHIPS_RK3576_RK3576_USBDEV_H */
+#endif /* __ARCH_ARM64_SRC_RK3576_RK3576_USB_H */

@@ -73,6 +73,10 @@
 #define RK3576_SDIO_ADDR  0x2A320000 /* SDIO host (dw-mshc)   */
 #define RK3576_EMMC_ADDR  0x2A330000 /* eMMC host (dwcmshc)   */
 
+/* USB OTG (Synopsys DesignWare USB3 / DWC3) */
+
+#define RK3576_USB0_ADDR 0x23000000 /* USB OTG0 (DWC3)       */
+
 /* I2C controller (Synopsys/Rockchip RK I2C, "rk3399-i2c" compatible). */
 
 #define RK3576_I2C0_ADDR 0x27300000
