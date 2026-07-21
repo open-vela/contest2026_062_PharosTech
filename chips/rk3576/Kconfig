@@ -15,6 +15,39 @@ config ARCH_CHIP_RK3576
 
 if ARCH_CHIP_RK3576
 
+choice
+	prompt "RK3576 DDR Capacity"
+	default RK3576_DDR_4G
+
+config RK3576_DDR_2G
+	bool "2 GB"
+	---help---
+		Select for 2 GB variant.
+
+config RK3576_DDR_4G
+	bool "4 GB"
+	---help---
+		Select for 4 GB variant.
+
+config RK3576_DDR_8G
+	bool "8 GB"
+	---help---
+		Select for 8 GB variant.
+
+config RK3576_DDR_16G
+	bool "16 GB"
+	---help---
+		Select for 16 GB variant.
+
+endchoice
+
+config RK3576_DDR_SIZE_GB
+	int
+	default 2 if RK3576_DDR_2G
+	default 4 if RK3576_DDR_4G
+	default 8 if RK3576_DDR_8G
+	default 16 if RK3576_DDR_16G
+
 menu "Rockchip RK3576 Peripheral Selection"
 
 config RK3576_UART
