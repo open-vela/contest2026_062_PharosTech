@@ -173,6 +173,13 @@ static const char *g_pwm_sel_parents[] = {
 };
 #endif
 
+static const char *g_matrix_audio_frac_sel_parents[] = {
+  "clk_gpll",  /* 0b00: clk_gpll_mux */
+  "clk_cpll",  /* 0b01: clk_cpll_mux */
+  "clk_aupll", /* 0b10: clk_aupll_mux */
+  "xin_osc0",  /* 0b11: xin_osc0_func_mux */
+};
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -189,10 +196,8 @@ static const char *g_pwm_sel_parents[] = {
 
 static void rk3576_clk_register_pll_factors(void)
 {
-  struct clk_s *gpll;
-  struct clk_s *cpll;
-  static struct rk3576_fracpll_s gpll_priv;
-  static struct rk3576_fracpll_s cpll_priv;
+  struct clk_s *gpll, *cpll, *aupll;
+  static struct rk3576_fracpll_s gpll_priv, cpll_priv, aupll_priv;
   static const char *g_pll_parents[] = { "xin_osc0" };
 
   /* Root oscillator — 24 MHz */
@@ -243,6 +248,17 @@ static void rk3576_clk_register_pll_factors(void)
                             1, 10);
   clk_register_fixed_factor("clk_cpll_div20", "clk_cpll", CLK_NAME_IS_STATIC,
                             1, 20);
+
+  /* AUPLL (FRACPLL) — rate derived from AUPLL_CON(0..2) at runtime.
+   * Parent is xin_osc0 so the CLK framework provides 24 MHz to recalc_rate.
+   */
+  aupll_priv.con_base = RK3576_CRU_ADDR + RK3576_CRU_AUPLL_CON(0);
+  aupll = clk_register("clk_aupll", g_pll_parents, 1,
+                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                       &g_rk3576_fracpll_ops, &aupll_priv, sizeof(aupll_priv));
+
+  DEBUGASSERT(aupll);
+  UNUSED(aupll);
 }
 
 /**
@@ -467,6 +483,154 @@ static void rk3576_clk_register_pwm(void)
 
 #undef RK3576_CLK_REGISTER_PWM_ONE
 
+/**
+ * Macro: RK3576_CLK_REGISTER_MATRIX_AUDIO_FRAC_ONE
+ *
+ * Register one clk_matrix_audio_frac_N clock tree
+ * (mux + fractional divider + gate).
+ *
+ * Register layout from TRM:
+ *   CLKSEL_CON(12 + 2*N)     : fractional divider register
+ *                               [31:16] = numerator (16-bit)
+ *                               [15:0]  = denominator (16-bit)
+ *   CLKSEL_CON(13 + 2*N)     : mux select register
+ *                               [1:0]   = parent select (2-bit)
+ *                               [31:16] = hiword write mask
+ *
+ * Parent selection (2-bit):
+ *   0b00: gpll / 0b01: cpll / 0b10: aupll / 0b11: xin_osc0
+ *
+ * Gate bits (CRU_GATE_CON01, 0x0804, SET_TO_DISABLE):
+ *   _0: bit 10  /  _1: bit 11  /  _2: bit 12  /  _3: bit 13
+ */
+
+#define RK3576_CLK_REGISTER_MATRIX_AUDIO_FRAC_ONE(index, div_reg, sel_reg,    \
+                                                  gate_bit)                   \
+  do                                                                          \
+    {                                                                         \
+      struct clk_s *_mux;                                                     \
+                                                                              \
+      _mux = clk_register_mux("clk_matrix_audio_frac_" #index "_sel",         \
+                              g_matrix_audio_frac_sel_parents,                \
+                              nitems(g_matrix_audio_frac_sel_parents),        \
+                              CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,       \
+                              sel_reg, 0, 2, CLK_MUX_HIWORD_MASK);            \
+      if (!_mux)                                                              \
+        {                                                                     \
+          _err("CLK: failed to register "                                     \
+               "clk_matrix_audio_frac_" #index "_sel\n");                     \
+          break;                                                              \
+        }                                                                     \
+                                                                              \
+      clk_register_fractional_divider("clk_matrix_audio_frac_" #index,        \
+                                      "clk_matrix_audio_frac_" #index "_sel", \
+                                      CLK_NAME_IS_STATIC, div_reg, 16, 16, 0, \
+                                      16, 0);                                 \
+                                                                              \
+      clk_register_gate("clk_matrix_audio_frac_" #index "_en",                \
+                        "clk_matrix_audio_frac_" #index, CLK_NAME_IS_STATIC,  \
+                        RK3576_CRU_ADDR + RK3576_CRU_GATE_CON(1), gate_bit,   \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
+    }                                                                         \
+  while (0)
+
+/**
+ * Macro: RK3576_CLK_REGISTER_MATRIX_AUDIO_INT_ONE
+ *
+ * Register one clk_matrix_audio_int_N clock tree
+ * (integer divider + gate).
+ *
+ * Unlike the frac clocks which each have their own 2-bit MUX selecting
+ * among GPLL/CPLL/AUPLL/XIN_OSC0, each integer clock is hard-wired to a
+ * single PLL parent (per the Linux reference implementation):
+ *   int_0 -> gpll  (fixed integer divider from GPLL)
+ *   int_1 -> cpll  (fixed integer divider from CPLL)
+ *   int_2 -> aupll (fixed integer divider from AUPLL)
+ *
+ * Register layout from TRM:
+ *   CLKSEL_CON28 (0x0370) : integer divider register
+ *     _0_div: [4:0]  /  _1_div: [9:5]  /  _2_div: [14:10]
+ *     div = div_con + 1
+ *
+ * Gate bits (TRM CRU_GATE_CON02/03, SET_TO_DISABLE):
+ *   _0: GATE_CON02 bit 14  /  _1: GATE_CON02 bit 15  /  _2: GATE_CON03 bit 0
+ */
+
+#define RK3576_CLK_REGISTER_MATRIX_AUDIO_INT_ONE(                           \
+    index, parent_name, div_reg, div_shift, gate_reg, gate_bit)             \
+  do                                                                        \
+    {                                                                       \
+      clk_register_divider("clk_matrix_audio_int_" #index, parent_name,     \
+                           CLK_NAME_IS_STATIC, div_reg, div_shift, 5,       \
+                           CLK_DIVIDER_HIWORD_MASK);                        \
+                                                                            \
+      clk_register_gate("clk_matrix_audio_int_" #index "_en",               \
+                        "clk_matrix_audio_int_" #index, CLK_NAME_IS_STATIC, \
+                        gate_reg, gate_bit,                                 \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
+    }                                                                       \
+  while (0)
+
+/**
+ * Name: rk3576_clk_register_matrix_audio
+ *
+ * Description:
+ *   Register all clk_matrix_audio_frac_0..3 (mux + fractional divider +
+ *   gate) and clk_matrix_audio_int_0..2 (integer divider + gate).
+ *
+ *   Fractional clocks each have:
+ *   - A 2-bit mux selecting between GPLL/CPLL/AUPLL/XIN_OSC0
+ *   - A fractional divider (16+16 bit)
+ *   - A gate
+ *
+ *   Integer clocks are each hard-wired to a single PLL (no mux):
+ *   - int_0 parent: gpll
+ *   - int_1 parent: cpll
+ *   - int_2 parent: aupll
+ *   Each has a 5-bit integer divider and a gate.
+ *
+ *   Register mapping (TRM):
+ *     clk_matrix_audio_frac_0: div=CON12(0x0330), sel=CON13(0x0334)
+ *     clk_matrix_audio_frac_1: div=CON14(0x0338), sel=CON15(0x033C)
+ *     clk_matrix_audio_frac_2: div=CON16(0x0340), sel=CON17(0x0344)
+ *     clk_matrix_audio_frac_3: div=CON18(0x0348), sel=CON19(0x034C)
+ *     clk_matrix_audio_int_0..2: div=CON28(0x0370) [4:0]/[9:5]/[14:10]
+ */
+
+static void rk3576_clk_register_matrix_audio(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+  const unsigned long int_div_reg = cru + RK3576_CRU_CLKSEL_CON(28);
+
+  /* Fractional clocks (mux + frac divider + gate) */
+
+  RK3576_CLK_REGISTER_MATRIX_AUDIO_FRAC_ONE(
+      0, cru + RK3576_CRU_CLKSEL_CON(12), cru + RK3576_CRU_CLKSEL_CON(13), 10);
+
+  RK3576_CLK_REGISTER_MATRIX_AUDIO_FRAC_ONE(
+      1, cru + RK3576_CRU_CLKSEL_CON(14), cru + RK3576_CRU_CLKSEL_CON(15), 11);
+
+  RK3576_CLK_REGISTER_MATRIX_AUDIO_FRAC_ONE(
+      2, cru + RK3576_CRU_CLKSEL_CON(16), cru + RK3576_CRU_CLKSEL_CON(17), 12);
+
+  RK3576_CLK_REGISTER_MATRIX_AUDIO_FRAC_ONE(
+      3, cru + RK3576_CRU_CLKSEL_CON(18), cru + RK3576_CRU_CLKSEL_CON(19), 13);
+
+  /* Integer clocks (int divider + gate, each hard-wired to one PLL). */
+
+  RK3576_CLK_REGISTER_MATRIX_AUDIO_INT_ONE(0, "clk_gpll", int_div_reg, 0,
+                                           cru + RK3576_CRU_GATE_CON(2), 14);
+
+  RK3576_CLK_REGISTER_MATRIX_AUDIO_INT_ONE(1, "clk_cpll", int_div_reg, 5,
+                                           cru + RK3576_CRU_GATE_CON(2), 15);
+
+  RK3576_CLK_REGISTER_MATRIX_AUDIO_INT_ONE(2, "clk_aupll", int_div_reg, 10,
+                                           cru + RK3576_CRU_GATE_CON(3), 0);
+}
+
+#undef RK3576_CLK_REGISTER_MATRIX_AUDIO_FRAC_ONE
+#undef RK3576_CLK_REGISTER_MATRIX_AUDIO_INT_ONE
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -483,6 +647,7 @@ static void rk3576_clk_register_pwm(void)
 void rk3576_clk_tree_initialize(void)
 {
   rk3576_clk_register_pll_factors();
+  rk3576_clk_register_matrix_audio();
 
 #ifdef CONFIG_RK3576_I2C
   rk3576_clk_register_i2c();
