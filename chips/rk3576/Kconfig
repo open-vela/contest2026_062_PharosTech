@@ -154,4 +154,33 @@ config RK3576_OSC_FREQ
 		RK3576 only supports 24MHz crystal on hardware.
 		Keep default unless you need fine-tune for clock calibration.
 
+menu "Rockchip RK3576 DMA allocator"
+
+config RK3576_DMA_ALLOC
+	bool "RK3576 DMA-dedicated heap allocator"
+	default n
+	select GRAN
+	---help---
+		Reserve a configurable amount of memory from the head of Bank2
+		(physically at 0x49400000) as a DMA-dedicated heap, ensuring all
+		allocations are within the PL330 DMA 32-bit SAR/DAR addressable
+		range (<4GB).  Allocations are D-Cache-line aligned (64B).
+		Initialised during arm64_addregion(), available via
+		rk3576_dma_alloc/free.
+
+if RK3576_DMA_ALLOC
+
+config RK3576_DMA_HEAP_SIZE_MB
+	int "DMA heap size in MiB"
+	default 16
+	range 1 1024
+	---help---
+		Size of the DMA-dedicated heap in MiB, carved from the head of
+		Bank2.  Default is 16 MiB.  The heap sits at 0x49400000 and
+		the remainder of Bank2 starts after it.
+
+endif # RK3576_DMA_ALLOC
+
+endmenu # Rockchip RK3576 DMA allocator
+
 endif # ARCH_CHIP_RK3576

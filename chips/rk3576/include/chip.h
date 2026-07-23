@@ -49,12 +49,31 @@
 #define CONFIG_RAMBANK1_SIZE (MB(130) + RK3576_BL31_SIZE)
 /* 130MB usable + 2MB BL31 hole */
 
+#ifdef CONFIG_RK3576_DMA_ALLOC
+
+/* DMA-dedicated heap: carved from the head of Bank2, always reachable
+ * by the PL330 DMA (32-bit SAR/DAR).  Managed by rk3576_dma_alloc.c
+ * (granule allocator).  Size is configurable via Kconfig.
+ */
+#define RK3576_DMA_HEAP_ADDR \
+  (CONFIG_RAMBANK1_ADDR + CONFIG_RAMBANK1_SIZE + RK3576_OPTEE_SIZE)
+#define RK3576_DMA_HEAP_SIZE MB(CONFIG_RK3576_DMA_HEAP_SIZE_MB)
+
+/* Second DRAM bank: from after the DMA heap to end of DDR */
+#define CONFIG_RAMBANK2_ADDR (RK3576_DMA_HEAP_ADDR + RK3576_DMA_HEAP_SIZE)
+#define CONFIG_RAMBANK2_SIZE                                                  \
+  (GB(CONFIG_RK3576_DDR_SIZE_GB) - RK3576_OPTEE_SIZE - CONFIG_RAMBANK1_SIZE - \
+   RK3576_DMA_HEAP_SIZE)
+
+#else /* !CONFIG_RK3576_DMA_ALLOC */
+
 /* Second DRAM bank: from after OP-TEE (0x49400000) to end of DDR */
 #define CONFIG_RAMBANK2_ADDR \
   (CONFIG_RAMBANK1_ADDR + CONFIG_RAMBANK1_SIZE + RK3576_OPTEE_SIZE)
 #define CONFIG_RAMBANK2_SIZE \
   (GB(CONFIG_RK3576_DDR_SIZE_GB) - RK3576_OPTEE_SIZE - CONFIG_RAMBANK1_SIZE)
-/* DDR_SIZE - OP-TEE - bank1 (which includes BL31 hole) */
+
+#endif /* CONFIG_RK3576_DMA_ALLOC */
 
 #define MPID_TO_CLUSTER_ID(mpid) ((mpid) & ~0xff)
 
