@@ -255,6 +255,17 @@ static const char *g_sai_mclk_src_parents[] = {
 };
 #endif
 
+/* FSPI: 00=GPLL, 01=CPLL, 10=XIN_OSC0, 11=invalid. */
+
+#ifdef CONFIG_RK3576_FSPI
+static const char *g_fspi_sel_parents[] = {
+  "clk_gpll", /* 0b00 */
+  "clk_cpll", /* 0b01 */
+  "xin_osc0", /* 0b10 */
+  "xin_osc0", /* 0b11 — undefined, fallback */
+};
+#endif
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -453,6 +464,105 @@ static void rk3576_clk_register_i2c(void)
 #endif /* CONFIG_RK3576_I2C */
 
 #undef RK3576_CLK_REGISTER_I2C_ONE
+
+/**
+ * Macro: RK3576_CLK_REGISTER_FSPI_ONE
+ *
+ * Register one FSPI controller clock tree (mux + hclk gate + sclk gate +
+ * divider).  Uses #id stringification for compile-time constant clock names.
+ *
+ * FSPI has a unique register layout:  MUX, DIV, and GATE exist in
+ * separate registers but MUX and DIV share CLKSEL_CON.  To avoid
+ * concurrent register access, we register the divider as a
+ * clk_divider that shares the same register as the clk_mux but
+ * occupies a non-overlapping bitfield.
+ *
+ * Parameters:
+ *   id          - FSPI controller index (0 or 1), used in name suffix
+ *   sel_reg     - CLKSEL register address (shared by MUX + DIV)
+ *   sel_shift   - MUX select field bit offset
+ *   gate_reg    - GATE register address (HCLK and SCLK share this)
+ *   hclk_bit    - HCLK GATE bit
+ *   sclk_bit    - SCLK GATE bit
+ */
+
+#define RK3576_CLK_REGISTER_FSPI_ONE(id, sel_reg, sel_shift, gate_reg,        \
+                                     hclk_bit, sclk_bit)                      \
+  do                                                                          \
+    {                                                                         \
+      struct clk_s *_mux;                                                     \
+                                                                              \
+      /* SCLK MUX: 2-bit selector, same register as divider */                \
+      _mux = clk_register_mux("sclk_fspi" #id "_sel", g_fspi_sel_parents,     \
+                              nitems(g_fspi_sel_parents),                     \
+                              CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,       \
+                              sel_reg, sel_shift, 2, CLK_MUX_HIWORD_MASK);    \
+      if (!_mux)                                                              \
+        {                                                                     \
+          _err("CLK: failed to register sclk_fspi" #id "_sel\n");             \
+          break;                                                              \
+        }                                                                     \
+                                                                              \
+      /* SCLK_x2 Divider: bits[5:0], same register as MUX.                    \
+       * Registered as a clk_divider so clk_set_rate() works.                 \
+       * The divider is (value + 1), 6 bits wide.                             \
+       * TRM name: sclk_fspiX_x2_div, output is f_sclk_fspi_x2 = PLL/(n+1)    \
+       * which is 2x the actual SCLK rate.                                    \
+       */                                                                     \
+      clk_register_divider("sclk_fspi" #id "_x2_div", "sclk_fspi" #id "_sel", \
+                           CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, \
+                           0, 6,                                              \
+                           CLK_DIVIDER_HIWORD_MASK | CLK_DIVIDER_ONE_BASED);  \
+                                                                              \
+      /* HCLK gate: AHB bus clock, no parent */                               \
+      clk_register_gate("hclk_fspi" #id "_en", NULL, CLK_NAME_IS_STATIC,      \
+                        gate_reg, hclk_bit,                                   \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
+                                                                              \
+      /* SCLK_x2 functional gate: parent is divider output */                 \
+      clk_register_gate("sclk_fspi" #id "_x2_en", "sclk_fspi" #id "_x2_div",  \
+                        CLK_NAME_IS_STATIC, gate_reg, sclk_bit,               \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
+    }                                                                         \
+  while (0)
+
+/****************************************************************************
+ * Name: rk3576_clk_register_fspi
+ *
+ * Description:
+ *   Register FSPI0–FSPI1 clock muxes, dividers, and gates.  The register
+ *   mapping matches _get_fspi_clock_sel_register(),
+ *   _get_fspi_clock_gate_register(), and _get_fspi_sclk_div_register()
+ *   from rk3576_cru.c.
+ *
+ *   Each FSPI has:
+ *   - sclk_fspiX_sel     : 2-bit mux (GPLL, CPLL, XIN_OSC0)
+ *   - sclk_fspiX_x2_div  : 6-bit SCLK_x2 divider (div + 1)
+ *   - hclk_fspiX_en      : AHB bus clock gate
+ *   - sclk_fspiX_x2_en   : SCLK_x2 functional clock gate
+ *
+ *   FSPI0: CLKSEL_CON(89) mux@[7:6] div@[5:0], GATE_CON(33) hclk@7 sclk@6
+ *   FSPI1: CLKSEL_CON(106) mux@[7:6] div@[5:0], GATE_CON(43) hclk@4 sclk@3
+ ****************************************************************************/
+
+#ifdef CONFIG_RK3576_FSPI
+static void rk3576_clk_register_fspi(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+
+  /* FSPI0 */
+
+  RK3576_CLK_REGISTER_FSPI_ONE(0, cru + RK3576_CRU_CLKSEL_CON(89), 6,
+                               cru + RK3576_CRU_GATE_CON(33), 7, 6);
+
+  /* FSPI1 */
+
+  RK3576_CLK_REGISTER_FSPI_ONE(1, cru + RK3576_CRU_CLKSEL_CON(106), 6,
+                               cru + RK3576_CRU_GATE_CON(43), 4, 3);
+}
+#endif /* CONFIG_RK3576_FSPI */
+
+#undef RK3576_CLK_REGISTER_FSPI_ONE
 
 /**
  * Macro: RK3576_CLK_REGISTER_PWM_ONE
@@ -1404,5 +1514,9 @@ void rk3576_clk_tree_initialize(void)
 
 #ifdef CONFIG_RK3576_DMA
   rk3576_clk_register_dmac();
+#endif
+
+#ifdef CONFIG_RK3576_FSPI
+  rk3576_clk_register_fspi();
 #endif
 }
