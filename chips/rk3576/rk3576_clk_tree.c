@@ -180,6 +180,32 @@ static const char *g_matrix_audio_frac_sel_parents[] = {
   "xin_osc0",  /* 0b11: xin_osc0_func_mux */
 };
 
+/* SAI mclk source selection (8 parents, 3-bit select).
+ * Used by all SAI0~9 mclk_saiX_src_sel muxes.
+ * Order matches TRM encoding:
+ *   0b000: xin_osc0
+ *   0b001: clk_matrix_audio_frac_0
+ *   0b010: clk_matrix_audio_frac_1
+ *   0b011: clk_matrix_audio_frac_2
+ *   0b100: clk_matrix_audio_frac_3
+ *   0b101: clk_matrix_audio_int_0
+ *   0b110: clk_matrix_audio_int_1
+ *   0b111: clk_matrix_audio_int_2
+ */
+
+#ifdef CONFIG_RK3576_SAI
+static const char *g_sai_mclk_src_parents[] = {
+  "xin_osc0",                /* 0b000 */
+  "clk_matrix_audio_frac_0", /* 0b001 */
+  "clk_matrix_audio_frac_1", /* 0b010 */
+  "clk_matrix_audio_frac_2", /* 0b011 */
+  "clk_matrix_audio_frac_3", /* 0b100 */
+  "clk_matrix_audio_int_0",  /* 0b101 */
+  "clk_matrix_audio_int_1",  /* 0b110 */
+  "clk_matrix_audio_int_2",  /* 0b111 */
+};
+#endif
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -631,6 +657,192 @@ static void rk3576_clk_register_matrix_audio(void)
 #undef RK3576_CLK_REGISTER_MATRIX_AUDIO_FRAC_ONE
 #undef RK3576_CLK_REGISTER_MATRIX_AUDIO_INT_ONE
 
+/**
+ * Macro: RK3576_CLK_REGISTER_SAI_ONE
+ *
+ * Register one SAI controller clock tree
+ * (src mux + src divider + mclk gate + hclk gate).
+ *
+ * The mclk_saiX_sel (external mclkin) mux layer is omitted for now;
+ * the divider output is directly exposed as "mclk_saiX".  When external
+ * mclkin support is needed, insert a mux here whose output is named
+ * "mclk_saiX" — the driver clock name stays the same.
+ *
+ * Hardware chain:
+ *   mclk_saiX_src_sel (3-bit MUX, 8 parents)
+ *     -> mclk_saiX_src_div (8-bit divider, div_con + 1)
+ *       -> mclk_saiX            (div output, exposed to driver)
+ *         -> mclk_saiX_en       (GATE)
+ *   hclk_saiX_en                (GATE, bus clock, no parent)
+ *
+ * Parameters:
+ *   index     - SAI index (0..9), used in clock name suffix
+ *   sel_reg   - CLKSEL register address (holds both src_sel and div)
+ *   src_shift - mclk_saiX_src_sel bit offset in sel_reg (3-bit field)
+ *   div_shift - mclk_saiX_src_div bit offset in sel_reg (8-bit field)
+ *   hclk_reg  - hclk GATE register address
+ *   hclk_bit  - hclk GATE bit
+ *   mclk_reg  - mclk GATE register address
+ *   mclk_bit  - mclk GATE bit
+ */
+
+#define RK3576_CLK_REGISTER_SAI_ONE(index, sel_reg, src_shift, div_shift,   \
+                                    hclk_reg, hclk_bit, mclk_reg, mclk_bit) \
+  do                                                                        \
+    {                                                                       \
+      struct clk_s *_src_sel;                                               \
+      struct clk_s *_div;                                                   \
+                                                                            \
+      _src_sel = clk_register_mux(                                          \
+          "mclk_sai" #index "_src_sel", g_sai_mclk_src_parents,             \
+          nitems(g_sai_mclk_src_parents),                                   \
+          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, src_shift, 3,  \
+          CLK_MUX_HIWORD_MASK);                                             \
+      if (!_src_sel)                                                        \
+        {                                                                   \
+          _err("CLK: failed to register mclk_sai" #index "_src_sel\n");     \
+          break;                                                            \
+        }                                                                   \
+                                                                            \
+      _div = clk_register_divider(                                          \
+          "mclk_sai" #index, "mclk_sai" #index "_src_sel",                  \
+          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, div_shift, 8,  \
+          CLK_DIVIDER_HIWORD_MASK);                                         \
+      if (!_div)                                                            \
+        {                                                                   \
+          _err("CLK: failed to register mclk_sai" #index "\n");             \
+          break;                                                            \
+        }                                                                   \
+                                                                            \
+      clk_register_gate("hclk_sai" #index "_en", NULL, CLK_NAME_IS_STATIC,  \
+                        hclk_reg, hclk_bit,                                 \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
+                                                                            \
+      clk_register_gate("mclk_sai" #index "_en", "mclk_sai" #index,         \
+                        CLK_NAME_IS_STATIC, mclk_reg, mclk_bit,             \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
+    }                                                                       \
+  while (0)
+
+/****************************************************************************
+ * Name: rk3576_clk_register_sai
+ *
+ * Description:
+ *   Register all SAI0–SAI9 clock trees (src mux + div + hclk gate +
+ *   mclk gate).
+ *
+ *   SAI clock registers are spread across:
+ *     SAI0:       CLKSEL_CON44  / GATE_CON07
+ *     SAI1:       CLKSEL_CON46  / GATE_CON08
+ *     SAI2:       CLKSEL_CON47  / GATE_CON08
+ *     SAI3:       CLKSEL_CON48  / GATE_CON08
+ *     SAI4:       CLKSEL_CON49  / GATE_CON08 (src) + GATE_CON09 (mclk/hclk)
+ *     SAI5:       CLKSEL_CON154 / GATE_CON65
+ *     SAI6:       CLKSEL_CON155 / GATE_CON65
+ *     SAI7:       CLKSEL_CON159 / GATE_CON67
+ *     SAI8:       CLKSEL_CON157 / GATE_CON66
+ *     SAI9:       CLKSEL_CON162 / GATE_CON68
+ *
+ *   All SAI mclk_src_sel fields are at [10:8] (3-bit), except SAI5 which
+ *   uses [12:10].
+ *
+ *   All SAI mclk_src_div fields are at [7:0] (8-bit), except SAI5 which
+ *   uses [9:2].
+ *
+ *   All gates use SET_TO_DISABLE (high = clock off).
+ ****************************************************************************/
+
+#ifdef CONFIG_RK3576_SAI
+static void rk3576_clk_register_sai(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+
+  /* SAI0 — CLKSEL_CON44 (0x03B0), GATE_CON07 */
+
+  RK3576_CLK_REGISTER_SAI_ONE(0, cru + RK3576_CRU_CLKSEL_CON(44),
+                              8, /* src_sel [10:8] */
+                              0, /* div [7:0] */
+                              cru + RK3576_CRU_GATE_CON(7), 13,  /* hclk */
+                              cru + RK3576_CRU_GATE_CON(7), 12); /* mclk */
+
+  /* SAI1 — CLKSEL_CON46 (0x03B8), GATE_CON08 */
+
+  RK3576_CLK_REGISTER_SAI_ONE(1, cru + RK3576_CRU_CLKSEL_CON(46),
+                              8, /* src_sel [10:8] */
+                              0, /* div [7:0] */
+                              cru + RK3576_CRU_GATE_CON(8), 8,  /* hclk */
+                              cru + RK3576_CRU_GATE_CON(8), 7); /* mclk */
+
+  /* SAI2 — CLKSEL_CON47 (0x03BC), GATE_CON08 */
+
+  RK3576_CLK_REGISTER_SAI_ONE(2, cru + RK3576_CRU_CLKSEL_CON(47),
+                              8, /* src_sel [10:8] */
+                              0, /* div [7:0] */
+                              cru + RK3576_CRU_GATE_CON(8), 14,  /* hclk */
+                              cru + RK3576_CRU_GATE_CON(8), 11); /* mclk */
+
+  /* SAI3 — CLKSEL_CON48 (0x03C0), GATE_CON08 */
+
+  RK3576_CLK_REGISTER_SAI_ONE(3, cru + RK3576_CRU_CLKSEL_CON(48),
+                              8, /* src_sel [10:8] */
+                              0, /* div [7:0] */
+                              cru + RK3576_CRU_GATE_CON(8), 15,  /* hclk */
+                              cru + RK3576_CRU_GATE_CON(8), 13); /* mclk */
+
+  /* SAI4 — CLKSEL_CON49 (0x03C4), GATE_CON08 (mclk src) +
+   *        GATE_CON09 (hclk + mclk) */
+
+  RK3576_CLK_REGISTER_SAI_ONE(4, cru + RK3576_CRU_CLKSEL_CON(49),
+                              8, /* src_sel [10:8] */
+                              0, /* div [7:0] */
+                              cru + RK3576_CRU_GATE_CON(9), 2,  /* hclk */
+                              cru + RK3576_CRU_GATE_CON(9), 0); /* mclk */
+
+  /* SAI5 — CLKSEL_CON154 (0x0568), GATE_CON65
+   *        src_sel at [12:10], div at [9:2] (different from SAI0~4). */
+
+  RK3576_CLK_REGISTER_SAI_ONE(5, cru + RK3576_CRU_CLKSEL_CON(154),
+                              10, /* src_sel [12:10] */
+                              2,  /* div [9:2] */
+                              cru + RK3576_CRU_GATE_CON(65), 5,  /* hclk */
+                              cru + RK3576_CRU_GATE_CON(65), 4); /* mclk */
+
+  /* SAI6 — CLKSEL_CON155 (0x056C), GATE_CON65 */
+
+  RK3576_CLK_REGISTER_SAI_ONE(6, cru + RK3576_CRU_CLKSEL_CON(155),
+                              8, /* src_sel [10:8] */
+                              0, /* div [7:0] */
+                              cru + RK3576_CRU_GATE_CON(65), 9,  /* hclk */
+                              cru + RK3576_CRU_GATE_CON(65), 8); /* mclk */
+
+  /* SAI7 — CLKSEL_CON159 (0x057C), GATE_CON67 */
+
+  RK3576_CLK_REGISTER_SAI_ONE(7, cru + RK3576_CRU_CLKSEL_CON(159),
+                              8, /* src_sel [10:8] */
+                              0, /* div [7:0] */
+                              cru + RK3576_CRU_GATE_CON(67), 10, /* hclk */
+                              cru + RK3576_CRU_GATE_CON(67), 9); /* mclk */
+
+  /* SAI8 — CLKSEL_CON157 (0x0574), GATE_CON66 */
+
+  RK3576_CLK_REGISTER_SAI_ONE(8, cru + RK3576_CRU_CLKSEL_CON(157),
+                              8, /* src_sel [10:8] */
+                              0, /* div [7:0] */
+                              cru + RK3576_CRU_GATE_CON(66), 0,  /* hclk */
+                              cru + RK3576_CRU_GATE_CON(66), 2); /* mclk */
+
+  /* SAI9 — CLKSEL_CON162 (0x0588), GATE_CON68 */
+
+  RK3576_CLK_REGISTER_SAI_ONE(9, cru + RK3576_CRU_CLKSEL_CON(162),
+                              8, /* src_sel [10:8] */
+                              0, /* div [7:0] */
+                              cru + RK3576_CRU_GATE_CON(68), 9,   /* hclk */
+                              cru + RK3576_CRU_GATE_CON(68), 11); /* mclk */
+}
+#endif /* CONFIG_RK3576_SAI */
+
+#undef RK3576_CLK_REGISTER_SAI_ONE
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -655,5 +867,9 @@ void rk3576_clk_tree_initialize(void)
 
 #ifdef CONFIG_RK3576_PWM
   rk3576_clk_register_pwm();
+#endif
+
+#ifdef CONFIG_RK3576_SAI
+  rk3576_clk_register_sai();
 #endif
 }
