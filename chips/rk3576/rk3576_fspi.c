@@ -74,8 +74,7 @@ struct rk3576_fspi_s
   uint8_t mode;           /* CPOL/CPHA mode (0-3) */
   int8_t nbits;           /* Bits per word (typically 8) */
   mutex_t *fspi_mutex;    /* Pointer to shared controller-level mutex */
-  struct clk_s *sclk_x2;  /* sclk_fspiX_x2_en gate (2x actual SCLK rate) */
-  struct clk_s *hclk;     /* hclk_fspiX_en gate (CLK framework handle) */
+  struct clk_s *sclk_x2;  /* sclk_fspiX_x2_div (2x actual SCLK rate) */
 };
 
 /****************************************************************************
@@ -268,54 +267,79 @@ static int fspi_hw_reset(struct rk3576_fspi_s *priv)
 
 static int fspi_hw_init(struct rk3576_fspi_s *priv)
 {
+  struct clk_s *hclk;
+  struct clk_s *gate;
   int ret;
   char name[32];
 
-  /* Get HCLK gate via CLK framework.
-   * NuttX CLK framework uses platform_device-style name matching, so
-   * clk_get() uses the exact name registered in clk_tree.
-   */
+  /* Get and enable HCLK (AHB bus clock gate) */
 
   snprintf(name, sizeof(name), "hclk_fspi%u_en", priv->id);
-  priv->hclk = clk_get(name);
-  if (!priv->hclk)
+  hclk = clk_get(name);
+  if (!hclk)
     {
       spierr("FSPI%u: failed to get %s\n", priv->id, name);
       return -ENODEV;
     }
 
-  snprintf(name, sizeof(name), "sclk_fspi%u_x2_en", priv->id);
-  priv->sclk_x2 = clk_get(name);
-  if (!priv->sclk_x2)
-    {
-      spierr("FSPI%u: failed to get %s\n", priv->id, name);
-      return -ENODEV;
-    }
-
-  /* Enable both HCLK (AHB bus) and SCLK (functional) clocks */
-
-  ret = clk_enable(priv->hclk);
+  ret = clk_enable(hclk);
   if (ret < 0)
     {
       spierr("FSPI%u: failed to enable hclk, ret=%d\n", priv->id, ret);
       return ret;
     }
 
+  /* Get the SCLK divider (sclk_fspiX_x2_div).  clk_set_rate on this
+   * divider controls the SCLK frequency.  Its parent is sclk_fspiX_sel,
+   * which the board init should switch to xin_osc0 (24 MHz) for
+   * fine-grained dividers.
+   */
+
+  snprintf(name, sizeof(name), "sclk_fspi%u_x2_div", priv->id);
+  priv->sclk_x2 = clk_get(name);
+  if (!priv->sclk_x2)
+    {
+      spierr("FSPI%u: failed to get %s\n", priv->id, name);
+      ret = -ENODEV;
+      goto err_disable_hclk;
+    }
+
+  /* Enable the x2 gate (output of the divider).  The divider itself is
+   * configured via clk_set_rate on priv->sclk_x2; the gate just needs
+   * to be on for the clock to reach the SFC controller.
+   */
+
+  snprintf(name, sizeof(name), "sclk_fspi%u_x2_en", priv->id);
+  gate = clk_get(name);
+  if (!gate)
+    {
+      spierr("FSPI%u: failed to get %s\n", priv->id, name);
+      ret = -ENODEV;
+      goto err_disable_hclk;
+    }
+
+  ret = clk_enable(gate);
+  if (ret < 0)
+    {
+      spierr("FSPI%u: failed to enable %s, ret=%d\n", priv->id, name, ret);
+      goto err_disable_hclk;
+    }
+
+  /* Enable the divider clock itself */
+
   ret = clk_enable(priv->sclk_x2);
   if (ret < 0)
     {
-      spierr("FSPI%u: failed to enable sclk, ret=%d\n", priv->id, ret);
-      return ret;
+      spierr("FSPI%u: failed to enable sclk_x2_div, ret=%d\n", priv->id, ret);
+      goto err_disable_gate;
     }
-
-  /* TODO: make the clock source configurable.*/
 
   /* Reset the SFC FSM and FIFOs */
 
   ret = fspi_hw_reset(priv);
   if (ret < 0)
     {
-      return ret;
+      goto err_disable_sclk;
     }
 
   /* Initialize both CS CTRL registers: single-line mode as safe default.
@@ -331,6 +355,14 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
   fspi_putreg(priv, 0xffffffff, RK3576_FSPI_IMR);
 
   return OK;
+
+err_disable_sclk:
+  clk_disable(priv->sclk_x2);
+err_disable_gate:
+  clk_disable(gate);
+err_disable_hclk:
+  clk_disable(hclk);
+  return ret;
 }
 
 /****************************************************************************
@@ -421,6 +453,7 @@ static int fspi_lock(struct qspi_dev_s *dev, bool lock)
 static uint32_t fspi_setfrequency(struct qspi_dev_s *dev, uint32_t frequency)
 {
   struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
+  uint32_t achievable;
 
   /* Ask the CLK framework what rate the divider can actually achieve
    * for the requested frequency.  clk_round_rate() walks the clock
@@ -429,10 +462,18 @@ static uint32_t fspi_setfrequency(struct qspi_dev_s *dev, uint32_t frequency)
    */
 
   DEBUGASSERT(priv->sclk_x2);
-  uint32_t achievable = clk_round_rate(priv->sclk_x2, frequency * 2) / 2;
+  achievable = clk_round_rate(priv->sclk_x2, frequency * 2) / 2;
 
   priv->frequency = frequency;
   priv->actual = achievable;
+
+  /* Apply the divider immediately so that the caller can rely on the
+   * reported frequency without deferring to a later lock() call.  The
+   * lock() path still calls hw_update_clock_div() as a safeguard.
+   */
+
+  clk_set_rate(priv->sclk_x2, frequency * 2);
+  g_fspi_hw_freq[priv->id] = achievable;
 
   return achievable;
 }
@@ -794,19 +835,6 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
   if (ret < 0)
     {
       return ret;
-    }
-
-  uint32_t timeout = FSPI_POLL_MAX;
-  while (--timeout)
-    {
-      if (getreg32(RK3576_FSPI_SR) & FSPI_SR_IS_BUSY)
-        {
-          break;
-        }
-    }
-  if (timeout == 0)
-    {
-      return -ETIMEDOUT;
     }
 
   /* CTRL config begin */

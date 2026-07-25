@@ -511,8 +511,7 @@ static void rk3576_clk_register_i2c(void)
        */                                                                     \
       clk_register_divider("sclk_fspi" #id "_x2_div", "sclk_fspi" #id "_sel", \
                            CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, \
-                           0, 6,                                              \
-                           CLK_DIVIDER_HIWORD_MASK | CLK_DIVIDER_ONE_BASED);  \
+                           0, 6, CLK_DIVIDER_HIWORD_MASK);                    \
                                                                               \
       /* HCLK gate: AHB bus clock, no parent */                               \
       clk_register_gate("hclk_fspi" #id "_en", NULL, CLK_NAME_IS_STATIC,      \
