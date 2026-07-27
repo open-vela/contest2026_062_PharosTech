@@ -37,10 +37,13 @@
 
 #include <nuttx/arch.h>
 #include <nuttx/clk/clk.h>
+#include <nuttx/clock.h>
+#include <nuttx/irq.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/mutex.h>
 #include <nuttx/spi/qspi.h>
 #include <nuttx/wdog.h>
+#include <semaphore.h>
 
 #include "arm64_internal.h"
 #include "hardware/rk3576_cru.h"
@@ -58,23 +61,52 @@
 
 #define FSPI_POLL_MAX 100000
 
+/* Interrupt timeout in milliseconds */
+
+#define FSPI_INT_TIMEOUT_MS 1000
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
 
+/* Forward declaration */
+
+struct rk3576_fspi_ctrl_s;
+
 struct rk3576_fspi_s
 {
-  struct qspi_dev_s qspi; /* Externally visible QSPI interface */
-  uint32_t regbase;       /* FSPI controller register base address */
-  uint8_t id;             /* Controller instance: 0 or 1 */
-  uint8_t cs;             /* Chip select: 0 or 1 */
-  bool initialized;       /* TRUE after hw_init succeeds */
-  uint32_t frequency;     /* Requested clock frequency */
-  uint32_t actual;        /* Actual clock frequency */
-  uint8_t mode;           /* CPOL/CPHA mode (0-3) */
-  int8_t nbits;           /* Bits per word (typically 8) */
-  mutex_t *fspi_mutex;    /* Pointer to shared controller-level mutex */
-  struct clk_s *sclk_x2;  /* sclk_fspiX_x2_div (2x actual SCLK rate) */
+  struct qspi_dev_s qspi;          /* Externally visible QSPI interface */
+  struct rk3576_fspi_ctrl_s *ctrl; /* Back-pointer to owning controller */
+  uint8_t cs;                      /* Chip select: 0 or 1 */
+  bool initialized;                /* TRUE after hw_init succeeds */
+  uint32_t frequency;              /* Requested clock frequency */
+  uint32_t actual;                 /* Actual clock frequency */
+  uint8_t mode;                    /* CPOL/CPHA mode (0-3) */
+  int8_t nbits;                    /* Bits per word (typically 8) */
+  struct clk_s *sclk_x2;           /* sclk_fspiX_x2_div (2x actual SCLK) */
+
+  /* Interrupt-related fields */
+
+  sem_t dma_sem; /* Transfer complete semaphore */
+};
+
+/* Per-controller state.
+ * All controller-level resources (register base, mutex, frequency cache,
+ * IRQ state, CS devices) are grouped into one struct so the ISR receives a
+ * single self-contained pointer via irq_attach arg.
+ */
+
+struct rk3576_fspi_ctrl_s
+{
+  uint32_t regbase;    /* FSPI controller register base */
+  uint8_t id;          /* Controller index: 0 or 1 */
+  mutex_t lock;        /* Controller-level mutex */
+  uint32_t hw_freq;    /* Cached actual SCLK frequency */
+  bool hw_initialized; /* One-time hardware init done */
+  bool irq_registered; /* IRQ handler registered */
+
+  struct rk3576_fspi_s *volatile active; /* Currently locked CS device (ISR) */
+  struct rk3576_fspi_s devs[RK3576_FSPI_NUM_CHIPSELECTS]; /* CS0, CS1 */
 };
 
 /****************************************************************************
@@ -109,6 +141,10 @@ static void fspi_free(struct qspi_dev_s *dev, void *buffer);
 
 static void fspi_hw_update_clock_div(struct rk3576_fspi_s *priv);
 
+/* Interrupt handler */
+
+static int fspi_interrupt(int irq, void *context, void *arg);
+
 /****************************************************************************
  * Private Data
  ****************************************************************************/
@@ -127,79 +163,51 @@ static const struct qspi_ops_s g_fspi_qspi_ops = {
   .free = fspi_free,
 };
 
-/* Controller-level shared mutexes.
- * CS0 and CS1 on the same FSPI controller share the same FSM / FIFO / DMA
- * engine, so they must be serialized at the controller level even though
- * they appear as independent qspi_dev_s instances to upper-half drivers.
+/* Per-controller state array.
+ * Each controller has its own register base, mutex, frequency cache,
+ * IRQ state, and two CS device instances (CS0, CS1).  The ISR receives
+ * a pointer to the owning g_fspi_ctrl[id] via irq_attach arg, so it can
+ * directly access regbase and active device without pointer arithmetic.
  */
 
-static mutex_t g_fspi_mutex[RK3576_FSPI_NUM_CONTROLLERS] = {
-  NXMUTEX_INITIALIZER,
-  NXMUTEX_INITIALIZER,
-};
-
-/* Controller-level hardware frequency cache.
- *
- * The SCLK_x2 divider is per-controller (shared by CS0 and CS1).  We
- * cache the last-written actual frequency here to avoid calling into the
- * CLK framework (clk_set_rate) when the requested frequency has not
- * changed.  A sentinel value of 0 means "never written / unknown".
- */
-
-static uint32_t g_fspi_hw_freq[RK3576_FSPI_NUM_CONTROLLERS] = {
-  0,
-  0,
-};
-
-/* FSPI instance array: [controller_id][cs_index] */
-
-static struct rk3576_fspi_s g_fspi_devs[RK3576_FSPI_NUM_CONTROLLERS]
-                                       [RK3576_FSPI_NUM_CHIPSELECTS] =
+static struct rk3576_fspi_ctrl_s g_fspi_ctrl[RK3576_FSPI_NUM_CONTROLLERS] =
 {
   /* FSPI0 */
   {
-    /* CS0 */
+    .regbase = RK3576_FSPI0_ADDR,
+    .id      = 0,
+    .lock    = NXMUTEX_INITIALIZER,
+    .devs    =
     {
-      .qspi =
+      /* CS0 */
       {
-        .ops = &g_fspi_qspi_ops,
+        .qspi  = { .ops = &g_fspi_qspi_ops },
+        .cs    = 0,
       },
-      .regbase = RK3576_FSPI0_ADDR,
-      .id      = 0,
-      .cs      = 0,
-    },
-    /* CS1 */
-    {
-      .qspi =
+      /* CS1 */
       {
-        .ops = &g_fspi_qspi_ops,
+        .qspi  = { .ops = &g_fspi_qspi_ops },
+        .cs    = 1,
       },
-      .regbase = RK3576_FSPI0_ADDR,
-      .id      = 0,
-      .cs      = 1,
     },
   },
   /* FSPI1 */
   {
-    /* CS0 */
+    .regbase = RK3576_FSPI1_ADDR,
+    .id      = 1,
+    .lock    = NXMUTEX_INITIALIZER,
+    .devs    =
     {
-      .qspi =
+      /* CS0 */
       {
-        .ops = &g_fspi_qspi_ops,
+        .qspi  = { .ops = &g_fspi_qspi_ops },
+        .cs    = 0,
       },
-      .regbase = RK3576_FSPI1_ADDR,
-      .id      = 1,
-      .cs      = 0,
-    },
-    /* CS1 */
-    {
-      .qspi =
+      /* CS1 */
       {
-        .ops = &g_fspi_qspi_ops,
+        .qspi  = { .ops = &g_fspi_qspi_ops },
+        .cs    = 1,
       },
-      .regbase = RK3576_FSPI1_ADDR,
-      .id      = 1,
-      .cs      = 1,
     },
   },
 };
@@ -211,13 +219,13 @@ static struct rk3576_fspi_s g_fspi_devs[RK3576_FSPI_NUM_CONTROLLERS]
 static inline uint32_t fspi_getreg(struct rk3576_fspi_s *priv,
                                    unsigned int offset)
 {
-  return getreg32(priv->regbase + offset);
+  return getreg32(priv->ctrl->regbase + offset);
 }
 
 static inline void fspi_putreg(struct rk3576_fspi_s *priv, uint32_t value,
                                unsigned int offset)
 {
-  putreg32(value, priv->regbase + offset);
+  putreg32(value, priv->ctrl->regbase + offset);
 }
 
 /****************************************************************************
@@ -250,7 +258,7 @@ static int fspi_hw_reset(struct rk3576_fspi_s *priv)
 
   if (timeout == 0)
     {
-      spierr("FSPI%u reset timeout\n", priv->id);
+      spierr("FSPI%u reset timeout\n", priv->ctrl->id);
       return -ETIMEDOUT;
     }
 
@@ -267,6 +275,7 @@ static int fspi_hw_reset(struct rk3576_fspi_s *priv)
 
 static int fspi_hw_init(struct rk3576_fspi_s *priv)
 {
+  struct rk3576_fspi_ctrl_s *ctrl = priv->ctrl;
   struct clk_s *hclk;
   struct clk_s *gate;
   int ret;
@@ -274,18 +283,18 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
 
   /* Get and enable HCLK (AHB bus clock gate) */
 
-  snprintf(name, sizeof(name), "hclk_fspi%u_en", priv->id);
+  snprintf(name, sizeof(name), "hclk_fspi%u_en", ctrl->id);
   hclk = clk_get(name);
   if (!hclk)
     {
-      spierr("FSPI%u: failed to get %s\n", priv->id, name);
+      spierr("FSPI%u: failed to get %s\n", ctrl->id, name);
       return -ENODEV;
     }
 
   ret = clk_enable(hclk);
   if (ret < 0)
     {
-      spierr("FSPI%u: failed to enable hclk, ret=%d\n", priv->id, ret);
+      spierr("FSPI%u: failed to enable hclk, ret=%d\n", ctrl->id, ret);
       return ret;
     }
 
@@ -295,11 +304,11 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
    * fine-grained dividers.
    */
 
-  snprintf(name, sizeof(name), "sclk_fspi%u_x2_div", priv->id);
+  snprintf(name, sizeof(name), "sclk_fspi%u_x2_div", ctrl->id);
   priv->sclk_x2 = clk_get(name);
   if (!priv->sclk_x2)
     {
-      spierr("FSPI%u: failed to get %s\n", priv->id, name);
+      spierr("FSPI%u: failed to get %s\n", ctrl->id, name);
       ret = -ENODEV;
       goto err_disable_hclk;
     }
@@ -309,11 +318,11 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
    * to be on for the clock to reach the SFC controller.
    */
 
-  snprintf(name, sizeof(name), "sclk_fspi%u_x2_en", priv->id);
+  snprintf(name, sizeof(name), "sclk_fspi%u_x2_en", ctrl->id);
   gate = clk_get(name);
   if (!gate)
     {
-      spierr("FSPI%u: failed to get %s\n", priv->id, name);
+      spierr("FSPI%u: failed to get %s\n", ctrl->id, name);
       ret = -ENODEV;
       goto err_disable_hclk;
     }
@@ -321,7 +330,7 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
   ret = clk_enable(gate);
   if (ret < 0)
     {
-      spierr("FSPI%u: failed to enable %s, ret=%d\n", priv->id, name, ret);
+      spierr("FSPI%u: failed to enable %s, ret=%d\n", ctrl->id, name, ret);
       goto err_disable_hclk;
     }
 
@@ -330,7 +339,7 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
   ret = clk_enable(priv->sclk_x2);
   if (ret < 0)
     {
-      spierr("FSPI%u: failed to enable sclk_x2_div, ret=%d\n", priv->id, ret);
+      spierr("FSPI%u: failed to enable sclk_x2_div, ret=%d\n", ctrl->id, ret);
       goto err_disable_gate;
     }
 
@@ -353,6 +362,23 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
   /* Mask all interrupts */
 
   fspi_putreg(priv, 0xffffffff, RK3576_FSPI_IMR);
+
+  /* Register interrupt handler for this controller */
+
+  if (!ctrl->irq_registered)
+    {
+      int irq = (ctrl->id == 0) ? RK3576_IRQ_FSPI0 : RK3576_IRQ_FSPI1;
+
+      ret = irq_attach(irq, fspi_interrupt, ctrl);
+      if (ret < 0)
+        {
+          spierr("FSPI%u: failed to attach IRQ, ret=%d\n", ctrl->id, ret);
+          goto err_disable_sclk;
+        }
+
+      up_enable_irq(irq);
+      ctrl->irq_registered = true;
+    }
 
   return OK;
 
@@ -384,9 +410,10 @@ err_disable_hclk:
 
 static void fspi_hw_update_clock_div(struct rk3576_fspi_s *priv)
 {
+  struct rk3576_fspi_ctrl_s *ctrl = priv->ctrl;
   int ret;
 
-  if (priv->actual == g_fspi_hw_freq[priv->id])
+  if (priv->actual == ctrl->hw_freq)
     {
       return;
     }
@@ -395,8 +422,66 @@ static void fspi_hw_update_clock_div(struct rk3576_fspi_s *priv)
   if (ret >= 0)
     {
       priv->actual = clk_get_rate(priv->sclk_x2) / 2;
-      g_fspi_hw_freq[priv->id] = priv->actual;
+      ctrl->hw_freq = priv->actual;
     }
+}
+
+/****************************************************************************
+ * Name: fspi_interrupt
+ *
+ * Description:
+ *   FSPI controller interrupt handler.
+ *
+ *   Since CS0 and CS1 share the same IRQ line, the mutex guarantees only
+ *   one CS is active at a time.  We dispatch all events to the device
+ *   recorded in ctrl->active.
+ *
+ ****************************************************************************/
+
+static int fspi_interrupt(int irq, void *context, void *arg)
+{
+  struct rk3576_fspi_ctrl_s *ctrl = (struct rk3576_fspi_ctrl_s *)arg;
+  struct rk3576_fspi_s *priv = ctrl->active;
+  uint32_t isr;
+
+  /* No active device — spurious interrupt.
+   * Read ISR and clear all pending bits so level-triggered IRQs
+   * won't retrigger endlessly.  ctrl->regbase is always valid.
+   */
+
+  if (!priv)
+    {
+      isr = getreg32(ctrl->regbase + RK3576_FSPI_ISR);
+      putreg32(isr, ctrl->regbase + RK3576_FSPI_ICLR);
+
+      /* mask all */
+      putreg32(0xffffffffu, ctrl->regbase + RK3576_FSPI_IMR);
+      return OK;
+    }
+
+  /* Atomically read ISR and clear all pending interrupt bits.
+   * This prevents re-entry of the same interrupt condition while
+   * we dispatch the events below.  The FIFO status (FSR) is also
+   * read once so both TX and RX level extraction use a consistent
+   * hardware snapshot.
+   */
+
+  isr = fspi_getreg(priv, RK3576_FSPI_ISR);
+  fspi_putreg(priv, isr, RK3576_FSPI_ICLR);
+
+  /* mask all */
+  fspi_putreg(priv, 0xffffffffu, RK3576_FSPI_IMR);
+
+  syslog(LOG_ERR, "isr 0x%x\n", isr);
+
+  /* Error interrupts — log a warning. */
+
+  if (isr & (FSPI_INT_BUS_ERR | FSPI_INT_NSPI_ERR))
+    {
+      spierr("FSPI%u error: ISR=0x%08x\n", ctrl->id, isr);
+    }
+
+  return OK;
 }
 
 /****************************************************************************
@@ -411,7 +496,7 @@ static void fspi_hw_update_clock_div(struct rk3576_fspi_s *priv)
  *
  *   Since CS0 and CS1 on the same FSPI controller share the FSM, FIFO and
  *   DMA engine, the lock is controller-wide.  Both CS instances on the same
- *   controller share a common mutex (g_fspi_mutex[id]).
+ *   controller share a common mutex (ctrl->lock).
  *
  *   On lock acquire, fspi_hw_update_clock_div() flushes the per-CS
  *   frequency request to the CRU hardware if the divider differs from the
@@ -421,21 +506,30 @@ static void fspi_hw_update_clock_div(struct rk3576_fspi_s *priv)
 static int fspi_lock(struct qspi_dev_s *dev, bool lock)
 {
   struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
+  struct rk3576_fspi_ctrl_s *ctrl = priv->ctrl;
   int ret;
 
   if (lock)
     {
-      ret = nxmutex_lock(priv->fspi_mutex);
+      ret = nxmutex_lock(&ctrl->lock);
       if (ret < 0)
         {
           return ret;
         }
 
       fspi_hw_update_clock_div(priv);
+
+      /* Record this device as active for IRQ dispatch.
+       * The mutex guarantees only one CS is active at a time,
+       * so the ISR can safely route interrupts to this device.
+       */
+
+      ctrl->active = priv;
     }
   else
     {
-      ret = nxmutex_unlock(priv->fspi_mutex);
+      ctrl->active = NULL;
+      ret = nxmutex_unlock(&ctrl->lock);
     }
 
   return ret;
@@ -453,6 +547,7 @@ static int fspi_lock(struct qspi_dev_s *dev, bool lock)
 static uint32_t fspi_setfrequency(struct qspi_dev_s *dev, uint32_t frequency)
 {
   struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
+  struct rk3576_fspi_ctrl_s *ctrl = priv->ctrl;
   uint32_t achievable;
 
   /* Ask the CLK framework what rate the divider can actually achieve
@@ -473,7 +568,7 @@ static uint32_t fspi_setfrequency(struct qspi_dev_s *dev, uint32_t frequency)
    */
 
   clk_set_rate(priv->sclk_x2, frequency * 2);
-  g_fspi_hw_freq[priv->id] = achievable;
+  ctrl->hw_freq = achievable;
 
   return achievable;
 }
@@ -570,65 +665,121 @@ static void fspi_free(struct qspi_dev_s *dev, void *buffer)
 }
 
 /****************************************************************************
+ * Name: fspi_wait_irq
+ *
+ * Description:
+ *   Wait for a specific interrupt event with timeout.
+ *
+ *   This is a generic helper that enables the requested interrupt, waits
+ *   on the corresponding semaphore, then disables the interrupt.  It is
+ *   used for TX FIFO ready, RX FIFO ready, transfer complete, and (in
+ *   the future) DMA completion.
+ *
+ * Input Parameters:
+ *   priv       - FSPI device instance
+ *   irq_mask   - Interrupt bit(s) to enable (FSPI_INT_xxx)
+ *   sem        - Semaphore to wait on
+ *   timeout_us - Timeout in microseconds
+ *
+ * Returned Value:
+ *   OK on success, or a negative errno on failure (e.g. -ETIMEDOUT).
+ ****************************************************************************/
+
+__attribute__((unused)) static int fspi_wait_irq(struct rk3576_fspi_s *priv,
+                                                 uint32_t irq_mask, sem_t *sem,
+                                                 uint32_t timeout_us)
+{
+  clock_t delay;
+  uint32_t imr;
+  int ret;
+
+  /* Drain any stale semaphore count left over from a previous transfer
+   * (e.g. the ISR posted before we managed to mask the interrupt).
+   */
+
+  while (nxsem_trywait(sem) >= 0)
+    {
+    }
+
+  /* Enable requested interrupt */
+
+  imr = fspi_getreg(priv, RK3576_FSPI_IMR);
+  imr &= ~irq_mask;
+  fspi_putreg(priv, imr, RK3576_FSPI_IMR);
+
+  /* Calculate delay in ticks and wait */
+
+  delay = USEC2TICK(timeout_us);
+  ret = nxsem_tickwait(sem, delay);
+
+  /* Disable requested interrupt */
+
+  imr |= irq_mask;
+  fspi_putreg(priv, imr, RK3576_FSPI_IMR);
+
+  return ret;
+}
+
+/****************************************************************************
  * Name: fspi_wait_tx_fifo_ready
  *
  * Description:
- *   Poll FSR (FIFO Status Register) until TX FIFO has at least one free
- *   slot, then return the number of available slots.
+ *   Poll until TX FIFO has at least one free slot.
  *
  *   TXLV (TX FIFO Level) — FSR bits[12:8] indicates how many 32-bit words
  *   the TX FIFO can still accept.
  *
- *   Returns:
- *     > 0 — number of free TX FIFO slots
- *     0 — timeout
+ * Returned Value:
+ *   >= 0 — number of free TX FIFO slots
+ *   < 0  — negated errno on failure (e.g. -ETIMEDOUT)
  ****************************************************************************/
 
-static int fspi_wait_tx_fifo_ready(struct rk3576_fspi_s *priv,
-                                   uint32_t timeout_us)
+static int fspi_wait_tx_fifo_ready(struct rk3576_fspi_s *priv)
 {
-  uint32_t timeout = timeout_us * 10;
   uint32_t status;
+  int poll = FSPI_POLL_MAX;
 
-  while (--timeout)
+  while (poll-- > 0)
     {
       status = fspi_getreg(priv, RK3576_FSPI_FSR);
       if (status & FSPI_FSR_TXLV_MASK)
         {
-          return (status & FSPI_FSR_TXLV_MASK) >> FSPI_FSR_TXLV_SHIFT;
+          return (int)((status & FSPI_FSR_TXLV_MASK) >> FSPI_FSR_TXLV_SHIFT);
         }
     }
 
-  return 0;
+  return -ETIMEDOUT;
 }
 
 /****************************************************************************
  * Name: fspi_wait_rx_fifo_ready
  *
  * Description:
- *   Poll FSR until RX FIFO has at least one word available, then return
- *   the number of available words.
+ *   Poll RX FIFO until at least one word is available.
  *
  *   RXLV (RX FIFO Level) — FSR bits[20:16] indicates how many 32-bit words
  *   are available in the RX FIFO.
+ *
+ * Returned Value:
+ *   >= 0 — number of available RX FIFO words
+ *   < 0  — negated errno on failure (e.g. -ETIMEDOUT)
  ****************************************************************************/
 
-static int fspi_wait_rx_fifo_ready(struct rk3576_fspi_s *priv,
-                                   uint32_t timeout_us)
+static int fspi_wait_rx_fifo_ready(struct rk3576_fspi_s *priv)
 {
-  uint32_t timeout = timeout_us * 10;
   uint32_t status;
+  int poll = FSPI_POLL_MAX;
 
-  while (--timeout)
+  while (poll-- > 0)
     {
       status = fspi_getreg(priv, RK3576_FSPI_FSR);
       if (status & FSPI_FSR_RXLV_MASK)
         {
-          return (status & FSPI_FSR_RXLV_MASK) >> FSPI_FSR_RXLV_SHIFT;
+          return (int)((status & FSPI_FSR_RXLV_MASK) >> FSPI_FSR_RXLV_SHIFT);
         }
     }
 
-  return 0;
+  return -ETIMEDOUT;
 }
 
 /****************************************************************************
@@ -658,11 +809,11 @@ static int fspi_write_fifo(struct rk3576_fspi_s *priv, const uint8_t *buf,
 
   while (dwords)
     {
-      tx_level = fspi_wait_tx_fifo_ready(priv, 1000);
-      if (tx_level <= 0)
+      tx_level = fspi_wait_tx_fifo_ready(priv);
+      if (tx_level < 0)
         {
-          spierr("FSPI TX FIFO wait timeout\n");
-          return -ETIMEDOUT;
+          spierr("FSPI TX FIFO wait failed: %d\n", tx_level);
+          return tx_level;
         }
 
       write_words = dwords;
@@ -685,11 +836,11 @@ static int fspi_write_fifo(struct rk3576_fspi_s *priv, const uint8_t *buf,
 
   if (bytes)
     {
-      tx_level = fspi_wait_tx_fifo_ready(priv, 1000);
-      if (tx_level <= 0)
+      tx_level = fspi_wait_tx_fifo_ready(priv);
+      if (tx_level < 0)
         {
-          spierr("FSPI TX FIFO tail wait timeout\n");
-          return -ETIMEDOUT;
+          spierr("FSPI TX FIFO tail wait failed: %d\n", tx_level);
+          return tx_level;
         }
 
       tmp = 0;
@@ -727,11 +878,11 @@ static int fspi_read_fifo(struct rk3576_fspi_s *priv, uint8_t *buf, int len)
 
   while (dwords)
     {
-      rx_level = fspi_wait_rx_fifo_ready(priv, 1000);
-      if (rx_level <= 0)
+      rx_level = fspi_wait_rx_fifo_ready(priv);
+      if (rx_level < 0)
         {
-          spierr("FSPI RX FIFO wait timeout\n");
-          return -ETIMEDOUT;
+          spierr("FSPI RX FIFO wait failed: %d\n", rx_level);
+          return rx_level;
         }
 
       read_words = dwords;
@@ -756,11 +907,11 @@ static int fspi_read_fifo(struct rk3576_fspi_s *priv, uint8_t *buf, int len)
 
   if (bytes)
     {
-      rx_level = fspi_wait_rx_fifo_ready(priv, 1000);
-      if (rx_level <= 0)
+      rx_level = fspi_wait_rx_fifo_ready(priv);
+      if (rx_level < 0)
         {
-          spierr("FSPI RX FIFO tail wait timeout\n");
-          return -ETIMEDOUT;
+          spierr("FSPI RX FIFO tail wait failed: %d\n", rx_level);
+          return rx_level;
         }
 
       tmp = fspi_getreg(priv, RK3576_FSPI_DATA);
@@ -776,28 +927,27 @@ static int fspi_read_fifo(struct rk3576_fspi_s *priv, uint8_t *buf, int len)
 }
 
 /****************************************************************************
- * Name: fspi_xfer_done
+ * Name: fspi_busy
  *
  * Description:
- *   Poll the FSM Status Register (SR) until the controller goes idle.
+ *   Poll FSPI_SR until the controller is idle (IS_BUSY == 0).
+ *
  ****************************************************************************/
 
-static int fspi_xfer_done(struct rk3576_fspi_s *priv)
+static int fspi_wait_busy(struct rk3576_fspi_s *priv)
 {
-  uint32_t timeout = FSPI_POLL_MAX;
-  uint32_t status;
+  unsigned int poll_cnt = FSPI_POLL_MAX;
 
-  while (--timeout)
+  while (fspi_getreg(priv, RK3576_FSPI_SR) & FSPI_SR_IS_BUSY)
     {
-      status = fspi_getreg(priv, RK3576_FSPI_SR);
-      if (!(status & FSPI_SR_IS_BUSY))
+      if (poll_cnt-- == 0)
         {
-          return OK;
+          spierr("FSPI%u busy timeout\n", priv->ctrl->id);
+          return -ETIMEDOUT;
         }
     }
 
-  spierr("FSPI wait idle timeout\n");
-  return -ETIMEDOUT;
+  return OK;
 }
 
 /****************************************************************************
@@ -819,7 +969,7 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
   uint32_t ctrl_rge_bits, cmd_reg_bits;
   int ret;
 
-  ret = fspi_xfer_done(priv);
+  ret = fspi_wait_busy(priv);
   if (ret < 0)
     {
       return ret;
@@ -963,7 +1113,7 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
 
   /* wait for transfer to complete */
 
-  ret = fspi_xfer_done(priv);
+  ret = fspi_wait_busy(priv);
   if (ret < 0)
     {
       fspi_hw_reset(priv);
@@ -1016,9 +1166,8 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
 
 struct qspi_dev_s *rk3576_fspi_initialize(int fspi_id, int cs)
 {
-  struct rk3576_fspi_s *priv = NULL;
-  static bool g_fspi_hw_initialized[RK3576_FSPI_NUM_CONTROLLERS] = { false,
-                                                                     false };
+  struct rk3576_fspi_ctrl_s *ctrl;
+  struct rk3576_fspi_s *priv;
 
   /* Validate arguments */
 
@@ -1029,23 +1178,22 @@ struct qspi_dev_s *rk3576_fspi_initialize(int fspi_id, int cs)
       return NULL;
     }
 
-  /* Select the pre-allocated instance */
+  ctrl = &g_fspi_ctrl[fspi_id];
+  priv = &ctrl->devs[cs];
 
-  priv = &g_fspi_devs[fspi_id][cs];
+  /* Wire the back-pointer (idempotent, safe to do on every call) */
 
-  /* Ensure the shared mutex pointer is set (only needed once) */
-
-  priv->fspi_mutex = &g_fspi_mutex[fspi_id];
+  priv->ctrl = ctrl;
 
   /* Lock the controller-level mutex to serialize hardware init */
 
-  nxmutex_lock(priv->fspi_mutex);
+  nxmutex_lock(&ctrl->lock);
 
   /* CS instance already initialized? */
 
   if (priv->initialized)
     {
-      nxmutex_unlock(priv->fspi_mutex);
+      nxmutex_unlock(&ctrl->lock);
       return &priv->qspi;
     }
 
@@ -1054,19 +1202,23 @@ struct qspi_dev_s *rk3576_fspi_initialize(int fspi_id, int cs)
    * hardware init.  Subsequent calls for the other CS skip it.
    */
 
-  if (!g_fspi_hw_initialized[fspi_id])
+  if (!ctrl->hw_initialized)
     {
       int ret;
 
       ret = fspi_hw_init(priv);
       if (ret < 0)
         {
-          nxmutex_unlock(priv->fspi_mutex);
+          nxmutex_unlock(&ctrl->lock);
           return NULL;
         }
 
-      g_fspi_hw_initialized[fspi_id] = true;
+      ctrl->hw_initialized = true;
     }
+
+  /* Initialize semaphores for this CS instance */
+
+  nxsem_init(&priv->dma_sem, 0, 0);
 
   /* Set default frequency and mode for this CS instance */
 
@@ -1075,7 +1227,7 @@ struct qspi_dev_s *rk3576_fspi_initialize(int fspi_id, int cs)
 
   priv->initialized = true;
 
-  nxmutex_unlock(priv->fspi_mutex);
+  nxmutex_unlock(&ctrl->lock);
 
   return &priv->qspi;
 }
