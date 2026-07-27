@@ -485,23 +485,11 @@ static uint32_t fspi_setfrequency(struct qspi_dev_s *dev, uint32_t frequency)
 static void fspi_setmode(struct qspi_dev_s *dev, enum qspi_mode_e mode)
 {
   struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
-  unsigned int ctrl_reg = RK3576_FSPI_CTRL(priv->cs);
-  uint32_t ctrl;
-
-  priv->mode = mode;
-
-  ctrl = fspi_getreg(priv, ctrl_reg);
-  ctrl &= ~(FSPI_CTRL_SPIM_MASK | FSPI_CTRL_SHIFTPHASE_MASK);
 
   switch (mode)
     {
       case QSPIDEV_MODE0:
-        ctrl |= FSPI_CTRL_SPIM_MODE_0;
-        ctrl |= FSPI_CTRL_SHIFTPHASE_POSEDGE;
-        break;
       case QSPIDEV_MODE3:
-        ctrl |= FSPI_CTRL_SPIM_MODE_3;
-        ctrl |= FSPI_CTRL_SHIFTPHASE_NEGEDGE;
         break;
       case QSPIDEV_MODE1:
       case QSPIDEV_MODE2:
@@ -512,7 +500,7 @@ static void fspi_setmode(struct qspi_dev_s *dev, enum qspi_mode_e mode)
         return;
     }
 
-  fspi_putreg(priv, ctrl, ctrl_reg);
+  priv->mode = mode;
 }
 
 /****************************************************************************
@@ -839,9 +827,21 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
 
   /* CTRL config begin */
 
-  ctrl_rge_bits = fspi_getreg(priv, ctrl_reg);
-  ctrl_rge_bits &=
-      ~(FSPI_CTRL_CMDB_MASK | FSPI_CTRL_ADDRB_MASK | FSPI_CTRL_DATAB_MASK);
+  ctrl_rge_bits = FSPI_CTRL_SHIFTPHASE_NEGEDGE;
+
+  if (priv->mode == QSPIDEV_MODE3)
+    {
+      ctrl_rge_bits |= FSPI_CTRL_SPIM_MODE_3;
+    }
+  else if (priv->mode == QSPIDEV_MODE0)
+    {
+      ctrl_rge_bits |= FSPI_CTRL_SPIM_MODE_0;
+    }
+  else
+    {
+      spierr("Unsupported spi mode %u", priv->mode);
+      return -EINVAL;
+    }
 
   /* The QSPICMD_IDUAL/IQUAD flags are ambiguous (upstream drivers read
    * them as widening only the instruction phase, while others apply them
