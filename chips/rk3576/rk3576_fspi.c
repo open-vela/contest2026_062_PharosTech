@@ -63,7 +63,7 @@
 
 /* Interrupt timeout in milliseconds */
 
-#define FSPI_INT_TIMEOUT_MS 1000
+#define FSPI_INT_TIMEOUT_US 1000000
 
 /****************************************************************************
  * Private Types
@@ -453,9 +453,6 @@ static int fspi_interrupt(int irq, void *context, void *arg)
     {
       isr = getreg32(ctrl->regbase + RK3576_FSPI_ISR);
       putreg32(isr, ctrl->regbase + RK3576_FSPI_ICLR);
-
-      /* mask all */
-      putreg32(0xffffffffu, ctrl->regbase + RK3576_FSPI_IMR);
       return OK;
     }
 
@@ -469,10 +466,10 @@ static int fspi_interrupt(int irq, void *context, void *arg)
   isr = fspi_getreg(priv, RK3576_FSPI_ISR);
   fspi_putreg(priv, isr, RK3576_FSPI_ICLR);
 
-  /* mask all */
-  fspi_putreg(priv, 0xffffffffu, RK3576_FSPI_IMR);
-
-  syslog(LOG_ERR, "isr 0x%x\n", isr);
+  if (isr & FSPI_INT_DMA)
+    {
+      nxsem_post(&priv->dma_sem);
+    }
 
   /* Error interrupts — log a warning. */
 
@@ -685,9 +682,8 @@ static void fspi_free(struct qspi_dev_s *dev, void *buffer)
  *   OK on success, or a negative errno on failure (e.g. -ETIMEDOUT).
  ****************************************************************************/
 
-__attribute__((unused)) static int fspi_wait_irq(struct rk3576_fspi_s *priv,
-                                                 uint32_t irq_mask, sem_t *sem,
-                                                 uint32_t timeout_us)
+static int fspi_wait_irq(struct rk3576_fspi_s *priv, uint32_t irq_mask,
+                         sem_t *sem, uint32_t timeout_us)
 {
   clock_t delay;
   uint32_t imr;
@@ -975,6 +971,10 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
       return ret;
     }
 
+  /* setup data length */
+  fspi_putreg(priv, cmdinfo->buflen, RK3576_FSPI_LEN_EXT);
+  fspi_putreg(priv, FSPI_LEN_CTRL_TRB_SEL, RK3576_FSPI_LEN_CTRL);
+
   /* CTRL config begin */
 
   ctrl_rge_bits = FSPI_CTRL_SHIFTPHASE_NEGEDGE;
@@ -1021,16 +1021,6 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
 
   /* setup cs */
   cmd_reg_bits = FSPI_CMD_CS(priv->cs);
-
-  /* setup data length */
-  if (cmdinfo->flags & (QSPICMD_READDATA | QSPICMD_WRITEDATA))
-    {
-      cmd_reg_bits |= (cmdinfo->buflen << FSPI_CMD_TRB_SHIFT);
-    }
-  else /* 0 data bytes will be transfered */
-    {
-      cmd_reg_bits |= (0 << FSPI_CMD_TRB_SHIFT);
-    }
 
   /* setup addr length */
   if (cmdinfo->flags & QSPICMD_ADDRESS)
@@ -1087,7 +1077,7 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
   /* CMD config end */
 
   /* send addr*/
-  if (cmdinfo->flags & QSPICMD_ADDRESS)
+  if ((cmdinfo->flags & QSPICMD_ADDRESS) && (cmdinfo->addrlen))
     {
       fspi_putreg(priv, cmdinfo->addr, RK3576_FSPI_ADDR);
     }
@@ -1111,15 +1101,6 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
         }
     }
 
-  /* wait for transfer to complete */
-
-  ret = fspi_wait_busy(priv);
-  if (ret < 0)
-    {
-      fspi_hw_reset(priv);
-      return ret;
-    }
-
   return OK;
 }
 
@@ -1132,10 +1113,162 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
 
 static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
 {
-  UNUSED(dev);
-  UNUSED(meminfo);
+  struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
+  unsigned int ctrl_reg = RK3576_FSPI_CTRL(priv->cs);
+  uint32_t ctrl_rge_bits, cmd_reg_bits;
+  int ret;
 
-  return -ENOSYS;
+  /* setup data length */
+  fspi_putreg(priv, meminfo->buflen, RK3576_FSPI_LEN_EXT);
+  fspi_putreg(priv, FSPI_LEN_CTRL_TRB_SEL, RK3576_FSPI_LEN_CTRL);
+
+  ret = fspi_wait_busy(priv);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  /* CTRL config begin */
+
+  ctrl_rge_bits = FSPI_CTRL_SHIFTPHASE_NEGEDGE;
+
+  if (priv->mode == QSPIDEV_MODE3)
+    {
+      ctrl_rge_bits |= FSPI_CTRL_SPIM_MODE_3;
+    }
+  else if (priv->mode == QSPIDEV_MODE0)
+    {
+      ctrl_rge_bits |= FSPI_CTRL_SPIM_MODE_0;
+    }
+  else
+    {
+      spierr("Unsupported spi mode %u", priv->mode);
+      return -EINVAL;
+    }
+
+  if (meminfo->flags & QSPIMEM_IDUAL)
+    {
+      ctrl_rge_bits |= FSPI_CTRL_CMDB_X2;
+    }
+  else if (meminfo->flags & QSPIMEM_IQUAD)
+    {
+      ctrl_rge_bits |= FSPI_CTRL_CMDB_X4;
+    }
+  else
+    {
+      ctrl_rge_bits |= FSPI_CTRL_CMDB_X1;
+    }
+
+  if (meminfo->flags & QSPIMEM_DUALIO)
+    {
+      ctrl_rge_bits |= FSPI_CTRL_ADDRB_X2;
+      ctrl_rge_bits |= FSPI_CTRL_DATAB_X2;
+    }
+  else if (meminfo->flags & QSPIMEM_QUADIO)
+    {
+      ctrl_rge_bits |= FSPI_CTRL_ADDRB_X4;
+      ctrl_rge_bits |= FSPI_CTRL_DATAB_X4;
+    }
+  else
+    {
+      ctrl_rge_bits |= FSPI_CTRL_ADDRB_X1;
+      ctrl_rge_bits |= FSPI_CTRL_DATAB_X1;
+    }
+
+  fspi_putreg(priv, ctrl_rge_bits, ctrl_reg);
+
+  /* CTRL config end */
+
+  /* CMD config begin */
+
+  /* setup cs */
+  cmd_reg_bits = FSPI_CMD_CS(priv->cs);
+
+  /* setup addr length */
+  switch (meminfo->addrlen)
+    {
+      case 0:
+        cmd_reg_bits |= FSPI_CMD_ADDR_0BITS;
+        break;
+      case 3:
+        cmd_reg_bits |= FSPI_CMD_ADDR_24BITS;
+        break;
+      case 4:
+        cmd_reg_bits |= FSPI_CMD_ADDR_32BITS;
+        break;
+      default:
+        spierr("Invalid qspi addr len (0, 3 or 4 bytes expected, got %u)",
+               meminfo->addrlen);
+        return -EINVAL;
+    }
+
+  /* setup WR */
+  if (meminfo->flags & QSPIMEM_WRITE)
+    {
+      cmd_reg_bits |= FSPI_CMD_DIR_WR;
+    }
+  else
+    {
+      cmd_reg_bits |= FSPI_CMD_DIR_RD;
+    }
+
+  /* setup dummy cycles (only in read mode) */
+  if (meminfo->buflen && !(meminfo->flags & QSPIMEM_WRITE))
+    {
+      if (meminfo->dummies > 15)
+        {
+          spierr("dummies out of range [0, 15], got %u", meminfo->dummies);
+          return -EINVAL;
+        }
+      cmd_reg_bits |= (meminfo->dummies << FSPI_CMD_DUMMY_SHIFT);
+    }
+  else
+    {
+      /* 0 dummy cycles */
+      cmd_reg_bits |= (0 << FSPI_CMD_DUMMY_SHIFT);
+    }
+
+  /* non-continuous mode */
+  cmd_reg_bits |= FSPI_CMD_CONT_DISABLE;
+
+  /* setup cmd */
+  if (meminfo->cmd > 0xff)
+    {
+      /* TODO: support 16-bit cmd */
+      spierr("8-bit cmd expected, got 0x%X", meminfo->cmd);
+      return -EINVAL;
+    }
+  cmd_reg_bits |= (meminfo->cmd << FSPI_CMD_OPCODE_SHIFT);
+
+  fspi_putreg(priv, cmd_reg_bits, RK3576_FSPI_CMD);
+
+  /* CMD config end */
+
+  /* send addr*/
+  if (meminfo->addrlen)
+    {
+      fspi_putreg(priv, meminfo->addr, RK3576_FSPI_ADDR);
+    }
+
+  /* Transfer data via FSPI internal DMA. */
+
+  if (meminfo->buflen)
+    {
+      fspi_putreg(priv, up_addrenv_va_to_pa(meminfo->buffer),
+                  RK3576_FSPI_DMAADDR);
+
+      fspi_putreg(priv, FSPI_DMA_TRIGGER_START, RK3576_FSPI_DMATR);
+
+      ret = fspi_wait_irq(priv, FSPI_INT_DMA, &(priv->dma_sem),
+                          FSPI_INT_TIMEOUT_US);
+      if (ret < 0)
+        {
+          fspi_hw_reset(priv);
+          return ret;
+        }
+    }
+
+  return OK;
 }
 
 /****************************************************************************
