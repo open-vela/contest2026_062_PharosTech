@@ -1,0 +1,139 @@
+name: build
+
+on:
+  push:
+    branches: [dev-ai-contest-2026]
+  pull_request:
+    branches: [dev-ai-contest-2026]
+
+  # 允许手动触发
+  workflow_dispatch:
+
+env:
+  # manifest 仓库：push / workflow_dispatch 用自身仓库；PR 事件使用目标仓库（base）。
+  # 注意：merged 的 merge_commit_sha 只存在于目标(base)仓库，fork 仓库中无此 commit。
+  MANIFEST_REPO: ${{ format('{0}/{1}', github.server_url, github.repository) }}
+  # 目标 commit（sha）：PR 下用 GitHub 生成的 merge commit（合并后的结果，即 refs/pull/<num>/merge）；
+  # push / workflow_dispatch 用当前 commit。锁定 sha 可消除分支解析竞态与 fork 歧义。
+  MANIFEST_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
+  # 仓库名即 manifest 文件名
+  REPO_NAME: ${{ github.event.repository.name }}
+  MANIFEST_FILE: ${{ github.event.repository.name }}.xml
+  # repo sync 的工作目录（workspace 下的 openvela 子目录）
+  OPENVELA_DIR: openvela
+
+jobs:
+  # 扫描 defconfig，生成 build matrix
+  scan_configs:
+    name: Scan Configs
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.MANIFEST_COMMIT }}
+
+      - name: Scan configs
+        id: matrix
+        run: |
+          CONFIGS='[]'
+          for cfg in $(find "boards" "configs" -name defconfig -printf '%h\n' | sort); do
+            CONFIGS=$(echo "$CONFIGS" | jq -c --arg c "$cfg" '. + [{"config": $c}]')
+          done
+          echo "matrix=$CONFIGS" >> $GITHUB_OUTPUT
+          echo "Discovered configs: $CONFIGS"
+
+  # 并行构建所有配置
+  build:
+    name: Build (${{ matrix.config }})
+    needs: scan_configs
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.scan_configs.outputs.matrix) }}
+
+    steps:
+      # 生成 artifact 名称 slug
+      - name: Generate config slug
+        run: |
+          SLUG="${{ matrix.config }}"
+          echo "CONFIG_SLUG=${SLUG//\//_}" >> "$GITHUB_ENV"
+
+      # 安装构建依赖
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git curl cmake python3 libc++abi-dev build-essential
+
+      # 安装 repo 工具
+      - name: Install repo
+        run: |
+          mkdir -p ~/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      # 拉取 openvela 全量源码
+      - name: Repo init & sync
+        run: |
+          mkdir -p ${{ env.OPENVELA_DIR }}
+          cd ${{ env.OPENVELA_DIR }}
+          repo init \
+            -u "${{ env.MANIFEST_REPO }}" \
+            -b "${{ env.MANIFEST_COMMIT }}" \
+            -m "${{ env.MANIFEST_FILE }}" \
+            --depth=1
+          repo sync -c -j4
+
+      # 签出到目标 commit（repo sync 拉下的是 manifest 默认 revision）
+      - name: Checkout contest repo to target commit
+        run: |
+          cd ${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}
+          git remote add ci "${{ env.MANIFEST_REPO }}" || true
+          git fetch ci ${{ env.MANIFEST_COMMIT }}
+          git checkout FETCH_HEAD
+
+      # CMake 构建
+      - name: Build (CMake)
+        id: cmake_build
+        continue-on-error: true
+        run: |
+          cd ${{ env.OPENVELA_DIR }}
+          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} --cmake
+
+      - name: Upload CMake artifact
+        if: steps.cmake_build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.CONFIG_SLUG }}-cmake
+          path: ${{ env.OPENVELA_DIR }}/cmake_out/**/nuttx.bin
+          if-no-files-found: error
+
+      # Makefile 构建
+      - name: Build (Makefile)
+        id: make_build
+        continue-on-error: true
+        run: |
+          cd ${{ env.OPENVELA_DIR }}
+          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} distclean
+          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} -j4
+
+      - name: Upload Makefile artifact
+        if: steps.make_build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.CONFIG_SLUG }}-makefile
+          path: ${{ env.OPENVELA_DIR }}/nuttx/nuttx.bin
+          if-no-files-found: error
+
+      # 任一构建失败则 job 失败
+      - name: Check build results
+        if: steps.cmake_build.outcome == 'failure' || steps.make_build.outcome == 'failure'
+        run: |
+          echo "::error::CMake outcome: ${{ steps.cmake_build.outcome }}, Makefile outcome: ${{ steps.make_build.outcome }}"
+          exit 1
