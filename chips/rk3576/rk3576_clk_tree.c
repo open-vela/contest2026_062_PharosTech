@@ -210,6 +210,7 @@ static void rk3576_clk_register_pll_factors(void)
                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
                       &g_rk3576_fracpll_ops, &gpll_priv, sizeof(gpll_priv));
   DEBUGASSERT(gpll);
+  UNUSED(gpll);
 
   clk_register_fixed_factor("clk_gpll_div2", "clk_gpll", CLK_NAME_IS_STATIC, 1,
                             2);
@@ -232,6 +233,7 @@ static void rk3576_clk_register_pll_factors(void)
                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
                       &g_rk3576_fracpll_ops, &cpll_priv, sizeof(cpll_priv));
   DEBUGASSERT(cpll);
+  UNUSED(cpll);
 
   clk_register_fixed_factor("clk_cpll_div2", "clk_cpll", CLK_NAME_IS_STATIC, 1,
                             2);
