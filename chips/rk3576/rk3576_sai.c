@@ -35,10 +35,9 @@
  * follows arch/arm/src/stm32f7/stm32_sai.c.
  *
  * Framing (fixed for bring-up): standard I2S, 2 slots per frame, 32-bit
- * slots carrying left-justified valid data (16/24/32-bit), MCLK = 256 * fs.
- * With 32-bit slots the SAI internal mclk-divider is constant for a given
- * channel count (BCLK = fs * channels * 32, MCLK/BCLK = 256/(channels*32)),
- * which keeps the divider independent of sample rate.
+ * slots carrying left-justified valid data (16/24/32-bit).  The codec
+ * selects its MCLK/LRCK ratio for each sample-rate family, and the SAI
+ * derives BCLK from the resulting MCLK at run time.
  *
  * Controller clocks are obtained from the RK3576 common clock framework.
  *
@@ -624,17 +623,18 @@ static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
  *
  * Description:
  *   Return the SAI internal mclk divider N (SCLK = MCLK / N) for the current
- *   channel count, with fixed 32-bit slots and MCLK = 256 * fs.  BCLK =
- *   fs * channels * 32, so N = MCLK / BCLK = 256 / (channels * 32).
+ *   sample rate and channel count.  Slots are fixed at 32 bits, while the
+ *   codec may select different MCLK/LRCK ratios for different sample rates.
  *
  ****************************************************************************/
 
 static uint32_t rk3576_sai_mclkdivider(struct rk3576_sai_s *priv)
 {
   uint32_t bits = (uint32_t)priv->channels * RK3576_SAI_SLOT_BITS;
-  uint32_t div = RK3576_SAI_MCLK_FS / bits;
+  uint32_t bclk = priv->samplerate * bits;
+  uint32_t div = bclk == 0 ? 0 : priv->mclk_freq / bclk;
 
-  if (div < 1)
+  if (div == 0 || priv->mclk_freq % bclk != 0)
     {
       div = 1;
     }
@@ -1153,6 +1153,7 @@ static int rk3576_sai_rxchannels(struct i2s_dev_s *dev, uint8_t channels)
 static uint32_t rk3576_sai_txsamplerate(struct i2s_dev_s *dev, uint32_t rate)
 {
   struct rk3576_sai_s *priv = (struct rk3576_sai_s *)dev;
+  uint32_t mclk;
 
   DEBUGASSERT(rate > 0);
 
@@ -1162,7 +1163,18 @@ static uint32_t rk3576_sai_txsamplerate(struct i2s_dev_s *dev, uint32_t rate)
       return 0;
     }
 
-  if (rk3576_sai_setclock(priv, rate * RK3576_SAI_MCLK_FS) < 0)
+  /* The codec sets its required MCLK before setting the sample rate.  Keep
+   * that rate when it is an integer multiple of the requested LRCK; high
+   * sample rates use 128fs rather than the 256fs default.
+   */
+
+  mclk = priv->mclk_freq;
+  if (mclk == 0 || mclk % rate != 0)
+    {
+      mclk = rate * RK3576_SAI_MCLK_FS;
+    }
+
+  if (rk3576_sai_setclock(priv, mclk) < 0)
     {
       return 0;
     }
