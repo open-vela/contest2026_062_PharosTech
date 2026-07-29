@@ -204,6 +204,44 @@ static int rk3576_uart_init_clock(struct rk3576_uart_port_s *port,
       return ret;
     }
 
+  /* Configure sclk to a rate suitable for the requested baud rate.
+   * The bootloader may leave the divider in a state that produces a
+   * very low sclk (e.g. 187.5 kHz), which makes the baud-rate divisor
+   * underflow to 0 and renders the UART non-functional.
+   *
+   * Request at least baud * 16 so the internal DL divider stays >= 1.
+   * The CLK framework will round up to the nearest achievable rate
+   * and may reparent the mux to find a better clock source.
+   *
+   * UART0 is special: its sclk was already configured by the
+   * bootloader (typically 24 MHz via xin_osc0 bypass), so we skip
+   * the set_rate to avoid disrupting the console.
+   */
+
+  if (port_id != UART_PORT_0)
+    {
+      struct clk_s *divclk;
+
+      snprintf(name, sizeof(name), "sclk_uart%u", port_id);
+      divclk = clk_get(name);
+      if (!divclk)
+        {
+          _err("UART%u: failed to get clock %s\n", port_id, name);
+          clk_disable(sclk);
+          clk_disable(pclk);
+          return -ENODEV;
+        }
+
+      ret = clk_set_rate(divclk, port->data.baud_rate * 16);
+      if (ret < 0)
+        {
+          _err("UART%u: failed to set sclk rate, ret=%d\n", port_id, ret);
+          clk_disable(sclk);
+          clk_disable(pclk);
+          return ret;
+        }
+    }
+
   port->pclk = pclk;
   port->sclk = sclk;
 
@@ -235,6 +273,7 @@ static uint32_t rk3576_uart_divisor(struct rk3576_uart_port_s *port,
                                     uint32_t baud)
 {
   uint32_t sclk = UART_SCLK;
+  uint32_t dl;
 
   DEBUGASSERT(baud != 0);
 
@@ -243,7 +282,18 @@ static uint32_t rk3576_uart_divisor(struct rk3576_uart_port_s *port,
       sclk = clk_get_rate(port->sclk);
     }
 
-  return sclk / (baud << 4);
+  dl = sclk / (baud << 4);
+
+  /* The DL register is 16 bits wide (DLL 8-bit + DLH 8-bit).
+   * A value of 0 is invalid and would produce undefined behavior
+   * on the wire; values > 65535 cannot be programmed into the
+   * 16-bit divisor latch.
+   */
+
+  DEBUGASSERT(dl > 0);
+  DEBUGASSERT(dl <= 65535);
+
+  return dl;
 }
 
 /***************************************************************************
@@ -825,6 +875,14 @@ static void rk3576_uart_txint(struct uart_dev_s *dev, bool enable)
 
       modreg8(RK3576_UART_IER_ETBEI, RK3576_UART_IER_ETBEI,
               RK3576_UART_IER(config->uart));
+
+      /* Prime the TX pump: write the first batch of data directly
+       * without waiting for a THRE interrupt.  This matches the
+       * upstream NuttX 16550 driver behavior; without it the
+       * initial TX may never start if THRE is not already asserted.
+       */
+
+      uart_xmitchars(dev);
     }
   else
     {
