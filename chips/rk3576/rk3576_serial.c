@@ -46,6 +46,7 @@
 #endif
 
 #include <nuttx/arch.h>
+#include <nuttx/clk/clk.h>
 #include <nuttx/fs/ioctl.h>
 #include <nuttx/init.h>
 #include <nuttx/irq.h>
@@ -127,6 +128,8 @@ struct rk3576_uart_port_s
   struct rk3576_uart_config config; /* UART Configuration */
   unsigned int irq_num;             /* UART IRQ Number */
   bool is_console;                  /* 1 if this UART is console */
+  struct clk_s *pclk;               /* APB bus interface clock */
+  struct clk_s *sclk;               /* Functional clock */
 };
 
 /***************************************************************************
@@ -141,6 +144,76 @@ static void rk3576_uart_txint(struct uart_dev_s *dev, bool enable);
  ***************************************************************************/
 
 /***************************************************************************
+ * Name: rk3576_uart_init_clock
+ *
+ * Description:
+ *   Initialize UART clocks (pclk and sclk) for the specified port.
+ *   This function enables the APB bus clock (pclk) to make registers
+ *   accessible, and the functional clock (sclk) for UART operation.
+ *
+ * Input Parameters:
+ *   port    - UART port structure
+ *   port_id - UART port number (0~11)
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ***************************************************************************/
+
+static int rk3576_uart_init_clock(struct rk3576_uart_port_s *port,
+                                  uint8_t port_id)
+{
+  char name[32];
+  struct clk_s *pclk;
+  struct clk_s *sclk;
+  int ret;
+
+  /* Get and enable the APB bus clock (pclk) */
+
+  snprintf(name, sizeof(name), "pclk_uart%u_en", port_id);
+  pclk = clk_get(name);
+  if (!pclk)
+    {
+      _err("UART%u: failed to get clock %s\n", port_id, name);
+      return -ENODEV;
+    }
+
+  ret = clk_enable(pclk);
+  if (ret < 0)
+    {
+      _err("UART%u: failed to enable clock %s\n", port_id, name);
+      return ret;
+    }
+
+  /* Get and enable the functional clock (sclk) */
+
+  snprintf(name, sizeof(name), "sclk_uart%u_en", port_id);
+  sclk = clk_get(name);
+  if (!sclk)
+    {
+      _err("UART%u: failed to get clock %s\n", port_id, name);
+      clk_disable(pclk);
+      return -ENODEV;
+    }
+
+  ret = clk_enable(sclk);
+  if (ret < 0)
+    {
+      _err("UART%u: failed to enable clock %s\n", port_id, name);
+      clk_disable(pclk);
+      return ret;
+    }
+
+  port->pclk = pclk;
+  port->sclk = sclk;
+
+  _info("UART%u: clocks initialized (pclk=%p, sclk=%p)\n", port_id, pclk,
+        sclk);
+
+  return OK;
+}
+
+/***************************************************************************
  * Name: rk3576_uart_divisor
  *
  * Description:
@@ -149,15 +222,28 @@ static void rk3576_uart_txint(struct uart_dev_s *dev, bool enable);
  *     BAUD = SCLK / (16 * DL), or
  *     DL   = SCLK / BAUD / 16
  *
+ *   If the CLK framework is initialized (port->sclk is non-NULL),
+ *   the actual clock rate is read from clk_get_rate(); otherwise
+ *   falls back to the default UART_SCLK (24 MHz) for early boot.
+ *
  * Returned Value:
  *   UART Divisor
  *
  ***************************************************************************/
 
-static uint32_t rk3576_uart_divisor(uint32_t baud)
+static uint32_t rk3576_uart_divisor(struct rk3576_uart_port_s *port,
+                                    uint32_t baud)
 {
+  uint32_t sclk = UART_SCLK;
+
   DEBUGASSERT(baud != 0);
-  return UART_SCLK / (baud << 4);
+
+  if (port->sclk)
+    {
+      sclk = clk_get_rate(port->sclk);
+    }
+
+  return sclk / (baud << 4);
 }
 
 /***************************************************************************
@@ -414,7 +500,7 @@ static int rk3576_uart_setup(struct uart_dev_s *dev)
 
   /* Set the BAUD divisor */
 
-  dl = rk3576_uart_divisor(data->baud_rate);
+  dl = rk3576_uart_divisor(port, data->baud_rate);
   putreg8(dl >> 8, RK3576_UART_DLH(config->uart));
   putreg8(dl & 0xff, RK3576_UART_DLL(config->uart));
 
@@ -878,7 +964,9 @@ static struct rk3576_uart_port_s g_uart0priv = {
   .config = { .uart = RK3576_UART0_ADDR },
 
   .irq_num = RK3576_IRQ_UART0,
-  .is_console = 1
+  .is_console = 1,
+  .pclk = NULL,
+  .sclk = NULL,
 };
 
 /* UART0 I/O Buffers (Console) */
@@ -1034,15 +1122,30 @@ void arm64_serialinit(void)
  * Name: rk3576_serial_register
  *
  * Description:
- *   Dynamically allocate and register a non-console UART port (UART1~11).
- *   Called by board-level code (e.g. board_late_initialize) after the heap
- *   is available.  UART0 must NOT be registered through this function.
+ *   Dynamically allocate and register a UART port.
+ *
+ *   For UART1~11 (UART_PORT_1 .. UART_PORT_11), this function heap-
+ *   allocates the port private data, uart_dev_s, and I/O buffers, then
+ *   initializes clocks and registers the device as /dev/ttySx.
+ *
+ *   For UART0 (UART_PORT_0), the function reuses the statically-
+ *   allocated g_uart0priv/g_uart0port (already registered as
+ *   /dev/console and /dev/ttyS0 during arm64_serialinit).  It only
+ *   initializes the clocks through the NuttX CLK framework so the
+ *   framework is aware of the UART0 clock enable state.
+ *   All other parameters (baud, bits, parity, stop2, buffer sizes)
+ *   are ignored for UART0 — its configuration is fixed at compile
+ *   time via Kconfig.
+ *
+ *   This function uses kmalloc and clk_get(), so it must be called
+ *   after the heap and clock tree are available (e.g. from
+ *   board_late_initialize).
  *
  * Input Parameters:
- *   port_id       - UART port identifier (UART_PORT_1 ~ UART_PORT_11)
- *   baud          - Baud rate
- *   bits          - Data bits (5 ~ 8)
- *   parity        - 0=none, 1=odd, 2=even
+ *   port_id       - UART port identifier (UART_PORT_0 ~ UART_PORT_11)
+ *   baud          - Baud rate (e.g. 115200)
+ *   bits          - Data bits (5, 6, 7, or 8)
+ *   parity        - Parity (0=none, 1=odd, 2=even)
  *   stop2         - true = 2 stop bits, false = 1 stop bit
  *   rx_buffer_size - RX buffer size (0 = default 256)
  *   tx_buffer_size - TX buffer size (0 = default 256)
@@ -1056,6 +1159,8 @@ int rk3576_serial_register(uint8_t port_id, uint32_t baud, uint8_t bits,
                            uint8_t parity, bool stop2, uint16_t rx_buffer_size,
                            uint16_t tx_buffer_size)
 {
+  static uint32_t g_registered_mask;
+
   struct rk3576_uart_port_s *priv;
   struct uart_dev_s *dev;
   char *rxbuf;
@@ -1064,13 +1169,37 @@ int rk3576_serial_register(uint8_t port_id, uint32_t baud, uint8_t bits,
   const struct rk3576_uart_hwdesc_s *hw;
   int ret;
 
-  /* Validate port_id */
+  /* Validate port_id before any shift operations to avoid UB */
 
-  if (port_id < UART_PORT_1 || port_id > UART_PORT_MAX)
+  if (port_id > UART_PORT_MAX)
     {
       _err("Invalid port_id=%u\n", port_id);
       return -EINVAL;
     }
+
+  /* Prevent double registration */
+
+  if (g_registered_mask & (1u << port_id))
+    {
+      _err("UART%u already registered\n", port_id);
+      return -EEXIST;
+    }
+
+  /* UART0 reuses statically-allocated port/dev — only init clocks */
+
+  if (port_id == UART_PORT_0)
+    {
+      ret = rk3576_uart_init_clock(&g_uart0priv, UART_PORT_0);
+      if (ret < 0)
+        {
+          return ret;
+        }
+
+      g_registered_mask |= (1u << UART_PORT_0);
+      return OK;
+    }
+
+  /* UART1~11: proceed with dynamic registration */
 
   hw = &g_uart_hwdesc[port_id];
 
@@ -1134,6 +1263,21 @@ int rk3576_serial_register(uint8_t port_id, uint32_t baud, uint8_t bits,
   priv->config.uart = hw->base;
   priv->irq_num = hw->irq;
   priv->is_console = false;
+  priv->pclk = NULL;
+  priv->sclk = NULL;
+
+  /* Initialize UART clocks */
+
+  ret = rk3576_uart_init_clock(priv, port_id);
+  if (ret < 0)
+    {
+      _err("UART%u: failed to initialize clocks, ret=%d\n", port_id, ret);
+      kmm_free(txbuf);
+      kmm_free(rxbuf);
+      kmm_free(dev);
+      kmm_free(priv);
+      return ret;
+    }
 
   /* Fill uart_dev_s */
 
@@ -1151,6 +1295,12 @@ int rk3576_serial_register(uint8_t port_id, uint32_t baud, uint8_t bits,
   if (ret < 0)
     {
       _err("UART%u: uart_register %s failed, ret=%d\n", port_id, devname, ret);
+
+      /* Roll back clocks enabled by rk3576_uart_init_clock() */
+
+      clk_disable(priv->sclk);
+      clk_disable(priv->pclk);
+
       kmm_free(txbuf);
       kmm_free(rxbuf);
       kmm_free(dev);
@@ -1158,6 +1308,7 @@ int rk3576_serial_register(uint8_t port_id, uint32_t baud, uint8_t bits,
       return ret;
     }
 
+  g_registered_mask |= (1u << port_id);
   return OK;
 }
 

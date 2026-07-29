@@ -27,6 +27,7 @@
 #include "kickpi_k7.h"
 #include "rk3576_clk_tree.h"
 #include "rk3576_gpio.h"
+#include "rk3576_serial.h"
 #include <arch/board/board.h>
 #include <nuttx/board.h>
 #include <nuttx/config.h>
@@ -169,6 +170,29 @@ void board_late_initialize(void)
    */
 
   rk3576_clk_tree_initialize();
+
+#ifdef CONFIG_RK3576_UART
+  /* Register UART0 through the unified serial registration path.
+   * UART0 is special: it was initialized early in arm64_earlyserialinit()
+   * for boot logging using the bootloader-configured clocks.  Now that the
+   * clock tree is ready, calling rk3576_serial_register(UART_PORT_0, ...)
+   * initializes the clocks through the NuttX CLK framework so the clock
+   * framework is aware of the UART0 clock enable state.
+   * The statically-allocated port/dev (g_uart0priv/g_uart0port) is reused;
+   * /dev/console and /dev/ttyS0 are already registered by arm64_serialinit.
+   */
+
+  {
+    int ret = rk3576_serial_register(UART_PORT_0, CONFIG_UART0_BAUD,
+                                     CONFIG_UART0_BITS, CONFIG_UART0_PARITY,
+                                     CONFIG_UART0_2STOP, 0, 0);
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: rk3576_serial_register(UART0) failed: %d\n",
+               ret);
+      }
+  }
+#endif /* CONFIG_RK3576_UART */
 
   /* Perform board initialization */
 

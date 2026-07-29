@@ -173,6 +173,55 @@ static const char *g_pwm_sel_parents[] = {
 };
 #endif
 
+#ifdef CONFIG_RK3576_UART
+
+/* UART frac clock source selection */
+
+static const char *g_matrix_uart_frac_sel_parents[] = {
+  "clk_gpll",  /* 0b00: clk_gpll_mux */
+  "clk_cpll",  /* 0b01: clk_cpll_mux */
+  "clk_aupll", /* 0b10: clk_aupll_mux */
+  "xin_osc0",  /* 0b11: xin_osc0_func_mux */
+};
+
+/* UART sclk source selection (7 parents, 3-bit select).
+ * Used by UART0, 2–11 sclk_uartN_sel muxes (NOT UART1).
+ * Order matches TRM encoding:
+ *   0b000: clk_gpll_mux
+ *   0b001: clk_cpll_mux
+ *   0b010: clk_aupll_mux
+ *   0b011: xin_osc0_func_mux
+ *   0b100: clk_matrix_uart_frac_0
+ *   0b101: clk_matrix_uart_frac_1
+ *   0b110: clk_matrix_uart_frac_2
+ *
+ * UART1 uses a different, two-level mux structure — see
+ * rk3576_clk_register_uart() for details.
+ */
+
+static const char *g_uart_sclk_sel_parents[] = {
+  "clk_gpll",               /* 0b000 */
+  "clk_cpll",               /* 0b001 */
+  "clk_aupll",              /* 0b010 */
+  "xin_osc0",               /* 0b011 */
+  "clk_matrix_uart_frac_0", /* 0b100 */
+  "clk_matrix_uart_frac_1", /* 0b101 */
+  "clk_matrix_uart_frac_2", /* 0b110 */
+};
+
+/* UART1 sclk parent list — used by sclk_uart1_sel mux.
+ * 0 = clk_uart1_src_top (programmable), 1 = xin_osc0 (24 MHz bypass).
+ */
+
+static const char *g_uart1_sclk_parents[] = {
+  "clk_uart1_src_top", /* 1'b0 */
+  "xin_osc0",          /* 1'b1 */
+};
+
+#endif /* CONFIG_RK3576_UART */
+
+/* Audio frac clock source selection */
+
 static const char *g_matrix_audio_frac_sel_parents[] = {
   "clk_gpll",  /* 0b00: clk_gpll_mux */
   "clk_cpll",  /* 0b01: clk_cpll_mux */
@@ -508,6 +557,374 @@ static void rk3576_clk_register_pwm(void)
 #endif /* CONFIG_RK3576_PWM */
 
 #undef RK3576_CLK_REGISTER_PWM_ONE
+
+/**
+ * Macro: RK3576_CLK_REGISTER_MATRIX_UART_FRAC_ONE
+ *
+ * Register one clk_matrix_uart_frac_N clock tree
+ * (mux + fractional divider + gate).
+ *
+ * Register layout from TRM:
+ *   CLKSEL_CON(21 + 2*N)     : fractional divider register
+ *                               [31:16] = numerator (16-bit)
+ *                               [15:0]  = denominator (16-bit)
+ *   CLKSEL_CON(22 + 2*N)     : mux select register
+ *                               [1:0]   = parent select (2-bit)
+ *                               [31:16] = hiword write mask
+ *
+ * Parent selection (2-bit):
+ *   0b00: gpll / 0b01: cpll / 0b10: aupll / 0b11: xin_osc0
+ *
+ * Gate bits (CRU_GATE_CON02, 0x0808, SET_TO_DISABLE):
+ *   _0: bit 4  /  _1: bit 5  /  _2: bit 6
+ */
+
+#define RK3576_CLK_REGISTER_MATRIX_UART_FRAC_ONE(index, div_reg, sel_reg,     \
+                                                 gate_bit)                    \
+  do                                                                          \
+    {                                                                         \
+      struct clk_s *_mux;                                                     \
+                                                                              \
+      _mux = clk_register_mux("clk_matrix_uart_frac_" #index "_sel",          \
+                              g_matrix_uart_frac_sel_parents,                 \
+                              nitems(g_matrix_uart_frac_sel_parents),         \
+                              CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,       \
+                              sel_reg, 0, 2, CLK_MUX_HIWORD_MASK);            \
+      if (!_mux)                                                              \
+        {                                                                     \
+          _err("CLK: failed to register "                                     \
+               "clk_matrix_uart_frac_" #index "_sel\n");                      \
+          break;                                                              \
+        }                                                                     \
+                                                                              \
+      clk_register_fractional_divider("clk_matrix_uart_frac_" #index,         \
+                                      "clk_matrix_uart_frac_" #index "_sel",  \
+                                      CLK_NAME_IS_STATIC, div_reg, 16, 16, 0, \
+                                      16, 0);                                 \
+                                                                              \
+      clk_register_gate("clk_matrix_uart_frac_" #index "_en",                 \
+                        "clk_matrix_uart_frac_" #index, CLK_NAME_IS_STATIC,   \
+                        RK3576_CRU_ADDR + RK3576_CRU_GATE_CON(2), gate_bit,   \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
+    }                                                                         \
+  while (0)
+
+/**
+ * Name: rk3576_clk_register_matrix_uart
+ *
+ * Description:
+ *   Register all clk_matrix_uart_frac_0..2 (mux + fractional divider +
+ *   gate).
+ *
+ *   Each UART frac clock has:
+ *   - A 2-bit mux selecting between GPLL/CPLL/AUPLL/XIN_OSC0
+ *   - A fractional divider (16+16 bit)
+ *   - A gate
+ *
+ *   Register mapping (TRM):
+ *     clk_matrix_uart_frac_0: div=CON21(0x0354), sel=CON22(0x0358)
+ *     clk_matrix_uart_frac_1: div=CON23(0x035C), sel=CON24(0x0360)
+ *     clk_matrix_uart_frac_2: div=CON25(0x0364), sel=CON26(0x0368)
+ */
+
+#ifdef CONFIG_RK3576_UART
+static void rk3576_clk_register_matrix_uart(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+
+  /* UART frac clocks (mux + frac divider + gate) */
+
+  RK3576_CLK_REGISTER_MATRIX_UART_FRAC_ONE(0, cru + RK3576_CRU_CLKSEL_CON(21),
+                                           cru + RK3576_CRU_CLKSEL_CON(22), 4);
+
+  RK3576_CLK_REGISTER_MATRIX_UART_FRAC_ONE(1, cru + RK3576_CRU_CLKSEL_CON(23),
+                                           cru + RK3576_CRU_CLKSEL_CON(24), 5);
+
+  RK3576_CLK_REGISTER_MATRIX_UART_FRAC_ONE(2, cru + RK3576_CRU_CLKSEL_CON(25),
+                                           cru + RK3576_CRU_CLKSEL_CON(26), 6);
+}
+#endif
+
+#undef RK3576_CLK_REGISTER_MATRIX_UART_FRAC_ONE
+
+/**
+ * Macro: RK3576_CLK_REGISTER_UART_ONE
+ *
+ * Register one UART controller clock tree
+ * (sclk mux + sclk divider + sclk gate + pclk gate).
+ *
+ * Parameters:
+ *   index     - UART index (0..11), used in clock name suffix
+ *   sel_reg   - CLKSEL register address (holds both src_sel and div)
+ *   src_shift - sclk_uartN_sel bit offset in sel_reg (3-bit field)
+ *   div_shift - sclk_uartN_div bit offset in sel_reg (8-bit field)
+ *   pclk_reg  - pclk GATE register address
+ *   pclk_bit  - pclk GATE bit
+ *   sclk_reg  - sclk GATE register address
+ *   sclk_bit  - sclk GATE bit
+ */
+
+#define RK3576_CLK_REGISTER_UART_ONE(index, sel_reg, src_shift, div_shift,   \
+                                     pclk_reg, pclk_bit, sclk_reg, sclk_bit) \
+  do                                                                         \
+    {                                                                        \
+      struct clk_s *_src_sel;                                                \
+      struct clk_s *_div;                                                    \
+                                                                             \
+      _src_sel = clk_register_mux(                                           \
+          "sclk_uart" #index "_sel", g_uart_sclk_sel_parents,                \
+          nitems(g_uart_sclk_sel_parents),                                   \
+          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, src_shift, 3,   \
+          CLK_MUX_HIWORD_MASK);                                              \
+      if (!_src_sel)                                                         \
+        {                                                                    \
+          _err("CLK: failed to register sclk_uart" #index "_sel\n");         \
+          break;                                                             \
+        }                                                                    \
+                                                                             \
+      _div = clk_register_divider(                                           \
+          "sclk_uart" #index, "sclk_uart" #index "_sel",                     \
+          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, div_shift, 8,   \
+          CLK_DIVIDER_HIWORD_MASK);                                          \
+      if (!_div)                                                             \
+        {                                                                    \
+          _err("CLK: failed to register sclk_uart" #index "\n");             \
+          break;                                                             \
+        }                                                                    \
+                                                                             \
+      clk_register_gate("pclk_uart" #index "_en", NULL, CLK_NAME_IS_STATIC,  \
+                        pclk_reg, pclk_bit,                                  \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
+                                                                             \
+      clk_register_gate("sclk_uart" #index "_en", "sclk_uart" #index,        \
+                        CLK_NAME_IS_STATIC, sclk_reg, sclk_bit,              \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
+    }                                                                        \
+  while (0)
+
+/****************************************************************************
+ * Name: rk3576_clk_register_uart
+ *
+ * Description:
+ *   Register all UART0–UART11 clock trees.
+ *
+ *   UART clock registers are spread across:
+ *     UART0:  CLKSEL_CON60  / GATE_CON13 (pclk) + GATE_CON14 (sclk)
+ *     UART1:  special — see below
+ *     UART2:  CLKSEL_CON61  / GATE_CON13 (pclk) + GATE_CON14 (sclk)
+ *     UART3:  CLKSEL_CON62  / GATE_CON13 (pclk) + GATE_CON14 (sclk)
+ *     UART4:  CLKSEL_CON63  / GATE_CON13 (pclk) + GATE_CON14 (sclk)
+ *     UART5:  CLKSEL_CON64  / GATE_CON13 (pclk) + GATE_CON14 (sclk)
+ *     UART6:  CLKSEL_CON65  / GATE_CON13 (pclk) + GATE_CON15 (sclk)
+ *     UART7:  CLKSEL_CON66  / GATE_CON14 (pclk) + GATE_CON15 (sclk)
+ *     UART8:  CLKSEL_CON67  / GATE_CON14 (pclk) + GATE_CON15 (sclk)
+ *     UART9:  CLKSEL_CON68  / GATE_CON14 (pclk) + GATE_CON15 (sclk)
+ *     UART10: CLKSEL_CON69  / GATE_CON14 (pclk) + GATE_CON15 (sclk)
+ *     UART11: CLKSEL_CON70  / GATE_CON14 (pclk) + GATE_CON15 (sclk)
+ *
+ *   UART0, 2–11: each has sclk_src_sel (3-bit mux) + sclk_src_div
+ *   (8-bit divider) + sclk gate + pclk gate.
+ *   All sclk_src_sel fields at [10:8], sclk_src_div at [7:0].
+ *
+ *   UART1 is special — it has a two-level mux structure with NO local
+ *   divider.  The hardware chain is:
+ *
+ *     Level 1 (CRU domain, CLKSEL_CON27):
+ *       clk_uart1_src_top_sel (3-bit mux, [15:13])
+ *         Parents: gpll / cpll / aupll / xin_osc0 /
+ *                  matrix_uart_frac_0 / _1 / _2
+ *         -> clk_uart1_src_top_div (8-bit divider, [12:5], div_con+1)
+ *           -> clk_uart1_src_top_en (gate, CRU_GATE_CON02[13])
+ *
+ *     Level 2 (PMU1CRU domain, PMU1CRU_CLKSEL_CON08):
+ *       sclk_uart1_sel (1-bit mux, [0])
+ *         0: clk_uart1_src_top (from level 1)
+ *         1: xin_osc0_func    (bypass, 24 MHz direct)
+ *         -> sclk_uart1_en (gate, PMU1CRU_GATE_CON05[5])
+ *
+ *   UART1 has no divider of its own — the division is performed by
+ *   clk_uart1_src_top_div upstream.
+ *
+ *   pclk gate: PMU1CRU_GATE_CON05[6]
+ *
+ *   All gates use SET_TO_DISABLE (high = clock off).
+ ****************************************************************************/
+
+#ifdef CONFIG_RK3576_UART
+static void rk3576_clk_register_uart(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+
+  /* UART0 — CLKSEL_CON60 (0x03F0), GATE_CON13/14 */
+
+  RK3576_CLK_REGISTER_UART_ONE(0, cru + RK3576_CRU_CLKSEL_CON(60),
+                               8, /* src_sel [10:8] */
+                               0, /* div [7:0] */
+                               cru + RK3576_CRU_GATE_CON(13), 10, /* pclk */
+                               cru + RK3576_CRU_GATE_CON(14), 5); /* sclk */
+
+  /* UART2 — CLKSEL_CON61 (0x03F4), GATE_CON13/14 */
+
+  RK3576_CLK_REGISTER_UART_ONE(2, cru + RK3576_CRU_CLKSEL_CON(61),
+                               8, /* src_sel [10:8] */
+                               0, /* div [7:0] */
+                               cru + RK3576_CRU_GATE_CON(13), 11, /* pclk */
+                               cru + RK3576_CRU_GATE_CON(14), 6); /* sclk */
+
+  /* UART3 — CLKSEL_CON62 (0x03F8), GATE_CON13/14 */
+
+  RK3576_CLK_REGISTER_UART_ONE(3, cru + RK3576_CRU_CLKSEL_CON(62),
+                               8, /* src_sel [10:8] */
+                               0, /* div [7:0] */
+                               cru + RK3576_CRU_GATE_CON(13), 12, /* pclk */
+                               cru + RK3576_CRU_GATE_CON(14), 9); /* sclk */
+
+  /* UART4 — CLKSEL_CON63 (0x03FC), GATE_CON13/14 */
+
+  RK3576_CLK_REGISTER_UART_ONE(4, cru + RK3576_CRU_CLKSEL_CON(63),
+                               8, /* src_sel [10:8] */
+                               0, /* div [7:0] */
+                               cru + RK3576_CRU_GATE_CON(13), 13,  /* pclk */
+                               cru + RK3576_CRU_GATE_CON(14), 12); /* sclk */
+
+  /* UART5 — CLKSEL_CON64 (0x0400), GATE_CON13/14 */
+
+  RK3576_CLK_REGISTER_UART_ONE(5, cru + RK3576_CRU_CLKSEL_CON(64),
+                               8, /* src_sel [10:8] */
+                               0, /* div [7:0] */
+                               cru + RK3576_CRU_GATE_CON(13), 14,  /* pclk */
+                               cru + RK3576_CRU_GATE_CON(14), 15); /* sclk */
+
+  /* UART6 — CLKSEL_CON65 (0x0404), GATE_CON13/15 */
+
+  RK3576_CLK_REGISTER_UART_ONE(6, cru + RK3576_CRU_CLKSEL_CON(65),
+                               8, /* src_sel [10:8] */
+                               0, /* div [7:0] */
+                               cru + RK3576_CRU_GATE_CON(13), 15, /* pclk */
+                               cru + RK3576_CRU_GATE_CON(15), 2); /* sclk */
+
+  /* UART7 — CLKSEL_CON66 (0x0408), GATE_CON14/15 */
+
+  RK3576_CLK_REGISTER_UART_ONE(7, cru + RK3576_CRU_CLKSEL_CON(66),
+                               8, /* src_sel [10:8] */
+                               0, /* div [7:0] */
+                               cru + RK3576_CRU_GATE_CON(14), 0,  /* pclk */
+                               cru + RK3576_CRU_GATE_CON(15), 5); /* sclk */
+
+  /* UART8 — CLKSEL_CON67 (0x040C), GATE_CON14/15 */
+
+  RK3576_CLK_REGISTER_UART_ONE(8, cru + RK3576_CRU_CLKSEL_CON(67),
+                               8, /* src_sel [10:8] */
+                               0, /* div [7:0] */
+                               cru + RK3576_CRU_GATE_CON(14), 1,  /* pclk */
+                               cru + RK3576_CRU_GATE_CON(15), 8); /* sclk */
+
+  /* UART9 — CLKSEL_CON68 (0x0410), GATE_CON14/15 */
+
+  RK3576_CLK_REGISTER_UART_ONE(9, cru + RK3576_CRU_CLKSEL_CON(68),
+                               8, /* src_sel [10:8] */
+                               0, /* div [7:0] */
+                               cru + RK3576_CRU_GATE_CON(14), 2,  /* pclk */
+                               cru + RK3576_CRU_GATE_CON(15), 9); /* sclk */
+
+  /* UART10 — CLKSEL_CON69 (0x0414), GATE_CON14/15 */
+
+  RK3576_CLK_REGISTER_UART_ONE(10, cru + RK3576_CRU_CLKSEL_CON(69),
+                               8, /* src_sel [10:8] */
+                               0, /* div [7:0] */
+                               cru + RK3576_CRU_GATE_CON(14), 3,   /* pclk */
+                               cru + RK3576_CRU_GATE_CON(15), 10); /* sclk */
+
+  /* UART11 — CLKSEL_CON70 (0x0418), GATE_CON14/15 */
+
+  RK3576_CLK_REGISTER_UART_ONE(11, cru + RK3576_CRU_CLKSEL_CON(70),
+                               8, /* src_sel [10:8] */
+                               0, /* div [7:0] */
+                               cru + RK3576_CRU_GATE_CON(14), 4,   /* pclk */
+                               cru + RK3576_CRU_GATE_CON(15), 11); /* sclk */
+
+  /* ---- UART1 — special two-level mux, no local divider ----
+   *
+   * Level 1: clk_uart1_src_top (CRU domain)
+   *   CLKSEL_CON27 (0x036C):
+   *     [15:13] = clk_uart1_src_top_sel (3-bit mux, 7 parents)
+   *     [12:5]  = clk_uart1_src_top_div (8-bit, div_con+1)
+   *   GATE_CON02 (0x0808):
+   *     [13]    = clk_uart1_src_top_en  (SET_TO_DISABLE)
+   *
+   * Level 2: sclk_uart1 (PMU1CRU domain)
+   *   PMU1CRU_CLKSEL_CON08 (0x27220320):
+   *     [0]     = sclk_uart1_sel (1-bit mux)
+   *               0 = clk_uart1_src_top, 1 = xin_osc0_func
+   *   PMU1CRU_GATE_CON05:
+   *     [5]     = sclk_uart1_en  (SET_TO_DISABLE)
+   *     [6]     = pclk_uart1_en  (SET_TO_DISABLE)
+   */
+
+  /* Level 1: clk_uart1_src_top_sel mux (3-bit, 7 parents) */
+  {
+    const unsigned long pmu1 = RK3576_PMU1_CRU_ADDR;
+    struct clk_s *mux;
+
+    mux = clk_register_mux("clk_uart1_src_top_sel", g_uart_sclk_sel_parents,
+                           nitems(g_uart_sclk_sel_parents),
+                           CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                           cru + RK3576_CRU_CLKSEL_CON(27), 13, 3,
+                           CLK_MUX_HIWORD_MASK);
+    if (!mux)
+      {
+        _err("CLK: failed to register clk_uart1_src_top_sel\n");
+      }
+
+    /* Level 1: clk_uart1_src_top_div (8-bit integer divider, [12:5]) */
+
+    clk_register_divider("clk_uart1_src_top", "clk_uart1_src_top_sel",
+                         CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                         cru + RK3576_CRU_CLKSEL_CON(27), 5, 8,
+                         CLK_DIVIDER_HIWORD_MASK);
+
+    /* Level 1: clk_uart1_src_top_en gate (CRU_GATE_CON02[13]) */
+
+    clk_register_gate("clk_uart1_src_top_en", "clk_uart1_src_top",
+                      CLK_NAME_IS_STATIC, cru + RK3576_CRU_GATE_CON(2), 13,
+                      CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+    /* Level 2: sclk_uart1_sel mux (1-bit, PMU1CRU_CLKSEL_CON08[0])
+     *   0 = clk_uart1_src_top, 1 = xin_osc0_func
+     */
+
+    mux = clk_register_mux(
+        "sclk_uart1_sel", g_uart1_sclk_parents, nitems(g_uart1_sclk_parents),
+        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+        pmu1 + RK3576_PMU1CRU_CLKSEL_CON(8), 0, 1, CLK_MUX_HIWORD_MASK);
+    if (!mux)
+      {
+        _err("CLK: failed to register sclk_uart1_sel\n");
+      }
+    /* sclk_uart1 — pass-through (div=1, mul=1) to preserve the
+     * "sclk_uartN" naming convention used by all other UARTs.
+     * UART1 has no local divider; the mux output IS the sclk.
+     */
+
+    clk_register_fixed_factor("sclk_uart1", "sclk_uart1_sel",
+                              CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, 1, 1);
+
+    /* sclk_uart1_en gate */
+
+    clk_register_gate("sclk_uart1_en", "sclk_uart1", CLK_NAME_IS_STATIC,
+                      pmu1 + RK3576_PMU1CRU_GATE_CON(5), 5,
+                      CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+    /* pclk_uart1_en gate */
+
+    clk_register_gate("pclk_uart1_en", NULL, CLK_NAME_IS_STATIC,
+                      pmu1 + RK3576_PMU1CRU_GATE_CON(5), 6,
+                      CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  }
+}
+#endif /* CONFIG_RK3576_UART */
+
+#undef RK3576_CLK_REGISTER_UART_ONE
 
 /**
  * Macro: RK3576_CLK_REGISTER_MATRIX_AUDIO_FRAC_ONE
@@ -866,6 +1283,11 @@ void rk3576_clk_tree_initialize(void)
 
 #ifdef CONFIG_RK3576_PWM
   rk3576_clk_register_pwm();
+#endif
+
+#ifdef CONFIG_RK3576_UART
+  rk3576_clk_register_matrix_uart();
+  rk3576_clk_register_uart();
 #endif
 
 #ifdef CONFIG_RK3576_SAI

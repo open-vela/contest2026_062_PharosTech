@@ -36,9 +36,7 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* UART port identifiers for rk3576_serial_register().
- * UART0 is the console (registered statically) and is intentionally omitted.
- */
+/* UART port identifiers for rk3576_serial_register(). */
 
 #define UART_PORT_0   0
 #define UART_PORT_1   1
@@ -71,20 +69,31 @@
  * Public Function Prototypes
  ****************************************************************************/
 
-/****************************************************************************
+/***************************************************************************
  * Name: rk3576_serial_register
  *
  * Description:
- *   Dynamically register a non-console UART port (UART1~11).
- *   UART0 is the console and is registered statically by the chip init
- *   code; do NOT call this function for UART0.
+ *   Dynamically allocate and register a UART port.
  *
- *   This function uses kmalloc to allocate the port structure and I/O
- *   buffers, so it must be called after the heap is available (e.g. from
- *   board_late_initialize, not from arm64_earlyserialinit).
+ *   For UART1~11 (UART_PORT_1 .. UART_PORT_11), this function heap-
+ *   allocates the port private data, uart_dev_s, and I/O buffers, then
+ *   initializes clocks and registers the device as /dev/ttySx.
+ *
+ *   For UART0 (UART_PORT_0), the function reuses the statically-
+ *   allocated g_uart0priv/g_uart0port (already registered as
+ *   /dev/console and /dev/ttyS0 during arm64_serialinit).  It only
+ *   initializes the clocks through the NuttX CLK framework so the
+ *   framework is aware of the UART0 clock enable state.
+ *   All other parameters (baud, bits, parity, stop2, buffer sizes)
+ *   are ignored for UART0 — its configuration is fixed at compile
+ *   time via Kconfig.
+ *
+ *   This function uses kmalloc and clk_get(), so it must be called
+ *   after the heap and clock tree are available (e.g. from
+ *   board_late_initialize).
  *
  * Input Parameters:
- *   port_id       - UART port identifier (UART_PORT_1 ~ UART_PORT_11)
+ *   port_id       - UART port identifier (UART_PORT_0 ~ UART_PORT_11)
  *   baud          - Baud rate (e.g. 115200)
  *   bits          - Data bits (5, 6, 7, or 8)
  *   parity        - Parity (0=none, 1=odd, 2=even)
