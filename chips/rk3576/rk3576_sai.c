@@ -79,6 +79,7 @@
 
 #include "arm64_internal.h"
 #include "hardware/rk3576_cru.h"
+#include "hardware/rk3576_memorymap.h"
 #include "hardware/rk3576_sai.h"
 #include "rk3576_dma.h"
 #include "rk3576_sai.h"
@@ -284,7 +285,7 @@ static const struct i2s_ops_s g_rk3576_sai_ops = {
 
 static struct rk3576_sai_s g_rk3576_sai1 = {
   .dev.ops = &g_rk3576_sai_ops,
-  .base = RK3576_SAI1_BASE,
+  .base = RK3576_SAI1_ADDR,
   .irq = RK3576_IRQ_SAI1,
   .busno = 1,
   .dma_tx_req = RK3576_SAI1_DMA_TX_REQ,

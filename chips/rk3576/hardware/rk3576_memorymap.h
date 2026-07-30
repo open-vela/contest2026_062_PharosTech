@@ -86,6 +86,10 @@
 #define RK3576_I2C8_ADDR 0x2acb0000
 #define RK3576_I2C9_ADDR 0x2ae80000
 
+/* Serial Audio Interface controllers. */
+
+#define RK3576_SAI1_ADDR 0x2a610000
+
 /* Clock & Reset Unit */
 
 #define RK3576_CRU_ADDR         0x27200000

@@ -47,10 +47,6 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Controller instance base address (SAI1). */
-
-#define RK3576_SAI1_BASE 0x2a610000
-
 /* dmac0 peripheral-request lines for SAI1 (DTS: dmas = <&dmac0 2 &dmac0 3>,
  * dma-names "tx", "rx").  Passed to rk3576_dma_get_channel().
  */
