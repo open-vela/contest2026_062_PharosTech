@@ -695,9 +695,8 @@ static void rk3576_clk_register_matrix_audio(void)
                                                                             \
       _src_sel = clk_register_mux(                                          \
           "mclk_sai" #index "_src_sel", g_sai_mclk_src_parents,             \
-          nitems(g_sai_mclk_src_parents),                                   \
-          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, src_shift, 3,  \
-          CLK_MUX_HIWORD_MASK);                                             \
+          nitems(g_sai_mclk_src_parents), CLK_NAME_IS_STATIC, sel_reg,      \
+          src_shift, 3, CLK_MUX_HIWORD_MASK);                               \
       if (!_src_sel)                                                        \
         {                                                                   \
           _err("CLK: failed to register mclk_sai" #index "_src_sel\n");     \
@@ -706,8 +705,8 @@ static void rk3576_clk_register_matrix_audio(void)
                                                                             \
       _div = clk_register_divider(                                          \
           "mclk_sai" #index, "mclk_sai" #index "_src_sel",                  \
-          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, div_shift, 8,  \
-          CLK_DIVIDER_HIWORD_MASK);                                         \
+          CLK_NAME_IS_STATIC, sel_reg, div_shift, 8,                        \
+          CLK_DIVIDER_HIWORD_MASK | CLK_DIVIDER_ROUND_CLOSEST);             \
       if (!_div)                                                            \
         {                                                                   \
           _err("CLK: failed to register mclk_sai" #index "\n");             \

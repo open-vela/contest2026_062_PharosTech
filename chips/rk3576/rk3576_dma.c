@@ -1100,22 +1100,24 @@ static int rk3576_dma_config(struct dma_chan_s *chan,
  * Name: rk3576_dma_pick_burst
  *
  * Description:
- *   Choose a beats-per-burst count (1..RK3576_DMA_MAX_BURSTLEN) that evenly
- *   divides the beat count.  A memory-to-memory transfer favours the largest
- *   burst for throughput; a peripheral transfer is paced one request at a
- *   time by the FIFO handshake, so a single-beat burst is used.
- ****************************************************************************/
+ *   Choose a beats-per-burst count that evenly divides the beat count.
+ *
+ * Memory-to-memory transfers use the controller maximum.  Peripheral
+ *
+ * transfers are capped at eight beats, matching the FIFO service quantum
+ *
+ * used by the RK3576 SAI and avoiding sustained underruns.
+
+ * ****************************************************************************/
 
 static uint8_t rk3576_dma_pick_burst(uint8_t direction, unsigned int nbeats)
 {
+  unsigned int maxburst;
   unsigned int b;
 
-  if (direction != RK3576_DMA_M2M)
-    {
-      return 1;
-    }
+  maxburst = direction == RK3576_DMA_M2M ? RK3576_DMA_MAX_BURSTLEN : 8;
 
-  for (b = RK3576_DMA_MAX_BURSTLEN; b > 1; b--)
+  for (b = maxburst; b > 1; b--)
     {
       if ((nbeats % b) == 0)
         {

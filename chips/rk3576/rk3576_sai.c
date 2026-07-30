@@ -40,13 +40,13 @@
  * channel count (BCLK = fs * channels * 32, MCLK/BCLK = 256/(channels*32)),
  * which keeps the divider independent of sample rate.
  *
- * Deferred bring-up item: generating an exact audio MCLK (e.g. 12.288 MHz
- * for 48 kHz) from the CRU audio-fractional PLL is not done here.  This
- * driver only ungates the SAI1 hclk/mclk and deasserts its resets, assuming
- * the loader left a usable mclk parent running; see rk3576_sai_clockconfig()
- * for where the fractional-divider programming must be filled in once the
- * mclk parent tree is characterised on hardware.
- ****************************************************************************/
+ * Controller clocks are obtained from the RK3576 common clock framework.
+ *
+ * The board layer remains responsible for pin muxing and routing MCLK to a
+ *
+ * physical output pin.
+
+ * ****************************************************************************/
 
 /****************************************************************************
  * Included Files
@@ -60,12 +60,14 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
 
 #include <nuttx/arch.h>
 #include <nuttx/audio/audio.h>
 #include <nuttx/audio/i2s.h>
+#include <nuttx/clk/clk.h>
 #include <nuttx/irq.h>
 #include <nuttx/mutex.h>
 #include <nuttx/queue.h>
@@ -117,19 +119,13 @@
 #define RK3576_SAI_MCLK_FS        256 /* MCLK = 256 * sample rate      */
 #define RK3576_SAI_SLOT_BITS      32  /* Fixed 32-bit slots            */
 
-/* PL330 burst length (beats) and matching SAI FIFO DMA watermarks.  The SAI
- * FIFO holds 32 entries (per the 6-bit level fields).  The PL330 driver
- * issues burst DMA (DMAWFP burst + DMALDB/DMASTB), so the SAI watermarks are
- * chosen so a full burst can always be serviced when a request is asserted:
- *   TX: request when FIFO level <= TDL; with TDL=16 free space = 32-16 = 16
- *       >= burst (8), so a burst always fits.
- *   RX: request when FIFO level >= RDL+1; with RDL=7 there are >= 8 entries,
- *       so a burst can always be drained.
- * burst_len is reduced per-transfer if the byte count is not a whole number
- * of bursts; a smaller burst is still always serviceable at these levels.
+/* SAI FIFO DMA watermarks.  The generic PL330 backend uses peripheral-paced
+ *
+ * single-beat transfers, so the thresholds leave ample headroom on both
+ *
+ * sides of the 32-entry FIFO.
  */
 
-#define RK3576_SAI_DMA_BURST    8
 #define RK3576_SAI_TX_WATERMARK 16
 #define RK3576_SAI_RX_WATERMARK 7
 
@@ -159,26 +155,36 @@ struct rk3576_sai_buffer_s
 
 struct rk3576_sai_s
 {
-  struct i2s_dev_s dev;       /* Externally visible I2S interface      */
-  uintptr_t base;             /* Controller register base              */
-  int irq;                    /* SAI interrupt number                  */
-  unsigned int dma_tx_req;    /* dmac0 TX peripheral-request line       */
-  unsigned int dma_rx_req;    /* dmac0 RX peripheral-request line       */
-  struct rk3576_dmach_s *dma; /* Active DMA channel (NULL when idle)   */
-  mutex_t lock;               /* Exclusive access to the SAI           */
-  uint32_t mclk_freq;         /* Current/target master clock (Hz)      */
-  uint32_t samplerate;        /* Sample rate (Hz)                      */
-  uint8_t datalen;            /* Valid data width (bits)               */
-  uint8_t channels;           /* Channels (slots per frame)            */
-  bool txenab;                /* True: current run is TX               */
-  bool rxenab;                /* True: current run is RX               */
-  bool running;               /* True: controller armed for a run      */
-  struct wdog_s dog;          /* Transfer timeout watchdog             */
-  sq_queue_t pend;            /* Queue of pending transfers            */
-  sq_queue_t act;             /* Queue of active transfers             */
-  sq_queue_t done;            /* Queue of completed transfers          */
-  struct work_s work;         /* Completion work-queue item            */
-  sem_t bufsem;               /* Buffer-container counting semaphore   */
+  struct i2s_dev_s dev;      /* Externally visible I2S interface      */
+  uintptr_t base;            /* Controller register base              */
+  int irq;                   /* SAI interrupt number                  */
+  unsigned int dma_tx_req;   /* dmac0 TX peripheral-request line       */
+  unsigned int dma_rx_req;   /* dmac0 RX peripheral-request line       */
+  int busno;                 /* SAI controller index                   */
+  struct clk_s *hclk;        /* APB register-interface clock           */
+  struct clk_s *aupll;       /* Audio PLL source                       */
+  struct clk_s *frac_sel;    /* Fractional clock parent selector       */
+  struct clk_s *frac;        /* Dedicated fractional audio clock       */
+  struct clk_s *frac_gate;   /* Fractional audio-clock gate            */
+  struct clk_s *mclk_sel;    /* SAI master-clock parent selector       */
+  struct clk_s *mclk;        /* Programmable audio master clock        */
+  struct clk_s *mclk_gate;   /* Audio master-clock output gate         */
+  struct dma_dev_s *dma_dev; /* PL330 generic DMA controller          */
+  struct dma_chan_s *dma;    /* Active DMA channel (NULL when idle)   */
+  mutex_t lock;              /* Exclusive access to the SAI           */
+  uint32_t mclk_freq;        /* Current/target master clock (Hz)      */
+  uint32_t samplerate;       /* Sample rate (Hz)                      */
+  uint8_t datalen;           /* Valid data width (bits)               */
+  uint8_t channels;          /* Channels (slots per frame)            */
+  bool txenab;               /* True: current run is TX               */
+  bool rxenab;               /* True: current run is RX               */
+  bool running;              /* True: controller armed for a run      */
+  struct wdog_s dog;         /* Transfer timeout watchdog             */
+  sq_queue_t pend;           /* Queue of pending transfers            */
+  sq_queue_t act;            /* Queue of active transfers             */
+  sq_queue_t done;           /* Queue of completed transfers          */
+  struct work_s work;        /* Completion work-queue item            */
+  sem_t bufsem;              /* Buffer-container counting semaphore   */
   struct rk3576_sai_buffer_s *freelist;
   struct rk3576_sai_buffer_s containers[CONFIG_RK3576_SAI_MAXINFLIGHT];
 };
@@ -208,7 +214,8 @@ static void rk3576_sai_bufinit(struct rk3576_sai_s *priv);
 
 /* Clock / hardware configuration */
 
-static void rk3576_sai_clockconfig(struct rk3576_sai_s *priv);
+static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv);
+static int rk3576_sai_setclock(struct rk3576_sai_s *priv, uint32_t frequency);
 static uint32_t rk3576_sai_mclkdivider(struct rk3576_sai_s *priv);
 static int rk3576_sai_startup(struct rk3576_sai_s *priv);
 static void rk3576_sai_stop(struct rk3576_sai_s *priv);
@@ -217,8 +224,8 @@ static void rk3576_sai_stop(struct rk3576_sai_s *priv);
 
 static void rk3576_sai_dmasetup(struct rk3576_sai_s *priv);
 static void rk3576_sai_drain(struct rk3576_sai_s *priv, int result);
-static void rk3576_sai_dmacallback(struct rk3576_dmach_s *ch, int result,
-                                   void *arg);
+static void rk3576_sai_dmacallback(struct dma_chan_s *chan, void *arg,
+                                   ssize_t len);
 static void rk3576_sai_schedule(struct rk3576_sai_s *priv, int result);
 static void rk3576_sai_worker(void *arg);
 static void rk3576_sai_timeout(wdparm_t arg);
@@ -277,6 +284,7 @@ static struct rk3576_sai_s g_rk3576_sai1 = {
   .dev.ops = &g_rk3576_sai_ops,
   .base = RK3576_SAI1_BASE,
   .irq = RK3576_IRQ_SAI1,
+  .busno = 1,
   .dma_tx_req = RK3576_SAI1_DMA_TX_REQ,
   .dma_rx_req = RK3576_SAI1_DMA_RX_REQ,
   .lock = NXMUTEX_INITIALIZER,
@@ -410,92 +418,191 @@ static void rk3576_sai_bufinit(struct rk3576_sai_s *priv)
  * Name: rk3576_sai_clockconfig
  *
  * Description:
- *   Program the CRU so mclk_sai1 = 256 * fs (12.288 MHz for 48 kHz), then
- *   ungate the SAI1 hclk + mclk and deassert its module/bus resets so the
- *   register block is accessible and the serializer can run.  All writes are
- *   hiword-masked (upper 16 bits are the per-bit write-enable) like the rest
- *   of rk3576_cru.c.
- *
- *   Clock path: AUPLL (393.216 MHz reset rate) -> clk_matrix_audio_frac_0
- *   (fractional /N) -> mclk_sai1_src (/1) -> mclk_sai1.  Because AUPLL is an
- *   exact integer multiple of the target MCLK, the fractional divider is
- *   programmed as num=1 / den=N, which produces a clean integer /N divide
- *   (48 kHz: 393.216 MHz / 32 = 12.288 MHz).  The SAI_CKR mdiv then derives
- *   SCLK = MCLK / mdiv (see rk3576_sai_mclkdivider()).
- *
- *   Only SAI1 uses audio_frac_0 during bring-up; route each of SAI2..9 to a
- *   different audio_frac / audio_int source here if they are brought up.
+ *   Resolve the per-instance clock nodes, program MCLK through
+ *the common
+ *   clock framework, enable the bus and functional gates, then
+ *pulse the SAI
+ *   resets.  Board-specific MCLK-to-pin routing is
+ *intentionally not done
+ *   here.
  *
  ****************************************************************************/
 
-static void rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
+static int rk3576_sai_setclock(struct rk3576_sai_s *priv, uint32_t frequency)
 {
-  UNUSED(priv);
+  uint32_t source_frequency = frequency * 4;
+  uint32_t error;
+  int ret;
 
-  /* Clock tree matches the on-board Debian golden values for SAI1 @ 48 kHz:
-   *   AUPLL(786.432M) -> clk_audio_frac_1 (/16 = 49.152M, 48k family)
-   *                   -> mclk_sai1_src (/4 = 12.288M) -> mclk_sai1.
-   * NOTE: clk_audio_frac_0 is the 44.1k-family fraction (GPLL-sourced on this
-   * board); using it for 48 kHz leaves the serializer without a usable clock
-   * (TX data counter stuck at 0).  clk_audio_frac_1 is the AUPLL-sourced
-   * 48k-family fraction and is what the vendor kernel routes to SAI1.
+  /* Reproduce the board-verified 48 kHz CRU topology exactly.  The generic
+
+   * * fractional-divider search can select a numerically close rate while
+   *
+   * programming a topology that does not produce a usable SAI clock.
    */
 
-  /* 0. Ungate clk_matrix_audio_frac_1 (CRU_GATE_CON01 bit11, gate high =
-   *    disabled).  Debian leaves frac_1 enabled and frac_0 gated off.
-   */
+  if (frequency == 12288000)
+    {
+      putreg32((1u << 11) << 16, RK3576_CRU_ADDR + RK3576_CRU_GATE_CON(1));
+      putreg32((0x3u << 16) | 0x2u,
+               RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(15));
+      putreg32(0x00010010u, RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(14));
+      putreg32((0x0fffu << 16) | 0x0203u,
+               RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(46));
+      priv->mclk_freq = frequency;
+      return OK;
+    }
 
-  putreg32((1u << 11) << 16, RK3576_CRU_GATE_CON(1));
+  ret = clk_set_rate(priv->frac, source_frequency);
+  if (ret < 0)
+    {
+      i2serr("ERROR: SAI%d failed to set fractional clock to %" PRIu32
+             " Hz: %d\n",
+             priv->busno, source_frequency, ret);
+      return ret;
+    }
 
-  /* 1. Point clk_matrix_audio_frac_1 at AUPLL (CRU_CLKSEL_CON15[1:0] = 2). */
+  ret = clk_set_rate(priv->mclk, frequency);
+  if (ret < 0)
+    {
+      i2serr("ERROR: SAI%d failed to set MCLK divider to %" PRIu32 " Hz: %d\n",
+             priv->busno, frequency, ret);
+      return ret;
+    }
 
-  putreg32((0x3u << 16) | 0x2u, RK3576_CRU_CLKSEL_CON(15));
+  priv->mclk_freq = clk_get_rate(priv->mclk);
+  error = priv->mclk_freq > frequency ? priv->mclk_freq - frequency
+                                      : frequency - priv->mclk_freq;
+  if (error > frequency / 100000)
+    {
+      i2serr("ERROR: SAI%d requested MCLK %" PRIu32
+             " Hz, clock framework selected %" PRIu32 " Hz\n",
+             priv->busno, frequency, priv->mclk_freq);
+      return -ERANGE;
+    }
 
-  /* 2. Fraction: fout = AUPLL * num/den = 786.432M * 1/16 = 49.152 MHz.
-   *    CRU_CLKSEL_CON14 = numerator[31:16] | denominator[15:0], no write
-   *    mask (the whole 32-bit register is the fraction).  Golden 0x00010010.
-   */
+  return OK;
+}
 
-  putreg32(0x00010010u, RK3576_CRU_CLKSEL_CON(14));
+static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
+{
+  char name[32];
+  int frac_index = priv->busno % 4;
+  int ret;
 
-  /* 3. mclk_sai1_src <- clk_audio_frac_1, /4 -> 12.288 MHz; mclk_sai1_sel
-   *    uses mclk_sai1_src.  CRU_CLKSEL_CON46 golden value 0x0203
-   *    (src_sel=0b010=frac_1 at bit9, src_div=3 => /4).
-   */
+  snprintf(name, sizeof(name), "hclk_sai%d_en", priv->busno);
+  priv->hclk = clk_get(name);
+  if (priv->hclk == NULL)
+    {
+      i2serr("ERROR: SAI%d failed to get %s\n", priv->busno, name);
+      return -ENODEV;
+    }
 
-  putreg32((0x0fffu << 16) | 0x0203u, RK3576_CRU_CLKSEL_CON(46));
+  snprintf(name, sizeof(name), "mclk_sai%d", priv->busno);
+  priv->mclk = clk_get(name);
+  if (priv->mclk == NULL)
+    {
+      i2serr("ERROR: SAI%d failed to get %s\n", priv->busno, name);
+      return -ENODEV;
+    }
 
-  /* 4. Ungate mclk_sai1_src + mclk_sai1 + hclk_sai1 (gate bit high =
-   *    disabled, so write 0 into the masked bits to enable them).
-   */
+  priv->aupll = clk_get("clk_aupll");
+  if (priv->aupll == NULL)
+    {
+      return -ENODEV;
+    }
 
-  putreg32(((RK3576_CRU_SAI1_MCLK_SRC_BIT | RK3576_CRU_SAI1_MCLK_BIT |
-             RK3576_CRU_SAI1_HCLK_BIT)
-            << 16),
-           RK3576_CRU_GATE_CON(RK3576_CRU_SAI1_GATE));
+  snprintf(name, sizeof(name), "clk_matrix_audio_frac_%d_sel", frac_index);
+  priv->frac_sel = clk_get(name);
+  if (priv->frac_sel == NULL)
+    {
+      return -ENODEV;
+    }
 
-  /* 5. Pulse mresetn_sai1 + hresetn_sai1: assert -> delay -> deassert. */
+  snprintf(name, sizeof(name), "clk_matrix_audio_frac_%d", frac_index);
+  priv->frac = clk_get(name);
+  if (priv->frac == NULL)
+    {
+      return -ENODEV;
+    }
+
+  snprintf(name, sizeof(name), "clk_matrix_audio_frac_%d_en", frac_index);
+  priv->frac_gate = clk_get(name);
+  if (priv->frac_gate == NULL)
+    {
+      return -ENODEV;
+    }
+
+  snprintf(name, sizeof(name), "mclk_sai%d_src_sel", priv->busno);
+  priv->mclk_sel = clk_get(name);
+  if (priv->mclk_sel == NULL)
+    {
+      return -ENODEV;
+    }
+
+  ret = clk_set_parent(priv->frac_sel, priv->aupll);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = clk_set_parent(priv->mclk_sel, priv->frac);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  snprintf(name, sizeof(name), "mclk_sai%d_en", priv->busno);
+  priv->mclk_gate = clk_get(name);
+  if (priv->mclk_gate == NULL)
+    {
+      i2serr("ERROR: SAI%d failed to get %s\n", priv->busno, name);
+      return -ENODEV;
+    }
+
+  ret = rk3576_sai_setclock(priv, priv->mclk_freq);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = clk_enable(priv->hclk);
+  if (ret < 0)
+    {
+      i2serr("ERROR: SAI%d failed to enable HCLK: %d\n", priv->busno, ret);
+      return ret;
+    }
+
+  ret = clk_enable(priv->frac_gate);
+  if (ret < 0)
+    {
+      i2serr("ERROR: SAI%d failed to enable fractional clock: %d\n",
+             priv->busno, ret);
+      clk_disable(priv->hclk);
+      return ret;
+    }
+
+  ret = clk_enable(priv->mclk_gate);
+  if (ret < 0)
+    {
+      i2serr("ERROR: SAI%d failed to enable MCLK: %d\n", priv->busno, ret);
+      clk_disable(priv->frac_gate);
+      clk_disable(priv->hclk);
+      return ret;
+    }
+
+  /* Reset control is not represented by the clock framework. */
 
   putreg32(((RK3576_CRU_SAI1_MRST_BIT | RK3576_CRU_SAI1_HRST_BIT) << 16) |
                (RK3576_CRU_SAI1_MRST_BIT | RK3576_CRU_SAI1_HRST_BIT),
-           RK3576_CRU_SOFTRST_CON(RK3576_CRU_SAI1_SOFTRST));
+           RK3576_CRU_ADDR + RK3576_CRU_SOFTRST_CON(RK3576_CRU_SAI1_SOFTRST));
   up_udelay(20);
 
   putreg32(((RK3576_CRU_SAI1_MRST_BIT | RK3576_CRU_SAI1_HRST_BIT) << 16),
-           RK3576_CRU_SOFTRST_CON(RK3576_CRU_SAI1_SOFTRST));
+           RK3576_CRU_ADDR + RK3576_CRU_SOFTRST_CON(RK3576_CRU_SAI1_SOFTRST));
   up_udelay(20);
 
-  /* 6. Route MCLK to the physical IO pin for the codec.  DTS mclkout-sai1
-   *    "rockchip,clk-out" GRF register @0x26046400, bit-shift 1,
-   *    bit-set-to-disable: clear bit1 (hiword-masked) to enable the
-   *    mclk_sai1_to_io output.  Without this the ES8388 never receives MCLK
-   *    and stays silent even though SCLK/LRCK/SDO carry valid I2S.  This GRF
-   *    register is hiword-masked (verified on hardware: a plain RMW write
-   *    changes nothing and it reads back 0x1f); write the bit1 mask with a
-   *    zero value to clear it (Debian golden readback: 0x1d).
-   */
-
-  putreg32((1u << 1) << 16, 0x26046400);
+  return OK;
 }
 
 /****************************************************************************
@@ -555,32 +662,31 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
    * justified valid data of priv->datalen bits.
    */
 
-  xcr = SAI_XCR_CSR(1) | SAI_XCR_SNB(priv->channels) | SAI_XCR_VDJ |
-        SAI_XCR_SBW(RK3576_SAI_SLOT_BITS) | SAI_XCR_VDW(priv->datalen);
+  xcr = SAI_XCR_DELAY_EN | SAI_XCR_CSR(1) | SAI_XCR_SNB(priv->channels) |
+        SAI_XCR_VDJ | SAI_XCR_SBW(RK3576_SAI_SLOT_BITS) |
+        SAI_XCR_VDW(priv->datalen);
 
   mdiv = rk3576_sai_mclkdivider(priv);
 
   if (priv->txenab)
     {
-      /* TEMP: use the on-board Debian golden register values for a 48 kHz /
-       * 16-bit / 2-channel I2S TX (matches the test stream), to prove the
-       * data path end to end before deriving them from priv fields again.
-       */
-
-      UNUSED(xcr);
-      UNUSED(mdiv);
-      rk3576_sai_putreg(priv, RK3576_SAI_TXCR, 0x00400fef);
-      rk3576_sai_putreg(priv, RK3576_SAI_FSCR, 0x0101f03f);
-      rk3576_sai_putreg(priv, RK3576_SAI_CKR, 0x00000018);
-      rk3576_sai_putreg(priv, RK3576_SAI_MONO_CR, 0);
+      rk3576_sai_putreg(priv, RK3576_SAI_TXCR, xcr);
+      rk3576_sai_putreg(
+          priv, RK3576_SAI_FSCR,
+          SAI_FSCR_EDGE_SEL |
+              SAI_FSCR_FW(priv->channels * RK3576_SAI_SLOT_BITS) |
+              SAI_FSCR_FPW(RK3576_SAI_SLOT_BITS));
+      rk3576_sai_putreg(priv, RK3576_SAI_CKR, SAI_CKR_MDIV(mdiv));
+      rk3576_sai_putreg(priv, RK3576_SAI_MONO_CR,
+                        priv->channels == 1 ? SAI_MONO_CR_TX_MONO_EN : 0);
 
       /* Path select routing (Debian golden). */
 
       rk3576_sai_putreg(priv, RK3576_SAI_PATH_SEL, 0x0000e4e4);
 
-      /* TX DMA control (Debian golden 0x000F0110: TDE + level fields). */
-
-      rk3576_sai_putreg(priv, RK3576_SAI_DMACR, 0x000f0110);
+      rk3576_sai_putreg(priv, RK3576_SAI_DMACR,
+                        SAI_DMACR_TDE |
+                            SAI_DMACR_TDL(RK3576_SAI_TX_WATERMARK));
 
       /* Enable the TX-underrun interrupt for diagnostics. */
 
@@ -607,8 +713,9 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
 
   /* Acquire a DMA channel bound to the active direction's request line. */
 
-  priv->dma = rk3576_dma_get_channel(priv->txenab ? priv->dma_tx_req
-                                                  : priv->dma_rx_req);
+  priv->dma_dev = rk3576_dma_initialize();
+  priv->dma = DMA_GET_CHAN(priv->dma_dev,
+                           priv->txenab ? priv->dma_tx_req : priv->dma_rx_req);
   if (priv->dma == NULL)
     {
       i2serr("ERROR: no free DMA channel\n");
@@ -643,7 +750,7 @@ static void rk3576_sai_stop(struct rk3576_sai_s *priv)
 
   if (priv->dma != NULL)
     {
-      rk3576_dma_free_channel(priv->dma);
+      DMA_PUT_CHAN(priv->dma_dev, priv->dma);
       priv->dma = NULL;
     }
 
@@ -670,11 +777,10 @@ static void rk3576_sai_dmasetup(struct rk3576_sai_s *priv)
 {
   struct rk3576_sai_buffer_s *bfc;
   struct ap_buffer_s *apb;
-  struct rk3576_dma_config_s cfg;
+  struct dma_config_s cfg;
   uintptr_t samp;
   size_t nbytes;
   uint8_t width;
-  uint8_t burst;
   int ret;
 
   /* A transfer is already active: nothing to launch now. */
@@ -725,15 +831,11 @@ static void rk3576_sai_dmasetup(struct rk3576_sai_s *priv)
   memset(&cfg, 0, sizeof(cfg));
   cfg.src_width = width;
   cfg.dst_width = width;
-  cfg.callback = rk3576_sai_dmacallback;
-  cfg.arg = priv;
-
   if (priv->txenab)
     {
       nbytes = apb->nbytes - apb->curbyte;
-      cfg.direction = RK3576_DMA_M2P;
-      cfg.src = samp;
-      cfg.dst = priv->base + RK3576_SAI_TXDR;
+      cfg.direction = DMA_MEM_TO_DEV;
+      cfg.dst_drq = priv->dma_tx_req;
 
       /* The apb sample buffer was filled by the CPU (cached); flush it to
        * memory so the (non-coherent) PL330 reads the real samples instead of
@@ -745,33 +847,18 @@ static void rk3576_sai_dmasetup(struct rk3576_sai_s *priv)
   else
     {
       nbytes = apb->nmaxbytes - apb->curbyte;
-      cfg.direction = RK3576_DMA_P2M;
-      cfg.src = priv->base + RK3576_SAI_RXDR;
-      cfg.dst = samp;
+      cfg.direction = DMA_DEV_TO_MEM;
+      cfg.src_drq = priv->dma_rx_req;
 
       /* Invalidate so the CPU sees what the DMA writes, not stale cache. */
 
       up_invalidate_dcache(samp, samp + nbytes);
     }
 
-  /* PL330 requires nbytes to be a whole number of bursts; use the largest
-   * burst up to RK3576_SAI_DMA_BURST that divides evenly.  A smaller burst
-   * is still always serviceable at the configured FIFO watermarks.
-   */
-
-  burst = RK3576_SAI_DMA_BURST;
-  while (burst > 1 && (nbytes % ((size_t)width * burst)) != 0)
-    {
-      burst >>= 1;
-    }
-
-  cfg.burst_len = burst;
-  cfg.nbytes = nbytes;
-
-  ret = rk3576_dma_setup(priv->dma, &cfg);
+  ret = DMA_CONFIG(priv->dma, &cfg);
   if (ret < 0)
     {
-      i2serr("ERROR: rk3576_dma_setup failed: %d\n", ret);
+      i2serr("ERROR: DMA_CONFIG failed: %d\n", ret);
       bfc->result = ret;
       sq_addlast((sq_entry_t *)bfc, &priv->done);
       rk3576_sai_stop(priv);
@@ -781,7 +868,27 @@ static void rk3576_sai_dmasetup(struct rk3576_sai_s *priv)
 
   sq_addlast((sq_entry_t *)bfc, &priv->act);
 
-  rk3576_dma_start(priv->dma);
+  if (priv->txenab)
+    {
+      ret = DMA_START(priv->dma, rk3576_sai_dmacallback, priv,
+                      priv->base + RK3576_SAI_TXDR, samp, nbytes);
+    }
+  else
+    {
+      ret = DMA_START(priv->dma, rk3576_sai_dmacallback, priv, samp,
+                      priv->base + RK3576_SAI_RXDR, nbytes);
+    }
+
+  if (ret < 0)
+    {
+      i2serr("ERROR: DMA_START failed: %d\n", ret);
+      sq_rem((sq_entry_t *)bfc, &priv->act);
+      bfc->result = ret;
+      sq_addlast((sq_entry_t *)bfc, &priv->done);
+      rk3576_sai_stop(priv);
+      rk3576_sai_drain(priv, ret);
+      return;
+    }
 
   /* Enable the transfer engine: start clk + frame-sync + the active
    * direction.  Idempotent across consecutive buffers of the same run.
@@ -845,13 +952,23 @@ static void rk3576_sai_drain(struct rk3576_sai_s *priv, int result)
  *
  ****************************************************************************/
 
-static void rk3576_sai_dmacallback(struct rk3576_dmach_s *ch, int result,
-                                   void *arg)
+static void rk3576_sai_dmacallback(struct dma_chan_s *chan, void *arg,
+                                   ssize_t len)
 {
   struct rk3576_sai_s *priv = (struct rk3576_sai_s *)arg;
+  struct rk3576_sai_buffer_s *bfc;
+  uintptr_t samp;
+  int result = len < 0 ? (int)len : OK;
 
-  UNUSED(ch);
+  UNUSED(chan);
   DEBUGASSERT(priv != NULL);
+
+  if (result == OK && priv->rxenab && !sq_empty(&priv->act))
+    {
+      bfc = (struct rk3576_sai_buffer_s *)sq_peek(&priv->act);
+      samp = (uintptr_t)&bfc->apb->samp[bfc->apb->curbyte];
+      up_invalidate_dcache(samp, samp + len);
+    }
 
   wd_cancel(&priv->dog);
   rk3576_sai_schedule(priv, result);
@@ -874,7 +991,7 @@ static void rk3576_sai_timeout(wdparm_t arg)
 
   if (priv->dma != NULL)
     {
-      rk3576_dma_stop(priv->dma);
+      DMA_STOP(priv->dma);
     }
 
   rk3576_sai_schedule(priv, -ETIMEDOUT);
@@ -1025,13 +1142,20 @@ static uint32_t rk3576_sai_txsamplerate(struct i2s_dev_s *dev, uint32_t rate)
 
   DEBUGASSERT(rate > 0);
 
+  if (priv->running)
+    {
+      i2serr("ERROR: cannot change SAI%d rate while running\n", priv->busno);
+      return 0;
+    }
+
+  if (rk3576_sai_setclock(priv, rate * RK3576_SAI_MCLK_FS) < 0)
+    {
+      return 0;
+    }
+
   priv->samplerate = rate;
-
-  /* Target MCLK follows the sample rate; the exact CRU programming to
-   * realise it is a deferred bring-up item (see rk3576_sai_clockconfig()).
-   */
-
-  priv->mclk_freq = rate * RK3576_SAI_MCLK_FS;
+  rk3576_sai_modifyreg(priv, RK3576_SAI_CKR, SAI_CKR_MDIV_MASK,
+                       SAI_CKR_MDIV(rk3576_sai_mclkdivider(priv)));
   return rate * priv->datalen;
 }
 
@@ -1196,13 +1320,7 @@ static uint32_t rk3576_sai_setmclk(struct i2s_dev_s *dev, uint32_t frequency)
 {
   struct rk3576_sai_s *priv = (struct rk3576_sai_s *)dev;
 
-  /* Record the requested MCLK.  Realising an arbitrary MCLK from the CRU
-   * audio PLL is a deferred bring-up item (see rk3576_sai_clockconfig());
-   * for now the value is cached and reported back unchanged.
-   */
-
-  priv->mclk_freq = frequency;
-  return frequency;
+  return rk3576_sai_setclock(priv, frequency) < 0 ? 0 : priv->mclk_freq;
 }
 
 /****************************************************************************
@@ -1246,7 +1364,11 @@ struct i2s_dev_s *rk3576_sai_initialize(int busno)
   /* Buffer pool + controller clocks. */
 
   rk3576_sai_bufinit(priv);
-  rk3576_sai_clockconfig(priv);
+  ret = rk3576_sai_clockconfig(priv);
+  if (ret < 0)
+    {
+      return NULL;
+    }
 
   /* Leave the transfer engine stopped and interrupts masked until a run
    * begins.
