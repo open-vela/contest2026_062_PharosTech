@@ -27,6 +27,7 @@
 #include "kickpi_k7.h"
 #include "rk3576_clk_tree.h"
 #include "rk3576_gpio.h"
+#include <arch/board/board.h>
 #include <nuttx/board.h>
 #include <nuttx/config.h>
 #include <stdint.h>
@@ -241,8 +242,7 @@ void board_late_initialize(void)
     int ret = kickpi_k7_audio_initialize();
     if (ret < 0)
       {
-        syslog(LOG_ERR, "ERROR: kickpi_k7_audio_initialize failed: %d\n",
-               ret);
+        syslog(LOG_ERR, "ERROR: kickpi_k7_audio_initialize failed: %d\n", ret);
       }
   }
 #endif

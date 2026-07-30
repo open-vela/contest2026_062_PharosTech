@@ -1,5 +1,5 @@
 /****************************************************************************
- * boards/arm64/rk3576/kickpi_k7/include/board.h
+ * boards/rk3576/kickpi-k7/include/board.h
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -38,6 +38,23 @@
  * ****************************************************************************/
 
 #ifdef CONFIG_KICKPI_K7_AUDIO
+/****************************************************************************
+
+ * * Name: kickpi_k7_audio_initialize
+ *
+ * Description:
+ *   Initialize the
+ * on-board ES8388 codec and SAI1 interface, then register
+ * /dev/audio/pcm0.
+ * Repeated calls are safe.
+ *
+ * Returned Value:
+ *   Zero on success; a
+ * negated errno value on failure.
+ *
+
+ * ****************************************************************************/
+
 int kickpi_k7_audio_initialize(void);
 #endif
 
