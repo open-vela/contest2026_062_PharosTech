@@ -35,6 +35,7 @@
 
 #include <errno.h>
 #include <nuttx/config.h>
+#include <stdbool.h>
 #include <syslog.h>
 
 #include <nuttx/audio/audio.h>
@@ -43,6 +44,7 @@
 #include <nuttx/audio/pcm.h>
 #include <nuttx/i2c/i2c_master.h>
 
+#include "arm64_internal.h"
 #include "kickpi_k7.h"
 #include "rk3576_gpio.h"
 #include "rk3576_i2c.h"
@@ -59,6 +61,11 @@
 #define KICKPI_K7_ES8388_I2C_FREQ 100000 /* 100 kHz control clock     */
 #define KICKPI_K7_SAI_BUS         1      /* SAI1                      */
 #define KICKPI_K7_PCM_DEVNAME     "pcm0"
+
+/* SYS_GRF_SOC_CON18 bit 1 routes SAI1 MCLK to the selected IO pin. */
+
+#define KICKPI_K7_SYS_GRF_SOC_CON18 0x26046400
+#define KICKPI_K7_SAI1_MCLKOUT_BIT  (1u << 1)
 
 /* SAI1 default signal group (DTS sai1m0, all GPIO4 bank, alt func 1):
  * MCLK=GPIO4_A2, SCLK=GPIO4_A3, LRCK=GPIO4_A5, SDO0=GPIO4_A7, SDI0=GPIO4_B3.
@@ -86,6 +93,8 @@ static const struct es8388_lower_s g_es8388_lower = {
   .address = KICKPI_K7_ES8388_I2C_ADDR,
 };
 
+static bool g_audio_initialized;
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -110,6 +119,11 @@ int kickpi_k7_audio_initialize(void)
   struct i2s_dev_s *i2s;
   int ret;
 
+  if (g_audio_initialized)
+    {
+      return OK;
+    }
+
   /* Mux the SAI1 signal group. */
 
   rk3576_config_gpio(KICKPI_K7_SAI1_MCLK);
@@ -117,6 +131,15 @@ int kickpi_k7_audio_initialize(void)
   rk3576_config_gpio(KICKPI_K7_SAI1_LRCK);
   rk3576_config_gpio(KICKPI_K7_SAI1_SDO0);
   rk3576_config_gpio(KICKPI_K7_SAI1_SDI0);
+
+  /* This K7-specific hiword-masked route is board policy, not a property of
+
+   * * the SAI controller.  Clearing the bit enables MCLK output; hardware
+   *
+   * readback is 0x1d when the route is active.
+   */
+
+  putreg32(KICKPI_K7_SAI1_MCLKOUT_BIT << 16, KICKPI_K7_SYS_GRF_SOC_CON18);
 
   /* Bring up the I2C3 control bus and the SAI1 I2S data interface. */
 
@@ -167,6 +190,7 @@ int kickpi_k7_audio_initialize(void)
 
   syslog(LOG_INFO, "INFO: audio ready: /dev/audio/%s (ES8388 on SAI1)\n",
          KICKPI_K7_PCM_DEVNAME);
+  g_audio_initialized = true;
   return OK;
 }
 
