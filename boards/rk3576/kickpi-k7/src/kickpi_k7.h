@@ -35,5 +35,18 @@
  * Public Functions Definitions
  ****************************************************************************/
 
+#ifdef CONFIG_KICKPI_K7_AUDIO
+/****************************************************************************
+ * Name: kickpi_k7_audio_initialize
+ *
+ * Description:
+ *   Bring up the on-board ES8388 codec on SAI1/I2C3 and register
+ *   /dev/audio/pcm0 (see kickpi_k7_audio.c).
+ *
+ ****************************************************************************/
+
+int kickpi_k7_audio_initialize(void);
+#endif
+
 #endif /* __ASSEMBLY__ */
 #endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */
