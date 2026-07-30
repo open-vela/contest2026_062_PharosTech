@@ -34,15 +34,17 @@
  * completion callback, cached channels/rate/width applied while stopped)
  * follows arch/arm/src/stm32f7/stm32_sai.c.
  *
- * Framing (fixed for bring-up): standard I2S, 2 slots per frame, 32-bit
- * slots carrying left-justified valid data (16/24/32-bit).  The codec
- * selects its MCLK/LRCK ratio for each sample-rate family, and the SAI
- * derives BCLK from the resulting MCLK at run time.
+ * Framing: standard I2S with two slots per frame.  16-bit streams use
  *
- * Controller clocks are obtained from the RK3576 common clock framework.
- *
- * The board layer remains responsible for pin muxing and routing MCLK to a
- *
+ * 16-bit slots; 24/32-bit streams use 32-bit slots.  The codec
+ * selects its
+ * MCLK/LRCK ratio for each sample-rate family, and the SAI
+ * derives BCLK
+ * from the resulting MCLK at run time.
+ * Controller clocks are obtained from
+ * the RK3576 common clock framework.
+ * The board layer remains responsible
+ * for pin muxing and routing MCLK to a
  * physical output pin.
 
  * ****************************************************************************/
@@ -116,7 +118,7 @@
 #define RK3576_SAI_DEF_CHANNELS   2
 
 #define RK3576_SAI_MCLK_FS        256 /* MCLK = 256 * sample rate      */
-#define RK3576_SAI_SLOT_BITS      32  /* Fixed 32-bit slots            */
+#define RK3576_SAI_WIDE_SLOT_BITS 32
 
 /* SAI FIFO DMA watermarks.  The generic PL330 backend uses peripheral-paced
  *
@@ -201,7 +203,7 @@ static void rk3576_sai_putreg(struct rk3576_sai_s *priv, unsigned int offset,
 static void rk3576_sai_modifyreg(struct rk3576_sai_s *priv,
                                  unsigned int offset, uint32_t clrbits,
                                  uint32_t setbits);
-static void rk3576_sai_clearlogic(struct rk3576_sai_s *priv, uint32_t clrbit);
+static int rk3576_sai_clearlogic(struct rk3576_sai_s *priv, uint32_t clrbit);
 
 /* Buffer container management */
 
@@ -215,6 +217,7 @@ static void rk3576_sai_bufinit(struct rk3576_sai_s *priv);
 
 static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv);
 static int rk3576_sai_setclock(struct rk3576_sai_s *priv, uint32_t frequency);
+static uint32_t rk3576_sai_slotbits(struct rk3576_sai_s *priv);
 static uint32_t rk3576_sai_mclkdivider(struct rk3576_sai_s *priv);
 static int rk3576_sai_startup(struct rk3576_sai_s *priv);
 static void rk3576_sai_stop(struct rk3576_sai_s *priv);
@@ -335,7 +338,7 @@ static void rk3576_sai_modifyreg(struct rk3576_sai_s *priv,
  *
  ****************************************************************************/
 
-static void rk3576_sai_clearlogic(struct rk3576_sai_s *priv, uint32_t clrbit)
+static int rk3576_sai_clearlogic(struct rk3576_sai_s *priv, uint32_t clrbit)
 {
   int retries = RK3576_SAI_CLR_RETRIES;
 
@@ -351,7 +354,10 @@ static void rk3576_sai_clearlogic(struct rk3576_sai_s *priv, uint32_t clrbit)
     {
       i2serr("ERROR: SAI_CLR bit 0x%08" PRIx32 " did not self-clear\n",
              clrbit);
+      return -ETIMEDOUT;
     }
+
+  return OK;
 }
 
 /****************************************************************************
@@ -434,13 +440,17 @@ static int rk3576_sai_setclock(struct rk3576_sai_s *priv, uint32_t frequency)
   int ret;
 
   /* Reproduce the board-verified audio-family CRU topologies exactly.  The
-   * generic fractional-divider search can select a numerically close rate
-   * while programming a topology that does not produce a usable SAI clock.
+
+   * * generic fractional-divider search can select a numerically close rate
+
+   * * while programming a topology that does not produce a usable SAI clock.
+
    */
 
   if (frequency == 11289600)
     {
       /* 44.1 kHz family: GPLL 1188 MHz * 784 / 20625 = 45.1584 MHz,
+       *
        * then divide by four to obtain an exact 11.2896 MHz MCLK.
        */
 
@@ -622,15 +632,23 @@ static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
  * Name: rk3576_sai_mclkdivider
  *
  * Description:
- *   Return the SAI internal mclk divider N (SCLK = MCLK / N) for the current
- *   sample rate and channel count.  Slots are fixed at 32 bits, while the
- *   codec may select different MCLK/LRCK ratios for different sample rates.
+ *   Return the SAI internal mclk divider N (SCLK = MCLK / N)
+ *for the current
+ *   sample rate and channel count.  Slots are fixed at 32
+ *bits, while the
+ *   codec may select different MCLK/LRCK ratios for
+ *different sample rates.
  *
  ****************************************************************************/
 
+static uint32_t rk3576_sai_slotbits(struct rk3576_sai_s *priv)
+{
+  return priv->datalen <= 16 ? 16 : RK3576_SAI_WIDE_SLOT_BITS;
+}
+
 static uint32_t rk3576_sai_mclkdivider(struct rk3576_sai_s *priv)
 {
-  uint32_t bits = (uint32_t)priv->channels * RK3576_SAI_SLOT_BITS;
+  uint32_t bits = (uint32_t)priv->channels * rk3576_sai_slotbits(priv);
   uint32_t bclk = priv->samplerate * bits;
   uint32_t div = bclk == 0 ? 0 : priv->mclk_freq / bclk;
 
@@ -663,33 +681,49 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
 {
   uint32_t xcr;
   uint32_t mdiv;
+  uint32_t slotbits;
+  int ret;
 
   /* Ensure the transfer engine is stopped and its logic is cleared before
-   * touching the (XFER-guarded) configuration fields.
+   *
+   * touching the (XFER-guarded) configuration fields.  SAI_CLR is handled
+   *
+   * in the serial-clock domain, so briefly run the clock while requesting
+   *
+   * the clear, then stop it again before reconfiguration.
    */
 
   rk3576_sai_putreg(priv, RK3576_SAI_XFER, 0);
-  rk3576_sai_clearlogic(priv, priv->txenab ? SAI_CLR_TXC : SAI_CLR_RXC);
+  rk3576_sai_putreg(priv, RK3576_SAI_XFER, SAI_XFER_CLK);
+  up_udelay(2);
+  ret = rk3576_sai_clearlogic(
+      priv, (priv->txenab ? SAI_CLR_TXC : SAI_CLR_RXC) | SAI_CLR_FSC);
+  rk3576_sai_putreg(priv, RK3576_SAI_XFER, 0);
+  if (ret < 0)
+    {
+      return ret;
+    }
 
   /* Operation-control register (identical TX/RX layout): one data lane,
+   *
    * MSB first, 'channels' slots per frame, 32-bit slots holding left-
+   *
    * justified valid data of priv->datalen bits.
    */
 
+  slotbits = rk3576_sai_slotbits(priv);
   xcr = SAI_XCR_DELAY_EN | SAI_XCR_CSR(1) | SAI_XCR_SNB(priv->channels) |
-        SAI_XCR_VDJ | SAI_XCR_SBW(RK3576_SAI_SLOT_BITS) |
-        SAI_XCR_VDW(priv->datalen);
+        SAI_XCR_VDJ | SAI_XCR_SBW(slotbits) | SAI_XCR_VDW(priv->datalen);
 
   mdiv = rk3576_sai_mclkdivider(priv);
 
   if (priv->txenab)
     {
       rk3576_sai_putreg(priv, RK3576_SAI_TXCR, xcr);
-      rk3576_sai_putreg(
-          priv, RK3576_SAI_FSCR,
-          SAI_FSCR_EDGE_SEL |
-              SAI_FSCR_FW(priv->channels * RK3576_SAI_SLOT_BITS) |
-              SAI_FSCR_FPW(RK3576_SAI_SLOT_BITS));
+      rk3576_sai_putreg(priv, RK3576_SAI_FSCR,
+                        SAI_FSCR_EDGE_SEL |
+                            SAI_FSCR_FW(priv->channels * slotbits) |
+                            SAI_FSCR_FPW(slotbits));
       rk3576_sai_putreg(priv, RK3576_SAI_CKR, SAI_CKR_MDIV(mdiv));
       rk3576_sai_putreg(priv, RK3576_SAI_MONO_CR,
                         priv->channels == 1 ? SAI_MONO_CR_TX_MONO_EN : 0);
@@ -710,8 +744,8 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
     {
       rk3576_sai_putreg(priv, RK3576_SAI_RXCR, xcr);
       rk3576_sai_putreg(priv, RK3576_SAI_FSCR,
-                        SAI_FSCR_FW(priv->channels * RK3576_SAI_SLOT_BITS) |
-                            SAI_FSCR_FPW(RK3576_SAI_SLOT_BITS));
+                        SAI_FSCR_FW(priv->channels * slotbits) |
+                            SAI_FSCR_FPW(slotbits));
       rk3576_sai_putreg(priv, RK3576_SAI_CKR, SAI_CKR_MDIV(mdiv));
       rk3576_sai_putreg(priv, RK3576_SAI_MONO_CR,
                         priv->channels == 1 ? SAI_MONO_CR_RX_MONO_EN : 0);
@@ -1164,8 +1198,10 @@ static uint32_t rk3576_sai_txsamplerate(struct i2s_dev_s *dev, uint32_t rate)
     }
 
   /* The codec sets its required MCLK before setting the sample rate.  Keep
-   * that rate when it is an integer multiple of the requested LRCK; high
-   * sample rates use 128fs rather than the 256fs default.
+
+   * * that rate when it is an integer multiple of the requested LRCK; high
+
+   * * sample rates use 128fs rather than the 256fs default.
    */
 
   mclk = priv->mclk_freq;
