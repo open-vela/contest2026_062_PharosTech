@@ -494,7 +494,8 @@ static void rk3576_clk_register_i2c(void)
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
                                                                               \
       clk_register_gate("clk_pwm" #ctrl, "clk_pwm" #ctrl "_sel",              \
-                        CLK_NAME_IS_STATIC, gate_reg, clk_bit,                \
+                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, gate_reg,   \
+                        clk_bit,                                              \
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
                                                                               \
       clk_register_gate("clk_pwm" #ctrl "_osc", "xin_osc0",                   \
@@ -580,35 +581,36 @@ static void rk3576_clk_register_pwm(void)
  *   _0: bit 4  /  _1: bit 5  /  _2: bit 6
  */
 
-#define RK3576_CLK_REGISTER_MATRIX_UART_FRAC_ONE(index, div_reg, sel_reg,     \
-                                                 gate_bit)                    \
-  do                                                                          \
-    {                                                                         \
-      struct clk_s *_mux;                                                     \
-                                                                              \
-      _mux = clk_register_mux("clk_matrix_uart_frac_" #index "_sel",          \
-                              g_matrix_uart_frac_sel_parents,                 \
-                              nitems(g_matrix_uart_frac_sel_parents),         \
-                              CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,       \
-                              sel_reg, 0, 2, CLK_MUX_HIWORD_MASK);            \
-      if (!_mux)                                                              \
-        {                                                                     \
-          _err("CLK: failed to register "                                     \
-               "clk_matrix_uart_frac_" #index "_sel\n");                      \
-          break;                                                              \
-        }                                                                     \
-                                                                              \
-      clk_register_fractional_divider("clk_matrix_uart_frac_" #index "_div",  \
-                                      "clk_matrix_uart_frac_" #index "_sel",  \
-                                      CLK_NAME_IS_STATIC, div_reg, 16, 16, 0, \
-                                      16, 0);                                 \
-                                                                              \
-      clk_register_gate("clk_matrix_uart_frac_" #index,                       \
-                        "clk_matrix_uart_frac_" #index "_div",                \
-                        CLK_NAME_IS_STATIC,                                   \
-                        RK3576_CRU_ADDR + RK3576_CRU_GATE_CON(2), gate_bit,   \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
-    }                                                                         \
+#define RK3576_CLK_REGISTER_MATRIX_UART_FRAC_ONE(index, div_reg, sel_reg,    \
+                                                 gate_bit)                   \
+  do                                                                         \
+    {                                                                        \
+      struct clk_s *_mux;                                                    \
+                                                                             \
+      _mux = clk_register_mux("clk_matrix_uart_frac_" #index "_sel",         \
+                              g_matrix_uart_frac_sel_parents,                \
+                              nitems(g_matrix_uart_frac_sel_parents),        \
+                              CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,      \
+                              sel_reg, 0, 2, CLK_MUX_HIWORD_MASK);           \
+      if (!_mux)                                                             \
+        {                                                                    \
+          _err("CLK: failed to register "                                    \
+               "clk_matrix_uart_frac_" #index "_sel\n");                     \
+          break;                                                             \
+        }                                                                    \
+                                                                             \
+      clk_register_fractional_divider("clk_matrix_uart_frac_" #index "_div", \
+                                      "clk_matrix_uart_frac_" #index "_sel", \
+                                      CLK_SET_RATE_PARENT |                  \
+                                          CLK_NAME_IS_STATIC,                \
+                                      div_reg, 16, 16, 0, 16, 0);            \
+                                                                             \
+      clk_register_gate("clk_matrix_uart_frac_" #index,                      \
+                        "clk_matrix_uart_frac_" #index "_div",               \
+                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,            \
+                        RK3576_CRU_ADDR + RK3576_CRU_GATE_CON(2), gate_bit,  \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
+    }                                                                        \
   while (0)
 
 /**
@@ -699,7 +701,8 @@ static void rk3576_clk_register_matrix_uart(void)
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
                                                                              \
       clk_register_gate("sclk_uart" #index, "sclk_uart" #index "_div",       \
-                        CLK_NAME_IS_STATIC, sclk_reg, sclk_bit,              \
+                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sclk_reg,  \
+                        sclk_bit,                                            \
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
     }                                                                        \
   while (0)
@@ -888,7 +891,8 @@ static void rk3576_clk_register_uart(void)
     /* Level 1: clk_uart1_src_top gate (CRU_GATE_CON02[13]) */
 
     clk_register_gate("clk_uart1_src_top", "clk_uart1_src_top_div",
-                      CLK_NAME_IS_STATIC, cru + RK3576_CRU_GATE_CON(2), 13,
+                      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                      cru + RK3576_CRU_GATE_CON(2), 13,
                       CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 
     /* Level 2: sclk_uart1_sel mux (1-bit, PMU1CRU_CLKSEL_CON08[0])
@@ -906,7 +910,8 @@ static void rk3576_clk_register_uart(void)
 
     /* sclk_uart1 gate */
 
-    clk_register_gate("sclk_uart1", "sclk_uart1_sel", CLK_NAME_IS_STATIC,
+    clk_register_gate("sclk_uart1", "sclk_uart1_sel",
+                      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
                       pmu1 + RK3576_PMU1CRU_GATE_CON(5), 5,
                       CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 
@@ -962,12 +967,13 @@ static void rk3576_clk_register_uart(void)
                                                                               \
       clk_register_fractional_divider("clk_matrix_audio_frac_" #index "_div", \
                                       "clk_matrix_audio_frac_" #index "_sel", \
-                                      CLK_NAME_IS_STATIC, div_reg, 16, 16, 0, \
-                                      16, 0);                                 \
+                                      CLK_SET_RATE_PARENT |                   \
+                                          CLK_NAME_IS_STATIC,                 \
+                                      div_reg, 16, 16, 0, 16, 0);             \
                                                                               \
       clk_register_gate("clk_matrix_audio_frac_" #index,                      \
                         "clk_matrix_audio_frac_" #index "_div",               \
-                        CLK_NAME_IS_STATIC,                                   \
+                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,             \
                         RK3576_CRU_ADDR + RK3576_CRU_GATE_CON(1), gate_bit,   \
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
     }                                                                         \
@@ -995,19 +1001,20 @@ static void rk3576_clk_register_uart(void)
  *   _0: GATE_CON02 bit 14  /  _1: GATE_CON02 bit 15  /  _2: GATE_CON03 bit 0
  */
 
-#define RK3576_CLK_REGISTER_MATRIX_AUDIO_INT_ONE(                        \
-    index, parent_name, div_reg, div_shift, gate_reg, gate_bit)          \
-  do                                                                     \
-    {                                                                    \
-      clk_register_divider("clk_matrix_audio_int_" #index "_div",        \
-                           parent_name, CLK_NAME_IS_STATIC, div_reg,     \
-                           div_shift, 5, CLK_DIVIDER_HIWORD_MASK);       \
-                                                                         \
-      clk_register_gate("clk_matrix_audio_int_" #index,                  \
-                        "clk_matrix_audio_int_" #index "_div",           \
-                        CLK_NAME_IS_STATIC, gate_reg, gate_bit,          \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE); \
-    }                                                                    \
+#define RK3576_CLK_REGISTER_MATRIX_AUDIO_INT_ONE(                           \
+    index, parent_name, div_reg, div_shift, gate_reg, gate_bit)             \
+  do                                                                        \
+    {                                                                       \
+      clk_register_divider("clk_matrix_audio_int_" #index "_div",           \
+                           parent_name, CLK_NAME_IS_STATIC, div_reg,        \
+                           div_shift, 5, CLK_DIVIDER_HIWORD_MASK);          \
+                                                                            \
+      clk_register_gate("clk_matrix_audio_int_" #index,                     \
+                        "clk_matrix_audio_int_" #index "_div",              \
+                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, gate_reg, \
+                        gate_bit,                                           \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
+    }                                                                       \
   while (0)
 
 /**
@@ -1117,7 +1124,7 @@ static void rk3576_clk_register_matrix_audio(void)
                                                                             \
       _div = clk_register_divider(                                          \
           "mclk_sai" #index "_div", "mclk_sai" #index "_src_sel",           \
-          CLK_NAME_IS_STATIC, sel_reg, div_shift, 8,                        \
+          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, div_shift, 8,  \
           CLK_DIVIDER_HIWORD_MASK | CLK_DIVIDER_ROUND_CLOSEST);             \
       if (!_div)                                                            \
         {                                                                   \
@@ -1130,7 +1137,8 @@ static void rk3576_clk_register_matrix_audio(void)
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
                                                                             \
       clk_register_gate("mclk_sai" #index, "mclk_sai" #index "_div",        \
-                        CLK_NAME_IS_STATIC, mclk_reg, mclk_bit,             \
+                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, mclk_reg, \
+                        mclk_bit,                                           \
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
     }                                                                       \
   while (0)
