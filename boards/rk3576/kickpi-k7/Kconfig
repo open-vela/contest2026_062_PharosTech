@@ -18,4 +18,16 @@ config KICKPI_K7_AUDIO
 		the SAI1 I2S controller as the PCM audio device /dev/audio/pcm0.
 		Muxes the SAI1 MCLK/SCLK/LRCK/SDO0/SDI0 pins at boot.
 
+config KICKPI_K7_STORAGE_AUTOMOUNT
+	bool "Automatic removable and on-board storage mounting"
+	default y
+	depends on FS_FAT && FS_TMPFS && GPT_PARTITION
+	depends on SCHED_WORKQUEUE && SCHED_LPWORK
+	depends on RK3576_SDMMC || RK3576_EMMC
+	---help---
+		Discover supported FAT data volumes without formatting media.  Prefer
+		a usable eMMC data volume for /data, fall back to SD, and handle SD
+		card insertion and removal.  /tmp remains a safe tmpfs; persistent
+		temporary storage is published as /tmp/persist when /data is mounted.
+
 endif # ARCH_BOARD_KICKPI_K7

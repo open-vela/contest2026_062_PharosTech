@@ -30,6 +30,10 @@ ifeq ($(CONFIG_KICKPI_K7_AUDIO),y)
 CSRCS += kickpi_k7_audio.c
 endif
 
+ifeq ($(CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT),y)
+CSRCS += kickpi_k7_storage.c
+endif
+
 ifeq ($(CONFIG_ETC_ROMFS),y)
   RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS
 endif

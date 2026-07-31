@@ -29,11 +29,19 @@
 
 #include <nuttx/config.h>
 #include <stdint.h>
+
 #ifndef __ASSEMBLY__
 
+struct sdio_dev_s;
+
 /****************************************************************************
- * Public Functions Definitions
+ * Public Function Prototypes
  ****************************************************************************/
+
+#ifdef CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT
+int kickpi_k7_storage_initialize(FAR struct sdio_dev_s *sdmmc,
+                                 FAR struct sdio_dev_s *emmc);
+#endif
 
 #endif /* __ASSEMBLY__ */
 #endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */

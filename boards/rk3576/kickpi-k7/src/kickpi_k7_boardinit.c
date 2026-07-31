@@ -31,7 +31,6 @@
 #include <nuttx/board.h>
 #include <nuttx/config.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <syslog.h>
 
 #ifdef CONFIG_RK3576_SDMMC
@@ -43,51 +42,6 @@
 #include "rk3576_emmc.h"
 #include <nuttx/mmcsd.h>
 #endif
-
-#if defined(CONFIG_RK3576_SDMMC) && defined(CONFIG_GPT_PARTITION)
-#include <nuttx/fs/partition.h>
-#endif
-
-/****************************************************************************
- * Private Functions
- ****************************************************************************/
-
-#if defined(CONFIG_RK3576_SDMMC) && defined(CONFIG_GPT_PARTITION)
-
-#define KICKPI_K7_SDMMC_DEVNAME "/dev/mmcsd0"
-
-/****************************************************************************
- * Name: kickpi_k7_partition_handler
- *
- * Description:
- *   Called by parse_block_partition() for each valid GPT partition on
- *   the sdmmc device.  The GPT layout (see build_sd.sh) is
- *   index 0 = uboot (BL33), index 1 = trust, index 2 = rootfs.
- ****************************************************************************/
-
-static void kickpi_k7_partition_handler(FAR struct partition_s *part,
-                                        FAR void *arg)
-{
-  char devname[32];
-
-  /* TODO: Match partitions by name (part->name) instead of index.
-   *       For example: if (strcmp(part->name, "rootfs") != 0) return;
-   *       This avoids mis-registration when GPT layout changes and
-   *       prevents exposing boot/trust partitions as writable (0660).
-   */
-
-  if (part->index < 9)
-    {
-      sprintf(devname, KICKPI_K7_SDMMC_DEVNAME "p%lu", part->index + 1);
-      register_blockpartition(devname, 0660, KICKPI_K7_SDMMC_DEVNAME,
-                              part->firstblock, part->nblocks);
-      syslog(LOG_INFO, "INFO: partition %s firstblock=%lu nblocks=%lu\n",
-             devname, (unsigned long)part->firstblock,
-             (unsigned long)part->nblocks);
-    }
-}
-
-#endif /* CONFIG_RK3576_SDMMC && CONFIG_GPT_PARTITION */
 
 /****************************************************************************
  * Public Functions
@@ -161,6 +115,13 @@ void rk3576_board_initialize(void)
 #ifdef CONFIG_BOARD_LATE_INITIALIZE
 void board_late_initialize(void)
 {
+#ifdef CONFIG_RK3576_SDMMC
+  FAR struct sdio_dev_s *sdmmc = NULL;
+#endif
+#ifdef CONFIG_RK3576_EMMC
+  FAR struct sdio_dev_s *emmc = NULL;
+#endif
+
   /* Register the RK3576 clock tree with the NuttX CLK framework.
    * Must be done before any peripheral driver calls clk_get().
    * This cannot run in arm64_chip_boot() because clk_register()
@@ -187,7 +148,7 @@ void board_late_initialize(void)
    */
 
   {
-    FAR struct sdio_dev_s *sdmmc = rk3576_sdmmc_initialize(0);
+    sdmmc = rk3576_sdmmc_initialize(0);
     if (sdmmc == NULL)
       {
         syslog(LOG_ERR, "ERROR: rk3576_sdmmc_initialize failed\n");
@@ -198,29 +159,13 @@ void board_late_initialize(void)
       }
   }
 
-#ifdef CONFIG_GPT_PARTITION
-  /* Parse the GPT and register each partition as /dev/mmcsd0pN.  The rootfs
-   * FAT is mounted explicitly (e.g. on /data) when needed, not here.
-   */
-
-  {
-    int ret = parse_block_partition(KICKPI_K7_SDMMC_DEVNAME,
-                                    kickpi_k7_partition_handler, NULL);
-    if (ret < 0)
-      {
-        syslog(LOG_WARNING,
-               "WARNING: parse " KICKPI_K7_SDMMC_DEVNAME " GPT failed: %d\n",
-               ret);
-      }
-  }
-#endif
 #endif
 
 #ifdef CONFIG_RK3576_EMMC
   /* Initialize the on-board eMMC (dwcmshc / SDHCI) as /dev/mmcsd1. */
 
   {
-    FAR struct sdio_dev_s *emmc = rk3576_emmc_initialize(0);
+    emmc = rk3576_emmc_initialize(0);
     if (emmc == NULL)
       {
         syslog(LOG_ERR, "ERROR: rk3576_emmc_initialize failed\n");
@@ -243,6 +188,28 @@ void board_late_initialize(void)
     if (ret < 0)
       {
         syslog(LOG_ERR, "ERROR: kickpi_k7_audio_initialize failed: %d\n", ret);
+      }
+  }
+#endif
+
+#ifdef CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT
+  {
+    int ret = kickpi_k7_storage_initialize(
+#ifdef CONFIG_RK3576_SDMMC
+        sdmmc,
+#else
+        NULL,
+#endif
+#ifdef CONFIG_RK3576_EMMC
+        emmc
+#else
+        NULL
+#endif
+    );
+
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: storage initialization failed: %d\n", ret);
       }
   }
 #endif
