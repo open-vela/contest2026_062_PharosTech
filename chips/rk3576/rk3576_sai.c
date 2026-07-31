@@ -440,43 +440,6 @@ static int rk3576_sai_setclock(struct rk3576_sai_s *priv, uint32_t frequency)
   uint32_t error;
   int ret;
 
-  /* Reproduce the board-verified audio-family CRU topologies exactly.  The
-
-   * * generic fractional-divider search can select a numerically close rate
-
-   * * while programming a topology that does not produce a usable SAI clock.
-
-   */
-
-  if (frequency == 11289600)
-    {
-      /* 44.1 kHz family: GPLL 1188 MHz * 784 / 20625 = 45.1584 MHz,
-       *
-       * then divide by four to obtain an exact 11.2896 MHz MCLK.
-       */
-
-      putreg32((1u << 10) << 16, RK3576_CRU_ADDR + RK3576_CRU_GATE_CON(1));
-      putreg32((0x3u << 16) | 0x0u,
-               RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(13));
-      putreg32(0x03105091u, RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(12));
-      putreg32((0x0fffu << 16) | 0x0103u,
-               RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(46));
-      priv->mclk_freq = frequency;
-      return OK;
-    }
-
-  if (frequency == 12288000)
-    {
-      putreg32((1u << 11) << 16, RK3576_CRU_ADDR + RK3576_CRU_GATE_CON(1));
-      putreg32((0x3u << 16) | 0x2u,
-               RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(15));
-      putreg32(0x00010010u, RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(14));
-      putreg32((0x0fffu << 16) | 0x0203u,
-               RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(46));
-      priv->mclk_freq = frequency;
-      return OK;
-    }
-
   ret = clk_set_rate(priv->frac, source_frequency);
   if (ret < 0)
     {
@@ -522,7 +485,7 @@ static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
       return -ENODEV;
     }
 
-  snprintf(name, sizeof(name), "mclk_sai%d_div", priv->busno);
+  snprintf(name, sizeof(name), "mclk_sai%d_src_div", priv->busno);
   priv->mclk = clk_get(name);
   if (priv->mclk == NULL)
     {

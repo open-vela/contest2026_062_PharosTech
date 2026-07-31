@@ -1081,66 +1081,102 @@ static void rk3576_clk_register_matrix_audio(void)
  * Macro: RK3576_CLK_REGISTER_SAI_ONE
  *
  * Register one SAI controller clock tree
- * (src mux + src divider + mclk gate + hclk gate).
- *
- * The mclk_saiX_sel (external mclkin) mux layer is omitted for now;
- * the div node is "mclk_saiX_div"; when external mclkin support is needed,
- * insert a mux here whose output is named "mclk_saiX" — the downstream
- * gate / driver clock name stays the same.
+ * (src mux + src divider + src gate + mclk mux + mclk gate + hclk gate).
  *
  * Hardware chain:
- *   mclk_saiX_src_sel (3-bit MUX, 8 parents)   -- _sel suffix (mux)
- *     -> mclk_saiX_div (8-bit divider, div_con + 1)  -- _div suffix (div)
- *       -> mclk_saiX     (GATE, most downstream)
- *   hclk_saiX                                   (GATE, bus clock)
+ *   mclk_saiX_src_sel (3-bit MUX, 8 parents)            -- _src_sel (mux)
+ *     -> mclk_saiX_src_div (8-bit divider, div_con + 1) -- _src_div (div)
+ *       -> mclk_saiX_src     (source gate)
+ *         -> mclk_saiX_sel   (final mclk mux, 1 or 2 bits)
+ *           -> mclk_saiX       (GATE, most downstream mclk)
+ *   hclk_saiX                                          (GATE, bus clock)
+ *
+ * Register layout (single CLKSEL_CON reg holds mclk_sel, src_sel, src_div):
+ *   [msel_shift + width - 1 : msel_shift]  = mclk_saiX_sel (mclk mux)
+ *   [src_sel_shift + 2 : src_sel_shift]    = mclk_saiX_src_sel (3-bit mux)
+ *   [src_div_shift + 7 : src_div_shift]    = mclk_saiX_src_div (8-bit div)
  *
  * Parameters:
- *   index     - SAI index (0..9), used in clock name suffix
- *   sel_reg   - CLKSEL register address (holds both src_sel and div)
- *   src_shift - mclk_saiX_src_sel bit offset in sel_reg (3-bit field)
- *   div_shift - mclk_saiX_src_div bit offset in sel_reg (8-bit field)
- *   hclk_reg  - hclk GATE register address
- *   hclk_bit  - hclk GATE bit
- *   mclk_reg  - mclk GATE register address
- *   mclk_bit  - mclk GATE bit
+ *   index          - SAI index (0..9), used in clock name suffix
+ *   sel_reg        - CLKSEL register address (holds msel + src_sel + div)
+ *   msel_shift     - mclk_saiX_sel mux bit offset in sel_reg
+ *   msel_width     - mclk_saiX_sel mux width (1 or 2 bits)
+ *   src_sel_shift  - mclk_saiX_src_sel bit offset in sel_reg (3-bit field)
+ *   src_div_shift  - mclk_saiX_src_div bit offset in sel_reg (8-bit field)
+ *   src_reg/src_bit- mclk_saiX_src GATE register address / bit
+ *   mclk_reg/mclk_bit- mclk_saiX GATE register address / bit
+ *   hclk_reg/hclk_bit- hclk_saiX GATE register address / bit
  */
 
-#define RK3576_CLK_REGISTER_SAI_ONE(index, sel_reg, src_shift, div_shift,   \
-                                    hclk_reg, hclk_bit, mclk_reg, mclk_bit) \
-  do                                                                        \
-    {                                                                       \
-      struct clk_s *_src_sel;                                               \
-      struct clk_s *_div;                                                   \
-                                                                            \
-      _src_sel = clk_register_mux(                                          \
-          "mclk_sai" #index "_src_sel", g_sai_mclk_src_parents,             \
-          nitems(g_sai_mclk_src_parents), CLK_NAME_IS_STATIC, sel_reg,      \
-          src_shift, 3, CLK_MUX_HIWORD_MASK);                               \
-      if (!_src_sel)                                                        \
-        {                                                                   \
-          _err("CLK: failed to register mclk_sai" #index "_src_sel\n");     \
-          break;                                                            \
-        }                                                                   \
-                                                                            \
-      _div = clk_register_divider(                                          \
-          "mclk_sai" #index "_div", "mclk_sai" #index "_src_sel",           \
-          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, div_shift, 8,  \
-          CLK_DIVIDER_HIWORD_MASK | CLK_DIVIDER_ROUND_CLOSEST);             \
-      if (!_div)                                                            \
-        {                                                                   \
-          _err("CLK: failed to register mclk_sai" #index "_div\n");         \
-          break;                                                            \
-        }                                                                   \
-                                                                            \
-      clk_register_gate("hclk_sai" #index, NULL, CLK_NAME_IS_STATIC,        \
-                        hclk_reg, hclk_bit,                                 \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
-                                                                            \
-      clk_register_gate("mclk_sai" #index, "mclk_sai" #index "_div",        \
-                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, mclk_reg, \
-                        mclk_bit,                                           \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
-    }                                                                       \
+#define RK3576_CLK_REGISTER_SAI_ONE(                                          \
+    index, sel_reg, msel_shift, msel_width, src_sel_shift, src_div_shift,     \
+    src_reg, src_bit, mclk_reg, mclk_bit, hclk_reg, hclk_bit)                 \
+  do                                                                          \
+    {                                                                         \
+      static const char *_m_sel_parents[] = {                                 \
+        "mclk_sai" #index "_src", /* bit0: mclk_saiX_src (default) */         \
+        (msel_width == 2) ? "sai" #index "_mclkin" : "sai1_mclkin",           \
+        "sai1_mclkin", /* bit2: only valid for 2-bit muxes */                 \
+      };                                                                      \
+      const int _m_sel_parents_cnt = (msel_width == 2) ? 3 : 2;               \
+      struct clk_s *_src_sel;                                                 \
+      struct clk_s *_src_div;                                                 \
+                                                                              \
+      /* mclk_saiX_src_sel : 3-bit source mux (8 parents). */                 \
+      _src_sel = clk_register_mux(                                            \
+          "mclk_sai" #index "_src_sel", g_sai_mclk_src_parents,               \
+          nitems(g_sai_mclk_src_parents),                                     \
+          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |                          \
+              CLK_PARENT_NAME_IS_STATIC,                                      \
+          sel_reg, src_sel_shift, 3, CLK_MUX_HIWORD_MASK);                    \
+      if (!_src_sel)                                                          \
+        {                                                                     \
+          _err("CLK: failed to register mclk_sai" #index "_src_sel\n");       \
+          break;                                                              \
+        }                                                                     \
+                                                                              \
+      /* mclk_saiX_src_div : 8-bit source divider (div_con + 1). */           \
+      _src_div = clk_register_divider(                                        \
+          "mclk_sai" #index "_src_div", "mclk_sai" #index "_src_sel",         \
+          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |                          \
+              CLK_PARENT_NAME_IS_STATIC,                                      \
+          sel_reg, src_div_shift, 8,                                          \
+          CLK_DIVIDER_HIWORD_MASK | CLK_DIVIDER_ROUND_CLOSEST);               \
+      if (!_src_div)                                                          \
+        {                                                                     \
+          _err("CLK: failed to register mclk_sai" #index "_src_div\n");       \
+          break;                                                              \
+        }                                                                     \
+                                                                              \
+      /* mclk_saiX_src : source gate. */                                      \
+      clk_register_gate(                                                      \
+          "mclk_sai" #index "_src", "mclk_sai" #index "_src_div",             \
+          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |                          \
+              CLK_PARENT_NAME_IS_STATIC,                                      \
+          src_reg, src_bit, CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);  \
+                                                                              \
+      /* mclk_saiX_sel : final mclk mux (1 or 2 bits), defaults to src.       \
+       *   2-bit (SAI0, SAI2-4): 00=src, 01=saiX_mclkin, 10=sai1_mclkin       \
+       *   1-bit (SAI1, SAI5-9): 0=src, 1=sai1_mclkin                         \
+       */                                                                     \
+      clk_register_mux("mclk_sai" #index "_sel", _m_sel_parents,              \
+                       _m_sel_parents_cnt,                                    \
+                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |             \
+                           CLK_PARENT_NAME_IS_STATIC,                         \
+                       sel_reg, msel_shift, msel_width, CLK_MUX_HIWORD_MASK); \
+                                                                              \
+      /* mclk_saiX : final mclk gate. */                                      \
+      clk_register_gate("mclk_sai" #index, "mclk_sai" #index "_sel",          \
+                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |            \
+                            CLK_PARENT_NAME_IS_STATIC,                        \
+                        mclk_reg, mclk_bit,                                   \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
+                                                                              \
+      /* hclk_saiX : bus gate. */                                             \
+      clk_register_gate("hclk_sai" #index, NULL, CLK_NAME_IS_STATIC,          \
+                        hclk_reg, hclk_bit,                                   \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
+    }                                                                         \
   while (0)
 
 /****************************************************************************
@@ -1176,87 +1212,116 @@ static void rk3576_clk_register_sai(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
 
-  /* SAI0 — CLKSEL_CON44 (0x03B0), GATE_CON07 */
+  /* SAI0 — CLKSEL_CON44 (0x03B0), GATE_CON07.
+   *   mclk_sel [12:11] (2-bit), src_sel [10:8], src_div [7:0]. */
 
-  RK3576_CLK_REGISTER_SAI_ONE(0, cru + RK3576_CRU_CLKSEL_CON(44),
-                              8, /* src_sel [10:8] */
-                              0, /* div [7:0] */
-                              cru + RK3576_CRU_GATE_CON(7), 13,  /* hclk */
-                              cru + RK3576_CRU_GATE_CON(7), 12); /* mclk */
+  RK3576_CLK_REGISTER_SAI_ONE(0, cru + RK3576_CRU_CLKSEL_CON(44), /* sel */
+                              11, 2, /* mclk_sel shift/width */
+                              8, 0,  /* src_sel shift, src_div shift */
+                              cru + RK3576_CRU_GATE_CON(7), 11,  /* src */
+                              cru + RK3576_CRU_GATE_CON(7), 12,  /* mclk */
+                              cru + RK3576_CRU_GATE_CON(7), 13); /* hclk */
 
-  /* SAI1 — CLKSEL_CON46 (0x03B8), GATE_CON08 */
+  /* SAI1 — CLKSEL_CON46 (0x03B8), GATE_CON08.
+   *   mclk_sel [11] (1-bit), src_sel [10:8], src_div [7:0]. */
 
-  RK3576_CLK_REGISTER_SAI_ONE(1, cru + RK3576_CRU_CLKSEL_CON(46),
-                              8, /* src_sel [10:8] */
-                              0, /* div [7:0] */
-                              cru + RK3576_CRU_GATE_CON(8), 8,  /* hclk */
-                              cru + RK3576_CRU_GATE_CON(8), 7); /* mclk */
+  RK3576_CLK_REGISTER_SAI_ONE(1, cru + RK3576_CRU_CLKSEL_CON(46), /* sel */
+                              11, 1, /* mclk_sel shift/width */
+                              8, 0,  /* src_sel shift, src_div shift */
+                              cru + RK3576_CRU_GATE_CON(8), 4,  /* src */
+                              cru + RK3576_CRU_GATE_CON(8), 5,  /* mclk */
+                              cru + RK3576_CRU_GATE_CON(8), 6); /* hclk */
 
-  /* SAI2 — CLKSEL_CON47 (0x03BC), GATE_CON08 */
+  /* SAI2 — CLKSEL_CON47 (0x03BC), GATE_CON08.
+   *   mclk_sel [12:11] (2-bit), src_sel [10:8], src_div [7:0]. */
 
-  RK3576_CLK_REGISTER_SAI_ONE(2, cru + RK3576_CRU_CLKSEL_CON(47),
-                              8, /* src_sel [10:8] */
-                              0, /* div [7:0] */
-                              cru + RK3576_CRU_GATE_CON(8), 14,  /* hclk */
-                              cru + RK3576_CRU_GATE_CON(8), 11); /* mclk */
+  RK3576_CLK_REGISTER_SAI_ONE(2, cru + RK3576_CRU_CLKSEL_CON(47), /* sel */
+                              11, 2, /* mclk_sel shift/width */
+                              8, 0,  /* src_sel shift, src_div shift */
+                              cru + RK3576_CRU_GATE_CON(8), 7,   /* src */
+                              cru + RK3576_CRU_GATE_CON(8), 8,   /* mclk */
+                              cru + RK3576_CRU_GATE_CON(8), 10); /* hclk */
 
-  /* SAI3 — CLKSEL_CON48 (0x03C0), GATE_CON08 */
+  /* SAI3 — CLKSEL_CON48 (0x03C0), GATE_CON08.
+   *   mclk_sel [12:11] (2-bit), src_sel [10:8], src_div [7:0]. */
 
-  RK3576_CLK_REGISTER_SAI_ONE(3, cru + RK3576_CRU_CLKSEL_CON(48),
-                              8, /* src_sel [10:8] */
-                              0, /* div [7:0] */
-                              cru + RK3576_CRU_GATE_CON(8), 15,  /* hclk */
-                              cru + RK3576_CRU_GATE_CON(8), 13); /* mclk */
+  RK3576_CLK_REGISTER_SAI_ONE(3, cru + RK3576_CRU_CLKSEL_CON(48), /* sel */
+                              11, 2, /* mclk_sel shift/width */
+                              8, 0,  /* src_sel shift, src_div shift */
+                              cru + RK3576_CRU_GATE_CON(8), 11,  /* src */
+                              cru + RK3576_CRU_GATE_CON(8), 12,  /* mclk */
+                              cru + RK3576_CRU_GATE_CON(8), 14); /* hclk */
 
-  /* SAI4 — CLKSEL_CON49 (0x03C4), GATE_CON08 (mclk src) +
-   *        GATE_CON09 (hclk + mclk) */
+  /* SAI4 — CLKSEL_CON49 (0x03C4), src gate GATE_CON08:15,
+   *         hclk/mclk GATE_CON09:2/0.
+   *   mclk_sel [12:11] (2-bit), src_sel [10:8], src_div [7:0]. */
 
-  RK3576_CLK_REGISTER_SAI_ONE(4, cru + RK3576_CRU_CLKSEL_CON(49),
-                              8, /* src_sel [10:8] */
-                              0, /* div [7:0] */
-                              cru + RK3576_CRU_GATE_CON(9), 2,  /* hclk */
-                              cru + RK3576_CRU_GATE_CON(9), 0); /* mclk */
+  RK3576_CLK_REGISTER_SAI_ONE(4, cru + RK3576_CRU_CLKSEL_CON(49), /* sel */
+                              11, 2, /* mclk_sel shift/width */
+                              8, 0,  /* src_sel shift, src_div shift */
+                              cru + RK3576_CRU_GATE_CON(8), 15, /* src */
+                              cru + RK3576_CRU_GATE_CON(9), 0,  /* mclk */
+                              cru + RK3576_CRU_GATE_CON(9), 2); /* hclk */
 
-  /* SAI5 — CLKSEL_CON154 (0x0568), GATE_CON65
-   *        src_sel at [12:10], div at [9:2] (different from SAI0~4). */
+  /* SAI5 — CLKSEL_CON154 (0x0568), GATE_CON65.
+   *   mclk_sel [13] (1-bit), src_sel [12:10], src_div [9:2]. */
 
-  RK3576_CLK_REGISTER_SAI_ONE(5, cru + RK3576_CRU_CLKSEL_CON(154),
-                              10, /* src_sel [12:10] */
-                              2,  /* div [9:2] */
-                              cru + RK3576_CRU_GATE_CON(65), 5,  /* hclk */
-                              cru + RK3576_CRU_GATE_CON(65), 4); /* mclk */
+  RK3576_CLK_REGISTER_SAI_ONE(5, cru + RK3576_CRU_CLKSEL_CON(154), /* sel */
+                              13, 1, /* mclk_sel shift/width */
+                              10, 2, /* src_sel shift, src_div shift */
+                              cru + RK3576_CRU_GATE_CON(65), 3,  /* src */
+                              cru + RK3576_CRU_GATE_CON(65), 4,  /* mclk */
+                              cru + RK3576_CRU_GATE_CON(65), 5); /* hclk */
 
-  /* SAI6 — CLKSEL_CON155 (0x056C), GATE_CON65 */
+  /* SAI6 — CLKSEL_CON155 (0x056C), GATE_CON65.
+   *   mclk_sel [11] (1-bit), src_sel [10:8], src_div [7:0]. */
 
-  RK3576_CLK_REGISTER_SAI_ONE(6, cru + RK3576_CRU_CLKSEL_CON(155),
-                              8, /* src_sel [10:8] */
-                              0, /* div [7:0] */
-                              cru + RK3576_CRU_GATE_CON(65), 9,  /* hclk */
-                              cru + RK3576_CRU_GATE_CON(65), 8); /* mclk */
+  RK3576_CLK_REGISTER_SAI_ONE(6, cru + RK3576_CRU_CLKSEL_CON(155), /* sel */
+                              11, 1, /* mclk_sel shift/width */
+                              8, 0,  /* src_sel shift, src_div shift */
+                              cru + RK3576_CRU_GATE_CON(65), 7,  /* src */
+                              cru + RK3576_CRU_GATE_CON(65), 8,  /* mclk */
+                              cru + RK3576_CRU_GATE_CON(65), 9); /* hclk */
 
-  /* SAI7 — CLKSEL_CON159 (0x057C), GATE_CON67 */
+  /* SAI7 — CLKSEL_CON159 (0x057C), GATE_CON67.
+   *   mclk_sel [11] (1-bit), src_sel [10:8], src_div [7:0]. */
 
-  RK3576_CLK_REGISTER_SAI_ONE(7, cru + RK3576_CRU_CLKSEL_CON(159),
-                              8, /* src_sel [10:8] */
-                              0, /* div [7:0] */
-                              cru + RK3576_CRU_GATE_CON(67), 10, /* hclk */
-                              cru + RK3576_CRU_GATE_CON(67), 9); /* mclk */
+  RK3576_CLK_REGISTER_SAI_ONE(7, cru + RK3576_CRU_CLKSEL_CON(159), /* sel */
+                              11, 1, /* mclk_sel shift/width */
+                              8, 0,  /* src_sel shift, src_div shift */
+                              cru + RK3576_CRU_GATE_CON(67), 8,   /* src */
+                              cru + RK3576_CRU_GATE_CON(67), 9,   /* mclk */
+                              cru + RK3576_CRU_GATE_CON(67), 10); /* hclk */
 
-  /* SAI8 — CLKSEL_CON157 (0x0574), GATE_CON66 */
+  /* SAI8 — CLKSEL_CON157 (0x0574), GATE_CON66.
+   *   mclk_sel [11] (1-bit), src_sel [10:8], src_div [7:0].
+   *   NOTE: gate bits are hclk=0, src_en=1, mclk=2 (non-contiguous). */
 
-  RK3576_CLK_REGISTER_SAI_ONE(8, cru + RK3576_CRU_CLKSEL_CON(157),
-                              8, /* src_sel [10:8] */
-                              0, /* div [7:0] */
-                              cru + RK3576_CRU_GATE_CON(66), 0,  /* hclk */
-                              cru + RK3576_CRU_GATE_CON(66), 2); /* mclk */
+  RK3576_CLK_REGISTER_SAI_ONE(8, cru + RK3576_CRU_CLKSEL_CON(157), /* sel */
+                              11, 1, /* mclk_sel shift/width */
+                              8, 0,  /* src_sel shift, src_div shift */
+                              cru + RK3576_CRU_GATE_CON(66), 1,  /* src */
+                              cru + RK3576_CRU_GATE_CON(66), 2,  /* mclk */
+                              cru + RK3576_CRU_GATE_CON(66), 0); /* hclk */
 
-  /* SAI9 — CLKSEL_CON162 (0x0588), GATE_CON68 */
+  /* SAI9 — CLKSEL_CON162 (0x0588), GATE_CON68.
+   *   mclk_sel [11] (1-bit), src_sel [10:8], src_div [7:0].
+   *   NOTE: gate bits are mclk=11, src_en=10, hclk=9. */
 
-  RK3576_CLK_REGISTER_SAI_ONE(9, cru + RK3576_CRU_CLKSEL_CON(162),
-                              8, /* src_sel [10:8] */
-                              0, /* div [7:0] */
-                              cru + RK3576_CRU_GATE_CON(68), 9,   /* hclk */
-                              cru + RK3576_CRU_GATE_CON(68), 11); /* mclk */
+  RK3576_CLK_REGISTER_SAI_ONE(9, cru + RK3576_CRU_CLKSEL_CON(162), 11,
+                              1,    /* mclk_sel shift/width */
+                              8, 0, /* src_sel shift, src_div shift */
+                              cru + RK3576_CRU_GATE_CON(68), 10, /* src */
+                              cru + RK3576_CRU_GATE_CON(68), 11, /* mclk */
+                              cru + RK3576_CRU_GATE_CON(68), 9); /* hclk */
+
+  /* saiX_mclkin : clock input from gpio (frequency unknown, set to 0)
+   * there is no mclkin for sai5~9 */
+  clk_register_fixed_rate("sai0_mclkin", NULL, CLK_NAME_IS_STATIC, 0);
+  clk_register_fixed_rate("sai1_mclkin", NULL, CLK_NAME_IS_STATIC, 0);
+  clk_register_fixed_rate("sai2_mclkin", NULL, CLK_NAME_IS_STATIC, 0);
+  clk_register_fixed_rate("sai3_mclkin", NULL, CLK_NAME_IS_STATIC, 0);
+  clk_register_fixed_rate("sai4_mclkin", NULL, CLK_NAME_IS_STATIC, 0);
 }
 #endif /* CONFIG_RK3576_SAI */
 
