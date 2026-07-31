@@ -133,6 +133,8 @@ struct rk3576_sdmmc_dev_s
   worker_t callback;        /* Registered callback function */
   void *cbarg;              /* Callback argument */
   struct work_s cbwork;     /* Callback work queue item */
+  rk3576_sdmmc_media_callback_t media_callback;
+  void *media_arg;
 
   /* Data transfer (PIO) state */
 
@@ -428,7 +430,8 @@ static void rk3576_sdmmc_configwaitints(struct rk3576_sdmmc_dev_s *priv,
 
   /* Merge in the data-transfer interrupts and write INTMASK together */
 
-  rk3576_sdmmc_putreg(priv, RK3576_SDMMC_INTMASK, priv->xfrints | waitints);
+  rk3576_sdmmc_putreg(priv, RK3576_SDMMC_INTMASK,
+                      priv->xfrints | waitints | SDMMC_INT_CD);
   leave_critical_section(flags);
 }
 
@@ -718,6 +721,14 @@ static int rk3576_sdmmc_interrupt(int irq, void *context, void *arg)
   if ((pending & SDMMC_INT_CD) != 0)
     {
       rk3576_sdmmc_callback(priv);
+
+      if (priv->media_callback != NULL)
+        {
+          bool inserted =
+              (rk3576_sdmmc_status(&priv->dev) & SDIO_STATUS_PRESENT) != 0;
+
+          priv->media_callback(priv->media_arg, inserted);
+        }
     }
 
   return OK;
@@ -760,7 +771,7 @@ static void rk3576_sdmmc_reset(struct sdio_dev_s *dev)
   /* Clear all raw interrupts, mask all interrupts */
 
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_RINTSTS, SDMMC_INT_ALL);
-  rk3576_sdmmc_putreg(priv, RK3576_SDMMC_INTMASK, 0);
+  rk3576_sdmmc_putreg(priv, RK3576_SDMMC_INTMASK, SDMMC_INT_CD);
 
   /* FIFO thresholds: RX/TX half-full trigger, burst length 1 (DW_MSHC FIFOTH
    * format: [30:28]=DW_MSIZE, [27:16]=RX_WMARK, [11:0]=TX_WMARK). */
@@ -959,7 +970,7 @@ static int rk3576_sdmmc_attach(struct sdio_dev_s *dev)
   /* Mask all sources, clear pending status, then open the controller-level
    * interrupt gate */
 
-  rk3576_sdmmc_putreg(priv, RK3576_SDMMC_INTMASK, 0);
+  rk3576_sdmmc_putreg(priv, RK3576_SDMMC_INTMASK, SDMMC_INT_CD);
   rk3576_sdmmc_putreg(priv, RK3576_SDMMC_RINTSTS, SDMMC_INT_ALL);
 
   up_enable_irq(priv->irq);
@@ -1758,6 +1769,30 @@ struct sdio_dev_s *rk3576_sdmmc_initialize(int slotno)
          priv->base, priv->irq);
 
   return &priv->dev;
+}
+
+/***************************************************************************
+ * Name: rk3576_sdmmc_register_media_callback
+ ***************************************************************************/
+
+int rk3576_sdmmc_register_media_callback(
+    FAR struct sdio_dev_s *dev, rk3576_sdmmc_media_callback_t callback,
+    FAR void *arg)
+{
+  struct rk3576_sdmmc_dev_s *priv;
+  irqstate_t flags;
+
+  if (dev == NULL)
+    {
+      return -EINVAL;
+    }
+
+  priv = (struct rk3576_sdmmc_dev_s *)dev;
+  flags = enter_critical_section();
+  priv->media_callback = callback;
+  priv->media_arg = arg;
+  leave_critical_section(flags);
+  return OK;
 }
 
 #endif /* CONFIG_RK3576_SDMMC */

@@ -31,6 +31,13 @@
 #include <nuttx/sdio.h>
 
 /****************************************************************************
+ * Public Types
+ ****************************************************************************/
+
+typedef CODE void (*rk3576_sdmmc_media_callback_t)(FAR void *arg,
+                                                   bool inserted);
+
+/****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
 
@@ -50,5 +57,22 @@
  ****************************************************************************/
 
 FAR struct sdio_dev_s *rk3576_sdmmc_initialize(int slotno);
+
+/****************************************************************************
+ * Name: rk3576_sdmmc_register_media_callback
+ *
+ * Description:
+ *   Register a board-level listener for SD card insertion and removal.  This
+ *   listener is independent of the callback reserved by the generic mmcsd
+ *   layer.  The callback runs in interrupt context and must only schedule
+ *   deferred work.
+ *
+ * Returned Value:
+ *   Zero on success; a negated errno value on failure.
+ ****************************************************************************/
+
+int rk3576_sdmmc_register_media_callback(
+    FAR struct sdio_dev_s *dev, rk3576_sdmmc_media_callback_t callback,
+    FAR void *arg);
 
 #endif /* __ARCH_ARM64_SRC_RK3576_RK3576_SDMMC_H */
