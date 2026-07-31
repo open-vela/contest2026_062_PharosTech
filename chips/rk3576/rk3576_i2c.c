@@ -513,7 +513,7 @@ struct i2c_master_s *rk3576_i2c_initialize(int bus)
       struct clk_s *pclk;
       int ret;
 
-      snprintf(name, sizeof(name), "pclk_i2c%d_en", bus);
+      snprintf(name, sizeof(name), "pclk_i2c%d", bus);
       pclk = clk_get(name);
       if (!pclk)
         {
@@ -528,7 +528,7 @@ struct i2c_master_s *rk3576_i2c_initialize(int bus)
           return NULL;
         }
 
-      snprintf(name, sizeof(name), "clk_i2c%d_en", bus);
+      snprintf(name, sizeof(name), "clk_i2c%d", bus);
       priv->clk = clk_get(name);
       if (!priv->clk)
         {

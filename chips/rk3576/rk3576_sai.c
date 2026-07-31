@@ -514,7 +514,7 @@ static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
   int frac_index = priv->busno % 4;
   int ret;
 
-  snprintf(name, sizeof(name), "hclk_sai%d_en", priv->busno);
+  snprintf(name, sizeof(name), "hclk_sai%d", priv->busno);
   priv->hclk = clk_get(name);
   if (priv->hclk == NULL)
     {
@@ -522,7 +522,7 @@ static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
       return -ENODEV;
     }
 
-  snprintf(name, sizeof(name), "mclk_sai%d", priv->busno);
+  snprintf(name, sizeof(name), "mclk_sai%d_div", priv->busno);
   priv->mclk = clk_get(name);
   if (priv->mclk == NULL)
     {
@@ -543,14 +543,14 @@ static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
       return -ENODEV;
     }
 
-  snprintf(name, sizeof(name), "clk_matrix_audio_frac_%d", frac_index);
+  snprintf(name, sizeof(name), "clk_matrix_audio_frac_%d_div", frac_index);
   priv->frac = clk_get(name);
   if (priv->frac == NULL)
     {
       return -ENODEV;
     }
 
-  snprintf(name, sizeof(name), "clk_matrix_audio_frac_%d_en", frac_index);
+  snprintf(name, sizeof(name), "clk_matrix_audio_frac_%d", frac_index);
   priv->frac_gate = clk_get(name);
   if (priv->frac_gate == NULL)
     {
@@ -570,13 +570,13 @@ static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
       return ret;
     }
 
-  ret = clk_set_parent(priv->mclk_sel, priv->frac);
+  ret = clk_set_parent(priv->mclk_sel, priv->frac_gate);
   if (ret < 0)
     {
       return ret;
     }
 
-  snprintf(name, sizeof(name), "mclk_sai%d_en", priv->busno);
+  snprintf(name, sizeof(name), "mclk_sai%d", priv->busno);
   priv->mclk_gate = clk_get(name);
   if (priv->mclk_gate == NULL)
     {

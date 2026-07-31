@@ -483,7 +483,7 @@ struct pwm_lowerhalf_s *rk3576_pwm_initialize(int pwm_controller_id,
       struct clk_s *clk;
       int ret;
 
-      snprintf(name, sizeof(name), "pclk_pwm%d_en", pwm_controller_id);
+      snprintf(name, sizeof(name), "pclk_pwm%d", pwm_controller_id);
       pclk = clk_get(name);
       if (!pclk)
         {
@@ -500,7 +500,7 @@ struct pwm_lowerhalf_s *rk3576_pwm_initialize(int pwm_controller_id,
         }
 
       /* TODO: don't use hard-coded clock sel, allow users to select clock */
-      snprintf(name, sizeof(name), "clk_pwm%d_osc_en", pwm_controller_id);
+      snprintf(name, sizeof(name), "clk_pwm%d_osc", pwm_controller_id);
       clk = clk_get(name);
       if (!clk)
         {

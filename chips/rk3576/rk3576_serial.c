@@ -170,7 +170,7 @@ static int rk3576_uart_init_clock(struct rk3576_uart_port_s *port,
 
   /* Get and enable the APB bus clock (pclk) */
 
-  snprintf(name, sizeof(name), "pclk_uart%u_en", port_id);
+  snprintf(name, sizeof(name), "pclk_uart%u", port_id);
   pclk = clk_get(name);
   if (!pclk)
     {
@@ -187,7 +187,7 @@ static int rk3576_uart_init_clock(struct rk3576_uart_port_s *port,
 
   /* Get and enable the functional clock (sclk) */
 
-  snprintf(name, sizeof(name), "sclk_uart%u_en", port_id);
+  snprintf(name, sizeof(name), "sclk_uart%u", port_id);
   sclk = clk_get(name);
   if (!sclk)
     {
@@ -220,19 +220,7 @@ static int rk3576_uart_init_clock(struct rk3576_uart_port_s *port,
 
   if (port_id != UART_PORT_0)
     {
-      struct clk_s *divclk;
-
-      snprintf(name, sizeof(name), "sclk_uart%u", port_id);
-      divclk = clk_get(name);
-      if (!divclk)
-        {
-          _err("UART%u: failed to get clock %s\n", port_id, name);
-          clk_disable(sclk);
-          clk_disable(pclk);
-          return -ENODEV;
-        }
-
-      ret = clk_set_rate(divclk, port->data.baud_rate * 16);
+      ret = clk_set_rate(sclk, port->data.baud_rate * 16);
       if (ret < 0)
         {
           _err("UART%u: failed to set sclk rate, ret=%d\n", port_id, ret);
