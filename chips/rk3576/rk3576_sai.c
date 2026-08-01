@@ -160,17 +160,10 @@ struct rk3576_sai_s
   unsigned int softrst;      /* CRU_SOFTRST_CONn index                */
   uint32_t mrst_bit;         /* Soft mresetn_saiN mask                */
   uint32_t hrst_bit;         /* Soft hresetn_saiN mask                */
-  int frac_index;            /* Assigned shared fractional divider    */
   bool tx_cap;               /* True: hardware has a TX DMA request   */
   bool rx_cap;               /* True: hardware has an RX DMA request  */
   int busno;                 /* SAI controller index                   */
   struct clk_s *hclk;        /* APB register-interface clock           */
-  struct clk_s *aupll;       /* Audio PLL source                       */
-  struct clk_s *frac_sel;    /* Fractional clock parent selector       */
-  struct clk_s *frac;        /* Dedicated fractional audio clock       */
-  struct clk_s *frac_gate;   /* Fractional audio-clock gate            */
-  struct clk_s *mclk_sel;    /* SAI master-clock parent selector       */
-  struct clk_s *mclk;        /* Programmable audio master clock        */
   struct clk_s *mclk_gate;   /* Audio master-clock output gate         */
   struct dma_dev_s *dma_dev; /* PL330 generic DMA controller          */
   struct dma_chan_s *dma;    /* Active DMA channel (NULL when idle)   */
@@ -352,24 +345,6 @@ static struct rk3576_sai_s g_rk3576_sai[10] = {
 
 #define RK3576_SAI_NINSTANCES (sizeof(g_rk3576_sai) / sizeof(g_rk3576_sai[0]))
 
-/* On-chip there are only four shared audio fractional dividers
- * (clk_matrix_audio_frac_0..3) for all ten SAI controllers, so they must be
- * time-shared.  Each SAI picks its frac from a static table at init time and
- * the runtime arbiter below rejects a conflicting request when two SAIs try
- * to drive the same frac to different MCLK rates.  SAI1 keeps frac1 to
- * preserve the original single-SAI bring-up behaviour.
- */
-
-#define RK3576_SAI_NFRAC 4
-
-static const uint8_t g_rk3576_sai_frac_map[RK3576_SAI_NINSTANCES] = {
-  /* bus 0   1   2   3   4   5   6   7   8   9 */
-  0, 1, 2, 3, 0, 1, 2, 3, 0, 1,
-};
-
-static uint32_t g_rk3576_sai_frac_freq[RK3576_SAI_NFRAC];
-static int g_rk3576_sai_frac_owner[RK3576_SAI_NFRAC];
-
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -508,59 +483,31 @@ static void rk3576_sai_bufinit(struct rk3576_sai_s *priv)
 
 static int rk3576_sai_setclock(struct rk3576_sai_s *priv, uint32_t frequency)
 {
-  uint32_t source_frequency = frequency * 4;
-  int frac = priv->frac_index;
+  uint32_t round;
   uint32_t error;
   int ret;
 
-  /* Frac is a shared on-chip resource: refuse to re-program it if another
-   * SAI already drives it to a different MCLK rate.  Same-rate sharing is
-   * allowed (both consumers then observe the identical MCLK).
-   */
-
-  if (g_rk3576_sai_frac_owner[frac] != 0 &&
-      g_rk3576_sai_frac_owner[frac] != priv->busno &&
-      g_rk3576_sai_frac_freq[frac] != frequency)
+  round = clk_round_rate(priv->mclk_gate, frequency);
+  error = round > frequency ? round - frequency : frequency - round;
+  if (error > frequency / 100000)
     {
-      i2serr("ERROR: SAI%d frac%d busy at %" PRIu32
-             " Hz (owner SAI%d) -- cannot use %" PRIu32 " Hz\n",
-             priv->busno, frac, g_rk3576_sai_frac_freq[frac],
-             g_rk3576_sai_frac_owner[frac], frequency);
-      return -EBUSY;
+      i2serr("ERROR: SAI%d MCLK %" PRIu32
+             " Hz not achievable (framework rounds to %" PRIu32 " Hz)\n",
+             priv->busno, frequency, round);
+      return -ERANGE;
     }
 
-  ret = clk_set_rate(priv->frac, source_frequency);
+  ret = clk_set_rate(priv->mclk_gate, frequency);
   if (ret < 0)
     {
-      i2serr("ERROR: SAI%d failed to set fractional clock to %" PRIu32
-             " Hz: %d\n",
-             priv->busno, source_frequency, ret);
-      return ret;
-    }
-
-  ret = clk_set_rate(priv->mclk, frequency);
-  if (ret < 0)
-    {
-      i2serr("ERROR: SAI%d failed to set MCLK divider to %" PRIu32 " Hz: %d\n",
+      i2serr("ERROR: SAI%d failed to set MCLK to %" PRIu32 " Hz: %d\n",
              priv->busno, frequency, ret);
       return ret;
     }
 
-  priv->mclk_freq = clk_get_rate(priv->mclk);
-  error = priv->mclk_freq > frequency ? priv->mclk_freq - frequency
-                                      : frequency - priv->mclk_freq;
-  if (error > frequency / 100000)
-    {
-      i2serr("ERROR: SAI%d requested MCLK %" PRIu32
-             " Hz, clock framework selected %" PRIu32 " Hz\n",
-             priv->busno, frequency, priv->mclk_freq);
-      return -ERANGE;
-    }
+  /* Read back the actually programmed rate for diagnostics / bookkeeping. */
 
-  /* Record the frac owner so a later conflicting claim is rejected. */
-
-  g_rk3576_sai_frac_owner[frac] = priv->busno;
-  g_rk3576_sai_frac_freq[frac] = frequency;
+  priv->mclk_freq = clk_get_rate(priv->mclk_gate);
 
   return OK;
 }
@@ -568,17 +515,7 @@ static int rk3576_sai_setclock(struct rk3576_sai_s *priv, uint32_t frequency)
 static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
 {
   char name[32];
-  int frac_index;
   int ret;
-
-  if (priv->busno < 0 || priv->busno >= RK3576_SAI_NINSTANCES)
-    {
-      i2serr("ERROR: invalid SAI bus %d\n", priv->busno);
-      return -EINVAL;
-    }
-
-  frac_index = g_rk3576_sai_frac_map[priv->busno];
-  priv->frac_index = frac_index;
 
   snprintf(name, sizeof(name), "hclk_sai%d", priv->busno);
   priv->hclk = clk_get(name);
@@ -586,60 +523,6 @@ static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
     {
       i2serr("ERROR: SAI%d failed to get %s\n", priv->busno, name);
       return -ENODEV;
-    }
-
-  snprintf(name, sizeof(name), "mclk_sai%d_src_div", priv->busno);
-  priv->mclk = clk_get(name);
-  if (priv->mclk == NULL)
-    {
-      i2serr("ERROR: SAI%d failed to get %s\n", priv->busno, name);
-      return -ENODEV;
-    }
-
-  priv->aupll = clk_get("clk_aupll");
-  if (priv->aupll == NULL)
-    {
-      return -ENODEV;
-    }
-
-  snprintf(name, sizeof(name), "clk_matrix_audio_frac_%d_sel", frac_index);
-  priv->frac_sel = clk_get(name);
-  if (priv->frac_sel == NULL)
-    {
-      return -ENODEV;
-    }
-
-  snprintf(name, sizeof(name), "clk_matrix_audio_frac_%d_div", frac_index);
-  priv->frac = clk_get(name);
-  if (priv->frac == NULL)
-    {
-      return -ENODEV;
-    }
-
-  snprintf(name, sizeof(name), "clk_matrix_audio_frac_%d", frac_index);
-  priv->frac_gate = clk_get(name);
-  if (priv->frac_gate == NULL)
-    {
-      return -ENODEV;
-    }
-
-  snprintf(name, sizeof(name), "mclk_sai%d_src_sel", priv->busno);
-  priv->mclk_sel = clk_get(name);
-  if (priv->mclk_sel == NULL)
-    {
-      return -ENODEV;
-    }
-
-  ret = clk_set_parent(priv->frac_sel, priv->aupll);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  ret = clk_set_parent(priv->mclk_sel, priv->frac_gate);
-  if (ret < 0)
-    {
-      return ret;
     }
 
   snprintf(name, sizeof(name), "mclk_sai%d", priv->busno);
@@ -663,20 +546,10 @@ static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
       return ret;
     }
 
-  ret = clk_enable(priv->frac_gate);
-  if (ret < 0)
-    {
-      i2serr("ERROR: SAI%d failed to enable fractional clock: %d\n",
-             priv->busno, ret);
-      clk_disable(priv->hclk);
-      return ret;
-    }
-
   ret = clk_enable(priv->mclk_gate);
   if (ret < 0)
     {
       i2serr("ERROR: SAI%d failed to enable MCLK: %d\n", priv->busno, ret);
-      clk_disable(priv->frac_gate);
       clk_disable(priv->hclk);
       return ret;
     }

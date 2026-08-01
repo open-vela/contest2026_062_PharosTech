@@ -224,94 +224,44 @@
  *   SAI9 : CON68 (0x0B10)  mresetn=11 hresetn=9
  */
 
-#define RK3576_CRU_SAI0_SOFTRST        7
-#define RK3576_CRU_SAI0_MRST_BIT       (1 << 12)
-#define RK3576_CRU_SAI0_HRST_BIT       (1 << 13)
+#define RK3576_CRU_SAI0_SOFTRST  7
+#define RK3576_CRU_SAI0_MRST_BIT (1 << 12)
+#define RK3576_CRU_SAI0_HRST_BIT (1 << 13)
 
-#define RK3576_CRU_SAI1_SOFTRST        8
-#define RK3576_CRU_SAI1_MRST_BIT       (1 << 5)
-#define RK3576_CRU_SAI1_HRST_BIT       (1 << 6)
+#define RK3576_CRU_SAI1_SOFTRST  8
+#define RK3576_CRU_SAI1_MRST_BIT (1 << 5)
+#define RK3576_CRU_SAI1_HRST_BIT (1 << 6)
 
-#define RK3576_CRU_SAI2_SOFTRST        8
-#define RK3576_CRU_SAI2_MRST_BIT       (1 << 9)
-#define RK3576_CRU_SAI2_HRST_BIT       (1 << 10)
+#define RK3576_CRU_SAI2_SOFTRST  8
+#define RK3576_CRU_SAI2_MRST_BIT (1 << 9)
+#define RK3576_CRU_SAI2_HRST_BIT (1 << 10)
 
-#define RK3576_CRU_SAI3_SOFTRST        8
-#define RK3576_CRU_SAI3_MRST_BIT       (1 << 12)
-#define RK3576_CRU_SAI3_HRST_BIT       (1 << 13)
+#define RK3576_CRU_SAI3_SOFTRST  8
+#define RK3576_CRU_SAI3_MRST_BIT (1 << 12)
+#define RK3576_CRU_SAI3_HRST_BIT (1 << 13)
 
-#define RK3576_CRU_SAI4_SOFTRST        9
-#define RK3576_CRU_SAI4_MRST_BIT       (1 << 0)
-#define RK3576_CRU_SAI4_HRST_BIT       (1 << 2)
+#define RK3576_CRU_SAI4_SOFTRST  9
+#define RK3576_CRU_SAI4_MRST_BIT (1 << 0)
+#define RK3576_CRU_SAI4_HRST_BIT (1 << 2)
 
-#define RK3576_CRU_SAI5_SOFTRST        65
-#define RK3576_CRU_SAI5_MRST_BIT       (1 << 4)
-#define RK3576_CRU_SAI5_HRST_BIT       (1 << 5)
+#define RK3576_CRU_SAI5_SOFTRST  65
+#define RK3576_CRU_SAI5_MRST_BIT (1 << 4)
+#define RK3576_CRU_SAI5_HRST_BIT (1 << 5)
 
-#define RK3576_CRU_SAI6_SOFTRST        65
-#define RK3576_CRU_SAI6_MRST_BIT       (1 << 8)
-#define RK3576_CRU_SAI6_HRST_BIT       (1 << 9)
+#define RK3576_CRU_SAI6_SOFTRST  65
+#define RK3576_CRU_SAI6_MRST_BIT (1 << 8)
+#define RK3576_CRU_SAI6_HRST_BIT (1 << 9)
 
-#define RK3576_CRU_SAI7_SOFTRST        67
-#define RK3576_CRU_SAI7_MRST_BIT       (1 << 5)
-#define RK3576_CRU_SAI7_HRST_BIT       (1 << 6)
+#define RK3576_CRU_SAI7_SOFTRST  67
+#define RK3576_CRU_SAI7_MRST_BIT (1 << 5)
+#define RK3576_CRU_SAI7_HRST_BIT (1 << 6)
 
-#define RK3576_CRU_SAI8_SOFTRST        66
-#define RK3576_CRU_SAI8_MRST_BIT       (1 << 2)
-#define RK3576_CRU_SAI8_HRST_BIT       (1 << 0)
+#define RK3576_CRU_SAI8_SOFTRST  66
+#define RK3576_CRU_SAI8_MRST_BIT (1 << 2)
+#define RK3576_CRU_SAI8_HRST_BIT (1 << 0)
 
-#define RK3576_CRU_SAI9_SOFTRST        68
-#define RK3576_CRU_SAI9_MRST_BIT       (1 << 11)
-#define RK3576_CRU_SAI9_HRST_BIT       (1 << 9)
-
-#define RK3576_CRU_SAI1_CLKSEL         46
-#define RK3576_CRU_SAI1_MCLK_SEL_BIT   (1 << 11) /* 0=mclk_sai1_src 1=mclkin */
-#define RK3576_CRU_SAI1_MSRC_SEL_SHIFT 8 /* [10:8] src parent mux     */
-#define RK3576_CRU_SAI1_MSRC_SEL_MASK  (0x7 << RK3576_CRU_SAI1_MSRC_SEL_SHIFT)
-#define RK3576_CRU_SAI1_MSRC_DIV_SHIFT 0 /* [7:0] src /= div_con+1    */
-#define RK3576_CRU_SAI1_MSRC_DIV_MASK  (0xff << RK3576_CRU_SAI1_MSRC_DIV_SHIFT)
-
-/* mclk_saiN_src parent select values (CRU_CLKSEL_CONn[10:8], 3-bit).  Only
- * the ones we use are named; the full list is xin_osc0(0),
- * audio_frac_0..3(1..4), audio_int_0..2(5..7).  The per-SAI mapping of the
- * four fractional dividers is a resource-allocation policy owned by the
- * driver (see rk3576_sai.c): on-chip there are only four
- * clk_matrix_audio_frac_0..3 shared by all ten SAI controllers.
- */
-
-#define RK3576_CRU_SAI_MSRC_SEL_AFRAC(n) (0x1 + (n))
-
-/* Audio fractional divider 0 (clk_matrix_audio_frac_0).  This is the parent
- * we drive mclk_sai1 from.  TRM Part1:
- *   CRU_CLKSEL_CON12 (0x0330): 32-bit fraction, [31:16]=numerator,
- *                              [15:0]=denominator; fout = fin * num / den.
- *   CRU_CLKSEL_CON13 (0x0334)[1:0]: fraction input mux
- *        00=gpll 01=cpll 10=aupll 11=xin_osc0.
- * SAI1 is the only audio consumer during bring-up, so appropriating frac_0
- * is safe; add per-SAI frac assignments here if SAI2..9 are brought up.
- */
-
-#define RK3576_CRU_AFRAC0_DIV_CON   12 /* CRU_CLKSEL_CON12          */
-#define RK3576_CRU_AFRAC0_SEL_CON   13 /* CRU_CLKSEL_CON13          */
-#define RK3576_CRU_AFRAC0_SEL_SHIFT 0  /* [1:0] fraction input mux  */
-#define RK3576_CRU_AFRAC0_SEL_MASK  (0x3 << RK3576_CRU_AFRAC0_SEL_SHIFT)
-#define RK3576_CRU_AFRAC0_SEL_AUPLL 0x2 /* clk_aupll_mux             */
-
-/* AUPLL runs at its reset rate = 24 MHz * (M + K/65536) / (P * 2^S) with
- * M=131 P=1 S=3 K=4719 => 24 MHz * 16.384 = 393.216 MHz, a canonical audio
- * rate equal to 32 * 12.288 MHz.  An integer ratio (fin/fout) makes the
- * fractional divider degenerate to a clean /N divide (num=1, den=N), so the
- * resulting MCLK is exact and jitter-free.  Verify on hardware that the
- * loader has not repurposed AUPLL (read CRU_AUPLL_CON0..2) before relying
- * on this constant.
- */
-
-/* AUPLL rate as left by the boot loader, read back from CRU_AUPLL_CON0..2 on
- * the KICKPI-K7: M=131, P=1, S=2, K=4719 => 24MHz*(131+4719/65536)/(1*2^2) =
- * 786.432 MHz.  786.432 / 64 = 12.288 MHz (48kHz*256), an exact integer
- * divide, so the audio_frac_0 fraction degenerates to num=1/den=64.
- */
-
-#define RK3576_AUPLL_FREQ 786432000u
+#define RK3576_CRU_SAI9_SOFTRST  68
+#define RK3576_CRU_SAI9_MRST_BIT (1 << 11)
+#define RK3576_CRU_SAI9_HRST_BIT (1 << 9)
 
 #endif /* __VENDOR_ROCKCHIP_RK3576_HARDWARE_RK3576_SAI_H */
