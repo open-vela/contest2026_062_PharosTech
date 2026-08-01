@@ -160,8 +160,9 @@ struct rk3576_sai_s
   struct i2s_dev_s dev;      /* Externally visible I2S interface      */
   uintptr_t base;            /* Controller register base              */
   int irq;                   /* SAI interrupt number                  */
-  unsigned int dma_tx_req;   /* dmac0 TX peripheral-request line       */
-  unsigned int dma_rx_req;   /* dmac0 RX peripheral-request line       */
+  unsigned int dma_tx_req;   /* DMA TX peripheral-request line        */
+  unsigned int dma_rx_req;   /* DMA RX peripheral-request line        */
+  unsigned int dma_ctrl;     /* Owning DMA controller index (0/1/2)   */
   int busno;                 /* SAI controller index                   */
   struct clk_s *hclk;        /* APB register-interface clock           */
   struct clk_s *aupll;       /* Audio PLL source                       */
@@ -290,6 +291,7 @@ static struct rk3576_sai_s g_rk3576_sai1 = {
   .busno = 1,
   .dma_tx_req = RK3576_SAI1_DMA_TX_REQ,
   .dma_rx_req = RK3576_SAI1_DMA_RX_REQ,
+  .dma_ctrl = 0,
   .lock = NXMUTEX_INITIALIZER,
   .samplerate = RK3576_SAI_DEF_SAMPLERATE,
   .datalen = RK3576_SAI_DEF_DATALEN,
@@ -725,7 +727,7 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
 
   /* Acquire a DMA channel bound to the active direction's request line. */
 
-  priv->dma_dev = rk3576_dma_initialize();
+  priv->dma_dev = rk3576_dma_initialize(priv->dma_ctrl);
   priv->dma = DMA_GET_CHAN(priv->dma_dev,
                            priv->txenab ? priv->dma_tx_req : priv->dma_rx_req);
   if (priv->dma == NULL)

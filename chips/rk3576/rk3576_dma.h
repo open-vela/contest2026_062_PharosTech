@@ -28,8 +28,10 @@
  * struct dma_dev_s * and clients drive it with the framework's
  * DMA_GET_CHAN / DMA_CONFIG / DMA_START / DMA_STOP / DMA_PUT_CHAN macros.
  * This lets any generic consumer (e.g. audio_dma, uart_16550) reuse the
- * controller without a controller-specific API.  The private micro-code
- * assembler / debug-interface launch stays internal to rk3576_dma.c.
+ * controller without a controller-specific API.  All three PL330 controllers
+ * (dmac0/1/2) are exposed; select one with the rk3576_dma_initialize()
+ * 'ctrl' argument.  The private micro-code assembler / debug-interface
+ * launch stays internal to rk3576_dma.c.
  ****************************************************************************/
 
 #ifndef __ARCH_ARM64_SRC_RK3576_RK3576_DMA_H
@@ -67,17 +69,20 @@
  * Name: rk3576_dma_initialize
  *
  * Description:
- *   Return the RK3576 PL330 DMA controller as a generic struct dma_dev_s.
- *   The controller hardware is brought up lazily on the first
- *   DMA_GET_CHAN().  Only dmac0 is instantiated today; the returned handle
- *   is a singleton.
+ *   Return the selected RK3576 PL330 DMA controller (index 0/1/2 ->
+ *   dmac0/dmac1/dmac2) as a generic struct dma_dev_s.  The controller
+ *   hardware (clock/reset ungating, interrupt attach) is brought up lazily
+ *   on the first DMA_GET_CHAN() against that controller.
+ *
+ * Input Parameters:
+ *   ctrl - Controller index.
  *
  * Returned Value:
- *   A pointer to the DMA controller device, never NULL.
+ *   A pointer to the DMA controller device, or NULL on failure.
  *
  ****************************************************************************/
 
-struct dma_dev_s *rk3576_dma_initialize(void);
+struct dma_dev_s *rk3576_dma_initialize(unsigned int ctrl);
 
 #endif /* CONFIG_RK3576_DMA */
 #endif /* __ARCH_ARM64_SRC_RK3576_RK3576_DMA_H */

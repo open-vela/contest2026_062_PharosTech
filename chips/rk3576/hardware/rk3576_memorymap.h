@@ -105,8 +105,10 @@
 /* IOMUX */
 #define RK3576_IOC_ADDR 0x26040000
 
-/* DMA controller */
+/* DMA controller (three PL330 instances, non-secure bases) ***************/
 
 #define RK3576_DMAC0_ADDR 0x2ab90000
+#define RK3576_DMAC1_ADDR 0x2abb0000
+#define RK3576_DMAC2_ADDR 0x2abd0000
 
 #endif /* __ARCH_ARM64_SRC_RK3576_HARDWARE_RK3576_MEMORYMAP_H */

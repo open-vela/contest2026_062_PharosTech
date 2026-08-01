@@ -53,8 +53,10 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include <nuttx/arch.h>
+#include <nuttx/clk/clk.h>
 #include <nuttx/irq.h>
 #include <nuttx/spinlock.h>
 
@@ -70,21 +72,23 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Controller base address.  Only dmac0 is instantiated by default; dmac1
- * (0x2abb0000) and dmac2 (0x2abd0000) can be added by giving each its own
- * instance of struct rk3576_dma_ctrl_s.
+/* Controller base address.  Three PL330 instances: dmac0 (0x2ab90000),
+ * dmac1 (0x2abb0000) and dmac2 (0x2abd0000), each with its own instance of
+ * struct rk3576_dma_ctrl_s.
  */
 
-/* GIC INTIDs for dmac0 (from arch/arm64/include/rk3576/irq.h).  The "event"
- * line signals DMASEV completion and normal channel interrupts; the "abort"
- * line signals a manager/channel fault.  NOTE: the TRM numbers the SPIs as
- * event=SPI0 (INTID 64) and abort=SPI1 (INTID 65); verify against the TRM
- * DMA request table if a controller other than dmac0 is added.
+/* GIC INTIDs (from arch/arm64/include/rk3576/irq.h).  The "event" line
+ * signals DMASEV completion and normal channel interrupts; the "abort" line
+ * signals a manager/channel fault.  Each controller has its own pair:
+ * dmac0 = SPI0 (64) / SPI1 (65), dmac1 = 66/67, dmac2 = 68/69 (see the TRM
+ * interrupt table).
  */
 
 /* DMAGO launch state.  openvela runs non-secure at EL1, so the DMA manager
  * is expected to have booted non-secure and DMAGO must carry the NS bit.
- * Verify with CR0.mgr_ns_at_rst / the platform boot state on hardware.
+ * Per the TRM all three controllers reset non-secure (CR0.mgr_ns_at_rst)
+ * and CR3.ins defaults to 0x0000ffff (events 0..15 non-secure), so the same
+ * launch state applies to dmac1 and dmac2 too.
  */
 
 #define RK3576_DMA_LAUNCH_NS 1
@@ -147,14 +151,15 @@ struct rk3576_dma_xfer_s
 struct rk3576_dmach_s
 {
   struct dma_chan_s dev; /* Generic channel (vtable) - must be first   */
-  uint8_t chan;          /* Channel number 0..7                        */
-  uint8_t periph;        /* Peripheral request line, or DRQ_NONE       */
-  bool inuse;            /* Channel reserved                           */
-  uint8_t direction;     /* Cached from DMA_CONFIG (M2M/M2P/P2M)        */
-  uint8_t src_width;     /* Cached source beat width (bytes)           */
-  uint8_t dst_width;     /* Cached destination beat width (bytes)      */
-  size_t proglen;        /* Assembled micro-code length in bytes       */
-  size_t xferlen;        /* Bytes in the in-flight transfer            */
+  struct rk3576_dma_ctrl_s *ctrl; /* Owning controller (back-pointer)  */
+  uint8_t chan;      /* Channel number 0..7                        */
+  uint8_t periph;    /* Peripheral request line, or DRQ_NONE       */
+  bool inuse;        /* Channel reserved                           */
+  uint8_t direction; /* Cached from DMA_CONFIG (M2M/M2P/P2M)        */
+  uint8_t src_width; /* Cached source beat width (bytes)           */
+  uint8_t dst_width; /* Cached destination beat width (bytes)      */
+  size_t proglen;    /* Assembled micro-code length in bytes       */
+  size_t xferlen;    /* Bytes in the in-flight transfer            */
   dma_callback_t callback;
   void *arg;
 
@@ -176,6 +181,9 @@ struct rk3576_dma_ctrl_s
   uintptr_t base;       /* Controller register base                   */
   int irq_event;        /* Completion/event interrupt                 */
   int irq_abort;        /* Fault/abort interrupt                       */
+  bool initialized;     /* Per-controller bring-up done               */
+  uint8_t index;        /* Controller index (0/1/2 -> dmac0/1/2)       */
+  struct clk_s *aclk;   /* Resolved aclk gate clock (clock tree)      */
   spinlock_t lock;      /* Guards channel allocation + register access */
   struct rk3576_dmach_s chan[RK3576_DMA_NCHANNELS];
 };
@@ -259,21 +267,86 @@ static const struct dma_ops_s g_rk3576_dma_ops = {
   .residual = rk3576_dma_residual,
 };
 
-/* dmac0.  Additional controllers get their own instance and irq attach. */
+/* Per-controller static initialisers.  Every channel is bound once at link
+ * time to the shared vtable (g_rk3576_dma_ops), its owning controller
+ * back-pointer (g_rk3576_dmacN) and its channel number, so no runtime setup
+ * pass is needed: rk3576_dma_initialize() only validates the index and
+ * returns the selected device.  Channel names prefix "g_rk3576_dmac" with the
+ * controller number; the channel array is inside that same controller, so the
+ * back-pointer refers to the instance being defined.
+ *
+ * RK3576_DMA_CHAN_INIT(idx, n) - one channel element.
+ * RK3576_DMA_CTRL_INIT(idx, addr, evt, abt) - one whole controller.
+ */
 
-static struct rk3576_dma_ctrl_s g_rk3576_dmac0 = {
-  .dev =
-    {
-      .get_chan = rk3576_dma_get_chan,
-      .put_chan = rk3576_dma_put_chan,
-    },
-  .base = RK3576_DMAC0_ADDR,
-  .irq_event = RK3576_IRQ_DMAC0,
-  .irq_abort = RK3576_IRQ_DMAC0_ABORT,
-  .lock = SP_UNLOCKED,
+#define RK3576_DMA_CTRL_NAME(idx) g_rk3576_dmac##idx
+
+#define RK3576_DMA_CHAN_INIT(idx, n)                                         \
+  {                                                                          \
+    .dev = { .ops = &g_rk3576_dma_ops }, .ctrl = &RK3576_DMA_CTRL_NAME(idx), \
+    .chan = (n)                                                              \
+  }
+
+#define RK3576_DMA_CTRL_INIT(idx, addr, evt, abt) \
+  static struct rk3576_dma_ctrl_s RK3576_DMA_CTRL_NAME(idx) = { \
+    .dev =                                               \
+      {                                                  \
+        .get_chan = rk3576_dma_get_chan,                 \
+        .put_chan = rk3576_dma_put_chan,                 \
+      },                                                 \
+    .base = (addr),                                      \
+    .irq_event = (evt),                                  \
+    .irq_abort = (abt),                                  \
+    .index = (idx),                                      \
+    .lock = SP_UNLOCKED,                                 \
+    .chan =                                              \
+      {                                                  \
+        RK3576_DMA_CHAN_INIT(idx, 0),                    \
+        RK3576_DMA_CHAN_INIT(idx, 1),                    \
+        RK3576_DMA_CHAN_INIT(idx, 2),                    \
+        RK3576_DMA_CHAN_INIT(idx, 3),                    \
+        RK3576_DMA_CHAN_INIT(idx, 4),                    \
+        RK3576_DMA_CHAN_INIT(idx, 5),                    \
+        RK3576_DMA_CHAN_INIT(idx, 6),                    \
+        RK3576_DMA_CHAN_INIT(idx, 7),                    \
+      },                                                 \
+  }
+
+/* Forward declarations so the initialisers above can take the address of an
+ * instance (including the one currently being defined).
+ */
+
+static struct rk3576_dma_ctrl_s g_rk3576_dmac0;
+static struct rk3576_dma_ctrl_s g_rk3576_dmac1;
+static struct rk3576_dma_ctrl_s g_rk3576_dmac2;
+
+/* One controller instance per PL330.  Each has its own get/put_chan table
+ * (the generic struct dma_dev_s get_chan/put_chan), its own irq pair and a
+ * per-controller bring-up flag.
+ */
+
+RK3576_DMA_CTRL_INIT(0, RK3576_DMAC0_ADDR, RK3576_IRQ_DMAC0,
+                     RK3576_IRQ_DMAC0_ABORT);
+RK3576_DMA_CTRL_INIT(1, RK3576_DMAC1_ADDR, RK3576_IRQ_DMAC1,
+                     RK3576_IRQ_DMAC1_ABORT);
+RK3576_DMA_CTRL_INIT(2, RK3576_DMAC2_ADDR, RK3576_IRQ_DMAC2,
+                     RK3576_IRQ_DMAC2_ABORT);
+
+/* Cleaning up macros */
+#undef RK3576_DMA_CTRL_INIT
+#undef RK3576_DMA_CHAN_INIT
+#undef RK3576_DMA_CTRL_NAME
+
+/* All controllers, ordered by the rk3576_dma_initialize() 'ctrl' index. */
+
+static struct rk3576_dma_ctrl_s *const g_rk3576_dma_ctrls[] = {
+  &g_rk3576_dmac0,
+  &g_rk3576_dmac1,
+  &g_rk3576_dmac2,
 };
 
-static bool g_rk3576_dma_initialized;
+#define RK3576_DMA_NCTRL \
+  (sizeof(g_rk3576_dma_ctrls) / sizeof(g_rk3576_dma_ctrls[0]))
 
 /****************************************************************************
  * Private Functions
@@ -295,15 +368,13 @@ static void rk3576_dma_putreg(struct rk3576_dma_ctrl_s *ctrl, unsigned int off,
  * Name: rk3576_dma_ctrl_of
  *
  * Description:
- *   Return the controller owning a channel.  Only dmac0 exists today, so
- *   this is a direct mapping; kept as a helper so more controllers can be
- *   added without touching the call sites.
+ *   Return the controller owning a channel.  Each channel carries a
+ *   back-pointer to its controller, set once in rk3576_dma_initialize().
  ****************************************************************************/
 
 static struct rk3576_dma_ctrl_s *rk3576_dma_ctrl_of(struct rk3576_dmach_s *ch)
 {
-  UNUSED(ch);
-  return &g_rk3576_dmac0;
+  return ch->ctrl;
 }
 
 /****************************************************************************
@@ -753,15 +824,39 @@ static int rk3576_dma_abort_isr(int irq, void *context, void *arg)
 
 static int rk3576_dmac_bringup(struct rk3576_dma_ctrl_s *ctrl)
 {
+  char aclk_name[16];
   uint32_t cr0;
   int ret;
   int i;
 
+  /* Resolve and enable the controller's aclk gate clock.  The aclk_dmacN
+   * clocks are registered with the CLK framework in rk3576_clk_tree.c
+   * (CRU_GATE_CON19 bits 1/2/3, SET_TO_DISABLE); clk_enable() clears the
+   * gate bit.  After power-on reset the aclks are already ungated, so this
+   * simply preserves / restores that default.  Peripheral reset is not
+   * touched here: power-on reset leaves the DMACs out of reset, and we rely
+   * on the firmware not disturbing that state.
+   */
+
+  snprintf(aclk_name, sizeof(aclk_name), "aclk_dmac%u", ctrl->index);
+  ctrl->aclk = clk_get(aclk_name);
+  if (ctrl->aclk == NULL)
+    {
+      dmaerr("ERROR: dmac@%" PRIxPTR " failed to get %s\n", ctrl->base,
+             aclk_name);
+      return -ENODEV;
+    }
+
+  ret = clk_enable(ctrl->aclk);
+  if (ret < 0)
+    {
+      dmaerr("ERROR: dmac@%" PRIxPTR " failed to enable %s: %d\n", ctrl->base,
+             aclk_name, ret);
+      return ret;
+    }
+
   /* Confirm the controller is clocked by reading CR0 (a gated block reads
-   * back 0 / all-ones).  The bootloader normally leaves the dmac aclk
-   * (CRU clk id 0xC9) ungated; if CR0 does not report the expected 8
-   * channels, a CRU ungate (mirror rk3576_cru_*_enable) is required here.
-   * Left as a probe concern rather than programming CRU bits blindly.
+   * back 0 / all-ones).
    */
 
   cr0 = rk3576_dma_getreg(ctrl, RK3576_DMA_CR0);
@@ -769,7 +864,8 @@ static int rk3576_dmac_bringup(struct rk3576_dma_ctrl_s *ctrl)
     {
       dmaerr("ERROR: dmac@%" PRIxPTR " CR0=%08" PRIx32 " (clock gated?)\n",
              ctrl->base, cr0);
-      return -ENODEV;
+      ret = -ENODEV;
+      goto err_clk;
     }
 
   dmainfo("dmac@%" PRIxPTR " CR0=%08" PRIx32 " channels=%u\n", ctrl->base, cr0,
@@ -783,6 +879,26 @@ static int rk3576_dmac_bringup(struct rk3576_dma_ctrl_s *ctrl)
       ctrl->chan[i].inuse = false;
     }
 
+  /* Attach both interrupt handlers first, so that once the event mask is
+   * armed below (and the interrupt lines are unmasked at the GIC with
+   * up_enable_irq()) the ISRs are guaranteed to be installed before any
+   * DMA completion/fault event can reach them.
+   */
+
+  ret = irq_attach(ctrl->irq_event, rk3576_dma_event_isr, ctrl);
+  if (ret < 0)
+    {
+      dmaerr("ERROR: irq_attach event irq=%d ret=%d\n", ctrl->irq_event, ret);
+      goto err_clk;
+    }
+
+  ret = irq_attach(ctrl->irq_abort, rk3576_dma_abort_isr, ctrl);
+  if (ret < 0)
+    {
+      dmaerr("ERROR: irq_attach abort irq=%d ret=%d\n", ctrl->irq_abort, ret);
+      goto err_event;
+    }
+
   /* Mask and clear all events, then route every event to the interrupt
    * line (INTEN bit set = event N raises an interrupt rather than only
    * being observable via INT_EVENT_RIS).
@@ -792,25 +908,18 @@ static int rk3576_dmac_bringup(struct rk3576_dma_ctrl_s *ctrl)
   rk3576_dma_putreg(ctrl, RK3576_DMA_INTCLR, 0xff);
   rk3576_dma_putreg(ctrl, RK3576_DMA_INTEN, 0xff);
 
-  /* Attach and enable both interrupt lines. */
-
-  ret = irq_attach(ctrl->irq_event, rk3576_dma_event_isr, ctrl);
-  if (ret < 0)
-    {
-      dmaerr("ERROR: irq_attach event irq=%d ret=%d\n", ctrl->irq_event, ret);
-      return ret;
-    }
-
-  ret = irq_attach(ctrl->irq_abort, rk3576_dma_abort_isr, ctrl);
-  if (ret < 0)
-    {
-      dmaerr("ERROR: irq_attach abort irq=%d ret=%d\n", ctrl->irq_abort, ret);
-      return ret;
-    }
+  /* Enable both interrupt lines. */
 
   up_enable_irq(ctrl->irq_event);
   up_enable_irq(ctrl->irq_abort);
   return OK;
+
+err_event:
+  irq_detach(ctrl->irq_event);
+
+err_clk:
+  clk_disable(ctrl->aclk);
+  return ret;
 }
 
 /****************************************************************************
@@ -1293,7 +1402,7 @@ static struct dma_chan_s *rk3576_dma_get_chan(struct dma_dev_s *dev,
 
   flags = spin_lock_irqsave(&ctrl->lock);
 
-  if (!g_rk3576_dma_initialized)
+  if (!ctrl->initialized)
     {
       if (rk3576_dmac_bringup(ctrl) < 0)
         {
@@ -1301,7 +1410,7 @@ static struct dma_chan_s *rk3576_dma_get_chan(struct dma_dev_s *dev,
           return NULL;
         }
 
-      g_rk3576_dma_initialized = true;
+      ctrl->initialized = true;
     }
 
   for (i = 0; i < RK3576_DMA_NCHANNELS; i++)
@@ -1368,23 +1477,24 @@ static void rk3576_dma_put_chan(struct dma_dev_s *dev, struct dma_chan_s *chan)
 
 /****************************************************************************
  * Name: rk3576_dma_initialize
+ *
+ * Description:
+ *   Return the selected controller (index 0/1/2 -> dmac0/dmac1/dmac2) as a
+ *   generic struct dma_dev_s.  The per-channel vtables and controller
+ *   back-pointers are bound statically, and the controller register block /
+ *   interrupt lines are brought up lazily on the first DMA_GET_CHAN() against
+ *   that controller.
  ****************************************************************************/
 
-struct dma_dev_s *rk3576_dma_initialize(void)
+struct dma_dev_s *rk3576_dma_initialize(unsigned int ctrl)
 {
-  /* Bind the per-channel vtable.  The controller register block is brought
-   * up lazily on the first get_chan().
-   */
-
-  int i;
-
-  for (i = 0; i < RK3576_DMA_NCHANNELS; i++)
+  if (ctrl >= RK3576_DMA_NCTRL)
     {
-      g_rk3576_dmac0.chan[i].dev.ops = &g_rk3576_dma_ops;
-      g_rk3576_dmac0.chan[i].chan = (uint8_t)i;
+      dmaerr("ERROR: invalid DMA controller index %u\n", ctrl);
+      return NULL;
     }
 
-  return &g_rk3576_dmac0.dev;
+  return &g_rk3576_dma_ctrls[ctrl]->dev;
 }
 
 #endif /* CONFIG_RK3576_DMA */

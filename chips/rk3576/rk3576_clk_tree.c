@@ -1328,6 +1328,46 @@ static void rk3576_clk_register_sai(void)
 #undef RK3576_CLK_REGISTER_SAI_ONE
 
 /****************************************************************************
+ * Name: rk3576_clk_register_dmac
+ *
+ * Description:
+ *   Register the three DMA controllers' aclk gate clocks (aclk_dmac0/1/2)
+ *   with the NuttX CLK framework.  Each gate is a single hiword-mask bit in
+ *   CRU_GATE_CON19, SET_TO_DISABLE (high = clock off); enabling the clock
+ *   writes 0 to the gate bit.
+ *
+ *   Per the TRM the aclk gates (aclk_dmac0/1/2_en) sit at GATE_CON19 bits
+ *   1/2/3.  The parent clocks are not modelled (NULL), matching the reset
+ *   default: after power-on reset all aclks are ungated, so enabling the
+ *   gate preserves that state for the DMA drivers.
+ ****************************************************************************/
+
+#ifdef CONFIG_RK3576_DMA
+static void rk3576_clk_register_dmac(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+
+  /* aclk_dmac0 — GATE_CON19 bit 1. */
+
+  clk_register_gate("aclk_dmac0", NULL, CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(19), 1,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* aclk_dmac1 — GATE_CON19 bit 2. */
+
+  clk_register_gate("aclk_dmac1", NULL, CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(19), 2,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* aclk_dmac2 — GATE_CON19 bit 3. */
+
+  clk_register_gate("aclk_dmac2", NULL, CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(19), 3,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+}
+#endif /* CONFIG_RK3576_DMA */
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -1360,5 +1400,9 @@ void rk3576_clk_tree_initialize(void)
 
 #ifdef CONFIG_RK3576_SAI
   rk3576_clk_register_sai();
+#endif
+
+#ifdef CONFIG_RK3576_DMA
+  rk3576_clk_register_dmac();
 #endif
 }
