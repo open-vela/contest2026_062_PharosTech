@@ -88,7 +88,16 @@
 
 /* Serial Audio Interface controllers. */
 
+#define RK3576_SAI0_ADDR 0x2a600000
 #define RK3576_SAI1_ADDR 0x2a610000
+#define RK3576_SAI2_ADDR 0x2a620000
+#define RK3576_SAI3_ADDR 0x2a630000
+#define RK3576_SAI4_ADDR 0x2a640000
+#define RK3576_SAI5_ADDR 0x27d40000
+#define RK3576_SAI6_ADDR 0x27d50000
+#define RK3576_SAI7_ADDR 0x27ed0000
+#define RK3576_SAI8_ADDR 0x27ee0000
+#define RK3576_SAI9_ADDR 0x27ef0000
 
 /* Clock & Reset Unit */
 

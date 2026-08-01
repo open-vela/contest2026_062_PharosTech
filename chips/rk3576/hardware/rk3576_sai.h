@@ -22,9 +22,10 @@
 
 /****************************************************************************
  * The RK3576 SAI (Serial Audio Interface, "rockchip,sai-v1") is a
- * multi-slot I2S/TDM controller.  Each instance is a 0x1000 register window;
- * SAI1 lives at 0x2a610000 and on the KICKPI-K7 drives an ES8388 codec (SAI1
- * is the bus master: it sources MCLK / BCLK / LRCK, the codec is the slave).
+ * multi-slot I2S/TDM controller.  Each instance is a 0x1000 register window
+ * A SAI controller is the I2S bus master, sourcing MCLK / BCLK / LRCK
+ * to a slave codec; which controller is wired to which codec is decided
+ * by the board layer.
  *
  * Register field encodings below are transcribed from the RK3576 TRM Part1
  * V1.2 section 24 (SAI).  The TX / RX operation-control registers (SAI_TXCR
@@ -47,12 +48,38 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* dmac0 peripheral-request lines for SAI1 (DTS: dmas = <&dmac0 2 &dmac0 3>,
- * dma-names "tx", "rx").  Passed to rk3576_dma_get_channel().
+/* DMA peripheral-request lines for every SAI controller, from the TRM
+ * Table 1-4 DMAC Request Mapping.  Each SAI hangs off one of the three
+ * PL330 controllers (dmac0/1/2) with a (tx, rx) request pair.
+ *
+ * Note: SAI5 has only an RX request and SAI7/SAI8/SAI9 only a TX request --
+ * those controllers are inherently single-direction and the respective
+ * partner request line is undefined (ND).
  */
 
+/* SAI0, SAI1 : DMAC0 */
+#define RK3576_SAI0_DMA_TX_REQ 0
+#define RK3576_SAI0_DMA_RX_REQ 1
 #define RK3576_SAI1_DMA_TX_REQ 2
 #define RK3576_SAI1_DMA_RX_REQ 3
+
+/* SAI2, SAI3, SAI8 : DMAC1 */
+#define RK3576_SAI2_DMA_TX_REQ 0
+#define RK3576_SAI2_DMA_RX_REQ 1
+#define RK3576_SAI3_DMA_TX_REQ 2
+#define RK3576_SAI3_DMA_RX_REQ 3
+#define RK3576_SAI8_DMA_TX_REQ 7
+
+/* SAI4, SAI5, SAI6, SAI7 : DMAC2 */
+#define RK3576_SAI4_DMA_TX_REQ 0
+#define RK3576_SAI4_DMA_RX_REQ 1
+#define RK3576_SAI5_DMA_RX_REQ 3
+#define RK3576_SAI6_DMA_TX_REQ 4
+#define RK3576_SAI6_DMA_RX_REQ 5
+#define RK3576_SAI7_DMA_TX_REQ 19
+
+/* SAI9 : DMAC0 (single TX request line). */
+#define RK3576_SAI9_DMA_TX_REQ 26
 
 /* Register offsets (per instance window) ******************************/
 
@@ -178,22 +205,64 @@
 #define SAI_INTSR_TXUI (1 << 1)  /* Tx underrun interrupt active  */
 #define SAI_INTSR_TXEI (1 << 0)  /* Tx empty interrupt active     */
 
-/* SAI1 clock control in the CRU (0x27200000).  Gate/reset bits verified
- * against RK3576 TRM Part1 CRU_GATE_CON08 (0x0820) and CRU_SOFTRST_CON08
- * (0x0a20); the mclk mux/divider lives in CRU_CLKSEL_CON46 (0x03b8).  Gate
- * bits are active-high-disable (write 0 to ungate).  Use with the
- * RK3576_CRU_GATE_CON()/SOFTRST_CON()/CLKSEL_CON() helpers from
+/* SAI soft-reset control.  Per the TRM each SAI has a (mresetn, hresetn)
+ * pair in one CRU_SOFTRST_CONn register; the driver pulses both when a
+ * controller is brought up.  The clock framework (rk3576_clk.c) is the
+ * source of truth for the GATE/CLKSEL bits, so only the reset indices and
+ * masks are needed here.  Use with RK3576_CRU_SOFTRST_CON() from
  * hardware/rk3576_cru.h.
+ *
+ *   SAI0 : CON07 (0x0A1C)  mresetn=12 hresetn=13
+ *   SAI1 : CON08 (0x0A20)  mresetn=5  hresetn=6
+ *   SAI2 : CON08 (0x0A20)  mresetn=9  hresetn=10
+ *   SAI3 : CON08 (0x0A20)  mresetn=12 hresetn=13
+ *   SAI4 : CON09 (0x0A24)  mresetn=0  hresetn=2
+ *   SAI5 : CON65 (0x0B04)  mresetn=4  hresetn=5
+ *   SAI6 : CON65 (0x0B04)  mresetn=8  hresetn=9
+ *   SAI7 : CON67 (0x0B0C)  mresetn=5  hresetn=6
+ *   SAI8 : CON66 (0x0B08)  mresetn=2  hresetn=0
+ *   SAI9 : CON68 (0x0B10)  mresetn=11 hresetn=9
  */
 
-#define RK3576_CRU_SAI1_GATE           8
-#define RK3576_CRU_SAI1_MCLK_SRC_BIT   (1 << 4) /* mclk_sai1_src_en          */
-#define RK3576_CRU_SAI1_MCLK_BIT       (1 << 5) /* mclk_sai1_en              */
-#define RK3576_CRU_SAI1_HCLK_BIT       (1 << 6) /* hclk_sai1_en              */
+#define RK3576_CRU_SAI0_SOFTRST        7
+#define RK3576_CRU_SAI0_MRST_BIT       (1 << 12)
+#define RK3576_CRU_SAI0_HRST_BIT       (1 << 13)
 
 #define RK3576_CRU_SAI1_SOFTRST        8
-#define RK3576_CRU_SAI1_MRST_BIT       (1 << 5) /* mresetn_sai1              */
-#define RK3576_CRU_SAI1_HRST_BIT       (1 << 6) /* hresetn_sai1              */
+#define RK3576_CRU_SAI1_MRST_BIT       (1 << 5)
+#define RK3576_CRU_SAI1_HRST_BIT       (1 << 6)
+
+#define RK3576_CRU_SAI2_SOFTRST        8
+#define RK3576_CRU_SAI2_MRST_BIT       (1 << 9)
+#define RK3576_CRU_SAI2_HRST_BIT       (1 << 10)
+
+#define RK3576_CRU_SAI3_SOFTRST        8
+#define RK3576_CRU_SAI3_MRST_BIT       (1 << 12)
+#define RK3576_CRU_SAI3_HRST_BIT       (1 << 13)
+
+#define RK3576_CRU_SAI4_SOFTRST        9
+#define RK3576_CRU_SAI4_MRST_BIT       (1 << 0)
+#define RK3576_CRU_SAI4_HRST_BIT       (1 << 2)
+
+#define RK3576_CRU_SAI5_SOFTRST        65
+#define RK3576_CRU_SAI5_MRST_BIT       (1 << 4)
+#define RK3576_CRU_SAI5_HRST_BIT       (1 << 5)
+
+#define RK3576_CRU_SAI6_SOFTRST        65
+#define RK3576_CRU_SAI6_MRST_BIT       (1 << 8)
+#define RK3576_CRU_SAI6_HRST_BIT       (1 << 9)
+
+#define RK3576_CRU_SAI7_SOFTRST        67
+#define RK3576_CRU_SAI7_MRST_BIT       (1 << 5)
+#define RK3576_CRU_SAI7_HRST_BIT       (1 << 6)
+
+#define RK3576_CRU_SAI8_SOFTRST        66
+#define RK3576_CRU_SAI8_MRST_BIT       (1 << 2)
+#define RK3576_CRU_SAI8_HRST_BIT       (1 << 0)
+
+#define RK3576_CRU_SAI9_SOFTRST        68
+#define RK3576_CRU_SAI9_MRST_BIT       (1 << 11)
+#define RK3576_CRU_SAI9_HRST_BIT       (1 << 9)
 
 #define RK3576_CRU_SAI1_CLKSEL         46
 #define RK3576_CRU_SAI1_MCLK_SEL_BIT   (1 << 11) /* 0=mclk_sai1_src 1=mclkin */
@@ -202,12 +271,15 @@
 #define RK3576_CRU_SAI1_MSRC_DIV_SHIFT 0 /* [7:0] src /= div_con+1    */
 #define RK3576_CRU_SAI1_MSRC_DIV_MASK  (0xff << RK3576_CRU_SAI1_MSRC_DIV_SHIFT)
 
-/* mclk_sai1_src parent select values for CRU_CLKSEL_CON46[10:8]
- * (RK3576_CRU_SAI1_MSRC_SEL_SHIFT).  Only the ones we use are named; the
- * full list is xin_osc0(0), audio_frac_0..3(1..4), audio_int_0..2(5..7).
+/* mclk_saiN_src parent select values (CRU_CLKSEL_CONn[10:8], 3-bit).  Only
+ * the ones we use are named; the full list is xin_osc0(0),
+ * audio_frac_0..3(1..4), audio_int_0..2(5..7).  The per-SAI mapping of the
+ * four fractional dividers is a resource-allocation policy owned by the
+ * driver (see rk3576_sai.c): on-chip there are only four
+ * clk_matrix_audio_frac_0..3 shared by all ten SAI controllers.
  */
 
-#define RK3576_CRU_SAI1_MSRC_SEL_AFRAC0 0x1 /* clk_matrix_audio_frac_0   */
+#define RK3576_CRU_SAI_MSRC_SEL_AFRAC(n) (0x1 + (n))
 
 /* Audio fractional divider 0 (clk_matrix_audio_frac_0).  This is the parent
  * we drive mclk_sai1 from.  TRM Part1:

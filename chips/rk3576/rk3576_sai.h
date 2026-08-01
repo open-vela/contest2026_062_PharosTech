@@ -42,13 +42,17 @@
  *
  * Description:
  *   Initialize a SAI controller and return its lower-half I2S interface for
- *   the board to bind to a codec (ES8388) via audio_i2s_initialize().  The
- *   board is responsible for muxing the SAI's MCLK/SCLK/LRCK/SDO/SDI pins
- *   before the returned device is used.
+ *   the board to bind to a codec via audio_i2s_initialize().  The board is
+ *   responsible for muxing the SAI's MCLK/SCLK/LRCK/SDO/SDI pins before the
+ *   returned device is used.
+ *
+ *   Any of the ten SAI0..SAI9 controllers may be selected.  Note that some
+ *   controllers are inherently single-direction in hardware (SAI5 is RX-only
+ *   and SAI7/SAI8/SAI9 are TX-only); the returned device rejects the
+ *   unsupported direction with -ENODEV.
  *
  * Input Parameters:
- *   busno - SAI controller index (1 selects SAI1 @ 0x2a610000; the only
- *           instance currently supported on the KICKPI-K7).
+ *   busno - SAI controller index (0..9).
  *
  * Returned Value:
  *   A non-NULL i2s_dev_s on success; NULL on failure.

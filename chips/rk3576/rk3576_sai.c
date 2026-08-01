@@ -23,31 +23,25 @@
 /****************************************************************************
  * RK3576 SAI (Serial Audio Interface, "sai-v1") lower-half I2S driver.
  * Implements NuttX struct i2s_dev_s so drivers/audio/audio_i2s.c can bind it
- * to an ES8388 codec and register a PCM device.  SAI1 is the I2S bus master
- * (it sources MCLK / BCLK / LRCK); the ES8388 is a slave clocked from it.
+ * to a codec and register a PCM device.  Each SAI controller is configured
+ * as the I2S bus master, sourcing MCLK / BCLK / LRCK to the (slave) codec;
+ * which controller is wired to which codec, plus pin muxing and routing
+ * MCLK to a physical output pin, are decided by the board layer.
  *
  * Audio samples move between an ap_buffer_s and the SAI FIFO through the
  * RK3576 PL330 DMA driver (rk3576_dma.c), one single-shot DMA transfer per
- * queued buffer.  Playback (TX, memory -> SAI_TXDR, M2P) is the primary
- * path; capture (RX, SAI_RXDR -> memory, P2M) mirrors it.  The structure
- * (pending / active / done buffer queues, per-buffer DMA, work-queue
- * completion callback, cached channels/rate/width applied while stopped)
- * follows arch/arm/src/stm32f7/stm32_sai.c.
+ * queued buffer (playback: memory -> SAI_TXDR, M2P; capture: SAI_RXDR ->
+ * memory, P2M).  The structure (pending / active / done buffer queues,
+ * per-buffer DMA, work-queue completion callback, cached channels/rate/
+ * width applied while stopped) follows arch/arm/src/stm32f7/stm32_sai.c.
  *
- * Framing: standard I2S with two slots per frame.  16-bit streams use
- *
- * 16-bit slots; 24/32-bit streams use 32-bit slots.  The codec
- * selects its
- * MCLK/LRCK ratio for each sample-rate family, and the SAI
- * derives BCLK
- * from the resulting MCLK at run time.
- * Controller clocks are obtained from
+ * Framing: standard I2S with two slots per frame (the codec selects its
+ * MCLK/LRCK ratio for each sample-rate family, and the SAI derives BCLK
+ * from the resulting MCLK at run time).  16-bit streams use 16-bit slots;
+ * 24/32-bit streams use 32-bit slots.  Controller clocks are obtained from
  * the RK3576 common clock framework.
- * The board layer remains responsible
- * for pin muxing and routing MCLK to a
- * physical output pin.
-
- * ****************************************************************************/
+ *
+ ****************************************************************************/
 
 /****************************************************************************
  * Included Files
@@ -163,6 +157,12 @@ struct rk3576_sai_s
   unsigned int dma_tx_req;   /* DMA TX peripheral-request line        */
   unsigned int dma_rx_req;   /* DMA RX peripheral-request line        */
   unsigned int dma_ctrl;     /* Owning DMA controller index (0/1/2)   */
+  unsigned int softrst;      /* CRU_SOFTRST_CONn index                */
+  uint32_t mrst_bit;         /* Soft mresetn_saiN mask                */
+  uint32_t hrst_bit;         /* Soft hresetn_saiN mask                */
+  int frac_index;            /* Assigned shared fractional divider    */
+  bool tx_cap;               /* True: hardware has a TX DMA request   */
+  bool rx_cap;               /* True: hardware has an RX DMA request  */
   int busno;                 /* SAI controller index                   */
   struct clk_s *hclk;        /* APB register-interface clock           */
   struct clk_s *aupll;       /* Audio PLL source                       */
@@ -282,23 +282,93 @@ static const struct i2s_ops_s g_rk3576_sai_ops = {
   .i2s_ioctl = rk3576_sai_ioctl,
 };
 
-/* SAI1 instance state. */
+/* One SAI controller instance descriptor in g_rk3576_sai[].
+ *
+ * busno / base / irq / dma_ctrl / dma_tx_req / dma_rx_req / tx_cap / rx_cap
+ * are fixed per-controller hardware attributes (TRM table 24.4.1 and the
+ * DMAC request mapping).  rx_req is unused (set to 0) when the controller
+ * has no RX request line, and vice-versa for a missing TX request; the
+ * *_cap flags gate which directions rk3576_sai_send()/receive() accept.
+ */
 
-static struct rk3576_sai_s g_rk3576_sai1 = {
-  .dev.ops = &g_rk3576_sai_ops,
-  .base = RK3576_SAI1_ADDR,
-  .irq = RK3576_IRQ_SAI1,
-  .busno = 1,
-  .dma_tx_req = RK3576_SAI1_DMA_TX_REQ,
-  .dma_rx_req = RK3576_SAI1_DMA_RX_REQ,
-  .dma_ctrl = 0,
-  .lock = NXMUTEX_INITIALIZER,
-  .samplerate = RK3576_SAI_DEF_SAMPLERATE,
-  .datalen = RK3576_SAI_DEF_DATALEN,
-  .channels = RK3576_SAI_DEF_CHANNELS,
-  .mclk_freq = RK3576_SAI_DEF_SAMPLERATE * RK3576_SAI_MCLK_FS,
-  .bufsem = SEM_INITIALIZER(CONFIG_RK3576_SAI_MAXINFLIGHT),
+#define RK3576_SAI_INSTANCE(_busno, _base, _irq, _dma_ctrl, _tx_req, _rx_req, \
+                            _tx_cap, _rx_cap, _softrst, _mrst, _hrst)         \
+  {                                                                           \
+    .dev.ops = &g_rk3576_sai_ops, .base = (_base), .irq = (_irq),             \
+    .dma_tx_req = (_tx_req), .dma_rx_req = (_rx_req),                         \
+    .dma_ctrl = (_dma_ctrl), .busno = (_busno), .tx_cap = (_tx_cap),          \
+    .rx_cap = (_rx_cap), .softrst = (_softrst), .mrst_bit = (_mrst),          \
+    .hrst_bit = (_hrst), .lock = NXMUTEX_INITIALIZER,                         \
+    .samplerate = RK3576_SAI_DEF_SAMPLERATE,                                  \
+    .datalen = RK3576_SAI_DEF_DATALEN, .channels = RK3576_SAI_DEF_CHANNELS,   \
+    .mclk_freq = RK3576_SAI_DEF_SAMPLERATE * RK3576_SAI_MCLK_FS,              \
+    .bufsem = SEM_INITIALIZER(CONFIG_RK3576_SAI_MAXINFLIGHT),                 \
+  }
+
+static struct rk3576_sai_s g_rk3576_sai[10] = {
+  RK3576_SAI_INSTANCE(0, RK3576_SAI0_ADDR, RK3576_IRQ_SAI0, 0,
+                      RK3576_SAI0_DMA_TX_REQ, RK3576_SAI0_DMA_RX_REQ, true,
+                      true, RK3576_CRU_SAI0_SOFTRST, RK3576_CRU_SAI0_MRST_BIT,
+                      RK3576_CRU_SAI0_HRST_BIT),
+  RK3576_SAI_INSTANCE(1, RK3576_SAI1_ADDR, RK3576_IRQ_SAI1, 0,
+                      RK3576_SAI1_DMA_TX_REQ, RK3576_SAI1_DMA_RX_REQ, true,
+                      true, RK3576_CRU_SAI1_SOFTRST, RK3576_CRU_SAI1_MRST_BIT,
+                      RK3576_CRU_SAI1_HRST_BIT),
+  RK3576_SAI_INSTANCE(2, RK3576_SAI2_ADDR, RK3576_IRQ_SAI2, 1,
+                      RK3576_SAI2_DMA_TX_REQ, RK3576_SAI2_DMA_RX_REQ, true,
+                      true, RK3576_CRU_SAI2_SOFTRST, RK3576_CRU_SAI2_MRST_BIT,
+                      RK3576_CRU_SAI2_HRST_BIT),
+  RK3576_SAI_INSTANCE(3, RK3576_SAI3_ADDR, RK3576_IRQ_SAI3, 1,
+                      RK3576_SAI3_DMA_TX_REQ, RK3576_SAI3_DMA_RX_REQ, true,
+                      true, RK3576_CRU_SAI3_SOFTRST, RK3576_CRU_SAI3_MRST_BIT,
+                      RK3576_CRU_SAI3_HRST_BIT),
+  RK3576_SAI_INSTANCE(4, RK3576_SAI4_ADDR, RK3576_IRQ_SAI4, 2,
+                      RK3576_SAI4_DMA_TX_REQ, RK3576_SAI4_DMA_RX_REQ, true,
+                      true, RK3576_CRU_SAI4_SOFTRST, RK3576_CRU_SAI4_MRST_BIT,
+                      RK3576_CRU_SAI4_HRST_BIT),
+  RK3576_SAI_INSTANCE(5, RK3576_SAI5_ADDR, RK3576_IRQ_SAI5, 2, 0,
+                      RK3576_SAI5_DMA_RX_REQ, false, true,
+                      RK3576_CRU_SAI5_SOFTRST, RK3576_CRU_SAI5_MRST_BIT,
+                      RK3576_CRU_SAI5_HRST_BIT),
+  RK3576_SAI_INSTANCE(6, RK3576_SAI6_ADDR, RK3576_IRQ_SAI6, 2,
+                      RK3576_SAI6_DMA_TX_REQ, RK3576_SAI6_DMA_RX_REQ, true,
+                      true, RK3576_CRU_SAI6_SOFTRST, RK3576_CRU_SAI6_MRST_BIT,
+                      RK3576_CRU_SAI6_HRST_BIT),
+  RK3576_SAI_INSTANCE(7, RK3576_SAI7_ADDR, RK3576_IRQ_SAI7, 2,
+                      RK3576_SAI7_DMA_TX_REQ, 0, true, false,
+                      RK3576_CRU_SAI7_SOFTRST, RK3576_CRU_SAI7_MRST_BIT,
+                      RK3576_CRU_SAI7_HRST_BIT),
+  RK3576_SAI_INSTANCE(8, RK3576_SAI8_ADDR, RK3576_IRQ_SAI8, 1,
+                      RK3576_SAI8_DMA_TX_REQ, 0, true, false,
+                      RK3576_CRU_SAI8_SOFTRST, RK3576_CRU_SAI8_MRST_BIT,
+                      RK3576_CRU_SAI8_HRST_BIT),
+  RK3576_SAI_INSTANCE(9, RK3576_SAI9_ADDR, RK3576_IRQ_SAI9, 0,
+                      RK3576_SAI9_DMA_TX_REQ, 0, true, false,
+                      RK3576_CRU_SAI9_SOFTRST, RK3576_CRU_SAI9_MRST_BIT,
+                      RK3576_CRU_SAI9_HRST_BIT),
 };
+
+#undef RK3576_SAI_INSTANCE
+
+#define RK3576_SAI_NINSTANCES (sizeof(g_rk3576_sai) / sizeof(g_rk3576_sai[0]))
+
+/* On-chip there are only four shared audio fractional dividers
+ * (clk_matrix_audio_frac_0..3) for all ten SAI controllers, so they must be
+ * time-shared.  Each SAI picks its frac from a static table at init time and
+ * the runtime arbiter below rejects a conflicting request when two SAIs try
+ * to drive the same frac to different MCLK rates.  SAI1 keeps frac1 to
+ * preserve the original single-SAI bring-up behaviour.
+ */
+
+#define RK3576_SAI_NFRAC 4
+
+static const uint8_t g_rk3576_sai_frac_map[RK3576_SAI_NINSTANCES] = {
+  /* bus 0   1   2   3   4   5   6   7   8   9 */
+  0, 1, 2, 3, 0, 1, 2, 3, 0, 1,
+};
+
+static uint32_t g_rk3576_sai_frac_freq[RK3576_SAI_NFRAC];
+static int g_rk3576_sai_frac_owner[RK3576_SAI_NFRAC];
 
 /****************************************************************************
  * Private Functions
@@ -439,8 +509,25 @@ static void rk3576_sai_bufinit(struct rk3576_sai_s *priv)
 static int rk3576_sai_setclock(struct rk3576_sai_s *priv, uint32_t frequency)
 {
   uint32_t source_frequency = frequency * 4;
+  int frac = priv->frac_index;
   uint32_t error;
   int ret;
+
+  /* Frac is a shared on-chip resource: refuse to re-program it if another
+   * SAI already drives it to a different MCLK rate.  Same-rate sharing is
+   * allowed (both consumers then observe the identical MCLK).
+   */
+
+  if (g_rk3576_sai_frac_owner[frac] != 0 &&
+      g_rk3576_sai_frac_owner[frac] != priv->busno &&
+      g_rk3576_sai_frac_freq[frac] != frequency)
+    {
+      i2serr("ERROR: SAI%d frac%d busy at %" PRIu32
+             " Hz (owner SAI%d) -- cannot use %" PRIu32 " Hz\n",
+             priv->busno, frac, g_rk3576_sai_frac_freq[frac],
+             g_rk3576_sai_frac_owner[frac], frequency);
+      return -EBUSY;
+    }
 
   ret = clk_set_rate(priv->frac, source_frequency);
   if (ret < 0)
@@ -470,14 +557,28 @@ static int rk3576_sai_setclock(struct rk3576_sai_s *priv, uint32_t frequency)
       return -ERANGE;
     }
 
+  /* Record the frac owner so a later conflicting claim is rejected. */
+
+  g_rk3576_sai_frac_owner[frac] = priv->busno;
+  g_rk3576_sai_frac_freq[frac] = frequency;
+
   return OK;
 }
 
 static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
 {
   char name[32];
-  int frac_index = priv->busno % 4;
+  int frac_index;
   int ret;
+
+  if (priv->busno < 0 || priv->busno >= RK3576_SAI_NINSTANCES)
+    {
+      i2serr("ERROR: invalid SAI bus %d\n", priv->busno);
+      return -EINVAL;
+    }
+
+  frac_index = g_rk3576_sai_frac_map[priv->busno];
+  priv->frac_index = frac_index;
 
   snprintf(name, sizeof(name), "hclk_sai%d", priv->busno);
   priv->hclk = clk_get(name);
@@ -580,15 +681,17 @@ static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
       return ret;
     }
 
-  /* Reset control is not represented by the clock framework. */
+  /* Reset control is not represented by the clock framework: pulse the
+   * per-instance soft resets (mresetn/hresetn) manually.
+   */
 
-  putreg32(((RK3576_CRU_SAI1_MRST_BIT | RK3576_CRU_SAI1_HRST_BIT) << 16) |
-               (RK3576_CRU_SAI1_MRST_BIT | RK3576_CRU_SAI1_HRST_BIT),
-           RK3576_CRU_ADDR + RK3576_CRU_SOFTRST_CON(RK3576_CRU_SAI1_SOFTRST));
+  putreg32(((priv->mrst_bit | priv->hrst_bit) << 16) |
+               (priv->mrst_bit | priv->hrst_bit),
+           RK3576_CRU_ADDR + RK3576_CRU_SOFTRST_CON(priv->softrst));
   up_udelay(20);
 
-  putreg32(((RK3576_CRU_SAI1_MRST_BIT | RK3576_CRU_SAI1_HRST_BIT) << 16),
-           RK3576_CRU_ADDR + RK3576_CRU_SOFTRST_CON(RK3576_CRU_SAI1_SOFTRST));
+  putreg32(((priv->mrst_bit | priv->hrst_bit) << 16),
+           RK3576_CRU_ADDR + RK3576_CRU_SOFTRST_CON(priv->softrst));
   up_udelay(20);
 
   return OK;
@@ -1236,6 +1339,15 @@ static int rk3576_sai_send(struct i2s_dev_s *dev, struct ap_buffer_s *apb,
 
   DEBUGASSERT(priv != NULL && apb != NULL);
 
+  /* This SAI hardware has no TX request line (e.g. SAI5), so playback is
+   * not possible.
+   */
+
+  if (!priv->tx_cap)
+    {
+      return -ENODEV;
+    }
+
   bfc = rk3576_sai_bufallocate(priv);
   DEBUGASSERT(bfc != NULL);
 
@@ -1292,6 +1404,15 @@ static int rk3576_sai_receive(struct i2s_dev_s *dev, struct ap_buffer_s *apb,
   int ret;
 
   DEBUGASSERT(priv != NULL && apb != NULL);
+
+  /* This SAI hardware has no RX request line (e.g. SAI7/8/9), so capture
+   * is not possible.
+   */
+
+  if (!priv->rx_cap)
+    {
+      return -ENODEV;
+    }
 
   bfc = rk3576_sai_bufallocate(priv);
   DEBUGASSERT(bfc != NULL);
@@ -1381,13 +1502,13 @@ struct i2s_dev_s *rk3576_sai_initialize(int busno)
   struct rk3576_sai_s *priv;
   int ret;
 
-  if (busno != 1)
+  if (busno < 0 || busno >= RK3576_SAI_NINSTANCES)
     {
       i2serr("ERROR: unsupported SAI bus %d\n", busno);
       return NULL;
     }
 
-  priv = &g_rk3576_sai1;
+  priv = &g_rk3576_sai[busno];
 
   /* Buffer pool + controller clocks. */
 
