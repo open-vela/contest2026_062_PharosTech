@@ -86,6 +86,14 @@ static int kickpi_k7_rtc_int_handler(FAR struct gpio_dev_s *dev, uint8_t pin)
 #endif /* CONFIG_KICKPI_K7_RTC */
 
 /****************************************************************************
+ * Private Function Prototypes
+ ****************************************************************************/
+
+#if defined(CONFIG_BOARD_LATE_INITIALIZE) && defined(CONFIG_RK3576_EMMC)
+static void kickpi_k7_emmc_pinmux(void);
+#endif
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -155,6 +163,33 @@ void rk3576_board_initialize(void)
  ****************************************************************************/
 
 #ifdef CONFIG_BOARD_LATE_INITIALIZE
+#ifdef CONFIG_RK3576_EMMC
+
+/****************************************************************************
+ * Name: kickpi_k7_emmc_pinmux
+ *
+ * Description:
+ *   Configure the board-wired eMMC DAT0..7, CMD and CLK pins from the vendor
+ *   DTS settings before the host controller starts card enumeration.
+ ****************************************************************************/
+
+static void kickpi_k7_emmc_pinmux(void)
+{
+  gpio_pinset_t common =
+      GPIO_PORT1 | GPIO_ALT | GPIO_AF1 | GPIO_PULLUP | GPIO_DRV_STRENGTH_66OHM;
+  unsigned int pin;
+
+  /* Vendor DTS: GPIO1_A0..A7 = DAT0..7, GPIO1_B0 = CMD and GPIO1_B1 = CLK.
+   * All use mux function 1 with pull-up and drive level 2.
+   */
+
+  for (pin = 0; pin <= 9; pin++)
+    {
+      rk3576_config_gpio(common | (pin << GPIO_PIN_SHIFT));
+    }
+}
+#endif
+
 void board_late_initialize(void)
 {
 #ifdef CONFIG_RK3576_SDMMC
@@ -288,6 +323,7 @@ void board_late_initialize(void)
   /* Initialize the on-board eMMC (dwcmshc / SDHCI) as /dev/mmcsd1. */
 
   {
+    kickpi_k7_emmc_pinmux();
     emmc = rk3576_emmc_initialize(0);
     if (emmc == NULL)
       {
