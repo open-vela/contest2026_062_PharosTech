@@ -79,11 +79,10 @@ struct rk3576_fspi_s
   struct rk3576_fspi_ctrl_s *ctrl; /* Back-pointer to owning controller */
   uint8_t cs;                      /* Chip select: 0 or 1 */
   bool initialized;                /* TRUE after hw_init succeeds */
-  uint32_t frequency;              /* Requested clock frequency */
-  uint32_t actual;                 /* Actual clock frequency */
+  uint32_t freq_req;               /* Requested clock frequency (raw) */
+  uint32_t freq;                   /* Expected achievable SCLK for this CS */
   uint8_t mode;                    /* CPOL/CPHA mode (0-3) */
   int8_t nbits;                    /* Bits per word (typically 8) */
-  struct clk_s *sclk_x2;           /* sclk_fspiX_x2_div (2x actual SCLK) */
 
   /* Interrupt-related fields */
 
@@ -98,10 +97,12 @@ struct rk3576_fspi_s
 
 struct rk3576_fspi_ctrl_s
 {
-  uint32_t regbase;    /* FSPI controller register base */
-  uint8_t id;          /* Controller index: 0 or 1 */
-  mutex_t lock;        /* Controller-level mutex */
-  uint32_t hw_freq;    /* Cached actual SCLK frequency */
+  uint32_t regbase; /* FSPI controller register base */
+  uint8_t id;       /* Controller index: 0 or 1 */
+  mutex_t lock;     /* Controller-level mutex */
+  struct clk_s
+      *sclk_x2;     /* sclk_fspiX_x2 clock (2x actual SCLK), per-controller */
+  uint32_t hw_freq; /* Actual SCLK frequency currently programmed in HW */
   bool hw_initialized; /* One-time hardware init done */
   bool irq_registered; /* IRQ handler registered */
 
@@ -277,13 +278,12 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
 {
   struct rk3576_fspi_ctrl_s *ctrl = priv->ctrl;
   struct clk_s *hclk;
-  struct clk_s *gate;
   int ret;
   char name[32];
 
   /* Get and enable HCLK (AHB bus clock gate) */
 
-  snprintf(name, sizeof(name), "hclk_fspi%u_en", ctrl->id);
+  snprintf(name, sizeof(name), "hclk_fspi%u", ctrl->id);
   hclk = clk_get(name);
   if (!hclk)
     {
@@ -298,49 +298,22 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
       return ret;
     }
 
-  /* Get the SCLK divider (sclk_fspiX_x2_div).  clk_set_rate on this
-   * divider controls the SCLK frequency.  Its parent is sclk_fspiX_sel,
-   * which the board init should switch to xin_osc0 (24 MHz) for
-   * fine-grained dividers.
-   */
+  /* Get and enable SCLK x2 (per-controller clock, shared by CS0/CS1) */
 
-  snprintf(name, sizeof(name), "sclk_fspi%u_x2_div", ctrl->id);
-  priv->sclk_x2 = clk_get(name);
-  if (!priv->sclk_x2)
+  snprintf(name, sizeof(name), "sclk_fspi%u_x2", ctrl->id);
+  ctrl->sclk_x2 = clk_get(name);
+  if (!ctrl->sclk_x2)
     {
       spierr("FSPI%u: failed to get %s\n", ctrl->id, name);
       ret = -ENODEV;
       goto err_disable_hclk;
     }
 
-  /* Enable the x2 gate (output of the divider).  The divider itself is
-   * configured via clk_set_rate on priv->sclk_x2; the gate just needs
-   * to be on for the clock to reach the SFC controller.
-   */
-
-  snprintf(name, sizeof(name), "sclk_fspi%u_x2_en", ctrl->id);
-  gate = clk_get(name);
-  if (!gate)
-    {
-      spierr("FSPI%u: failed to get %s\n", ctrl->id, name);
-      ret = -ENODEV;
-      goto err_disable_hclk;
-    }
-
-  ret = clk_enable(gate);
+  ret = clk_enable(ctrl->sclk_x2);
   if (ret < 0)
     {
-      spierr("FSPI%u: failed to enable %s, ret=%d\n", ctrl->id, name, ret);
+      spierr("FSPI%u: failed to enable sclk_x2, ret=%d\n", ctrl->id, ret);
       goto err_disable_hclk;
-    }
-
-  /* Enable the divider clock itself */
-
-  ret = clk_enable(priv->sclk_x2);
-  if (ret < 0)
-    {
-      spierr("FSPI%u: failed to enable sclk_x2_div, ret=%d\n", ctrl->id, ret);
-      goto err_disable_gate;
     }
 
   /* Reset the SFC FSM and FIFOs */
@@ -383,9 +356,7 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
   return OK;
 
 err_disable_sclk:
-  clk_disable(priv->sclk_x2);
-err_disable_gate:
-  clk_disable(gate);
+  clk_disable(ctrl->sclk_x2);
 err_disable_hclk:
   clk_disable(hclk);
   return ret;
@@ -399,13 +370,16 @@ err_disable_hclk:
  * Name: fspi_hw_update_clock_div
  *
  * Description:
- *   Apply the per-CS frequency request to the SCLK_x2 divider hardware.
+ *   Refresh the SCLK_x2 divider hardware to match this CS's expected
+ *   rate (priv->freq), but only when that differs from the rate currently
+ *   programmed into the hardware (ctrl->hw_freq).
  *
  *   The SCLK_x2 divider is per-controller (shared by CS0 and CS1), so
  *   this function must only be called while the controller-level mutex
- *   is held.  We cache the last-written actual frequency at the
- *   controller level and skip the clk_set_rate() call (and the associated
- *   CLK framework lock overhead) when the frequency has not changed.
+ *   is held (from fspi_lock()).  Comparing priv->freq (expected) against
+ *   ctrl->hw_freq (actual in HW) lets us skip the clk_set_rate() call
+ *   and the associated CLK framework lock overhead when a CS requests a
+ *   rate the hardware already provides.
  ****************************************************************************/
 
 static void fspi_hw_update_clock_div(struct rk3576_fspi_s *priv)
@@ -413,17 +387,32 @@ static void fspi_hw_update_clock_div(struct rk3576_fspi_s *priv)
   struct rk3576_fspi_ctrl_s *ctrl = priv->ctrl;
   int ret;
 
-  if (priv->actual == ctrl->hw_freq)
+  /* No change required when this CS's expected rate already matches the
+   * rate currently programmed into the hardware.
+   */
+
+  if (priv->freq == ctrl->hw_freq)
     {
       return;
     }
 
-  ret = clk_set_rate(priv->sclk_x2, priv->frequency * 2);
-  if (ret >= 0)
+  ret = clk_set_rate(ctrl->sclk_x2, priv->freq * 2);
+  if (ret < 0)
     {
-      priv->actual = clk_get_rate(priv->sclk_x2) / 2;
-      ctrl->hw_freq = priv->actual;
+      /* Divider update failed: re-read the actual rate and keep the
+       * cached hw_freq consistent with hardware so the next lock()
+       * call sees priv->freq != hw_freq and retries the change instead
+       * of silently skipping it.
+       */
+
+      spiwarn("FSPI%u: clk_set_rate(%lu) failed, using %lu\n", ctrl->id,
+              (unsigned long)priv->freq * 2,
+              (unsigned long)clk_get_rate(ctrl->sclk_x2));
+      ctrl->hw_freq = clk_get_rate(ctrl->sclk_x2) / 2;
+      return;
     }
+
+  ctrl->hw_freq = clk_get_rate(ctrl->sclk_x2) / 2;
 }
 
 /****************************************************************************
@@ -536,9 +525,11 @@ static int fspi_lock(struct qspi_dev_s *dev, bool lock)
  * Name: fspi_setfrequency
  *
  * Description:
- *   Record the requested frequency for this CS instance.  The divider
- *   computation and CRU register write are deferred to fspi_lock() when
- *   this CS gains exclusive access to the shared controller hardware.
+ *   Record the requested frequency for this CS instance.  Only the
+ *   expected (achievable) rate is cached in priv->freq; the actual CRU
+ *   register write is deferred to fspi_lock(), which calls
+ *   fspi_hw_update_clock_div() to refresh the hardware when the expected
+ *   rate differs from the currently programmed one.
  ****************************************************************************/
 
 static uint32_t fspi_setfrequency(struct qspi_dev_s *dev, uint32_t frequency)
@@ -553,19 +544,16 @@ static uint32_t fspi_setfrequency(struct qspi_dev_s *dev, uint32_t frequency)
    * any registers, giving us the nearest achievable rate.
    */
 
-  DEBUGASSERT(priv->sclk_x2);
-  achievable = clk_round_rate(priv->sclk_x2, frequency * 2) / 2;
+  DEBUGASSERT(ctrl->sclk_x2);
+  achievable = clk_round_rate(ctrl->sclk_x2, frequency * 2) / 2;
 
-  priv->frequency = frequency;
-  priv->actual = achievable;
-
-  /* Apply the divider immediately so that the caller can rely on the
-   * reported frequency without deferring to a later lock() call.  The
-   * lock() path still calls hw_update_clock_div() as a safeguard.
+  /* Record the raw request and cache the expected achievable rate.  No
+   * CRU register is touched here; the actual clk_set_rate() write is
+   * deferred to fspi_lock() -> fspi_hw_update_clock_div().
    */
 
-  clk_set_rate(priv->sclk_x2, frequency * 2);
-  ctrl->hw_freq = achievable;
+  priv->freq_req = frequency;
+  priv->freq = achievable;
 
   return achievable;
 }
