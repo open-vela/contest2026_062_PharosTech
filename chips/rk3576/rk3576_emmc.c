@@ -48,6 +48,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <syslog.h>
 
 #include <nuttx/arch.h>
 #include <nuttx/clock.h>
@@ -103,15 +104,11 @@
 
 #define RK3576_EMMC_TOUTCTRL_MAX 0x0e
 
-/* Bus width selected on widebus(true).  The on-board eMMC is wired 8-bit
- * (DTS bus-width = 8); a D1-only build narrows this to 1-bit.
+/* Bus width selected on widebus(true).  The board wires all eight data lines,
+ * and the generic mmcsd layer negotiates 8-bit MMC operation.
  */
 
-#ifdef CONFIG_SDIO_WIDTH_D1_ONLY
-#define RK3576_EMMC_WIDEBITS 0
-#else
 #define RK3576_EMMC_WIDEBITS EMMC_HOSTCTRL1_DWIDTH8
-#endif
 
 /* Busy-wait loop limit for register self-clear / present-state polling. */
 
@@ -179,6 +176,9 @@ struct rk3576_emmc_dev_s
   volatile uint32_t xfrints;  /* Signal-enable set during data transfer */
   volatile uint32_t waitints; /* Signal-enable set while waiting on a cmd */
   uint32_t blocksize;         /* Current block size (from blocksetup) */
+  uint16_t xfermode;          /* Prepared mode for the next data command */
+  uint32_t lastcmd;           /* Last command encoding for diagnostics */
+  uint32_t lastarg;           /* Last command argument for diagnostics */
 };
 
 /****************************************************************************
@@ -530,6 +530,18 @@ static void rk3576_emmc_eventtimeout(wdparm_t arg)
 
   if ((priv->waitevents & SDIOWAIT_TIMEOUT) != 0)
     {
+      syslog(LOG_ERR,
+             "ERROR: emmc timeout cmd=%08" PRIx32 " arg=%08" PRIx32
+             " present=%08" PRIx32 " nint=%04x eint=%04x xfer=%04x"
+             " hwcmd=%04x remain=%lu block=%lu wait=%08" PRIx32 "\n",
+             priv->lastcmd, priv->lastarg,
+             rk3576_emmc_getreg32(priv, RK3576_EMMC_PRESENT),
+             rk3576_emmc_getreg16(priv, RK3576_EMMC_NINTSTS),
+             rk3576_emmc_getreg16(priv, RK3576_EMMC_EINTSTS),
+             rk3576_emmc_getreg16(priv, RK3576_EMMC_XFERMODE),
+             rk3576_emmc_getreg16(priv, RK3576_EMMC_CMD),
+             (unsigned long)priv->remaining, (unsigned long)priv->blocksize,
+             priv->waitevents);
       rk3576_emmc_endwait(priv, SDIOWAIT_TIMEOUT);
       mcerr("ERROR: Event wait timed out\n");
     }
@@ -553,7 +565,6 @@ static void rk3576_emmc_recvfifo(struct rk3576_emmc_dev_s *priv)
    */
 
   size_t chunk = priv->blocksize ? priv->blocksize : priv->remaining;
-
   while (chunk >= sizeof(uint32_t) && priv->remaining >= sizeof(uint32_t))
     {
       *priv->buffer++ = rk3576_emmc_getreg32(priv, RK3576_EMMC_BUFFER);
@@ -652,6 +663,12 @@ static int rk3576_emmc_interrupt(int irq, void *context, void *arg)
 
   if ((eint & EMMC_EPART(EMMC_DATAERR_INTS)) != 0)
     {
+      syslog(LOG_ERR,
+             "ERROR: emmc data irq cmd=%08" PRIx32 " arg=%08" PRIx32
+             " present=%08" PRIx32 " nint=%04x eint=%04x remain=%lu\n",
+             priv->lastcmd, priv->lastarg,
+             rk3576_emmc_getreg32(priv, RK3576_EMMC_PRESENT), nint, eint,
+             (unsigned long)priv->remaining);
       priv->remaining = 0;
       priv->buffer = NULL;
       rk3576_emmc_configxfrints(priv, 0);
@@ -802,6 +819,7 @@ static void rk3576_emmc_reset(struct sdio_dev_s *dev)
   priv->waitevents = 0;
   priv->wkupevent = 0;
   priv->blocksize = 0;
+  priv->xfermode = 0;
 
   /* Identification-mode initial clock (<400KHz). */
 
@@ -814,7 +832,7 @@ static void rk3576_emmc_reset(struct sdio_dev_s *dev)
  * Name: rk3576_emmc_capabilities
  *
  * Description:
- *   Report host capabilities: 8-bit (or 1-bit in a D1-only build) bus, PIO
+ *   Report host capabilities: 8-bit bus and PIO
  *   data path.  DMABEFOREWRITE makes mmcsd run SENDSETUP before the write
  *   command, which is required on SDHCI because the transfer mode must be
  *   programmed before the command register write.
@@ -826,14 +844,10 @@ static sdio_capset_t rk3576_emmc_capabilities(struct sdio_dev_s *dev)
 
   UNUSED(dev);
 
-  /* Force 1-bit bus for this milestone.  Without SDIO_CAPS_1BIT_ONLY the mmcsd
-   * layer switches the eMMC to 4-bit (MMC_SWITCH BUS_WIDTH), which must be
-   * matched by the host width -- the wider data lines depend on board pinmux
-   * that is out of scope here.  1-bit (DAT0) is proven working; 4/8-bit is a
-   * follow-up once the eMMC data-pin muxing is added.
+  /* The generic MMC layer switches the card to EXT_CSD BUS_WIDTH=8 before
+   * asking the host to enable wide-bus operation.  Match that width here.
    */
-
-  caps |= SDIO_CAPS_1BIT_ONLY;
+  caps |= SDIO_CAPS_8BIT;
   caps |= SDIO_CAPS_DMABEFOREWRITE;
 
   return caps;
@@ -857,8 +871,8 @@ static sdio_statset_t rk3576_emmc_status(struct sdio_dev_s *dev)
  * Name: rk3576_emmc_widebus
  *
  * Description:
- *   Select the data bus width in HOSTCTRL1.  enable selects the widest wired
- *   width (8-bit on this board); disable narrows to 1-bit.
+ *   Select the data bus width in HOSTCTRL1.  Wide mode is 8-bit to match the
+ *   MMC_SWITCH issued by the generic mmcsd layer.
  ****************************************************************************/
 
 static void rk3576_emmc_widebus(struct sdio_dev_s *dev, bool enable)
@@ -966,6 +980,8 @@ static int rk3576_emmc_sendcmd(struct sdio_dev_s *dev, uint32_t cmd,
 
   cmdidx = (cmd & MMCSD_CMDIDX_MASK) >> MMCSD_CMDIDX_SHIFT;
   data = (cmd & MMCSD_DATAXFR_MASK) != 0;
+  priv->lastcmd = cmd;
+  priv->lastarg = arg;
 
   /* A command that uses the DAT line for data, or one that reports busy on
    * DAT (R1b), must wait for the DAT line to be free before it is issued.
@@ -1045,7 +1061,11 @@ static int rk3576_emmc_sendcmd(struct sdio_dev_s *dev, uint32_t cmd,
 
   rk3576_emmc_putreg32(priv, RK3576_EMMC_ARG1, arg);
 
-  if (!data)
+  if (data)
+    {
+      rk3576_emmc_putreg16(priv, RK3576_EMMC_XFERMODE, priv->xfermode);
+    }
+  else
     {
       rk3576_emmc_putreg16(priv, RK3576_EMMC_XFERMODE, 0);
     }
@@ -1103,6 +1123,7 @@ static int rk3576_emmc_recvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
       mode |= EMMC_XFERMODE_BCEN | EMMC_XFERMODE_MSBSEL;
     }
 
+  priv->xfermode = mode;
   rk3576_emmc_putreg16(priv, RK3576_EMMC_XFERMODE, mode);
 
   rk3576_emmc_configxfrints(priv, EMMC_RXRDY_INT | EMMC_XFRDONE_INTS |
@@ -1153,6 +1174,7 @@ static int rk3576_emmc_sendsetup(struct sdio_dev_s *dev, const uint8_t *buffer,
       mode |= EMMC_XFERMODE_MSBSEL;
     }
 
+  priv->xfermode = mode;
   rk3576_emmc_putreg16(priv, RK3576_EMMC_XFERMODE, mode);
 
   rk3576_emmc_configxfrints(priv, EMMC_TXRDY_INT | EMMC_XFRDONE_INTS |
