@@ -670,6 +670,8 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
       rk3576_sai_putreg(priv, RK3576_SAI_MONO_CR,
                         priv->channels == 1 ? SAI_MONO_CR_TX_MONO_EN : 0);
 
+      rk3576_sai_putreg(priv, RK3576_SAI_TX_SHIFT, SAI_XSHIFT_FS_1CYCLE);
+
       /* Path select routing (Debian golden). */
 
       rk3576_sai_putreg(priv, RK3576_SAI_PATH_SEL, 0x0000e4e4);
@@ -691,6 +693,7 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
       rk3576_sai_putreg(priv, RK3576_SAI_CKR, SAI_CKR_MDIV(mdiv));
       rk3576_sai_putreg(priv, RK3576_SAI_MONO_CR,
                         priv->channels == 1 ? SAI_MONO_CR_RX_MONO_EN : 0);
+      rk3576_sai_putreg(priv, RK3576_SAI_RX_SHIFT, SAI_XSHIFT_FS_1CYCLE);
 
       /* RX DMA request when FIFO level >= watermark + 1. */
 

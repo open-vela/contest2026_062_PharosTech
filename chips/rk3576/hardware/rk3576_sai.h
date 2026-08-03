@@ -146,6 +146,21 @@
 #define SAI_FSCR_FW_MASK   (0xfff << SAI_FSCR_FW_SHIFT)
 #define SAI_FSCR_FW(bits)  (((bits)-1) << SAI_FSCR_FW_SHIFT)
 
+/* SAI_TX_SHIFT (0x64) / SAI_RX_SHIFT (0x68) ************************/
+/* [22:0] Transfer frame sync pulse shift control:
+ *   0: Normal mode
+ *   1: Fs 1/2 cycle shift left
+ *   2: Fs 1 cycle shift left
+ *   3: Fs 3/2 cycle shift left ...
+ * Standard I2S uses "1 cycle shift left" (value 2) so that the first
+ * data bit follows FS one full BCLK later than the FS transition edge.
+ */
+
+#define SAI_XSHIFT_FS_SHIFT  0 /* [22:0] fsync pulse shift        */
+#define SAI_XSHIFT_FS_MASK   (0x7fffff << SAI_XSHIFT_FS_SHIFT)
+#define SAI_XSHIFT_FS(n)     ((n) << SAI_XSHIFT_FS_SHIFT)
+#define SAI_XSHIFT_FS_1CYCLE SAI_XSHIFT_FS(2) /* Fs 1 cycle shift left */
+
 /* SAI_MONO_CR (0x0c) ***********************************************/
 
 #define SAI_MONO_CR_RX_SLOT_SHIFT 2        /* [8:2] rx mono valid slot sel  */
