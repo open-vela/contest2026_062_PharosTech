@@ -97,6 +97,7 @@
 #define RK3576_EMMC_ID_FREQ    400000    /* Identification mode (<400KHz) */
 #define RK3576_EMMC_XFER_FREQ  52000000  /* MMC High Speed clock request */
 #define RK3576_EMMC_HS200_FREQ 200000000 /* MMC HS200 clock request */
+#define RK3576_EMMC_HS400_FREQ 200000000 /* MMC HS400 clock request */
 
 /* Timeout control: data timeout counter = TMCLK * 2^(13 + value); 0x0e is the
  * maximum, giving the longest tolerated data/busy timeout.
@@ -250,7 +251,7 @@ static void rk3576_emmc_resetlines(struct rk3576_emmc_dev_s *priv,
                                    uint8_t lines);
 static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv,
                                  uint32_t freq);
-static int rk3576_emmc_configdll(struct rk3576_emmc_dev_s *priv);
+static int rk3576_emmc_configdll(struct rk3576_emmc_dev_s *priv, bool hs400);
 static void rk3576_emmc_configwaitints(struct rk3576_emmc_dev_s *priv,
                                        uint32_t waitints,
                                        sdio_eventset_t waitevents,
@@ -311,6 +312,8 @@ static int rk3576_emmc_registercallback(struct sdio_dev_s *dev,
 static void rk3576_emmc_gotextcsd(struct sdio_dev_s *dev,
                                   const uint8_t *buffer);
 static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd);
+static int rk3576_emmc_hs400_enhanced_strobe(struct sdio_dev_s *dev,
+                                             bool enable);
 
 #ifdef CONFIG_SDIO_DMA
 #ifdef CONFIG_ARCH_HAVE_SDIO_PREFLIGHT
@@ -361,6 +364,7 @@ static const struct sdio_dev_s g_rk3576_emmc_ops = {
 #endif
   .gotextcsd = rk3576_emmc_gotextcsd,
   .execute_tuning = rk3576_emmc_execute_tuning,
+  .hs400_enhanced_strobe = rk3576_emmc_hs400_enhanced_strobe,
 #ifdef CONFIG_SDIO_DMA
 #ifdef CONFIG_ARCH_HAVE_SDIO_PREFLIGHT
   .dmapreflight = rk3576_emmc_dmapreflight,
@@ -564,7 +568,7 @@ static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
 
  * ****************************************************************************/
 
-static int rk3576_emmc_configdll(struct rk3576_emmc_dev_s *priv)
+static int rk3576_emmc_configdll(struct rk3576_emmc_dev_s *priv, bool hs400)
 {
   uint16_t savedclock;
   uint32_t value;
@@ -604,12 +608,19 @@ static int rk3576_emmc_configdll(struct rk3576_emmc_dev_s *priv)
 
   rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_ATCTRL,
                        (1 << 16) | (3 << 17) | (3 << 19));
-  rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLTXCLK,
-                       EMMC_DLL_DLYENA | EMMC_DLL_TAP_FROM_SW |
-                           EMMC_DLL_RXCLK_NOINVERTER | EMMC_DLL_TXCLK_TAP);
+  rk3576_emmc_putreg32(
+      priv, RK3576_EMMC_VENDOR_DLLTXCLK,
+      EMMC_DLL_DLYENA | EMMC_DLL_TAP_FROM_SW | EMMC_DLL_RXCLK_NOINVERTER |
+          (hs400 ? EMMC_DLL_HS400_TXCLK_TAP : EMMC_DLL_HS200_TXCLK_TAP));
   rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLSTRBIN,
                        EMMC_DLL_DLYENA | EMMC_DLL_TAP_FROM_SW |
                            EMMC_DLL_STRBIN_TAP);
+  rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLCMDOUT,
+                       hs400 ? EMMC_DLL_DLYENA | EMMC_DLL_TAP_FROM_SW |
+                                   EMMC_DLL_CMDOUT_SRC_CLK_NEG |
+                                   EMMC_DLL_CMDOUT_EN_SRC_CLK_NEG |
+                                   EMMC_DLL_HS400_CMDOUT_TAP
+                             : 0);
   rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, savedclock);
   return OK;
 }
@@ -1070,6 +1081,8 @@ static sdio_capset_t rk3576_emmc_capabilities(struct sdio_dev_s *dev)
   caps |= SDIO_CAPS_8BIT;
   caps |= SDIO_CAPS_MMC_HS_MODE;
   caps |= SDIO_CAPS_MMC_HS200_MODE;
+  caps |= SDIO_CAPS_MMC_HS400_MODE;
+  caps |= SDIO_CAPS_MMC_ENHANCED_STROBE;
   caps |= SDIO_CAPS_DMABEFOREWRITE;
 #ifdef CONFIG_SDIO_DMA
   caps |= SDIO_CAPS_DMASUPPORTED;
@@ -1167,6 +1180,12 @@ static void rk3576_emmc_clock(struct sdio_dev_s *dev, enum sdio_clock_e rate)
         freq = RK3576_EMMC_HS200_FREQ;
         break;
 
+      case CLOCK_MMC_HS400:
+        hc |= EMMC_HOSTCTRL1_HISPD;
+        hc2 |= EMMC_HOSTCTRL2_HS400 | EMMC_HOSTCTRL2_V18;
+        freq = RK3576_EMMC_HS400_FREQ;
+        break;
+
       case CLOCK_SD_TRANSFER_1BIT:
       case CLOCK_SD_TRANSFER_4BIT:
         freq = RK3576_EMMC_XFER_FREQ;
@@ -1177,9 +1196,18 @@ static void rk3576_emmc_clock(struct sdio_dev_s *dev, enum sdio_clock_e rate)
   rk3576_emmc_putreg16(priv, RK3576_EMMC_HOSTCTRL2, hc2);
   rk3576_emmc_setclock(priv, freq);
 
-  if (rate == CLOCK_MMC_HS200)
+  if (rate == CLOCK_MMC_HS200 || rate == CLOCK_MMC_HS400)
     {
-      priv->dll_ready = rk3576_emmc_configdll(priv) == OK;
+      priv->dll_ready =
+          rk3576_emmc_configdll(priv, rate == CLOCK_MMC_HS400) == OK;
+      if (rate == CLOCK_MMC_HS400)
+        {
+          uint32_t emmcctrl;
+
+          emmcctrl = rk3576_emmc_getreg32(priv, RK3576_EMMC_VENDOR_EMMCCTRL);
+          emmcctrl |= EMMC_VENDOR_CARD_IS_EMMC;
+          rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_EMMCCTRL, emmcctrl);
+        }
     }
   else
     {
@@ -1187,6 +1215,7 @@ static void rk3576_emmc_clock(struct sdio_dev_s *dev, enum sdio_clock_e rate)
       rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLCTRL,
                            EMMC_DLLCTRL_BYPASS | EMMC_DLLCTRL_START);
       rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLTXCLK, 0);
+      rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLCMDOUT, 0);
     }
 }
 
@@ -1723,8 +1752,7 @@ static void rk3576_emmc_gotextcsd(struct sdio_dev_s *dev,
   priv->device_type = buffer[RK3576_EMMC_EXTCSD_DEVICE_TYPE];
   priv->strobe_support = buffer[RK3576_EMMC_EXTCSD_STROBE_SUPPORT];
 
-  syslog(LOG_INFO,
-         "INFO: eMMC EXT_CSD rev=%u device_type=%02x hs_timing=%u"
+  mcinfo("eMMC EXT_CSD rev=%u device_type=%02x hs_timing=%u"
          " strobe=%02x\n",
          priv->extcsd_rev, priv->device_type,
          buffer[RK3576_EMMC_EXTCSD_HS_TIMING], priv->strobe_support);
@@ -1755,7 +1783,7 @@ static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd)
       return -EIO;
     }
 
-  syslog(LOG_INFO, "INFO: eMMC HS200 tuning start hostctrl2=%04x\n",
+  mcinfo("eMMC HS200 tuning start hostctrl2=%04x\n",
          rk3576_emmc_getreg16(priv, RK3576_EMMC_HOSTCTRL2));
 
   hc2 = rk3576_emmc_getreg16(priv, RK3576_EMMC_HOSTCTRL2);
@@ -1801,8 +1829,7 @@ static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd)
           priv->tuning_active = false;
           if ((hc2 & EMMC_HOSTCTRL2_TUNED_CLK) != 0)
             {
-              syslog(LOG_INFO,
-                     "INFO: eMMC HS200 tuning complete iterations=%d"
+              mcinfo("eMMC HS200 tuning complete iterations=%d"
                      " hostctrl2=%04x dll=%08" PRIx32 " clksel89=%08" PRIx32
                      "\n",
                      i + 1, hc2,
@@ -1829,6 +1856,46 @@ static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd)
   syslog(LOG_ERR, "ERROR: eMMC HS200 tuning exhausted ret=%d hostctrl2=%04x\n",
          ret, hc2);
   return ret < 0 ? ret : -EIO;
+}
+
+/****************************************************************************
+
+ * * Name: rk3576_emmc_hs400_enhanced_strobe
+
+ * ****************************************************************************/
+
+static int rk3576_emmc_hs400_enhanced_strobe(struct sdio_dev_s *dev,
+                                             bool enable)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  uint32_t value;
+
+  if (enable && (!priv->dll_ready || priv->strobe_support == 0))
+    {
+      return -EIO;
+    }
+
+  value = rk3576_emmc_getreg32(priv, RK3576_EMMC_VENDOR_EMMCCTRL);
+  value |= EMMC_VENDOR_CARD_IS_EMMC;
+  if (enable)
+    {
+      value |= EMMC_VENDOR_ENHANCED_STROBE;
+    }
+  else
+    {
+      value &= ~EMMC_VENDOR_ENHANCED_STROBE;
+    }
+
+  rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_EMMCCTRL, value);
+  mcinfo("eMMC HS400 enhanced strobe %s hostctrl2=%04x"
+         " emmcctrl=%08" PRIx32 " txclk=%08" PRIx32 " cmdout=%08" PRIx32
+         " strbin=%08" PRIx32 "\n",
+         enable ? "enabled" : "disabled",
+         rk3576_emmc_getreg16(priv, RK3576_EMMC_HOSTCTRL2), value,
+         rk3576_emmc_getreg32(priv, RK3576_EMMC_VENDOR_DLLTXCLK),
+         rk3576_emmc_getreg32(priv, RK3576_EMMC_VENDOR_DLLCMDOUT),
+         rk3576_emmc_getreg32(priv, RK3576_EMMC_VENDOR_DLLSTRBIN));
+  return OK;
 }
 
 #ifdef CONFIG_SDIO_DMA

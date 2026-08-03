@@ -87,6 +87,7 @@
 #define RK3576_EMMC_VENDOR_DLLRXCLK   0x804 /* DLL receive clock */
 #define RK3576_EMMC_VENDOR_DLLTXCLK   0x808 /* DLL transmit clock */
 #define RK3576_EMMC_VENDOR_DLLSTRBIN  0x80c /* DLL data strobe input */
+#define RK3576_EMMC_VENDOR_DLLCMDOUT  0x810 /* DLL command output */
 #define RK3576_EMMC_VENDOR_DLLSTATUS0 0x840 /* DLL status */
 
 /* SWRESET (0x2f) -- software reset bits *********************************/
@@ -123,23 +124,33 @@
 
 #define EMMC_HOSTCTRL2_UHSMASK     0x0007
 #define EMMC_HOSTCTRL2_HS200       0x0003
+#define EMMC_HOSTCTRL2_HS400       0x0007
 #define EMMC_HOSTCTRL2_V18         (1 << 3)
 #define EMMC_HOSTCTRL2_EXEC_TUNING (1 << 6)
 #define EMMC_HOSTCTRL2_TUNED_CLK   (1 << 7)
 
 /* Rockchip dwcmshc DLL ****************************************************/
 
-#define EMMC_DLLCTRL_START        (1 << 0)
-#define EMMC_DLLCTRL_START_POINT  (5 << 16)
-#define EMMC_DLLCTRL_INCREMENT    (2 << 8)
-#define EMMC_DLLCTRL_BYPASS       (1 << 24)
-#define EMMC_DLL_DLYENA           (1 << 27)
-#define EMMC_DLL_TAP_FROM_SW      (1 << 24)
-#define EMMC_DLL_RXCLK_NOINVERTER (1 << 29)
-#define EMMC_DLL_STATUS_LOCKED    (1 << 8)
-#define EMMC_DLL_STATUS_TIMEOUT   (1 << 9)
-#define EMMC_DLL_TXCLK_TAP        0x10
-#define EMMC_DLL_STRBIN_TAP       0x04
+#define EMMC_DLLCTRL_START             (1 << 0)
+#define EMMC_DLLCTRL_START_POINT       (5 << 16)
+#define EMMC_DLLCTRL_INCREMENT         (2 << 8)
+#define EMMC_DLLCTRL_BYPASS            (1 << 24)
+#define EMMC_DLL_DLYENA                (1 << 27)
+#define EMMC_DLL_TAP_FROM_SW           (1 << 24)
+#define EMMC_DLL_RXCLK_NOINVERTER      (1 << 29)
+#define EMMC_DLL_CMDOUT_SRC_CLK_NEG    (1 << 28)
+#define EMMC_DLL_CMDOUT_EN_SRC_CLK_NEG (1 << 29)
+#define EMMC_DLL_STATUS_LOCKED         (1 << 8)
+#define EMMC_DLL_STATUS_TIMEOUT        (1 << 9)
+#define EMMC_DLL_HS200_TXCLK_TAP       0x10
+#define EMMC_DLL_HS400_TXCLK_TAP       0x0a
+#define EMMC_DLL_HS400_CMDOUT_TAP      0x08
+#define EMMC_DLL_STRBIN_TAP            0x04
+
+/* Rockchip vendor eMMC control ********************************************/
+
+#define EMMC_VENDOR_CARD_IS_EMMC    (1 << 0)
+#define EMMC_VENDOR_ENHANCED_STROBE (1 << 8)
 
 /* PRESENT (0x24) -- present state *************************************/
 
