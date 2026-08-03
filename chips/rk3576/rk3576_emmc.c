@@ -65,6 +65,7 @@
 #include "arm64_arch.h"
 #include "arm64_internal.h"
 #include "chip.h"
+#include "hardware/rk3576_cru.h"
 #include "hardware/rk3576_emmc.h"
 #include "hardware/rk3576_memorymap.h"
 #include "rk3576_emmc.h"
@@ -79,25 +80,22 @@
 
 #define RK3576_EMMC_NHOSTS 1
 
-/* Base clock: CAP0[15:8] reports the base clock in MHz (0xc8 = 200MHz on the
- * RK3576).  Used to derive the SDCLK divider (SDCLK = baseclk / (2 * N)).
- * The default is used only if CAP0 reads back zero.
- */
+/* Card clock parents provided by RK3576 CRU. */
 
-#define RK3576_EMMC_BASECLK_DEF 200000000
+#define RK3576_EMMC_GPLL_FREQ     1188000000
+#define RK3576_EMMC_OSC_FREQ      24000000
+#define RK3576_EMMC_CRU_CLKSEL    89
+#define RK3576_EMMC_CRU_DIV_SHIFT 8
+#define RK3576_EMMC_CRU_DIV_MASK  (0x3f << 8)
+#define RK3576_EMMC_CRU_SEL_SHIFT 14
+#define RK3576_EMMC_CRU_SEL_MASK  (3 << 14)
+#define RK3576_EMMC_CRU_SEL_GPLL  0
+#define RK3576_EMMC_CRU_SEL_OSC   2
 
 /* Target card clock for each stage. */
 
 #define RK3576_EMMC_ID_FREQ   400000   /* Identification mode (<400KHz) */
 #define RK3576_EMMC_XFER_FREQ 52000000 /* MMC High Speed clock request */
-
-/* SDCLK frequency-select field width: this driver uses the 8-bit divider in
- * CLKCTRL[15:8] only (N up to 255 -> ~392KHz from a 200MHz base), which
- * covers both the identification and default-speed transfer clocks.  The
- * 10-bit extension bits [7:6] are left zero (HS400/tuning is out of scope).
- */
-
-#define RK3576_EMMC_DIV_MAX 0xff
 
 /* Timeout control: data timeout counter = TMCLK * 2^(13 + value); 0x0e is the
  * maximum, giving the longest tolerated data/busy timeout.
@@ -165,9 +163,8 @@ struct rk3576_emmc_dev_s
 {
   struct sdio_dev_s dev; /* Standard SDIO interface (must be first) */
 
-  uintptr_t base;   /* Controller register base address */
-  int irq;          /* Controller interrupt number */
-  uint32_t baseclk; /* Base clock in Hz (from CAP0) */
+  uintptr_t base; /* Controller register base address */
+  int irq;        /* Controller interrupt number */
 
   /* Event wait support */
 
@@ -233,6 +230,7 @@ static inline void rk3576_emmc_putreg32(struct rk3576_emmc_dev_s *priv,
 /* Low-level helpers */
 
 static void rk3576_emmc_setsigen(struct rk3576_emmc_dev_s *priv);
+static uint32_t rk3576_emmc_setcruclock(uint32_t freq);
 static void rk3576_emmc_resetlines(struct rk3576_emmc_dev_s *priv,
                                    uint8_t lines);
 static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv,
@@ -447,19 +445,61 @@ static void rk3576_emmc_setsigen(struct rk3576_emmc_dev_s *priv)
 }
 
 /****************************************************************************
+
+ * * Name: rk3576_emmc_setcruclock
+
+ * ****************************************************************************/
+
+static uint32_t rk3576_emmc_setcruclock(uint32_t freq)
+{
+  uintptr_t regaddr =
+      RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(RK3576_EMMC_CRU_CLKSEL);
+  uint32_t parent;
+  uint32_t select;
+  uint32_t divisor;
+  uint32_t value;
+
+  if (freq <= RK3576_EMMC_ID_FREQ)
+    {
+      parent = RK3576_EMMC_OSC_FREQ;
+      select = RK3576_EMMC_CRU_SEL_OSC;
+    }
+  else
+    {
+      parent = RK3576_EMMC_GPLL_FREQ;
+      select = RK3576_EMMC_CRU_SEL_GPLL;
+    }
+
+  divisor = (parent + freq - 1) / freq;
+  if (divisor < 1)
+    {
+      divisor = 1;
+    }
+  else if (divisor > 64)
+    {
+      divisor = 64;
+    }
+
+  value = ((RK3576_EMMC_CRU_DIV_MASK | RK3576_EMMC_CRU_SEL_MASK) << 16) |
+          (select << RK3576_EMMC_CRU_SEL_SHIFT) |
+          ((divisor - 1) << RK3576_EMMC_CRU_DIV_SHIFT);
+  putreg32(value, regaddr);
+  return parent / divisor;
+}
+
+/****************************************************************************
  * Name: rk3576_emmc_setclock
  *
  * Description:
- *   Set the card clock.  Disable SD clock -> program the 8-bit divider ->
- *   wait for the internal clock to re-stabilise -> enable SD clock.  The card
- *   clock is baseclk / (2 * N) where N is the CLKCTRL[15:8] divider (N = 0
- *   selects the base clock directly).
- ****************************************************************************/
+ *   Set the card clock through CRU.  Rockchip dwcmshc does not use the SDHCI
+
+ * *   frequency divider, so CLKCTRL selects the undivided CRU clock.
+
+ * ****************************************************************************/
 
 static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
 {
   uint32_t divided;
-  uint32_t div;
   uint16_t clk;
   int i;
 
@@ -472,24 +512,13 @@ static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
       return;
     }
 
-  /* 2) Compute the divider: N = ceil(baseclk / (2 * freq)), clamped. */
+  /* 2) Program the external card clock and use SDHCI divider zero. */
 
-  if (freq >= priv->baseclk)
-    {
-      div = 0;
-    }
-  else
-    {
-      div = (priv->baseclk + (2 * freq) - 1) / (2 * freq);
-      if (div > RK3576_EMMC_DIV_MAX)
-        {
-          div = RK3576_EMMC_DIV_MAX;
-        }
-    }
+  divided = rk3576_emmc_setcruclock(freq);
 
   /* 3) Program the divider and wait for the internal clock to stabilise. */
 
-  clk = EMMC_CLKCTRL_INTLEN | (uint16_t)(div << EMMC_CLKCTRL_SDCLKFREQ_SHIFT);
+  clk = EMMC_CLKCTRL_INTLEN;
   rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, clk);
 
   for (i = 0; i < RK3576_EMMC_SPIN; i++)
@@ -505,8 +534,7 @@ static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
 
   rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, clk | EMMC_CLKCTRL_SDCLKEN);
 
-  divided = div == 0 ? priv->baseclk : priv->baseclk / (2 * div);
-  mcinfo("eMMC clock requested=%" PRIu32 " divided=%" PRIu32
+  mcinfo("eMMC clock requested=%" PRIu32 " configured=%" PRIu32
          " hostctrl1=%02x\n",
          freq, divided, rk3576_emmc_getreg8(priv, RK3576_EMMC_HOSTCTRL1));
 }
@@ -840,26 +868,17 @@ static int rk3576_emmc_interrupt(int irq, void *context, void *arg)
  *
  * Description:
  *   Software-reset the host, bring up the internal + card clock and bus power,
- *   latch all status bits and restore the identification-mode defaults.  Adds
- *   no CRU/pinctrl setup: the eMMC is a non-removable, loader-configured boot
- *   device whose clock domain and pins are already up.
- ****************************************************************************/
+ *   latch all status bits and restore the identification-mode defaults.
+
+ * ****************************************************************************/
 
 static void rk3576_emmc_reset(struct sdio_dev_s *dev)
 {
   struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
-  uint32_t cap0;
-  uint32_t basemhz;
   irqstate_t flags;
   int i;
 
   flags = enter_critical_section();
-
-  /* Determine the base clock from CAP0[15:8] (MHz). */
-
-  cap0 = rk3576_emmc_getreg32(priv, RK3576_EMMC_CAP0);
-  basemhz = (cap0 >> 8) & 0xff;
-  priv->baseclk = basemhz != 0 ? basemhz * 1000000 : RK3576_EMMC_BASECLK_DEF;
 
   /* Software-reset the whole host and wait for the bit to self-clear. */
 
