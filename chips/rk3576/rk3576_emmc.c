@@ -89,7 +89,7 @@
 /* Target card clock for each stage. */
 
 #define RK3576_EMMC_ID_FREQ   400000   /* Identification mode (<400KHz) */
-#define RK3576_EMMC_XFER_FREQ 52000000 /* MMC High Speed (50 MHz actual) */
+#define RK3576_EMMC_XFER_FREQ 52000000 /* MMC High Speed clock request */
 
 /* SDCLK frequency-select field width: this driver uses the 8-bit divider in
  * CLKCTRL[15:8] only (N up to 255 -> ~392KHz from a 200MHz base), which
@@ -116,13 +116,15 @@
 #define RK3576_EMMC_SPIN 1000000
 
 #ifdef CONFIG_SDIO_DMA
-#define RK3576_EMMC_ADMA_NDESC 8
-#define RK3576_EMMC_ADMA_BUFSZ 65536
-#define RK3576_EMMC_ADMA_LIMIT UINT64_C(0x100000000)
+#define RK3576_EMMC_ADMA_NDESC    16
+#define RK3576_EMMC_ADMA_BUFSZ    65536
+#define RK3576_EMMC_ADMA_BOUNDARY (128 * 1024 * 1024)
+#define RK3576_EMMC_ADMA_MAXXFR   (512 * 1024)
+#define RK3576_EMMC_ADMA_LIMIT    UINT64_C(0x100000000)
 
-#define EMMC_ADMA2_VALID       (1 << 0)
-#define EMMC_ADMA2_END         (1 << 1)
-#define EMMC_ADMA2_ACT_TRAN    (2 << 4)
+#define EMMC_ADMA2_VALID          (1 << 0)
+#define EMMC_ADMA2_END            (1 << 1)
+#define EMMC_ADMA2_ACT_TRAN       (2 << 4)
 #endif
 
 /* Packed interrupt sets: the SDHCI normal (16-bit) and error (16-bit) status
@@ -231,6 +233,8 @@ static inline void rk3576_emmc_putreg32(struct rk3576_emmc_dev_s *priv,
 /* Low-level helpers */
 
 static void rk3576_emmc_setsigen(struct rk3576_emmc_dev_s *priv);
+static void rk3576_emmc_resetlines(struct rk3576_emmc_dev_s *priv,
+                                   uint8_t lines);
 static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv,
                                  uint32_t freq);
 static void rk3576_emmc_configwaitints(struct rk3576_emmc_dev_s *priv,
@@ -454,7 +458,7 @@ static void rk3576_emmc_setsigen(struct rk3576_emmc_dev_s *priv)
 
 static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
 {
-  uint32_t actual;
+  uint32_t divided;
   uint32_t div;
   uint16_t clk;
   int i;
@@ -501,11 +505,33 @@ static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
 
   rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, clk | EMMC_CLKCTRL_SDCLKEN);
 
-  actual = div == 0 ? priv->baseclk : priv->baseclk / (2 * div);
-  syslog(LOG_INFO,
-         "INFO: eMMC clock requested=%" PRIu32 " actual=%" PRIu32
+  divided = div == 0 ? priv->baseclk : priv->baseclk / (2 * div);
+  mcinfo("eMMC clock requested=%" PRIu32 " divided=%" PRIu32
          " hostctrl1=%02x\n",
-         freq, actual, rk3576_emmc_getreg8(priv, RK3576_EMMC_HOSTCTRL1));
+         freq, divided, rk3576_emmc_getreg8(priv, RK3576_EMMC_HOSTCTRL1));
+}
+
+/****************************************************************************
+
+ * * Name: rk3576_emmc_resetlines
+
+ * ****************************************************************************/
+
+static void rk3576_emmc_resetlines(struct rk3576_emmc_dev_s *priv,
+                                   uint8_t lines)
+{
+  int i;
+
+  rk3576_emmc_putreg8(priv, RK3576_EMMC_SWRESET, lines);
+  for (i = 0; i < RK3576_EMMC_SPIN; i++)
+    {
+      if ((rk3576_emmc_getreg8(priv, RK3576_EMMC_SWRESET) & lines) == 0)
+        {
+          return;
+        }
+    }
+
+  syslog(LOG_ERR, "ERROR: eMMC line reset timed out mask=%02x\n", lines);
 }
 
 /****************************************************************************
@@ -726,6 +752,7 @@ static int rk3576_emmc_interrupt(int irq, void *context, void *arg)
       priv->remaining = 0;
       priv->buffer = NULL;
       rk3576_emmc_configxfrints(priv, 0);
+      rk3576_emmc_resetlines(priv, EMMC_SWRESET_DAT);
 
       if ((priv->waitevents & (SDIOWAIT_TRANSFERDONE | SDIOWAIT_ERROR)) != 0)
         {
@@ -909,7 +936,7 @@ static void rk3576_emmc_reset(struct sdio_dev_s *dev)
  * Name: rk3576_emmc_capabilities
  *
  * Description:
- *   Report host capabilities: 8-bit MMC High Speed bus and PIO data path.
+ *   Report host capabilities: 8-bit MMC High Speed bus and ADMA2 data path.
  *
  * DMABEFOREWRITE makes mmcsd run SENDSETUP before the write command, which
  *
@@ -986,9 +1013,9 @@ static void rk3576_emmc_widebus(struct sdio_dev_s *dev, bool enable)
  *
  * clock, so CLOCK_MMC_TRANSFER selects SDHCI High Speed timing.  With the
  *
- * 200 MHz base clock, the integer divider produces a 50 MHz card clock for
+ * reported 200 MHz base clock, the programmed integer divider corresponds
  *
- * the 52 MHz request.
+ * to 50 MHz for the 52 MHz request.
 
  * ****************************************************************************/
 
@@ -1589,17 +1616,49 @@ static void rk3576_emmc_dma_disable(struct rk3576_emmc_dev_s *priv)
 static bool rk3576_emmc_dma_ok(const uint8_t *buffer, size_t buflen)
 {
   uintptr_t address = (uintptr_t)buffer;
+  uintptr_t cursor = address;
+  size_t remaining = buflen;
   size_t linesize = up_get_dcache_linesize();
+  unsigned int ndescs = 0;
 
   if (linesize == 0)
     {
       linesize = 64;
     }
 
-  return buffer != NULL && buflen > 0 && (address & (linesize - 1)) == 0 &&
-         (buflen & (linesize - 1)) == 0 &&
-         buflen <= RK3576_EMMC_ADMA_NDESC * RK3576_EMMC_ADMA_BUFSZ &&
-         (uint64_t)address + buflen <= RK3576_EMMC_ADMA_LIMIT;
+  if (buffer == NULL || buflen == 0 || (address & (linesize - 1)) != 0 ||
+      (buflen & (linesize - 1)) != 0 || buflen > RK3576_EMMC_ADMA_MAXXFR ||
+      (uint64_t)address + buflen > RK3576_EMMC_ADMA_LIMIT)
+    {
+      return false;
+    }
+
+  while (remaining > 0)
+    {
+      size_t boundary = RK3576_EMMC_ADMA_BOUNDARY -
+                        (cursor & (RK3576_EMMC_ADMA_BOUNDARY - 1));
+      size_t segment = remaining;
+
+      if (segment > RK3576_EMMC_ADMA_BUFSZ)
+        {
+          segment = RK3576_EMMC_ADMA_BUFSZ;
+        }
+
+      if (segment > boundary)
+        {
+          segment = boundary;
+        }
+
+      if (++ndescs > RK3576_EMMC_ADMA_NDESC)
+        {
+          return false;
+        }
+
+      cursor += segment;
+      remaining -= segment;
+    }
+
+  return true;
 }
 
 /****************************************************************************
@@ -1622,10 +1681,20 @@ static int rk3576_emmc_dma_setup(struct rk3576_emmc_dev_s *priv,
 
   while (remaining > 0)
     {
-      size_t segment = remaining > RK3576_EMMC_ADMA_BUFSZ
-                           ? RK3576_EMMC_ADMA_BUFSZ
-                           : remaining;
+      size_t boundary = RK3576_EMMC_ADMA_BOUNDARY -
+                        (address & (RK3576_EMMC_ADMA_BOUNDARY - 1));
+      size_t segment = remaining;
       uint16_t attr = EMMC_ADMA2_VALID | EMMC_ADMA2_ACT_TRAN;
+
+      if (segment > RK3576_EMMC_ADMA_BUFSZ)
+        {
+          segment = RK3576_EMMC_ADMA_BUFSZ;
+        }
+
+      if (segment > boundary)
+        {
+          segment = boundary;
+        }
 
       if (segment == remaining)
         {
