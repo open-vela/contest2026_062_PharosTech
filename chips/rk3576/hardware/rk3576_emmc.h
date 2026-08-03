@@ -163,6 +163,7 @@
 #define EMMC_EINT_DATTIMEOUT (1 << 4) /* Data timeout error           */
 #define EMMC_EINT_DATCRC     (1 << 5) /* Data CRC error               */
 #define EMMC_EINT_DATEND     (1 << 6) /* Data end bit error           */
+#define EMMC_EINT_ADMA       (1 << 9) /* ADMA error                   */
 #define EMMC_EINT_ALL        0xffff   /* All error bits               */
 
 #endif /* __VENDOR_ROCKCHIP_RK3576_HARDWARE_RK3576_EMMC_H */

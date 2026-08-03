@@ -24,15 +24,16 @@
  * RK3576 eMMC host controller driver -- Synopsys DesignWare Cortex MSHC
  * (dwcmshc), which presents a standard SDHCI 3.0 register block.  Implements
  * the NuttX struct sdio_dev_s so the generic drivers/mmcsd/mmcsd_sdio.c stack
- * drives it.  The data path is PIO (the SDHCI buffer data port) in the
- * interrupt/event model that mmcsd expects; a CONFIG_SDIO_DMA build compiles
- * the DMA setup entry points but falls back to PIO (SDMA/ADMA2 and the
- * HS400/CQE/DLL vendor area are out of scope for this milestone).
+ * drives it.  The data path supports SDHCI ADMA2 with transparent PIO
  *
- * The eMMC is a non-removable, loader-configured boot device: the bootloader
- * has already ungated the CRU clock domain and configured the pin IOMUX, so
- * this driver adds no CRU or pinctrl code (HOSTVER/CAP read back valid with
- * the loader configuration only).
+ *fallback for buffers that cannot be addressed safely by 32-bit ADMA2.
+ *
+ *HS400/CQE/DLL support uses the Rockchip vendor area and is separate.
+ * The
+ *eMMC is a non-removable, loader-configured boot device: the bootloader has
+ *already ungated the CRU clock domain and configured the pin IOMUX, so this
+ *driver adds no CRU or pinctrl code (HOSTVER/CAP read back valid with the
+ *loader configuration only).
  ****************************************************************************/
 
 /****************************************************************************
@@ -88,7 +89,7 @@
 /* Target card clock for each stage. */
 
 #define RK3576_EMMC_ID_FREQ   400000   /* Identification mode (<400KHz) */
-#define RK3576_EMMC_XFER_FREQ 25000000 /* Default-speed transfer        */
+#define RK3576_EMMC_XFER_FREQ 52000000 /* MMC High Speed (50 MHz actual) */
 
 /* SDCLK frequency-select field width: this driver uses the 8-bit divider in
  * CLKCTRL[15:8] only (N up to 255 -> ~392KHz from a 200MHz base), which
@@ -114,6 +115,16 @@
 
 #define RK3576_EMMC_SPIN 1000000
 
+#ifdef CONFIG_SDIO_DMA
+#define RK3576_EMMC_ADMA_NDESC 8
+#define RK3576_EMMC_ADMA_BUFSZ 65536
+#define RK3576_EMMC_ADMA_LIMIT UINT64_C(0x100000000)
+
+#define EMMC_ADMA2_VALID       (1 << 0)
+#define EMMC_ADMA2_END         (1 << 1)
+#define EMMC_ADMA2_ACT_TRAN    (2 << 4)
+#endif
+
 /* Packed interrupt sets: the SDHCI normal (16-bit) and error (16-bit) status
  * live in separate registers, so a single 32-bit value carries the normal
  * bits in [15:0] and the error bits in [31:16].
@@ -132,8 +143,9 @@
 #define EMMC_RESPERR_INTS                                                 \
   EMMC_MKERR(EMMC_EINT_CMDTIMEOUT | EMMC_EINT_CMDCRC | EMMC_EINT_CMDEND | \
              EMMC_EINT_CMDIDX)
-#define EMMC_DATAERR_INTS \
-  EMMC_MKERR(EMMC_EINT_DATTIMEOUT | EMMC_EINT_DATCRC | EMMC_EINT_DATEND)
+#define EMMC_DATAERR_INTS                                                 \
+  EMMC_MKERR(EMMC_EINT_DATTIMEOUT | EMMC_EINT_DATCRC | EMMC_EINT_DATEND | \
+             EMMC_EINT_ADMA)
 
 /* Clear-all mask for the status registers (write-1-to-clear). */
 
@@ -179,7 +191,23 @@ struct rk3576_emmc_dev_s
   uint16_t xfermode;          /* Prepared mode for the next data command */
   uint32_t lastcmd;           /* Last command encoding for diagnostics */
   uint32_t lastarg;           /* Last command argument for diagnostics */
+
+#ifdef CONFIG_SDIO_DMA
+  volatile bool dma_active; /* Current transfer uses ADMA2 */
+  bool dma_read;            /* ADMA direction: true = card to memory */
+  uintptr_t dma_buffer;     /* DMA buffer start */
+  size_t dma_length;        /* DMA buffer length */
+#endif
 };
+
+#ifdef CONFIG_SDIO_DMA
+struct rk3576_emmc_adma2_desc_s
+{
+  uint16_t attr;
+  uint16_t length;
+  uint32_t address;
+};
+#endif
 
 /****************************************************************************
  * Private Function Prototypes
@@ -217,6 +245,14 @@ static void rk3576_emmc_eventtimeout(wdparm_t arg);
 static void rk3576_emmc_recvfifo(struct rk3576_emmc_dev_s *priv);
 static void rk3576_emmc_sendfifo(struct rk3576_emmc_dev_s *priv);
 static void rk3576_emmc_callback(struct rk3576_emmc_dev_s *priv);
+
+#ifdef CONFIG_SDIO_DMA
+static void rk3576_emmc_dma_disable(struct rk3576_emmc_dev_s *priv);
+static bool rk3576_emmc_dma_ok(const uint8_t *buffer, size_t buflen);
+static int rk3576_emmc_dma_setup(struct rk3576_emmc_dev_s *priv,
+                                 const uint8_t *buffer, size_t buflen,
+                                 bool write);
+#endif
 
 /* Interrupt handling */
 
@@ -333,6 +369,11 @@ static const struct rk3576_emmc_cfg_s
 
 static struct rk3576_emmc_dev_s g_emmc_hosts[RK3576_EMMC_NHOSTS];
 
+#ifdef CONFIG_SDIO_DMA
+static struct rk3576_emmc_adma2_desc_s
+    g_emmc_adma_descs[RK3576_EMMC_ADMA_NDESC] aligned_data(64);
+#endif
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -413,6 +454,7 @@ static void rk3576_emmc_setsigen(struct rk3576_emmc_dev_s *priv)
 
 static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
 {
+  uint32_t actual;
   uint32_t div;
   uint16_t clk;
   int i;
@@ -458,6 +500,12 @@ static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
   /* 4) Enable the SD clock to the card. */
 
   rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, clk | EMMC_CLKCTRL_SDCLKEN);
+
+  actual = div == 0 ? priv->baseclk : priv->baseclk / (2 * div);
+  syslog(LOG_INFO,
+         "INFO: eMMC clock requested=%" PRIu32 " actual=%" PRIu32
+         " hostctrl1=%02x\n",
+         freq, actual, rk3576_emmc_getreg8(priv, RK3576_EMMC_HOSTCTRL1));
 }
 
 /****************************************************************************
@@ -665,10 +713,16 @@ static int rk3576_emmc_interrupt(int irq, void *context, void *arg)
     {
       syslog(LOG_ERR,
              "ERROR: emmc data irq cmd=%08" PRIx32 " arg=%08" PRIx32
-             " present=%08" PRIx32 " nint=%04x eint=%04x remain=%lu\n",
+             " present=%08" PRIx32 " nint=%04x eint=%04x remain=%lu"
+             " admaerr=%02x admaaddr=%08" PRIx32 "\n",
              priv->lastcmd, priv->lastarg,
              rk3576_emmc_getreg32(priv, RK3576_EMMC_PRESENT), nint, eint,
-             (unsigned long)priv->remaining);
+             (unsigned long)priv->remaining,
+             rk3576_emmc_getreg8(priv, RK3576_EMMC_ADMAERR),
+             rk3576_emmc_getreg32(priv, RK3576_EMMC_ADMAADDR));
+#ifdef CONFIG_SDIO_DMA
+      rk3576_emmc_dma_disable(priv);
+#endif
       priv->remaining = 0;
       priv->buffer = NULL;
       rk3576_emmc_configxfrints(priv, 0);
@@ -681,7 +735,11 @@ static int rk3576_emmc_interrupt(int irq, void *context, void *arg)
 
   /* --- Data transfer done --- */
 
-  else if ((nint & EMMC_NINT_XFERDONE) != 0 && priv->buffer != NULL)
+  else if ((nint & EMMC_NINT_XFERDONE) != 0 && (priv->buffer != NULL
+#ifdef CONFIG_SDIO_DMA
+                                                || priv->dma_active
+#endif
+                                                ))
     {
       /* Drain any tail still in the buffer port.  On this dwcmshc XFERDONE can
        * post together with the final buffer-read-ready window, so read the
@@ -695,11 +753,24 @@ static int rk3576_emmc_interrupt(int irq, void *context, void *arg)
        * EXT_CSD read back as zero).
        */
 
-      while (priv->remaining >= sizeof(uint32_t))
+#ifdef CONFIG_SDIO_DMA
+      if (priv->dma_active)
         {
-          *priv->buffer++ = rk3576_emmc_getreg32(priv, RK3576_EMMC_BUFFER);
-          priv->remaining -= sizeof(uint32_t);
+          if (priv->dma_read)
+            {
+              up_invalidate_dcache(priv->dma_buffer,
+                                   priv->dma_buffer + priv->dma_length);
+            }
+
+          rk3576_emmc_dma_disable(priv);
         }
+      else
+#endif
+        while (priv->remaining >= sizeof(uint32_t))
+          {
+            *priv->buffer++ = rk3576_emmc_getreg32(priv, RK3576_EMMC_BUFFER);
+            priv->remaining -= sizeof(uint32_t);
+          }
 
       priv->remaining = 0;
       priv->buffer = NULL;
@@ -820,6 +891,12 @@ static void rk3576_emmc_reset(struct sdio_dev_s *dev)
   priv->wkupevent = 0;
   priv->blocksize = 0;
   priv->xfermode = 0;
+#ifdef CONFIG_SDIO_DMA
+  priv->dma_active = false;
+  priv->dma_read = false;
+  priv->dma_buffer = 0;
+  priv->dma_length = 0;
+#endif
 
   /* Identification-mode initial clock (<400KHz). */
 
@@ -832,11 +909,15 @@ static void rk3576_emmc_reset(struct sdio_dev_s *dev)
  * Name: rk3576_emmc_capabilities
  *
  * Description:
- *   Report host capabilities: 8-bit bus and PIO
- *   data path.  DMABEFOREWRITE makes mmcsd run SENDSETUP before the write
- *   command, which is required on SDHCI because the transfer mode must be
- *   programmed before the command register write.
- ****************************************************************************/
+ *   Report host capabilities: 8-bit MMC High Speed bus and PIO data path.
+ *
+ * DMABEFOREWRITE makes mmcsd run SENDSETUP before the write command, which
+ *
+ * is required on SDHCI because the transfer mode must be programmed before
+ *
+ * the command register write.
+
+ * ****************************************************************************/
 
 static sdio_capset_t rk3576_emmc_capabilities(struct sdio_dev_s *dev)
 {
@@ -848,7 +929,11 @@ static sdio_capset_t rk3576_emmc_capabilities(struct sdio_dev_s *dev)
    * asking the host to enable wide-bus operation.  Match that width here.
    */
   caps |= SDIO_CAPS_8BIT;
+  caps |= SDIO_CAPS_MMC_HS_MODE;
   caps |= SDIO_CAPS_DMABEFOREWRITE;
+#ifdef CONFIG_SDIO_DMA
+  caps |= SDIO_CAPS_DMASUPPORTED;
+#endif
 
   return caps;
 }
@@ -895,15 +980,26 @@ static void rk3576_emmc_widebus(struct sdio_dev_s *dev, bool enable)
  * Name: rk3576_emmc_clock
  *
  * Description:
- *   Set the card clock for the requested stage.  eMMC only exercises the
- *   identification and default-speed transfer clocks; the SD-specific rates
- *   map to the same default-speed transfer clock.
- ****************************************************************************/
+ *   Set the card clock and host timing for the requested stage.  The generic
+
+ * *   MMC layer switches EXT_CSD HS_TIMING before requesting the transfer
+ *
+ * clock, so CLOCK_MMC_TRANSFER selects SDHCI High Speed timing.  With the
+ *
+ * 200 MHz base clock, the integer divider produces a 50 MHz card clock for
+ *
+ * the 52 MHz request.
+
+ * ****************************************************************************/
 
 static void rk3576_emmc_clock(struct sdio_dev_s *dev, enum sdio_clock_e rate)
 {
   struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
   uint32_t freq;
+  uint8_t hc;
+
+  hc = rk3576_emmc_getreg8(priv, RK3576_EMMC_HOSTCTRL1);
+  hc &= ~EMMC_HOSTCTRL1_HISPD;
 
   switch (rate)
     {
@@ -917,12 +1013,17 @@ static void rk3576_emmc_clock(struct sdio_dev_s *dev, enum sdio_clock_e rate)
         break;
 
       case CLOCK_MMC_TRANSFER:
+        hc |= EMMC_HOSTCTRL1_HISPD;
+        freq = RK3576_EMMC_XFER_FREQ;
+        break;
+
       case CLOCK_SD_TRANSFER_1BIT:
       case CLOCK_SD_TRANSFER_4BIT:
         freq = RK3576_EMMC_XFER_FREQ;
         break;
     }
 
+  rk3576_emmc_putreg8(priv, RK3576_EMMC_HOSTCTRL1, hc);
   rk3576_emmc_setclock(priv, freq);
 }
 
@@ -1098,6 +1199,10 @@ static int rk3576_emmc_recvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
   blksz = priv->blocksize ? priv->blocksize : nbytes;
   nblocks = blksz ? (nbytes / blksz) : 1;
 
+#ifdef CONFIG_SDIO_DMA
+  rk3576_emmc_dma_disable(priv);
+#endif
+
   priv->buffer = (uint32_t *)buffer;
   priv->remaining = nbytes;
 
@@ -1157,6 +1262,10 @@ static int rk3576_emmc_sendsetup(struct sdio_dev_s *dev, const uint8_t *buffer,
   blksz = priv->blocksize ? priv->blocksize : nbytes;
   nblocks = blksz ? (nbytes / blksz) : 1;
 
+#ifdef CONFIG_SDIO_DMA
+  rk3576_emmc_dma_disable(priv);
+#endif
+
   priv->buffer = (uint32_t *)buffer;
   priv->remaining = nbytes;
 
@@ -1200,6 +1309,9 @@ static int rk3576_emmc_cancel(struct sdio_dev_s *dev)
 
   priv->buffer = NULL;
   priv->remaining = 0;
+#ifdef CONFIG_SDIO_DMA
+  rk3576_emmc_dma_disable(priv);
+#endif
   return OK;
 }
 
@@ -1448,15 +1560,153 @@ static void rk3576_emmc_gotextcsd(struct sdio_dev_s *dev,
 
 #ifdef CONFIG_SDIO_DMA
 
+/****************************************************************************
+
+ * * Name: rk3576_emmc_dma_disable
+
+ * ****************************************************************************/
+
+static void rk3576_emmc_dma_disable(struct rk3576_emmc_dev_s *priv)
+{
+  uint8_t hc;
+
+  hc = rk3576_emmc_getreg8(priv, RK3576_EMMC_HOSTCTRL1);
+  hc &= ~(3 << EMMC_HOSTCTRL1_DMASEL_SHIFT);
+  rk3576_emmc_putreg8(priv, RK3576_EMMC_HOSTCTRL1, hc);
+
+  priv->dma_active = false;
+  priv->dma_read = false;
+  priv->dma_buffer = 0;
+  priv->dma_length = 0;
+}
+
+/****************************************************************************
+
+ * * Name: rk3576_emmc_dma_ok
+
+ * ****************************************************************************/
+
+static bool rk3576_emmc_dma_ok(const uint8_t *buffer, size_t buflen)
+{
+  uintptr_t address = (uintptr_t)buffer;
+  size_t linesize = up_get_dcache_linesize();
+
+  if (linesize == 0)
+    {
+      linesize = 64;
+    }
+
+  return buffer != NULL && buflen > 0 && (address & (linesize - 1)) == 0 &&
+         (buflen & (linesize - 1)) == 0 &&
+         buflen <= RK3576_EMMC_ADMA_NDESC * RK3576_EMMC_ADMA_BUFSZ &&
+         (uint64_t)address + buflen <= RK3576_EMMC_ADMA_LIMIT;
+}
+
+/****************************************************************************
+
+ * * Name: rk3576_emmc_dma_setup
+
+ * ****************************************************************************/
+
+static int rk3576_emmc_dma_setup(struct rk3576_emmc_dev_s *priv,
+                                 const uint8_t *buffer, size_t buflen,
+                                 bool write)
+{
+  uintptr_t address = (uintptr_t)buffer;
+  size_t remaining = buflen;
+  uint32_t blksz;
+  uint32_t nblocks;
+  uint16_t mode;
+  uint8_t hc;
+  int index = 0;
+
+  while (remaining > 0)
+    {
+      size_t segment = remaining > RK3576_EMMC_ADMA_BUFSZ
+                           ? RK3576_EMMC_ADMA_BUFSZ
+                           : remaining;
+      uint16_t attr = EMMC_ADMA2_VALID | EMMC_ADMA2_ACT_TRAN;
+
+      if (segment == remaining)
+        {
+          attr |= EMMC_ADMA2_END;
+        }
+
+      g_emmc_adma_descs[index].attr = attr;
+      g_emmc_adma_descs[index].length =
+          segment == RK3576_EMMC_ADMA_BUFSZ ? 0 : (uint16_t)segment;
+      g_emmc_adma_descs[index].address = (uint32_t)address;
+
+      address += segment;
+      remaining -= segment;
+      index++;
+    }
+
+  up_clean_dcache((uintptr_t)g_emmc_adma_descs,
+                  (uintptr_t)&g_emmc_adma_descs[index]);
+
+  if (write)
+    {
+      up_clean_dcache((uintptr_t)buffer, (uintptr_t)buffer + buflen);
+    }
+  else
+    {
+      up_invalidate_dcache((uintptr_t)buffer, (uintptr_t)buffer + buflen);
+    }
+
+  priv->buffer = NULL;
+  priv->remaining = 0;
+  priv->dma_active = true;
+  priv->dma_read = !write;
+  priv->dma_buffer = (uintptr_t)buffer;
+  priv->dma_length = buflen;
+
+  blksz = priv->blocksize ? priv->blocksize : buflen;
+  nblocks = blksz ? buflen / blksz : 1;
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSTS,
+                       EMMC_NINT_XFERDONE | EMMC_NINT_DMAINT);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSTS,
+                       EMMC_EPART(EMMC_DATAERR_INTS));
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_BLOCKSIZE, (uint16_t)blksz);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_BLOCKCOUNT, (uint16_t)nblocks);
+  rk3576_emmc_putreg32(priv, RK3576_EMMC_ADMAADDR,
+                       (uint32_t)(uintptr_t)g_emmc_adma_descs);
+
+  hc = rk3576_emmc_getreg8(priv, RK3576_EMMC_HOSTCTRL1);
+  hc &= ~(3 << EMMC_HOSTCTRL1_DMASEL_SHIFT);
+  hc |= EMMC_HOSTCTRL1_DMA_ADMA2;
+  rk3576_emmc_putreg8(priv, RK3576_EMMC_HOSTCTRL1, hc);
+
+  mode = EMMC_XFERMODE_DMAEN;
+  if (!write)
+    {
+      mode |= EMMC_XFERMODE_DTDSEL;
+    }
+
+  if (nblocks > 1)
+    {
+      mode |= EMMC_XFERMODE_BCEN | EMMC_XFERMODE_MSBSEL;
+    }
+
+  priv->xfermode = mode;
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_XFERMODE, mode);
+  rk3576_emmc_configxfrints(priv, EMMC_XFRDONE_INTS | EMMC_DATAERR_INTS);
+  return OK;
+}
+
 #ifdef CONFIG_ARCH_HAVE_SDIO_PREFLIGHT
 /****************************************************************************
  * Name: rk3576_emmc_dmapreflight
  *
  * Description:
- *   Validate a buffer for the DMA path.  This milestone runs PIO for all
- *   transfers, so every buffer is accepted (the setup below routes it through
- *   the PIO path).
- ****************************************************************************/
+ *   Always accept the request here.  The generic MMC layer does not retry a
+ *
+ * failed DMA preflight through PIO, so the setup methods select ADMA2 or
+ *
+ * PIO themselves.
+
+ * ****************************************************************************/
 
 static int rk3576_emmc_dmapreflight(struct sdio_dev_s *dev,
                                     const uint8_t *buffer, size_t buflen)
@@ -1472,21 +1722,36 @@ static int rk3576_emmc_dmapreflight(struct sdio_dev_s *dev,
  * Name: rk3576_emmc_dmarecvsetup / rk3576_emmc_dmasendsetup
  *
  * Description:
- *   DMA setup entry points.  SDMA/ADMA2 is out of scope for this milestone;
- *   these fall back to the proven PIO setup so a CONFIG_SDIO_DMA build still
- *   enumerates and transfers correctly.
- ****************************************************************************/
+ *   Select ADMA2 for cache-line-aligned low-4G buffers within descriptor
+ *
+ * capacity.  Other requests transparently use the proven PIO path.
+
+ * ****************************************************************************/
 
 static int rk3576_emmc_dmarecvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
                                     size_t buflen)
 {
-  return rk3576_emmc_recvsetup(dev, buffer, buflen);
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+
+  if (!rk3576_emmc_dma_ok(buffer, buflen))
+    {
+      return rk3576_emmc_recvsetup(dev, buffer, buflen);
+    }
+
+  return rk3576_emmc_dma_setup(priv, buffer, buflen, false);
 }
 
 static int rk3576_emmc_dmasendsetup(struct sdio_dev_s *dev,
                                     const uint8_t *buffer, size_t buflen)
 {
-  return rk3576_emmc_sendsetup(dev, buffer, buflen);
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+
+  if (!rk3576_emmc_dma_ok(buffer, buflen))
+    {
+      return rk3576_emmc_sendsetup(dev, buffer, buflen);
+    }
+
+  return rk3576_emmc_dma_setup(priv, buffer, buflen, true);
 }
 
 #endif /* CONFIG_SDIO_DMA */
