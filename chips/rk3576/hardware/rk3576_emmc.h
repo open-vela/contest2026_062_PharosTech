@@ -81,9 +81,13 @@
 
 /* Rockchip dwcmshc vendor area (deferred; HS400/DLL only) ****************/
 
-#define RK3576_EMMC_VENDOR_EMMCCTRL 0x52c /* eMMC control (card_is_emmc) */
-#define RK3576_EMMC_VENDOR_ATCTRL   0x540 /* AT (tuning) control             */
-#define RK3576_EMMC_VENDOR_DLLCTRL  0x800 /* DLL control (HS400) */
+#define RK3576_EMMC_VENDOR_EMMCCTRL   0x52c /* eMMC control (card_is_emmc) */
+#define RK3576_EMMC_VENDOR_ATCTRL     0x540 /* AT (tuning) control             */
+#define RK3576_EMMC_VENDOR_DLLCTRL    0x800 /* DLL control (HS400) */
+#define RK3576_EMMC_VENDOR_DLLRXCLK   0x804 /* DLL receive clock */
+#define RK3576_EMMC_VENDOR_DLLTXCLK   0x808 /* DLL transmit clock */
+#define RK3576_EMMC_VENDOR_DLLSTRBIN  0x80c /* DLL data strobe input */
+#define RK3576_EMMC_VENDOR_DLLSTATUS0 0x840 /* DLL status */
 
 /* SWRESET (0x2f) -- software reset bits *********************************/
 
@@ -114,6 +118,28 @@
 #define EMMC_HOSTCTRL1_DMA_SDMA     (0 << 3) /* SDMA                         */
 #define EMMC_HOSTCTRL1_DMA_ADMA2    (2 << 3) /* 32-bit ADMA2                 */
 #define EMMC_HOSTCTRL1_DWIDTH8      (1 << 5) /* 8-bit data width (eMMC)      */
+
+/* HOSTCTRL2 (0x3e) -- UHS/tuning control *********************************/
+
+#define EMMC_HOSTCTRL2_UHSMASK     0x0007
+#define EMMC_HOSTCTRL2_HS200       0x0003
+#define EMMC_HOSTCTRL2_V18         (1 << 3)
+#define EMMC_HOSTCTRL2_EXEC_TUNING (1 << 6)
+#define EMMC_HOSTCTRL2_TUNED_CLK   (1 << 7)
+
+/* Rockchip dwcmshc DLL ****************************************************/
+
+#define EMMC_DLLCTRL_START        (1 << 0)
+#define EMMC_DLLCTRL_START_POINT  (5 << 16)
+#define EMMC_DLLCTRL_INCREMENT    (2 << 8)
+#define EMMC_DLLCTRL_BYPASS       (1 << 24)
+#define EMMC_DLL_DLYENA           (1 << 27)
+#define EMMC_DLL_TAP_FROM_SW      (1 << 24)
+#define EMMC_DLL_RXCLK_NOINVERTER (1 << 29)
+#define EMMC_DLL_STATUS_LOCKED    (1 << 8)
+#define EMMC_DLL_STATUS_TIMEOUT   (1 << 9)
+#define EMMC_DLL_TXCLK_TAP        0x10
+#define EMMC_DLL_STRBIN_TAP       0x04
 
 /* PRESENT (0x24) -- present state *************************************/
 

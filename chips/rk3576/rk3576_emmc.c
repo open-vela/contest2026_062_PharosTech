@@ -81,9 +81,9 @@
 #define RK3576_EMMC_NHOSTS 1
 
 /* Card clock parents provided by RK3576 CRU. */
-
 #define RK3576_EMMC_GPLL_FREQ     1188000000
 #define RK3576_EMMC_OSC_FREQ      24000000
+
 #define RK3576_EMMC_CRU_CLKSEL    89
 #define RK3576_EMMC_CRU_DIV_SHIFT 8
 #define RK3576_EMMC_CRU_DIV_MASK  (0x3f << 8)
@@ -94,14 +94,22 @@
 
 /* Target card clock for each stage. */
 
-#define RK3576_EMMC_ID_FREQ   400000   /* Identification mode (<400KHz) */
-#define RK3576_EMMC_XFER_FREQ 52000000 /* MMC High Speed clock request */
+#define RK3576_EMMC_ID_FREQ    400000    /* Identification mode (<400KHz) */
+#define RK3576_EMMC_XFER_FREQ  52000000  /* MMC High Speed clock request */
+#define RK3576_EMMC_HS200_FREQ 200000000 /* MMC HS200 clock request */
 
 /* Timeout control: data timeout counter = TMCLK * 2^(13 + value); 0x0e is the
  * maximum, giving the longest tolerated data/busy timeout.
  */
 
 #define RK3576_EMMC_TOUTCTRL_MAX 0x0e
+
+/* Extended CSD fields used to select the next high-speed mode. */
+
+#define RK3576_EMMC_EXTCSD_STROBE_SUPPORT 184
+#define RK3576_EMMC_EXTCSD_HS_TIMING      185
+#define RK3576_EMMC_EXTCSD_REV            192
+#define RK3576_EMMC_EXTCSD_DEVICE_TYPE    196
 
 /* Bus width selected on widebus(true).  The board wires all eight data lines,
  * and the generic mmcsd layer negotiates 8-bit MMC operation.
@@ -111,7 +119,9 @@
 
 /* Busy-wait loop limit for register self-clear / present-state polling. */
 
-#define RK3576_EMMC_SPIN 1000000
+#define RK3576_EMMC_SPIN           1000000
+#define RK3576_EMMC_TUNING_RETRIES 128
+#define RK3576_EMMC_TUNING_SIZE    128
 
 #ifdef CONFIG_SDIO_DMA
 #define RK3576_EMMC_ADMA_NDESC    16
@@ -182,14 +192,19 @@ struct rk3576_emmc_dev_s
 
   /* Data transfer (PIO) state */
 
-  uint32_t *buffer;           /* Transfer buffer (32bit aligned) */
-  volatile size_t remaining;  /* Remaining byte count */
-  volatile uint32_t xfrints;  /* Signal-enable set during data transfer */
-  volatile uint32_t waitints; /* Signal-enable set while waiting on a cmd */
-  uint32_t blocksize;         /* Current block size (from blocksetup) */
-  uint16_t xfermode;          /* Prepared mode for the next data command */
-  uint32_t lastcmd;           /* Last command encoding for diagnostics */
-  uint32_t lastarg;           /* Last command argument for diagnostics */
+  uint32_t *buffer;            /* Transfer buffer (32bit aligned) */
+  volatile size_t remaining;   /* Remaining byte count */
+  volatile uint32_t xfrints;   /* Signal-enable set during data transfer */
+  volatile uint32_t waitints;  /* Signal-enable set while waiting on a cmd */
+  uint32_t blocksize;          /* Current block size (from blocksetup) */
+  uint16_t xfermode;           /* Prepared mode for the next data command */
+  uint32_t lastcmd;            /* Last command encoding for diagnostics */
+  uint32_t lastarg;            /* Last command argument for diagnostics */
+  uint8_t extcsd_rev;          /* Extended CSD revision */
+  uint8_t device_type;         /* Extended CSD supported timing modes */
+  uint8_t strobe_support;      /* Enhanced strobe support */
+  bool dll_ready;              /* Rockchip high-speed DLL is locked */
+  volatile bool tuning_active; /* CMD21 tuning is in progress */
 
 #ifdef CONFIG_SDIO_DMA
   volatile bool dma_active; /* Current transfer uses ADMA2 */
@@ -235,6 +250,7 @@ static void rk3576_emmc_resetlines(struct rk3576_emmc_dev_s *priv,
                                    uint8_t lines);
 static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv,
                                  uint32_t freq);
+static int rk3576_emmc_configdll(struct rk3576_emmc_dev_s *priv);
 static void rk3576_emmc_configwaitints(struct rk3576_emmc_dev_s *priv,
                                        uint32_t waitints,
                                        sdio_eventset_t waitevents,
@@ -294,6 +310,7 @@ static int rk3576_emmc_registercallback(struct sdio_dev_s *dev,
 #endif
 static void rk3576_emmc_gotextcsd(struct sdio_dev_s *dev,
                                   const uint8_t *buffer);
+static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd);
 
 #ifdef CONFIG_SDIO_DMA
 #ifdef CONFIG_ARCH_HAVE_SDIO_PREFLIGHT
@@ -343,6 +360,7 @@ static const struct sdio_dev_s g_rk3576_emmc_ops = {
   .registercallback = rk3576_emmc_registercallback,
 #endif
   .gotextcsd = rk3576_emmc_gotextcsd,
+  .execute_tuning = rk3576_emmc_execute_tuning,
 #ifdef CONFIG_SDIO_DMA
 #ifdef CONFIG_ARCH_HAVE_SDIO_PREFLIGHT
   .dmapreflight = rk3576_emmc_dmapreflight,
@@ -370,6 +388,7 @@ static const struct rk3576_emmc_cfg_s
 /* Host instances (ops copied from the template at initialize time). */
 
 static struct rk3576_emmc_dev_s g_emmc_hosts[RK3576_EMMC_NHOSTS];
+static uint8_t g_emmc_tuning[RK3576_EMMC_TUNING_SIZE] aligned_data(64);
 
 #ifdef CONFIG_SDIO_DMA
 static struct rk3576_emmc_adma2_desc_s
@@ -537,6 +556,62 @@ static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
   mcinfo("eMMC clock requested=%" PRIu32 " configured=%" PRIu32
          " hostctrl1=%02x\n",
          freq, divided, rk3576_emmc_getreg8(priv, RK3576_EMMC_HOSTCTRL1));
+}
+
+/****************************************************************************
+
+ * * Name: rk3576_emmc_configdll
+
+ * ****************************************************************************/
+
+static int rk3576_emmc_configdll(struct rk3576_emmc_dev_s *priv)
+{
+  uint16_t savedclock;
+  uint32_t value;
+  int i;
+
+  savedclock = rk3576_emmc_getreg16(priv, RK3576_EMMC_CLKCTRL);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, 0);
+
+  rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLCTRL, 1 << 1);
+  up_udelay(1);
+  rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLCTRL, 0);
+
+  rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLRXCLK, EMMC_DLL_DLYENA);
+  rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLCTRL,
+                       EMMC_DLLCTRL_START_POINT | EMMC_DLLCTRL_INCREMENT |
+                           EMMC_DLLCTRL_START);
+
+  for (i = 0; i < RK3576_EMMC_SPIN; i++)
+    {
+      value = rk3576_emmc_getreg32(priv, RK3576_EMMC_VENDOR_DLLSTATUS0);
+      if ((value & EMMC_DLL_STATUS_LOCKED) != 0 &&
+          (value & EMMC_DLL_STATUS_TIMEOUT) == 0)
+        {
+          break;
+        }
+    }
+
+  if (i >= RK3576_EMMC_SPIN)
+    {
+      syslog(LOG_ERR,
+             "ERROR: eMMC DLL lock timed out status=%08" PRIx32
+             " clksel89=%08" PRIx32 "\n",
+             value, getreg32(RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(89)));
+      rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, savedclock);
+      return -ETIMEDOUT;
+    }
+
+  rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_ATCTRL,
+                       (1 << 16) | (3 << 17) | (3 << 19));
+  rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLTXCLK,
+                       EMMC_DLL_DLYENA | EMMC_DLL_TAP_FROM_SW |
+                           EMMC_DLL_RXCLK_NOINVERTER | EMMC_DLL_TXCLK_TAP);
+  rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLSTRBIN,
+                       EMMC_DLL_DLYENA | EMMC_DLL_TAP_FROM_SW |
+                           EMMC_DLL_STRBIN_TAP);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, savedclock);
+  return OK;
 }
 
 /****************************************************************************
@@ -754,6 +829,21 @@ static int rk3576_emmc_interrupt(int irq, void *context, void *arg)
       /* Drain the ready block; the transfer completes on XFERDONE. */
 
       rk3576_emmc_recvfifo(priv);
+
+      /* During SDHCI tuning, dwcmshc completes each tuning iteration with
+
+       * * Buffer Read Ready but no normal Transfer Complete interrupt.
+ */
+
+      if (priv->tuning_active && priv->remaining == 0)
+        {
+          priv->buffer = NULL;
+          rk3576_emmc_configxfrints(priv, 0);
+          if ((priv->waitevents & SDIOWAIT_TRANSFERDONE) != 0)
+            {
+              rk3576_emmc_endwait(priv, SDIOWAIT_TRANSFERDONE);
+            }
+        }
     }
 
   if ((nint & EMMC_TXRDY_INT) != 0 && priv->buffer != NULL)
@@ -868,9 +958,10 @@ static int rk3576_emmc_interrupt(int irq, void *context, void *arg)
  *
  * Description:
  *   Software-reset the host, bring up the internal + card clock and bus power,
- *   latch all status bits and restore the identification-mode defaults.
-
- * ****************************************************************************/
+ *   latch all status bits and restore the identification-mode defaults.  Adds
+ *   no CRU/pinctrl setup: the eMMC is a non-removable, loader-configured boot
+ *   device whose clock domain and pins are already up.
+ ****************************************************************************/
 
 static void rk3576_emmc_reset(struct sdio_dev_s *dev)
 {
@@ -937,6 +1028,8 @@ static void rk3576_emmc_reset(struct sdio_dev_s *dev)
   priv->wkupevent = 0;
   priv->blocksize = 0;
   priv->xfermode = 0;
+  priv->dll_ready = false;
+  priv->tuning_active = false;
 #ifdef CONFIG_SDIO_DMA
   priv->dma_active = false;
   priv->dma_read = false;
@@ -976,6 +1069,7 @@ static sdio_capset_t rk3576_emmc_capabilities(struct sdio_dev_s *dev)
    */
   caps |= SDIO_CAPS_8BIT;
   caps |= SDIO_CAPS_MMC_HS_MODE;
+  caps |= SDIO_CAPS_MMC_HS200_MODE;
   caps |= SDIO_CAPS_DMABEFOREWRITE;
 #ifdef CONFIG_SDIO_DMA
   caps |= SDIO_CAPS_DMASUPPORTED;
@@ -1042,10 +1136,14 @@ static void rk3576_emmc_clock(struct sdio_dev_s *dev, enum sdio_clock_e rate)
 {
   struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
   uint32_t freq;
+  uint16_t hc2;
   uint8_t hc;
 
   hc = rk3576_emmc_getreg8(priv, RK3576_EMMC_HOSTCTRL1);
   hc &= ~EMMC_HOSTCTRL1_HISPD;
+  hc2 = rk3576_emmc_getreg16(priv, RK3576_EMMC_HOSTCTRL2);
+  hc2 &= ~(EMMC_HOSTCTRL2_UHSMASK | EMMC_HOSTCTRL2_EXEC_TUNING |
+           EMMC_HOSTCTRL2_TUNED_CLK);
 
   switch (rate)
     {
@@ -1063,6 +1161,12 @@ static void rk3576_emmc_clock(struct sdio_dev_s *dev, enum sdio_clock_e rate)
         freq = RK3576_EMMC_XFER_FREQ;
         break;
 
+      case CLOCK_MMC_HS200:
+        hc |= EMMC_HOSTCTRL1_HISPD;
+        hc2 |= EMMC_HOSTCTRL2_HS200 | EMMC_HOSTCTRL2_V18;
+        freq = RK3576_EMMC_HS200_FREQ;
+        break;
+
       case CLOCK_SD_TRANSFER_1BIT:
       case CLOCK_SD_TRANSFER_4BIT:
         freq = RK3576_EMMC_XFER_FREQ;
@@ -1070,7 +1174,20 @@ static void rk3576_emmc_clock(struct sdio_dev_s *dev, enum sdio_clock_e rate)
     }
 
   rk3576_emmc_putreg8(priv, RK3576_EMMC_HOSTCTRL1, hc);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_HOSTCTRL2, hc2);
   rk3576_emmc_setclock(priv, freq);
+
+  if (rate == CLOCK_MMC_HS200)
+    {
+      priv->dll_ready = rk3576_emmc_configdll(priv) == OK;
+    }
+  else
+    {
+      priv->dll_ready = false;
+      rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLCTRL,
+                           EMMC_DLLCTRL_BYPASS | EMMC_DLLCTRL_START);
+      rk3576_emmc_putreg32(priv, RK3576_EMMC_VENDOR_DLLTXCLK, 0);
+    }
 }
 
 /****************************************************************************
@@ -1600,8 +1717,118 @@ static int rk3576_emmc_registercallback(struct sdio_dev_s *dev,
 static void rk3576_emmc_gotextcsd(struct sdio_dev_s *dev,
                                   const uint8_t *buffer)
 {
-  UNUSED(dev);
-  UNUSED(buffer);
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+
+  priv->extcsd_rev = buffer[RK3576_EMMC_EXTCSD_REV];
+  priv->device_type = buffer[RK3576_EMMC_EXTCSD_DEVICE_TYPE];
+  priv->strobe_support = buffer[RK3576_EMMC_EXTCSD_STROBE_SUPPORT];
+
+  syslog(LOG_INFO,
+         "INFO: eMMC EXT_CSD rev=%u device_type=%02x hs_timing=%u"
+         " strobe=%02x\n",
+         priv->extcsd_rev, priv->device_type,
+         buffer[RK3576_EMMC_EXTCSD_HS_TIMING], priv->strobe_support);
+}
+
+/****************************************************************************
+
+ * * Name: rk3576_emmc_execute_tuning
+
+ * ****************************************************************************/
+
+static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd)
+{
+  struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
+  sdio_eventset_t event;
+  uint32_t response;
+  uint16_t hc2;
+  int ret = -EIO;
+  int i;
+
+  if (cmd != MMC_CMD21)
+    {
+      return -EINVAL;
+    }
+
+  if (!priv->dll_ready)
+    {
+      return -EIO;
+    }
+
+  syslog(LOG_INFO, "INFO: eMMC HS200 tuning start hostctrl2=%04x\n",
+         rk3576_emmc_getreg16(priv, RK3576_EMMC_HOSTCTRL2));
+
+  hc2 = rk3576_emmc_getreg16(priv, RK3576_EMMC_HOSTCTRL2);
+  hc2 |= EMMC_HOSTCTRL2_EXEC_TUNING;
+  hc2 &= ~EMMC_HOSTCTRL2_TUNED_CLK;
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_HOSTCTRL2, hc2);
+  priv->tuning_active = true;
+
+  for (i = 0; i < RK3576_EMMC_TUNING_RETRIES; i++)
+    {
+      priv->blocksize = RK3576_EMMC_TUNING_SIZE;
+      rk3576_emmc_waitenable(
+          dev, SDIOWAIT_TRANSFERDONE | SDIOWAIT_TIMEOUT | SDIOWAIT_ERROR, 100);
+      ret = rk3576_emmc_recvsetup(dev, g_emmc_tuning, RK3576_EMMC_TUNING_SIZE);
+      if (ret < 0)
+        {
+          break;
+        }
+
+      ret = rk3576_emmc_sendcmd(dev, cmd, 0);
+      if (ret == OK)
+        {
+          ret = rk3576_emmc_waitresponse(dev, cmd);
+        }
+
+      if (ret == OK)
+        {
+          ret = rk3576_emmc_recvshort(dev, cmd, &response);
+        }
+
+      if (ret == OK)
+        {
+          event = rk3576_emmc_eventwait(dev);
+          if ((event & SDIOWAIT_TRANSFERDONE) == 0)
+            {
+              ret = -EIO;
+            }
+        }
+
+      hc2 = rk3576_emmc_getreg16(priv, RK3576_EMMC_HOSTCTRL2);
+      if ((hc2 & EMMC_HOSTCTRL2_EXEC_TUNING) == 0)
+        {
+          priv->tuning_active = false;
+          if ((hc2 & EMMC_HOSTCTRL2_TUNED_CLK) != 0)
+            {
+              syslog(LOG_INFO,
+                     "INFO: eMMC HS200 tuning complete iterations=%d"
+                     " hostctrl2=%04x dll=%08" PRIx32 " clksel89=%08" PRIx32
+                     "\n",
+                     i + 1, hc2,
+                     rk3576_emmc_getreg32(priv, RK3576_EMMC_VENDOR_DLLSTATUS0),
+                     getreg32(RK3576_CRU_ADDR +
+                              RK3576_CRU_CLKSEL_CON(RK3576_EMMC_CRU_CLKSEL)));
+              rk3576_emmc_resetlines(priv, EMMC_SWRESET_DAT);
+              return OK;
+            }
+
+          return -EIO;
+        }
+
+      if (ret < 0)
+        {
+          rk3576_emmc_cancel(dev);
+        }
+    }
+
+  hc2 = rk3576_emmc_getreg16(priv, RK3576_EMMC_HOSTCTRL2);
+  hc2 &= ~(EMMC_HOSTCTRL2_EXEC_TUNING | EMMC_HOSTCTRL2_TUNED_CLK);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_HOSTCTRL2, hc2);
+  priv->tuning_active = false;
+  syslog(LOG_ERR, "ERROR: eMMC HS200 tuning exhausted ret=%d hostctrl2=%04x\n",
+         ret, hc2);
+  return ret < 0 ? ret : -EIO;
 }
 
 #ifdef CONFIG_SDIO_DMA
