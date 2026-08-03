@@ -49,6 +49,7 @@
 #include "hardware/rk3576_cru.h"
 #include "hardware/rk3576_fspi.h"
 #include "hardware/rk3576_memorymap.h"
+#include "rk3576_dma_alloc.h"
 #include "rk3576_fspi.h"
 
 #ifdef CONFIG_RK3576_FSPI
@@ -61,9 +62,36 @@
 
 #define FSPI_POLL_MAX 100000
 
-/* Interrupt timeout in milliseconds */
+/* Base timeout allowance (in microseconds) added on top of the estimated
+ * data transfer time to form the DMA transfer timeout threshold.
+ */
 
 #define FSPI_INT_TIMEOUT_US 1000000
+
+/* Minimum transfer length (in bytes) that qualifies for the internal DMA
+ * path.  Shorter transfers go through the FIFO polling path instead, since
+ * the DMA setup/teardown and interrupt overhead would outweigh the benefit.
+ */
+
+#define FSPI_DMA_LEN_THRES 64
+
+/* DMA payload cache-line alignment.
+ *
+ * rk3576_dma_alloc() hands out 64B-aligned blocks so that per-transfer
+ * D-cache maintenance (clean/invalidate) never touches neighbouring data.
+ * fspi_alloc() prepends a size_t metadata header to recover the block size
+ * on free (QSPI_FREE() carries no length).  If the header were placed
+ * directly in front of the payload (payload = base + 8), it would drag the
+ * payload down to 8-byte alignment and would force the metadata and the DMA
+ * payload to share a cache line.  Instead we park the header alone in the
+ * first cache line and return the payload at the start of the next line,
+ * keeping the payload 64B-aligned and cache-line isolated from the header.
+ */
+
+#define FSPI_DMA_CACHELINE  64
+#define FSPI_DMA_ALIGN_MASK (FSPI_DMA_CACHELINE - 1)
+#define FSPI_DMA_ALIGN_UP(n) \
+  (((n) + FSPI_DMA_ALIGN_MASK) & ~FSPI_DMA_ALIGN_MASK)
 
 /****************************************************************************
  * Private Types
@@ -141,6 +169,9 @@ static void fspi_free(struct qspi_dev_s *dev, void *buffer);
 /* Internal helpers */
 
 static void fspi_hw_update_clock_div(struct rk3576_fspi_s *priv);
+static inline uint32_t
+rk3576_fspi_calc_timeout_thres(struct rk3576_fspi_s *priv, uint32_t buflen,
+                               uint32_t line_bits);
 
 /* Interrupt handler */
 
@@ -629,24 +660,186 @@ static void fspi_setbits(struct qspi_dev_s *dev, int nbits)
 
 /****************************************************************************
  * Name: fspi_alloc
+ *
+ * Description:
+ *   Allocate a DMA-safe buffer for QSPI data transfer.
+ *
+ *   Prefers the RK3576 DMA-dedicated heap (rk3576_dma_alloc), which
+ *   provides physically-contiguous memory inside the 32-bit DMA
+ *   addressable range.  When CONFIG_RK3576_DMA_ALLOC is disabled we fall
+ *   back to the kernel heap (kmm_malloc) which tracks the block size
+ *   internally, so that path is passed through directly.
+ *
+ *   The size metadata is only used on the DMA path: because the QSPI_FREE()
+ *   API does not carry the buffer length, but rk3576_dma_free() requires
+ *   the exact size, we persist the total size in a single size_t stored at
+ *   the head of the allocation.
+ *
+ *   To keep the returned DMA payload cache-line aligned (64B) and isolated
+ *   from the metadata, the size_t header is parked alone in the first cache
+ *   line (offset 0) and the payload is returned at the start of the next
+ *   cache line.  This preserves the alignment rk3576_dma_alloc() provides
+ *   so per-transfer D-cache maintenance never touches neighbouring data,
+ *   and so the metadata is never in the same line as DMA payload.
+ *
+ * Input Parameters:
+ *   dev   - Device-specific state data
+ *   buflen - Buffer length to allocate, in bytes
+ *
+ * Returned Value:
+ *   Pointer to the allocated buffer, or NULL on failure.
+ *
  ****************************************************************************/
 
 static void *fspi_alloc(struct qspi_dev_s *dev, size_t buflen)
 {
-  /* Allocate memory suitable for DMA (cache-aligned).
-   * TODO: use a DMA-safe allocator if available.
+#ifndef CONFIG_RK3576_DMA_ALLOC
+#warning \
+    "CONFIG_RK3576_DMA_ALLOC is disabled: FSPI buffers fall back to kmm_malloc"
+  return kmm_malloc(buflen);
+#else
+  size_t *size;
+  size_t total;
+  uint8_t *base;
+
+  /* Total block: size_t header (first cache line) + payload, rounded up to
+   * a whole number of cache lines so no padding is ever needed.
    */
 
-  return kmm_malloc(buflen);
+  total = FSPI_DMA_ALIGN_UP(sizeof(*size) + buflen);
+
+  base = rk3576_dma_alloc(total);
+  if (base == NULL)
+    {
+      return NULL;
+    }
+
+  /* Store the total block size in the metadata header. */
+
+  size = (size_t *)base;
+  *size = total;
+
+  /* Return the payload at the start of the second cache line.
+   * base is 64B-aligned (granule allocator), so payload = base + 64 is
+   * again 64B-aligned and cache-line isolated from the metadata header.
+   */
+
+  return base + FSPI_DMA_CACHELINE;
+#endif
 }
 
 /****************************************************************************
  * Name: fspi_free
+ *
+ * Description:
+ *   Free a buffer previously allocated by fspi_alloc(), dispatching to the
+ *   matching allocator.  On the DMA path the total size is recovered from
+ *   the size_t header stored at the head of the allocation.
+ *
+ * Input Parameters:
+ *   dev    - Device-specific state data
+ *   buffer - Buffer previously returned by fspi_alloc()
+ *
+ * Returned Value:
+ *   None.
+ *
  ****************************************************************************/
 
 static void fspi_free(struct qspi_dev_s *dev, void *buffer)
 {
+#ifndef CONFIG_RK3576_DMA_ALLOC
   kmm_free(buffer);
+#else
+  size_t *size;
+
+  DEBUGASSERT(buffer != NULL);
+
+  /* Recover the total size from the header in the first cache line,
+   * i.e. one cache line before the returned payload.
+   */
+
+  size = (size_t *)((uintptr_t)buffer - FSPI_DMA_CACHELINE);
+
+  rk3576_dma_free(size, *size);
+#endif /* CONFIG_RK3576_DMA_ALLOC */
+}
+
+/****************************************************************************
+ * Name: rk3576_fspi_calc_timeout_thres
+ *
+ * Description:
+ *   Estimate a DMA transfer timeout threshold based on the requested data
+ *   length and the data line width, using the actual SCLK frequency
+ *   currently programmed in the hardware (ctrl->hw_freq).
+ *
+ *   The pure data transfer time is approximated as:
+ *
+ *     clocks       = buflen * (8 / line_bits)
+ *     time_us      = clocks * 1000000 / fspi_freq
+ *
+ *   where "8 / line_bits" is the number of SCLK cycles needed per byte:
+ *     1 line (X1)  -> 8 cycles/byte  (i.e. buflen divided by 1/8)
+ *     2 lines (X2) -> 4 cycles/byte  (i.e. buflen divided by 1/4)
+ *     4 lines (X4) -> 2 cycles/byte  (i.e. buflen divided by 1/2)
+ *
+ *   Command/address/dummy cycles are negligible and ignored.  The final
+ *   threshold adds FSPI_INT_TIMEOUT_US as a fixed base allowance, so short
+ *   transfers always keep a sane floor while long transfers scale up with
+ *   the actual amount of data being moved.
+ *
+ *   The timeout is computed from ctrl->hw_freq, which the owning lock()
+ *   sequence refreshes to this CS's expected rate before any transfer
+ *   starts.
+ *
+ * Input Parameters:
+ *   priv      - FSPI device instance (controller holds the HW rate)
+ *   buflen    - Data transfer length, in bytes
+ *   line_bits - Number of data lines: 1 (X1), 2 (X2) or 4 (X4)
+ *
+ * Returned Value:
+ *   Timeout threshold, in microseconds.
+ *
+ ****************************************************************************/
+
+static inline uint32_t
+rk3576_fspi_calc_timeout_thres(struct rk3576_fspi_s *priv, uint32_t buflen,
+                               uint32_t line_bits)
+{
+  uint64_t clocks;          /* SCLK cycles needed for the data payload */
+  uint64_t time_us;         /* Pure data transfer time, in us */
+  uint32_t clocks_per_byte; /* SCLK cycles consumed per byte */
+  uint32_t hw_freq;         /* Actual SCLK currently programmed in HW */
+
+  DEBUGASSERT(line_bits == 1 || line_bits == 2 || line_bits == 4);
+
+  hw_freq = priv->ctrl->hw_freq;
+
+  /* If the hardware SCLK is unknown, the internal state is broken.
+   * Fail fast: return the shortest possible timeout so the transfer
+   * errors out immediately instead of stalling.
+   */
+  if (!hw_freq)
+    {
+      return 1;
+    }
+
+  /* Convert the byte count into SCLK cycles (8 / line_bits per byte). */
+
+  clocks_per_byte = 8 / line_bits;
+  clocks = (uint64_t)buflen * clocks_per_byte;
+
+  /* Convert cycles to microseconds using the hardware SCLK. */
+
+  time_us = (clocks * 1000000) / hw_freq;
+
+  /* Add a fixed base allowance, guarding against 32-bit overflow. */
+
+  if (time_us > UINT32_MAX - FSPI_INT_TIMEOUT_US)
+    {
+      return UINT32_MAX;
+    }
+
+  return (uint32_t)time_us + FSPI_INT_TIMEOUT_US;
 }
 
 /****************************************************************************
@@ -953,6 +1146,9 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
   uint32_t ctrl_rge_bits, cmd_reg_bits;
   int ret;
 
+  DEBUGASSERT(cmdinfo);
+  DEBUGASSERT(!cmdinfo->buflen || cmdinfo->buffer);
+
   ret = fspi_wait_busy(priv);
   if (ret < 0)
     {
@@ -1054,7 +1250,6 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
   /* setup cmd */
   if (cmdinfo->cmd > 0xff)
     {
-      /* TODO: support 16-bit cmd */
       spierr("8-bit cmd expected, got 0x%X", cmdinfo->cmd);
       return -EINVAL;
     }
@@ -1106,15 +1301,18 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
   uint32_t ctrl_rge_bits, cmd_reg_bits;
   int ret;
 
-  /* setup data length */
-  fspi_putreg(priv, meminfo->buflen, RK3576_FSPI_LEN_EXT);
-  fspi_putreg(priv, FSPI_LEN_CTRL_TRB_SEL, RK3576_FSPI_LEN_CTRL);
+  DEBUGASSERT(meminfo);
+  DEBUGASSERT(!meminfo->buflen || meminfo->buffer);
 
   ret = fspi_wait_busy(priv);
   if (ret < 0)
     {
       return ret;
     }
+
+  /* setup data length */
+  fspi_putreg(priv, meminfo->buflen, RK3576_FSPI_LEN_EXT);
+  fspi_putreg(priv, FSPI_LEN_CTRL_TRB_SEL, RK3576_FSPI_LEN_CTRL);
 
   /* CTRL config begin */
 
@@ -1222,7 +1420,6 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
   /* setup cmd */
   if (meminfo->cmd > 0xff)
     {
-      /* TODO: support 16-bit cmd */
       spierr("8-bit cmd expected, got 0x%X", meminfo->cmd);
       return -EINVAL;
     }
@@ -1238,20 +1435,125 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
       fspi_putreg(priv, meminfo->addr, RK3576_FSPI_ADDR);
     }
 
-  /* Transfer data via FSPI internal DMA. */
+  /* No data to transfer. */
 
-  if (meminfo->buflen)
+  if (!meminfo->buflen)
     {
-      fspi_putreg(priv, up_addrenv_va_to_pa(meminfo->buffer),
-                  RK3576_FSPI_DMAADDR);
+      return OK;
+    }
+
+  uintptr_t physical_addr = up_addrenv_va_to_pa(meminfo->buffer);
+
+  /* Transfer data via the FSPI internal DMA engine.
+   *
+   * The DMA path is only used when ALL of the following hold:
+   *
+   *   1) The transfer is large enough (>= FSPI_DMA_LEN_THRES).  For small
+   *      transfers the DMA setup/teardown and interrupt overhead is not
+   *      worth it, so they always go through the FIFO polling path.
+   *
+   *   2) The length is a multiple of 4.  The built-in DMA engine moves
+   *      data in 32-bit word units, and the total transfer byte count
+   *      (TRB / LEN_EXT) must match what the FSM actually shifts out.
+   *      If len is 2-byte but not 4-byte aligned (e.g. 0x82), the DMA
+   *      engine only shifts whole words (0x80 bytes): the FSM is left
+   *      waiting for the missing 1-3 bytes, busy stays asserted, CS stays
+   *      low, and wait_busy() below times out.  The data buffer length
+   *      must therefore be a multiple of 4 bytes to use the DMA path.
+   *
+   *   3) The whole buffer (physical address PLUS its length) fits in
+   *      32 bits.  RK3576_FSPI_DMAADDR is a 32-bit register, so the
+   *      source/destination buffer must reside entirely within the lower
+   *      4 GiB of the physical address space for the built-in DMA engine
+   *      to address it.  A buffer that merely STARTS below 4 GiB but
+   *      crosses the 4 GiB boundary would make the DMA engine wrap around
+   *      and corrupt data, so both the base and the end address must be
+   *      checked.  Buffers above 4 GiB (e.g. high-DRAM) fall back to the
+   *      FIFO polling path instead.
+   *
+   * Anything else falls through to the FIFO polling path below, which
+   * handles the trailing 1-3 bytes correctly via the SFC_DATA register.
+   */
+
+  if (meminfo->buflen >= FSPI_DMA_LEN_THRES && (meminfo->buflen % 4) == 0 &&
+      physical_addr <= 0xffffffffu &&
+      physical_addr + meminfo->buflen - 1 <= 0xffffffffu)
+    {
+      uint32_t line_bits;
+      uint32_t timeout_us;
+
+      /* Determine the data line width.  The DATA phase dominates the
+       * transfer time, so only the DUALIO/QUADIO flags matter here; they
+       * match the DATAB_X1/X2/X4 bits programmed into the CTRL register
+       * above.  Used to scale the DMA timeout with the data volume.
+       */
+
+      if (meminfo->flags & QSPIMEM_QUADIO)
+        {
+          line_bits = 4;
+        }
+      else if (meminfo->flags & QSPIMEM_DUALIO)
+        {
+          line_bits = 2;
+        }
+      else
+        {
+          line_bits = 1;
+        }
+
+      timeout_us =
+          rk3576_fspi_calc_timeout_thres(priv, meminfo->buflen, line_bits);
+
+      fspi_putreg(priv, (unsigned int)physical_addr, RK3576_FSPI_DMAADDR);
+
+      if (meminfo->flags & QSPIMEM_WRITE)
+        {
+          up_clean_dcache((uintptr_t)meminfo->buffer,
+                          (uintptr_t)meminfo->buffer + meminfo->buflen);
+        }
 
       fspi_putreg(priv, FSPI_DMA_TRIGGER_START, RK3576_FSPI_DMATR);
 
-      ret = fspi_wait_irq(priv, FSPI_INT_DMA, &(priv->dma_sem),
-                          FSPI_INT_TIMEOUT_US);
+      ret = fspi_wait_irq(priv, FSPI_INT_DMA, &(priv->dma_sem), timeout_us);
+
       if (ret < 0)
         {
           fspi_hw_reset(priv);
+          return ret;
+        }
+
+      /* Read path: DMA has written the buffer into memory.  Invalidate
+       * the D-cache so a subsequent CPU read misses and fetches the fresh
+       * DMA data, instead of hitting a stale line held since before the
+       * transfer.  Write path needs no post-DMA maintenance.
+       *
+       * As above, this operates by virtual address meminfo->buffer.
+       */
+
+      if (!(meminfo->flags & QSPIMEM_WRITE))
+        {
+          up_invalidate_dcache((uintptr_t)meminfo->buffer,
+                               (uintptr_t)meminfo->buffer + meminfo->buflen);
+        }
+
+      return OK;
+    }
+
+  /* Fall back to FIFO polling. */
+
+  if (meminfo->flags & QSPIMEM_WRITE)
+    {
+      ret = fspi_write_fifo(priv, meminfo->buffer, meminfo->buflen);
+      if (ret < 0)
+        {
+          return ret;
+        }
+    }
+  else
+    {
+      ret = fspi_read_fifo(priv, meminfo->buffer, meminfo->buflen);
+      if (ret < 0)
+        {
           return ret;
         }
     }
