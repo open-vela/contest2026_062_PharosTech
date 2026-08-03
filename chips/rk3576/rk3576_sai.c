@@ -113,7 +113,6 @@
 #define RK3576_SAI_DEF_CHANNELS   2
 
 #define RK3576_SAI_MCLK_FS        256 /* MCLK = 256 * sample rate      */
-#define RK3576_SAI_WIDE_SLOT_BITS 32
 
 /* SAI FIFO DMA watermarks.  The generic PL330 backend uses peripheral-paced
  *
@@ -212,8 +211,6 @@ static void rk3576_sai_bufinit(struct rk3576_sai_s *priv);
 
 static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv);
 static int rk3576_sai_setclock(struct rk3576_sai_s *priv, uint32_t frequency);
-static uint32_t rk3576_sai_slotbits(struct rk3576_sai_s *priv);
-static uint32_t rk3576_sai_mclkdivider(struct rk3576_sai_s *priv);
 static int rk3576_sai_startup(struct rk3576_sai_s *priv);
 static void rk3576_sai_stop(struct rk3576_sai_s *priv);
 
@@ -571,38 +568,6 @@ static int rk3576_sai_clockconfig(struct rk3576_sai_s *priv)
 }
 
 /****************************************************************************
- * Name: rk3576_sai_mclkdivider
- *
- * Description:
- *   Return the SAI internal mclk divider N (SCLK = MCLK / N)
- *for the current
- *   sample rate and channel count.  Slots are fixed at 32
- *bits, while the
- *   codec may select different MCLK/LRCK ratios for
- *different sample rates.
- *
- ****************************************************************************/
-
-static uint32_t rk3576_sai_slotbits(struct rk3576_sai_s *priv)
-{
-  return priv->datalen <= 16 ? 16 : RK3576_SAI_WIDE_SLOT_BITS;
-}
-
-static uint32_t rk3576_sai_mclkdivider(struct rk3576_sai_s *priv)
-{
-  uint32_t bits = (uint32_t)priv->channels * rk3576_sai_slotbits(priv);
-  uint32_t bclk = priv->samplerate * bits;
-  uint32_t div = bclk == 0 ? 0 : priv->mclk_freq / bclk;
-
-  if (div == 0 || priv->mclk_freq % bclk != 0)
-    {
-      div = 1;
-    }
-
-  return div;
-}
-
-/****************************************************************************
  * Name: rk3576_sai_startup
  *
  * Description:
@@ -647,17 +612,24 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
     }
 
   /* Operation-control register (identical TX/RX layout): one data lane,
-   *
-   * MSB first, 'channels' slots per frame, 32-bit slots holding left-
-   *
-   * justified valid data of priv->datalen bits.
+   * MSB first, 'channels' slots per frame, 32-bit slots holding
+   * left-justified valid data of priv->datalen bits.  16-bit streams use
+   * 16-bit slots; 24/32-bit streams use 32-bit slots, so that the
+   * mclk/bclk ratio stays an exact integer and is easy to divide.
    */
 
-  slotbits = rk3576_sai_slotbits(priv);
+  slotbits = priv->datalen <= 16 ? 16 : 32;
   xcr = SAI_XCR_DELAY_EN | SAI_XCR_CSR(1) | SAI_XCR_SNB(priv->channels) |
         SAI_XCR_VDJ | SAI_XCR_SBW(slotbits) | SAI_XCR_VDW(priv->datalen);
 
-  mdiv = rk3576_sai_mclkdivider(priv);
+  /* SCLK = MCLK / N; N is the integer mclk/bclk ratio for the current
+   * sample rate / channels / slot width.  Fall back to 1 (no division)
+   * when the ratio is not an exact integer.
+   */
+
+  mdiv = priv->channels * slotbits * priv->samplerate;
+  mdiv =
+      (mdiv == 0 || priv->mclk_freq % mdiv != 0) ? 1 : priv->mclk_freq / mdiv;
 
   if (priv->txenab)
     {
@@ -1161,8 +1133,7 @@ static uint32_t rk3576_sai_txsamplerate(struct i2s_dev_s *dev, uint32_t rate)
     }
 
   priv->samplerate = rate;
-  rk3576_sai_modifyreg(priv, RK3576_SAI_CKR, SAI_CKR_MDIV_MASK,
-                       SAI_CKR_MDIV(rk3576_sai_mclkdivider(priv)));
+
   return rate * priv->datalen;
 }
 
