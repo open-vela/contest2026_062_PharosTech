@@ -1,0 +1,23 @@
+# drivers/Kconfig
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Board/SoC-family (platform) drivers Kconfig.
+#
+# This directory is symlinked into the NuttX kernel driver tree as
+# drivers/platform (via CONFIG_SPECIFIC_DRIVERS + BOARD_DRIVERS_DIR), so
+# nuttx/drivers/Kconfig sources it unconditionally with:
+#   source "$BINDIR/drivers/platform/Kconfig"
+#
+# Because that entry lives under the build-time link $BINDIR/drivers/platform
+# (-> this directory), all our sources below use the $BINDIR/drivers/platform/
+# prefix.  This matches the upstream convention used by cxd56xx and sifli.
+#
+# NOTE: we intentionally do NOT wrap this in `if SPECIFIC_DRIVERS`.  The
+# driver-layer master switch NYABULA_CUSTOM_DRIVERS `select SPECIFIC_DRIVERS`
+# (so enabling a custom driver turns on the platform channel automatically);
+# wrapping here in `if SPECIFIC_DRIVERS` would make NYABULA_CUSTOM_DRIVERS
+# depend on SPECIFIC_DRIVERS and, combined with that select, create a Kconfig
+# dependency loop.
+
+source "$BINDIR/drivers/platform/drivers/Kconfig"

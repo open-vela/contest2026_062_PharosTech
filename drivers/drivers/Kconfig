@@ -1,0 +1,14 @@
+# drivers/drivers/Kconfig
+#
+# SPDX-License-Identifier: Apache-2.0
+
+config NYABULA_CUSTOM_DRIVERS
+    bool "Nyabula Custom Drivers"
+	default y
+    select SPECIFIC_DRIVERS
+
+if NYABULA_CUSTOM_DRIVERS
+
+# TODO
+
+endif

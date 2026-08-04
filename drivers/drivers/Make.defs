@@ -1,0 +1,27 @@
+############################################################################
+# drivers/drivers/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Collected by the top-level platform Make.defs (nuttx/drivers/platform is a
+# symlink to boards/rk3576/drivers).  Compilation happens in nuttx/drivers/,
+# so paths are relative to the `platform/` link.  Each driver subdirectory
+# provides its own Make.defs declaring CSRCS (and VPATH/DEPPATH for its .c
+# files); new drivers are picked up automatically via the wildcard below, no
+# edit needed here.
+############################################################################
+
+include $(wildcard platform/drivers/*/Make.defs)
+
+# Public header directory shared by all drivers: boards/rk3576/drivers/include/
+# (exposed once here, not in every driver).  This Make.defs is pulled in by
+# nuttx/drivers/Makefile (kernel-side libdrivers.a build), so the CFLAGS add
+# applies to every kernel-side driver compilation here.  The kernel-side board
+# code (libboard.a) is a separate make process and is exposed separately in the
+# board's src/Makefile.
+#
+# Guard on the master switch CONFIG_NYABULA_CUSTOM_DRIVERS: as long as any
+# driver in this set is enabled, expose the shared include dir.
+ifeq ($(CONFIG_NYABULA_CUSTOM_DRIVERS),y)
+  CFLAGS += ${INCDIR_PREFIX}$(TOPDIR)$(DELIM)drivers$(DELIM)platform$(DELIM)include
+endif

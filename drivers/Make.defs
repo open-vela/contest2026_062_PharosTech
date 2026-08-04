@@ -1,0 +1,12 @@
+############################################################################
+# drivers/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# This directory is symlinked into nuttx/drivers/platform, and this file is
+# pulled in by nuttx/drivers/Makefile via `-include platform/Make.defs` when
+# CONFIG_SPECIFIC_DRIVERS=y.  Compilation happens in the nuttx/drivers/
+# directory, so all paths below are relative to the `platform/` link.
+############################################################################
+
+include platform/drivers/Make.defs

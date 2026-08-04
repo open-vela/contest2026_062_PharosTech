@@ -26,6 +26,17 @@ CSRCS = kickpi_k7_boardinit.c
 CSRCS += kickpi_k7_appinit.c
 CSRCS += kickpi_k7_reset.c
 
+# Makefile (legacy) build mode: expose the platform driver's public header
+# directory (boards/rk3576/drivers/include, shared by all platform drivers) so
+# this kernel-side board code can #include "<driver>.h".  Both this board code
+# and the drivers now live on the kernel side; the drivers are found via
+# BOARD_DRIVERS_DIR ($(BOARD_DIR)/../drivers, symlinked to the shared drivers
+# tree).  Guard on the master switch CONFIG_NYABULA_CUSTOM_DRIVERS.  (CMake
+# mode exposes it via NUTTX_INCLUDE_DIRECTORIES instead of this file.)
+ifeq ($(CONFIG_NYABULA_CUSTOM_DRIVERS),y)
+  CFLAGS += ${INCDIR_PREFIX}"$(BOARD_DIR)$(DELIM)..$(DELIM)drivers$(DELIM)include"
+endif
+
 ifeq ($(CONFIG_KICKPI_K7_AUDIO),y)
 CSRCS += kickpi_k7_audio.c
 endif
