@@ -111,10 +111,6 @@ struct rk3576_fspi_s
   uint32_t freq;                   /* Expected achievable SCLK for this CS */
   uint8_t mode;                    /* CPOL/CPHA mode (0-3) */
   int8_t nbits;                    /* Bits per word (typically 8) */
-
-  /* Interrupt-related fields */
-
-  sem_t dma_sem; /* Transfer complete semaphore */
 };
 
 /* Per-controller state.
@@ -136,6 +132,11 @@ struct rk3576_fspi_ctrl_s
 
   struct rk3576_fspi_s *volatile active; /* Currently locked CS device (ISR) */
   struct rk3576_fspi_s devs[RK3576_FSPI_NUM_CHIPSELECTS]; /* CS0, CS1 */
+
+  /* Transfer state (shared by CS0/CS1 on this controller) */
+
+  sem_t dma_sem;         /* DMA transfer complete semaphore */
+  volatile bool dma_err; /* TRUE if the last DMA transfer ended in an error */
 };
 
 /****************************************************************************
@@ -384,6 +385,16 @@ static int fspi_hw_init(struct rk3576_fspi_s *priv)
       ctrl->irq_registered = true;
     }
 
+  /* One-time transfer semaphore init (shared by CS0/CS1).
+   * Done after IRQ registration succeeds so a failed init leaves the
+   * semaphore untouched and a later retry initialises it exactly once.
+   */
+
+  ret = nxsem_init(&ctrl->dma_sem, 0, 0);
+  DEBUGASSERT(ret == OK);
+
+  ctrl->dma_err = false;
+
   return OK;
 
 err_disable_sclk:
@@ -486,16 +497,18 @@ static int fspi_interrupt(int irq, void *context, void *arg)
   isr = fspi_getreg(priv, RK3576_FSPI_ISR);
   fspi_putreg(priv, isr, RK3576_FSPI_ICLR);
 
-  if (isr & FSPI_INT_DMA)
-    {
-      nxsem_post(&priv->dma_sem);
-    }
-
-  /* Error interrupts — log a warning. */
-
   if (isr & (FSPI_INT_BUS_ERR | FSPI_INT_NSPI_ERR))
     {
+      ctrl->dma_err = true;
+      nxsem_post(&ctrl->dma_sem);
       spierr("FSPI%u error: ISR=0x%08x\n", ctrl->id, isr);
+
+      return OK;
+    }
+
+  if (isr & FSPI_INT_DMA)
+    {
+      nxsem_post(&ctrl->dma_sem);
     }
 
   return OK;
@@ -1142,22 +1155,11 @@ static int fspi_wait_busy(struct rk3576_fspi_s *priv)
 static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
 {
   struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
-  unsigned int ctrl_reg = RK3576_FSPI_CTRL(priv->cs);
   uint32_t ctrl_rge_bits, cmd_reg_bits;
   int ret;
 
   DEBUGASSERT(cmdinfo);
   DEBUGASSERT(!cmdinfo->buflen || cmdinfo->buffer);
-
-  ret = fspi_wait_busy(priv);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  /* setup data length */
-  fspi_putreg(priv, cmdinfo->buflen, RK3576_FSPI_LEN_EXT);
-  fspi_putreg(priv, FSPI_LEN_CTRL_TRB_SEL, RK3576_FSPI_LEN_CTRL);
 
   /* CTRL config begin */
 
@@ -1196,8 +1198,6 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
   ctrl_rge_bits |= FSPI_CTRL_CMDB_X1;
   ctrl_rge_bits |= FSPI_CTRL_ADDRB_X1;
   ctrl_rge_bits |= FSPI_CTRL_DATAB_X1;
-
-  fspi_putreg(priv, ctrl_rge_bits, ctrl_reg);
 
   /* CTRL config end */
 
@@ -1255,14 +1255,33 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
     }
   cmd_reg_bits |= (cmdinfo->cmd << FSPI_CMD_OPCODE_SHIFT);
 
-  fspi_putreg(priv, cmd_reg_bits, RK3576_FSPI_CMD);
-
   /* CMD config end */
+
+  /* wait for SR */
+  ret = fspi_wait_busy(priv);
+  if (ret < 0)
+    {
+      goto transmission_failure;
+    }
+
+  /* setup data length */
+  fspi_putreg(priv, cmdinfo->buflen, RK3576_FSPI_LEN_EXT);
+  fspi_putreg(priv, FSPI_LEN_CTRL_TRB_SEL, RK3576_FSPI_LEN_CTRL);
+
+  /* setup CTRL and CMD register */
+  fspi_putreg(priv, ctrl_rge_bits, RK3576_FSPI_CTRL(priv->cs));
+  fspi_putreg(priv, cmd_reg_bits, RK3576_FSPI_CMD);
 
   /* send addr*/
   if ((cmdinfo->flags & QSPICMD_ADDRESS) && (cmdinfo->addrlen))
     {
       fspi_putreg(priv, cmdinfo->addr, RK3576_FSPI_ADDR);
+    }
+
+  /* skip data if len==0 */
+  if (!cmdinfo->buflen)
+    {
+      return OK;
     }
 
   /* transfer data via FIFO */
@@ -1272,7 +1291,7 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
       ret = fspi_write_fifo(priv, cmdinfo->buffer, cmdinfo->buflen);
       if (ret < 0)
         {
-          return ret;
+          goto transmission_failure;
         }
     }
   else if (cmdinfo->flags & QSPICMD_READDATA)
@@ -1280,11 +1299,15 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
       ret = fspi_read_fifo(priv, cmdinfo->buffer, cmdinfo->buflen);
       if (ret < 0)
         {
-          return ret;
+          goto transmission_failure;
         }
     }
 
   return OK;
+
+transmission_failure:
+  fspi_hw_reset(priv);
+  return ret;
 }
 
 /****************************************************************************
@@ -1297,22 +1320,11 @@ static int fspi_command(struct qspi_dev_s *dev, struct qspi_cmdinfo_s *cmdinfo)
 static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
 {
   struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
-  unsigned int ctrl_reg = RK3576_FSPI_CTRL(priv->cs);
   uint32_t ctrl_rge_bits, cmd_reg_bits;
   int ret;
 
   DEBUGASSERT(meminfo);
   DEBUGASSERT(!meminfo->buflen || meminfo->buffer);
-
-  ret = fspi_wait_busy(priv);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  /* setup data length */
-  fspi_putreg(priv, meminfo->buflen, RK3576_FSPI_LEN_EXT);
-  fspi_putreg(priv, FSPI_LEN_CTRL_TRB_SEL, RK3576_FSPI_LEN_CTRL);
 
   /* CTRL config begin */
 
@@ -1360,8 +1372,6 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
       ctrl_rge_bits |= FSPI_CTRL_ADDRB_X1;
       ctrl_rge_bits |= FSPI_CTRL_DATAB_X1;
     }
-
-  fspi_putreg(priv, ctrl_rge_bits, ctrl_reg);
 
   /* CTRL config end */
 
@@ -1425,9 +1435,22 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
     }
   cmd_reg_bits |= (meminfo->cmd << FSPI_CMD_OPCODE_SHIFT);
 
-  fspi_putreg(priv, cmd_reg_bits, RK3576_FSPI_CMD);
-
   /* CMD config end */
+
+  /* wait for SR */
+  ret = fspi_wait_busy(priv);
+  if (ret < 0)
+    {
+      goto transmission_failure;
+    }
+
+  /* setup data length */
+  fspi_putreg(priv, meminfo->buflen, RK3576_FSPI_LEN_EXT);
+  fspi_putreg(priv, FSPI_LEN_CTRL_TRB_SEL, RK3576_FSPI_LEN_CTRL);
+
+  /* setup CTRL and CMD register */
+  fspi_putreg(priv, ctrl_rge_bits, RK3576_FSPI_CTRL(priv->cs));
+  fspi_putreg(priv, cmd_reg_bits, RK3576_FSPI_CMD);
 
   /* send addr*/
   if (meminfo->addrlen)
@@ -1435,8 +1458,7 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
       fspi_putreg(priv, meminfo->addr, RK3576_FSPI_ADDR);
     }
 
-  /* No data to transfer. */
-
+  /* skip data if len==0 */
   if (!meminfo->buflen)
     {
       return OK;
@@ -1514,12 +1536,26 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
 
       fspi_putreg(priv, FSPI_DMA_TRIGGER_START, RK3576_FSPI_DMATR);
 
-      ret = fspi_wait_irq(priv, FSPI_INT_DMA, &(priv->dma_sem), timeout_us);
+      /* Clear any stale error flag from a previous transfer, then wait
+       * for DMA completion OR an error.  The error bits must be included
+       * in the mask so the ISR's error branch is actually reachable;
+       * otherwise a BUS_ERR/NSPI_ERR is silently masked and we would only
+       * discover it via timeout.
+       */
 
+      priv->ctrl->dma_err = false;
+      ret = fspi_wait_irq(
+          priv, (FSPI_INT_DMA | FSPI_INT_BUS_ERR | FSPI_INT_NSPI_ERR),
+          &(priv->ctrl->dma_sem), timeout_us);
       if (ret < 0)
         {
-          fspi_hw_reset(priv);
-          return ret;
+          goto transmission_failure;
+        }
+
+      if (priv->ctrl->dma_err)
+        {
+          ret = -EIO;
+          goto transmission_failure;
         }
 
       /* Read path: DMA has written the buffer into memory.  Invalidate
@@ -1546,7 +1582,7 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
       ret = fspi_write_fifo(priv, meminfo->buffer, meminfo->buflen);
       if (ret < 0)
         {
-          return ret;
+          goto transmission_failure;
         }
     }
   else
@@ -1554,11 +1590,15 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
       ret = fspi_read_fifo(priv, meminfo->buffer, meminfo->buflen);
       if (ret < 0)
         {
-          return ret;
+          goto transmission_failure;
         }
     }
 
   return OK;
+
+transmission_failure:
+  fspi_hw_reset(priv);
+  return ret;
 }
 
 /****************************************************************************
@@ -1638,10 +1678,6 @@ struct qspi_dev_s *rk3576_fspi_initialize(int fspi_id, int cs)
 
       ctrl->hw_initialized = true;
     }
-
-  /* Initialize semaphores for this CS instance */
-
-  nxsem_init(&priv->dma_sem, 0, 0);
 
   /* Set default frequency and mode for this CS instance */
 
