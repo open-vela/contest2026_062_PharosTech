@@ -88,8 +88,8 @@
  * keeping the payload 64B-aligned and cache-line isolated from the header.
  */
 
-#define FSPI_DMA_CACHELINE  64
-#define FSPI_DMA_ALIGN_MASK (FSPI_DMA_CACHELINE - 1)
+#define FSPI_ARM64_CACHELINE 64
+#define FSPI_DMA_ALIGN_MASK  (FSPI_ARM64_CACHELINE - 1)
 #define FSPI_DMA_ALIGN_UP(n) \
   (((n) + FSPI_DMA_ALIGN_MASK) & ~FSPI_DMA_ALIGN_MASK)
 
@@ -715,11 +715,24 @@ static void *fspi_alloc(struct qspi_dev_s *dev, size_t buflen)
   size_t total;
   uint8_t *base;
 
-  /* Total block: size_t header (first cache line) + payload, rounded up to
-   * a whole number of cache lines so no padding is ever needed.
+  /* The allocation below computes total = FSPI_DMA_ALIGN_UP(64 + buflen),
+   * and FSPI_DMA_ALIGN_UP() internally adds FSPI_DMA_ALIGN_MASK (63)
+   * before rounding.  Guard against the (unreachable in practice) case
+   * where the +63 pushes the size_t sum past SIZE_MAX.
    */
 
-  total = FSPI_DMA_ALIGN_UP(sizeof(*size) + buflen);
+  DEBUGASSERT(buflen <= SIZE_MAX - FSPI_ARM64_CACHELINE - FSPI_DMA_ALIGN_MASK);
+
+  /* Total block: the size_t header is parked alone in the first cache
+   * line and the payload starts at the beginning of the second cache
+   * line (offset FSPI_ARM64_CACHELINE), so the minimum block size is one
+   * full cache line plus the payload.  Rounded up to a whole number of
+   * cache lines so no padding is ever needed.  Using FSPI_ARM64_CACHELINE
+   * (not sizeof(*size)) here is what guarantees the usable payload length
+   * (total - FSPI_ARM64_CACHELINE) is always >= buflen.
+   */
+
+  total = FSPI_DMA_ALIGN_UP(FSPI_ARM64_CACHELINE + buflen);
 
   base = rk3576_dma_alloc(total);
   if (base == NULL)
@@ -737,7 +750,7 @@ static void *fspi_alloc(struct qspi_dev_s *dev, size_t buflen)
    * again 64B-aligned and cache-line isolated from the metadata header.
    */
 
-  return base + FSPI_DMA_CACHELINE;
+  return base + FSPI_ARM64_CACHELINE;
 #endif
 }
 
@@ -771,7 +784,7 @@ static void fspi_free(struct qspi_dev_s *dev, void *buffer)
    * i.e. one cache line before the returned payload.
    */
 
-  size = (size_t *)((uintptr_t)buffer - FSPI_DMA_CACHELINE);
+  size = (size_t *)((uintptr_t)buffer - FSPI_ARM64_CACHELINE);
 
   rk3576_dma_free(size, *size);
 #endif /* CONFIG_RK3576_DMA_ALLOC */
@@ -1317,6 +1330,111 @@ transmission_failure:
  *   Perform one QSPI memory transfer
  ****************************************************************************/
 
+/* Helper used by both fspi_memory() and the bounce-buffer path below.
+ * Performs one DMA data transfer against a caller-provided buffer that is
+ * already known to satisfy ALL of the DMA prerequisites: length >= THRES,
+ * length % 4 == 0, 64B cache-line aligned, and physically within the lower
+ * 4 GiB so it is addressable by the 32-bit DMAADDR register.
+ *
+ * This helper owns the full D-cache maintenance for the transfer and
+ * applies it uniformly to every caller:
+ *   - write:  clean dirty lines before DMA (so DMA reads fresh data);
+ *   - read:   invalidate before DMA (so stale dirty lines cannot be
+ *             written back over the new data mid-transfer) and invalidate
+ *             again after DMA (so a subsequent CPU read fetches the fresh
+ *             data).
+ *
+ * The pre-DMA read invalidate is safe for all callers: the direct aligned
+ * path covers whole cache lines (no foreign data to lose) and the bounce
+ * buffer is exclusively owned by this transfer.  The caller must run this
+ * while holding the controller lock.
+ */
+
+static int fspi_memory_dma(struct rk3576_fspi_s *priv, uint8_t *buf,
+                           uintptr_t phys, uint32_t len, uint32_t flags)
+{
+  uint32_t line_bits;
+  uint32_t timeout_us;
+  int ret;
+
+  /* Determine the data line width.  The DATA phase dominates the
+   * transfer time, so only the DUALIO/QUADIO flags matter here.
+   */
+
+  if (flags & QSPIMEM_QUADIO)
+    {
+      line_bits = 4;
+    }
+  else if (flags & QSPIMEM_DUALIO)
+    {
+      line_bits = 2;
+    }
+  else
+    {
+      line_bits = 1;
+    }
+
+  timeout_us = rk3576_fspi_calc_timeout_thres(priv, len, line_bits);
+
+  fspi_putreg(priv, (unsigned int)phys, RK3576_FSPI_DMAADDR);
+
+  if (flags & QSPIMEM_WRITE)
+    {
+      /* Write: push any dirty lines out so the DMA reads fresh data. */
+
+      up_clean_dcache((uintptr_t)buf, (uintptr_t)buf + len);
+    }
+  else
+    {
+      /* Read: discard any stale dirty lines before DMA so they cannot be
+       * automatically written back over the freshly-DMA'd data in the
+       * window between DMA start and the post-transfer invalidate below.
+       *
+       * This is safe for every caller of fspi_memory_dma():
+       *   - direct path: the buffer is cache-line aligned on both ends, so
+       *     the whole line is overwritten by DMA and there is no foreign
+       *     data to lose;
+       *   - bounce path: the buffer is exclusively owned by this transfer,
+       *     so even a line only partially covered by len holds only stale
+       *     bounce data, which is discarded anyway.
+       */
+
+      up_invalidate_dcache((uintptr_t)buf, (uintptr_t)buf + len);
+    }
+
+  fspi_putreg(priv, FSPI_DMA_TRIGGER_START, RK3576_FSPI_DMATR);
+
+  /* Clear any stale error flag from a previous transfer, then wait
+   * for DMA completion OR an error.  The error bits must be included
+   * in the mask so the ISR's error branch is reachable.
+   */
+
+  priv->ctrl->dma_err = false;
+  ret = fspi_wait_irq(priv,
+                      (FSPI_INT_DMA | FSPI_INT_BUS_ERR | FSPI_INT_NSPI_ERR),
+                      &(priv->ctrl->dma_sem), timeout_us);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (priv->ctrl->dma_err)
+    {
+      return -EIO;
+    }
+
+  /* Read path: discard any stale line held since before the transfer so a
+   * subsequent CPU read fetches the fresh DMA data.
+   */
+
+  if (!(flags & QSPIMEM_WRITE))
+    {
+      up_invalidate_dcache((uintptr_t)buf, (uintptr_t)buf + len);
+    }
+
+  return OK;
+}
+
 static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
 {
   struct rk3576_fspi_s *priv = (struct rk3576_fspi_s *)dev;
@@ -1464,15 +1582,14 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
       return OK;
     }
 
-  uintptr_t physical_addr = up_addrenv_va_to_pa(meminfo->buffer);
-
   /* Transfer data via the FSPI internal DMA engine.
    *
-   * The DMA path is only used when ALL of the following hold:
+   * The DMA path is only considered when ALL of the following hold:
    *
-   *   1) The transfer is large enough (>= FSPI_DMA_LEN_THRES).  For small
-   *      transfers the DMA setup/teardown and interrupt overhead is not
-   *      worth it, so they always go through the FIFO polling path.
+   *   1) The transfer is large enough (>= FSPI_DMA_LEN_THRES).  Shorter
+   *      transfers (and any buffer we cannot DMA) always go through the
+   *      FIFO polling path, since the DMA setup/teardown and interrupt
+   *      overhead would outweigh the benefit.
    *
    *   2) The length is a multiple of 4.  The built-in DMA engine moves
    *      data in 32-bit word units, and the total transfer byte count
@@ -1490,93 +1607,91 @@ static int fspi_memory(struct qspi_dev_s *dev, struct qspi_meminfo_s *meminfo)
    *      to address it.  A buffer that merely STARTS below 4 GiB but
    *      crosses the 4 GiB boundary would make the DMA engine wrap around
    *      and corrupt data, so both the base and the end address must be
-   *      checked.  Buffers above 4 GiB (e.g. high-DRAM) fall back to the
-   *      FIFO polling path instead.
+   *      checked.
    *
-   * Anything else falls through to the FIFO polling path below, which
-   * handles the trailing 1-3 bytes correctly via the SFC_DATA register.
+   * In addition, safe D-cache maintenance requires the buffer to be
+   * cache-line (64B) aligned on both ends; otherwise the invalidate after
+   * a DMA read would touch neighbouring cache lines and could discard (or
+   * write back) dirty data belonging to other objects, and a pre-existing
+   * dirty line could be written back over the freshly-DMA'd data.
+   *
+   * Conditions (2) and (3) concern only the buffer's physical address and
+   * alignment, not its contents.  When either fails, the transfer is
+   * staged through a 64B-aligned bounce buffer allocated from the DMA heap
+   * (phys == virt, always within the 4 GiB range), so it still benefits
+   * from the DMA engine rather than degrading to polling.  Only a length
+   * that is too short or not a multiple of 4 (condition 2) is truly
+   * unfixable by copying, so those cases fall through to FIFO polling.
+   * When CONFIG_RK3576_DMA_ALLOC is disabled (or the bounce allocation
+   * fails), the non-aligned/out-of-range transfer falls back to FIFO
+   * polling as a last resort.
+   *
+   * The FIFO polling path below handles the trailing 1-3 bytes correctly
+   * via the SFC_DATA register.
    */
 
-  if (meminfo->buflen >= FSPI_DMA_LEN_THRES && (meminfo->buflen % 4) == 0 &&
+  uintptr_t physical_addr = up_addrenv_va_to_pa(meminfo->buffer);
+
+  if (meminfo->buflen < FSPI_DMA_LEN_THRES || meminfo->buflen % 4)
+    {
+      goto poll_fallback;
+    }
+
+  if ((physical_addr % FSPI_ARM64_CACHELINE) == 0 &&
+      (meminfo->buflen % FSPI_ARM64_CACHELINE) == 0 &&
       physical_addr <= 0xffffffffu &&
       physical_addr + meminfo->buflen - 1 <= 0xffffffffu)
     {
-      uint32_t line_bits;
-      uint32_t timeout_us;
-
-      /* Determine the data line width.  The DATA phase dominates the
-       * transfer time, so only the DUALIO/QUADIO flags matter here; they
-       * match the DATAB_X1/X2/X4 bits programmed into the CTRL register
-       * above.  Used to scale the DMA timeout with the data volume.
-       */
-
-      if (meminfo->flags & QSPIMEM_QUADIO)
-        {
-          line_bits = 4;
-        }
-      else if (meminfo->flags & QSPIMEM_DUALIO)
-        {
-          line_bits = 2;
-        }
-      else
-        {
-          line_bits = 1;
-        }
-
-      timeout_us =
-          rk3576_fspi_calc_timeout_thres(priv, meminfo->buflen, line_bits);
-
-      fspi_putreg(priv, (unsigned int)physical_addr, RK3576_FSPI_DMAADDR);
-
-      if (meminfo->flags & QSPIMEM_WRITE)
-        {
-          up_clean_dcache((uintptr_t)meminfo->buffer,
-                          (uintptr_t)meminfo->buffer + meminfo->buflen);
-        }
-
-      fspi_putreg(priv, FSPI_DMA_TRIGGER_START, RK3576_FSPI_DMATR);
-
-      /* Clear any stale error flag from a previous transfer, then wait
-       * for DMA completion OR an error.  The error bits must be included
-       * in the mask so the ISR's error branch is actually reachable;
-       * otherwise a BUS_ERR/NSPI_ERR is silently masked and we would only
-       * discover it via timeout.
-       */
-
-      priv->ctrl->dma_err = false;
-      ret = fspi_wait_irq(
-          priv, (FSPI_INT_DMA | FSPI_INT_BUS_ERR | FSPI_INT_NSPI_ERR),
-          &(priv->ctrl->dma_sem), timeout_us);
+      ret = fspi_memory_dma(priv, meminfo->buffer, physical_addr,
+                            meminfo->buflen, meminfo->flags);
       if (ret < 0)
         {
           goto transmission_failure;
         }
 
-      if (priv->ctrl->dma_err)
-        {
-          ret = -EIO;
-          goto transmission_failure;
-        }
-
-      /* Read path: DMA has written the buffer into memory.  Invalidate
-       * the D-cache so a subsequent CPU read misses and fetches the fresh
-       * DMA data, instead of hitting a stale line held since before the
-       * transfer.  Write path needs no post-DMA maintenance.
-       *
-       * As above, this operates by virtual address meminfo->buffer.
-       */
-
-      if (!(meminfo->flags & QSPIMEM_WRITE))
-        {
-          up_invalidate_dcache((uintptr_t)meminfo->buffer,
-                               (uintptr_t)meminfo->buffer + meminfo->buflen);
-        }
-
       return OK;
     }
 
-  /* Fall back to FIFO polling. */
+#ifdef CONFIG_RK3576_DMA_ALLOC
+  /* Non-aligned or out-of-range: stage the data in a 64B-aligned bounce
+   * buffer allocated from the DMA-dedicated heap (phys == virt, within
+   * the 4 GiB DMA range).  memcpy is a normal CPU access, so the
+   * caller's non-aligned buffer needs no cache maintenance — cache
+   * coherency for it is handled by the CPU itself.  If the bounce
+   * allocation fails, fall through to FIFO polling.
+   */
 
+  void *bounce = rk3576_dma_alloc(meminfo->buflen);
+  if (!bounce)
+    {
+      goto poll_fallback;
+    }
+
+  if (meminfo->flags & QSPIMEM_WRITE)
+    {
+      memcpy(bounce, meminfo->buffer, meminfo->buflen);
+    }
+
+  ret = fspi_memory_dma(priv, bounce, (uintptr_t)bounce, meminfo->buflen,
+                        meminfo->flags);
+  if (ret < 0)
+    {
+      rk3576_dma_free(bounce, meminfo->buflen);
+      goto transmission_failure;
+    }
+
+  if (!(meminfo->flags & QSPIMEM_WRITE))
+    {
+      memcpy(meminfo->buffer, bounce, meminfo->buflen);
+    }
+
+  rk3576_dma_free(bounce, meminfo->buflen);
+
+  return OK;
+#endif /* CONFIG_RK3576_DMA_ALLOC */
+
+poll_fallback:
+  /* Fall back to FIFO polling. */
   if (meminfo->flags & QSPIMEM_WRITE)
     {
       ret = fspi_write_fifo(priv, meminfo->buffer, meminfo->buflen);
