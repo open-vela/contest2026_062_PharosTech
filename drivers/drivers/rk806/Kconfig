@@ -1,0 +1,22 @@
+############################################################################
+# vendor/drivers/drivers/rk806/Kconfig
+#
+# RK806 PMIC regulator driver configuration.
+#
+# RK806 is the power management IC used on the kickpi-k7 (RK3576) board:
+# a multi-channel PMIC providing several BUCK (DCDC) and LDO regulators,
+# each independently switchable and voltage-adjustable.
+############################################################################
+
+config REGULATOR_RK806
+    bool "RK806 PMIC regulator driver"
+    default n
+    depends on !DISABLE_MQUEUE
+    select REGULATOR
+    ---help---
+        Enable support for the Rockchip RK806 PMIC, implemented on top of
+        the NuttX regulator framework (include/nuttx/power/regulator.h).
+
+        Each RK806 output (BUCK/LDO) is registered as a separate regulator
+        device, exposed via the common regulator upper-half. Selecting this
+        option compiles the driver.
