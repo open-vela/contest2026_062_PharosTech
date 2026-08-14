@@ -263,4 +263,43 @@
 #define RK806_NLDO5_EN_REG   RK806_REG_POWER_EN5
 #define RK806_NLDO5_EN_MASK  (1u << 2)
 
+/****************************************************************************
+ * Voltage decode (microvolts).
+ *
+ * The output voltage for a given vsel selector is a piecewise-linear
+ *(segmented) function of the 8-bit vsel value.  BUCK and LDO (NLDO/PLDO)
+ *outputs use different segment tables:
+ *
+ *   BUCK:  sel 0..159    -> 500000 + sel * 6250   (0.5V .. 1.5V)
+ *          sel 160..236  -> 1500000 + (sel-160) * 25000  (1.5V .. 3.4V)
+ *          sel 237..255  -> 3400000               (fixed 3.4V)
+ *
+ *   LDO :  sel 0..232    -> 500000 + sel * 12500  (0.5V .. 3.4V)
+ *          sel 233..255  -> 3400000               (fixed 3.4V)
+ *
+ * All selectors up to 255 (8-bit vsel field) are valid; out-of-range values
+ * map to -EINVAL at the API boundary.
+ ****************************************************************************/
+
+#define RK806_BUCK_VOLT_MIN0  500000
+#define RK806_BUCK_VOLT_MAX0  1500000
+#define RK806_BUCK_VOLT_MIN1  1500000
+#define RK806_BUCK_VOLT_MAX1  3400000
+#define RK806_BUCK_VOLT_STEP0 6250
+#define RK806_BUCK_VOLT_STEP1 25000
+#define RK806_BUCK_SEL_END0   160 /* first selector of segment 1 */
+#define RK806_BUCK_SEL_END1   237 /* first selector of segment 2 */
+#define RK806_BUCK_SEL_COUNT  256
+
+#define RK806_LDO_VOLT_MIN0   500000
+#define RK806_LDO_VOLT_MAX0   3400000
+#define RK806_LDO_VOLT_STEP0  12500
+#define RK806_LDO_SEL_END0    233 /* first selector of segment 1 */
+#define RK806_LDO_SEL_COUNT   256
+
+/* All outputs (BUCK and LDO) are adjustable across the same full range. */
+
+#define RK806_MIN_UV 500000
+#define RK806_MAX_UV 3400000
+
 #endif /* __DRIVERS_RK806_HW_H */
