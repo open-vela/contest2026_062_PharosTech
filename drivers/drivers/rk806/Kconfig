@@ -20,3 +20,351 @@ config REGULATOR_RK806
         Each RK806 output (BUCK/LDO) is registered as a separate regulator
         device, exposed via the common regulator upper-half. Selecting this
         option compiles the driver.
+
+if REGULATOR_RK806
+
+menu "RK806 Regulator Output Configuration"
+
+config RK806_BUCK1_NAME
+    string "BUCK1 regulator name"
+    default "rk806_buck1"
+    ---help---
+        Device name used when registering the RK806 BUCK1 regulator.
+        Boards may override this to match their schematic net name
+        (e.g. "vcc_1v8_s3").
+
+config RK806_BUCK1_BOOT_ON
+    bool "Enable BUCK1 at boot"
+    default y
+
+config RK806_BUCK1_ALWAYS_ON
+    bool "Keep BUCK1 always on"
+    default n
+
+config RK806_BUCK1_SUPPLY
+    string "BUCK1 input supply (VCC1) parent regulator name"
+    default ""
+    ---help---
+        Name of the parent regulator that supplies BUCK1's input rail
+        (VCC1).  Leave empty if VCC1 is a fixed/battery rail with no
+        independently controlled parent regulator.
+
+config RK806_BUCK2_NAME
+    string "BUCK2 regulator name"
+    default "rk806_buck2"
+
+config RK806_BUCK2_BOOT_ON
+    bool "Enable BUCK2 at boot"
+    default y
+
+config RK806_BUCK2_ALWAYS_ON
+    bool "Keep BUCK2 always on"
+    default n
+
+config RK806_BUCK2_SUPPLY
+    string "BUCK2 input supply (VCC2) parent regulator name"
+    default ""
+
+config RK806_BUCK3_NAME
+    string "BUCK3 regulator name"
+    default "rk806_buck3"
+
+config RK806_BUCK3_BOOT_ON
+    bool "Enable BUCK3 at boot"
+    default y
+
+config RK806_BUCK3_ALWAYS_ON
+    bool "Keep BUCK3 always on"
+    default n
+
+config RK806_BUCK3_SUPPLY
+    string "BUCK3 input supply (VCC3) parent regulator name"
+    default ""
+
+config RK806_BUCK4_NAME
+    string "BUCK4 regulator name"
+    default "rk806_buck4"
+
+config RK806_BUCK4_BOOT_ON
+    bool "Enable BUCK4 at boot"
+    default y
+
+config RK806_BUCK4_ALWAYS_ON
+    bool "Keep BUCK4 always on"
+    default n
+
+config RK806_BUCK4_SUPPLY
+    string "BUCK4 input supply (VCC4) parent regulator name"
+    default ""
+
+config RK806_BUCK5_NAME
+    string "BUCK5 regulator name"
+    default "rk806_buck5"
+
+config RK806_BUCK5_BOOT_ON
+    bool "Enable BUCK5 at boot"
+    default y
+
+config RK806_BUCK5_ALWAYS_ON
+    bool "Keep BUCK5 always on"
+    default n
+
+config RK806_BUCK5_SUPPLY
+    string "BUCK5 input supply (VCC5) parent regulator name"
+    default ""
+
+config RK806_BUCK6_NAME
+    string "BUCK6 regulator name"
+    default "rk806_buck6"
+
+config RK806_BUCK6_BOOT_ON
+    bool "Enable BUCK6 at boot"
+    default y
+
+config RK806_BUCK6_ALWAYS_ON
+    bool "Keep BUCK6 always on"
+    default n
+
+config RK806_BUCK6_SUPPLY
+    string "BUCK6 input supply (VCC6) parent regulator name"
+    default ""
+
+config RK806_BUCK7_NAME
+    string "BUCK7 regulator name"
+    default "rk806_buck7"
+
+config RK806_BUCK7_BOOT_ON
+    bool "Enable BUCK7 at boot"
+    default y
+
+config RK806_BUCK7_ALWAYS_ON
+    bool "Keep BUCK7 always on"
+    default n
+
+config RK806_BUCK7_SUPPLY
+    string "BUCK7 input supply (VCC7) parent regulator name"
+    default ""
+
+config RK806_BUCK8_NAME
+    string "BUCK8 regulator name"
+    default "rk806_buck8"
+
+config RK806_BUCK8_BOOT_ON
+    bool "Enable BUCK8 at boot"
+    default y
+
+config RK806_BUCK8_ALWAYS_ON
+    bool "Keep BUCK8 always on"
+    default n
+
+config RK806_BUCK8_SUPPLY
+    string "BUCK8 input supply (VCC8) parent regulator name"
+    default ""
+
+config RK806_BUCK9_NAME
+    string "BUCK9 regulator name"
+    default "rk806_buck9"
+
+config RK806_BUCK9_BOOT_ON
+    bool "Enable BUCK9 at boot"
+    default y
+
+config RK806_BUCK9_ALWAYS_ON
+    bool "Keep BUCK9 always on"
+    default n
+
+config RK806_BUCK9_SUPPLY
+    string "BUCK9 input supply (VCC9) parent regulator name"
+    default ""
+
+config RK806_BUCK10_NAME
+    string "BUCK10 regulator name"
+    default "rk806_buck10"
+
+config RK806_BUCK10_BOOT_ON
+    bool "Enable BUCK10 at boot"
+    default y
+
+config RK806_BUCK10_ALWAYS_ON
+    bool "Keep BUCK10 always on"
+    default n
+
+config RK806_BUCK10_SUPPLY
+    string "BUCK10 input supply (VCC10) parent regulator name"
+    default ""
+
+config RK806_NLDO1_NAME
+    string "NLDO1 regulator name"
+    default "rk806_nldo1"
+
+config RK806_NLDO1_BOOT_ON
+    bool "Enable NLDO1 at boot"
+    default y
+
+config RK806_NLDO1_ALWAYS_ON
+    bool "Keep NLDO1 always on"
+    default n
+
+config RK806_NLDO1_2_3_SUPPLY
+    string "NLDO1-3 input supply (VCC13) parent regulator name"
+    default ""
+    ---help---
+        Name of the parent regulator that supplies the NLDO1-3 input rail
+        (VCC13).  NLDO1, NLDO2 and NLDO3 share this input internally, so
+        this single setting is used by all three.  Leave empty if VCC13
+        is a fixed/battery rail.
+
+config RK806_NLDO2_NAME
+    string "NLDO2 regulator name"
+    default "rk806_nldo2"
+
+config RK806_NLDO2_BOOT_ON
+    bool "Enable NLDO2 at boot"
+    default y
+
+config RK806_NLDO2_ALWAYS_ON
+    bool "Keep NLDO2 always on"
+    default n
+
+config RK806_NLDO3_NAME
+    string "NLDO3 regulator name"
+    default "rk806_nldo3"
+
+config RK806_NLDO3_BOOT_ON
+    bool "Enable NLDO3 at boot"
+    default y
+
+config RK806_NLDO3_ALWAYS_ON
+    bool "Keep NLDO3 always on"
+    default n
+
+config RK806_NLDO4_NAME
+    string "NLDO4 regulator name"
+    default "rk806_nldo4"
+
+config RK806_NLDO4_BOOT_ON
+    bool "Enable NLDO4 at boot"
+    default y
+
+config RK806_NLDO4_ALWAYS_ON
+    bool "Keep NLDO4 always on"
+    default n
+
+config RK806_NLDO4_5_SUPPLY
+    string "NLDO4-5 input supply (VCC14) parent regulator name"
+    default ""
+    ---help---
+        Name of the parent regulator that supplies the NLDO4-5 input rail
+        (VCC14).  NLDO4 and NLDO5 share this input internally.  Leave empty
+        if VCC14 is a fixed/battery rail.
+
+config RK806_NLDO5_NAME
+    string "NLDO5 regulator name"
+    default "rk806_nldo5"
+
+config RK806_NLDO5_BOOT_ON
+    bool "Enable NLDO5 at boot"
+    default y
+
+config RK806_NLDO5_ALWAYS_ON
+    bool "Keep NLDO5 always on"
+    default n
+
+config RK806_PLDO1_NAME
+    string "PLDO1 regulator name"
+    default "rk806_pldo1"
+
+config RK806_PLDO1_BOOT_ON
+    bool "Enable PLDO1 at boot"
+    default y
+
+config RK806_PLDO1_ALWAYS_ON
+    bool "Keep PLDO1 always on"
+    default n
+
+config RK806_PLDO1_2_3_SUPPLY
+    string "PLDO1-3 input supply (VCC11) parent regulator name"
+    default ""
+    ---help---
+        Name of the parent regulator that supplies the PLDO1-3 input rail
+        (VCC11).  PLDO1, PLDO2 and PLDO3 share this input internally.  Leave
+        empty if VCC11 is a fixed/battery rail.
+
+config RK806_PLDO2_NAME
+    string "PLDO2 regulator name"
+    default "rk806_pldo2"
+
+config RK806_PLDO2_BOOT_ON
+    bool "Enable PLDO2 at boot"
+    default y
+
+config RK806_PLDO2_ALWAYS_ON
+    bool "Keep PLDO2 always on"
+    default n
+
+config RK806_PLDO3_NAME
+    string "PLDO3 regulator name"
+    default "rk806_pldo3"
+
+config RK806_PLDO3_BOOT_ON
+    bool "Enable PLDO3 at boot"
+    default y
+
+config RK806_PLDO3_ALWAYS_ON
+    bool "Keep PLDO3 always on"
+    default n
+
+config RK806_PLDO4_NAME
+    string "PLDO4 regulator name"
+    default "rk806_pldo4"
+
+config RK806_PLDO4_BOOT_ON
+    bool "Enable PLDO4 at boot"
+    default y
+
+config RK806_PLDO4_ALWAYS_ON
+    bool "Keep PLDO4 always on"
+    default n
+
+config RK806_PLDO4_5_SUPPLY
+    string "PLDO4-5 input supply (VCC12) parent regulator name"
+    default ""
+    ---help---
+        Name of the parent regulator that supplies the PLDO4-5 input rail
+        (VCC12).  PLDO4 and PLDO5 share this input internally.  Leave empty
+        if VCC12 is a fixed/battery rail.
+
+config RK806_PLDO5_NAME
+    string "PLDO5 regulator name"
+    default "rk806_pldo5"
+
+config RK806_PLDO5_BOOT_ON
+    bool "Enable PLDO5 at boot"
+    default y
+
+config RK806_PLDO5_ALWAYS_ON
+    bool "Keep PLDO5 always on"
+    default n
+
+config RK806_PLDO6_NAME
+    string "PLDO6 regulator name"
+    default "rk806_pldo6"
+
+config RK806_PLDO6_BOOT_ON
+    bool "Enable PLDO6 at boot"
+    default y
+
+config RK806_PLDO6_ALWAYS_ON
+    bool "Keep PLDO6 always on"
+    default n
+
+config RK806_PLDO6_SUPPLY
+    string "PLDO6 input supply (VCCA) parent regulator name"
+    default ""
+    ---help---
+        Name of the parent regulator that supplies the PLDO6 input rail
+        (VCCA).  Leave empty if VCCA is a fixed/battery rail.
+
+endmenu # RK806 Regulator Output Configuration
+
+endif # REGULATOR_RK806

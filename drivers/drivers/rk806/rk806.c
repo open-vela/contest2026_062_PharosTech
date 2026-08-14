@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <string.h>
 
+#include <nuttx/devicetree/util_macro.h>
 #include <nuttx/i2c/i2c_master.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/power/regulator.h>
@@ -103,44 +104,13 @@ static struct rk806_dev_s g_rk806 = {
   RK806_BUS_SPEED,   /* frequency */
 };
 
-/****************************************************************************
- * Voltage decode (microvolts).
- *
- * The output voltage for a given vsel selector is a piecewise-linear
- *(segmented) function of the 8-bit vsel value.  BUCK and LDO (NLDO/PLDO)
- *outputs use different segment tables:
- *
- *   BUCK:  sel 0..159    -> 500000 + sel * 6250   (0.5V .. 1.5V)
- *          sel 160..236  -> 1500000 + (sel-160) * 25000  (1.5V .. 3.4V)
- *          sel 237..255  -> 3400000               (fixed 3.4V)
- *
- *   LDO :  sel 0..232    -> 500000 + sel * 12500  (0.5V .. 3.4V)
- *          sel 233..255  -> 3400000               (fixed 3.4V)
- *
- * All selectors up to 255 (8-bit vsel field) are valid; out-of-range values
- * map to -EINVAL at the API boundary.
- ****************************************************************************/
+/* Fold an empty string into NULL for the desc->supply_name field.  The
+ * Kconfig *_SUPPLY symbol is a string; when a board leaves it empty it
+ * means the rail's input is a fixed (always-on) supply with no independent
+ * parent regulator, so the framework must not try to resolve/enable it.
+ */
 
-#define RK806_BUCK_VOLT_MIN0  500000
-#define RK806_BUCK_VOLT_MAX0  1500000
-#define RK806_BUCK_VOLT_MIN1  1500000
-#define RK806_BUCK_VOLT_MAX1  3400000
-#define RK806_BUCK_VOLT_STEP0 6250
-#define RK806_BUCK_VOLT_STEP1 25000
-#define RK806_BUCK_SEL_END0   160 /* first selector of segment 1 */
-#define RK806_BUCK_SEL_END1   237 /* first selector of segment 2 */
-#define RK806_BUCK_SEL_COUNT  256
-
-#define RK806_LDO_VOLT_MIN0   500000
-#define RK806_LDO_VOLT_MAX0   3400000
-#define RK806_LDO_VOLT_STEP0  12500
-#define RK806_LDO_SEL_END0    233 /* first selector of segment 1 */
-#define RK806_LDO_SEL_COUNT   256
-
-/* All outputs (BUCK and LDO) are adjustable across the same full range. */
-
-#define RK806_MIN_UV 500000
-#define RK806_MAX_UV 3400000
+#define RK806_SUPPLY_OR_NULL(s) ((s)[0] ? (s) : NULL)
 
 /****************************************************************************
  * Name: rk806_decode_buck_voltage
@@ -217,86 +187,86 @@ static unsigned int rk806_get_voltage_count(unsigned int id)
 
  */
 
-#define RK806_BUCK_REG(_id, _name, _enable_reg, _enable_mask)     \
-  {                                                               \
-    .name = _name, .id = RK806_ID_BUCK##_id,                      \
-    .n_voltages = RK806_BUCK_SEL_COUNT,                           \
-    .vsel_reg = RK806_REG_BUCK##_id##_ON_VSEL,                    \
-    .vsel_mask = RK806_BUCK_VSEL_MASK, .enable_reg = _enable_reg, \
-    .enable_mask = _enable_mask, .min_uv = RK806_MIN_UV,          \
-    .max_uv = RK806_MAX_UV, .boot_on = 1, /* TODO */              \
-        .always_on = 0,                   /* TODO */              \
+#define RK806_BUCK_REG(_id, _enable_reg, _enable_mask)                    \
+  {                                                                       \
+    .name = CONFIG_RK806_BUCK##_id##_NAME, .id = RK806_ID_BUCK##_id,      \
+    .n_voltages = RK806_BUCK_SEL_COUNT,                                   \
+    .vsel_reg = RK806_REG_BUCK##_id##_ON_VSEL,                            \
+    .vsel_mask = RK806_BUCK_VSEL_MASK, .enable_reg = _enable_reg,         \
+    .enable_mask = _enable_mask, .min_uv = RK806_MIN_UV,                  \
+    .max_uv = RK806_MAX_UV,                                               \
+    .boot_on = IS_ENABLED(CONFIG_RK806_BUCK##_id##_BOOT_ON),              \
+    .always_on = IS_ENABLED(CONFIG_RK806_BUCK##_id##_ALWAYS_ON),          \
+    .supply_name = RK806_SUPPLY_OR_NULL(CONFIG_RK806_BUCK##_id##_SUPPLY), \
+  }
+
+#define RK806_NLDO_REG(_id, _enable_reg, _enable_mask, _supply)      \
+  {                                                                  \
+    .name = CONFIG_RK806_NLDO##_id##_NAME, .id = RK806_ID_NLDO##_id, \
+    .n_voltages = RK806_LDO_SEL_COUNT,                               \
+    .vsel_reg = RK806_REG_NLDO##_id##_ON_VSEL,                       \
+    .vsel_mask = RK806_NLDO_VSEL_MASK, .enable_reg = _enable_reg,    \
+    .enable_mask = _enable_mask, .min_uv = RK806_MIN_UV,             \
+    .max_uv = RK806_MAX_UV,                                          \
+    .boot_on = IS_ENABLED(CONFIG_RK806_NLDO##_id##_BOOT_ON),         \
+    .always_on = IS_ENABLED(CONFIG_RK806_NLDO##_id##_ALWAYS_ON),     \
+    .supply_name = RK806_SUPPLY_OR_NULL(_supply),                    \
+  }
+
+#define RK806_PLDO_REG(_id, _enable_reg, _enable_mask, _supply)      \
+  {                                                                  \
+    .name = CONFIG_RK806_PLDO##_id##_NAME, .id = RK806_ID_PLDO##_id, \
+    .n_voltages = RK806_LDO_SEL_COUNT,                               \
+    .vsel_reg = RK806_REG_PLDO##_id##_ON_VSEL,                       \
+    .vsel_mask = RK806_PLDO_VSEL_MASK, .enable_reg = _enable_reg,    \
+    .enable_mask = _enable_mask, .min_uv = RK806_MIN_UV,             \
+    .max_uv = RK806_MAX_UV,                                          \
+    .boot_on = IS_ENABLED(CONFIG_RK806_PLDO##_id##_BOOT_ON),         \
+    .always_on = IS_ENABLED(CONFIG_RK806_PLDO##_id##_ALWAYS_ON),     \
+    .supply_name = RK806_SUPPLY_OR_NULL(_supply),                    \
   }
 
 static const struct regulator_desc_s
     g_rk806_regulators[RK806_NUM_REGULATORS] = {
-      RK806_BUCK_REG(1, "rk806_buck1", RK806_BUCK1_EN_REG,
-                     RK806_BUCK1_EN_MASK),
-      RK806_BUCK_REG(2, "rk806_buck2", RK806_BUCK2_EN_REG,
-                     RK806_BUCK2_EN_MASK),
-      RK806_BUCK_REG(3, "rk806_buck3", RK806_BUCK3_EN_REG,
-                     RK806_BUCK3_EN_MASK),
-      RK806_BUCK_REG(4, "rk806_buck4", RK806_BUCK4_EN_REG,
-                     RK806_BUCK4_EN_MASK),
-      RK806_BUCK_REG(5, "rk806_buck5", RK806_BUCK5_EN_REG,
-                     RK806_BUCK5_EN_MASK),
-      RK806_BUCK_REG(6, "rk806_buck6", RK806_BUCK6_EN_REG,
-                     RK806_BUCK6_EN_MASK),
-      RK806_BUCK_REG(7, "rk806_buck7", RK806_BUCK7_EN_REG,
-                     RK806_BUCK7_EN_MASK),
-      RK806_BUCK_REG(8, "rk806_buck8", RK806_BUCK8_EN_REG,
-                     RK806_BUCK8_EN_MASK),
-      RK806_BUCK_REG(9, "rk806_buck9", RK806_BUCK9_EN_REG,
-                     RK806_BUCK9_EN_MASK),
-      RK806_BUCK_REG(10, "rk806_buck10", RK806_BUCK10_EN_REG,
-                     RK806_BUCK10_EN_MASK),
+      RK806_BUCK_REG(1, RK806_BUCK1_EN_REG, RK806_BUCK1_EN_MASK),
+      RK806_BUCK_REG(2, RK806_BUCK2_EN_REG, RK806_BUCK2_EN_MASK),
+      RK806_BUCK_REG(3, RK806_BUCK3_EN_REG, RK806_BUCK3_EN_MASK),
+      RK806_BUCK_REG(4, RK806_BUCK4_EN_REG, RK806_BUCK4_EN_MASK),
+      RK806_BUCK_REG(5, RK806_BUCK5_EN_REG, RK806_BUCK5_EN_MASK),
+      RK806_BUCK_REG(6, RK806_BUCK6_EN_REG, RK806_BUCK6_EN_MASK),
+      RK806_BUCK_REG(7, RK806_BUCK7_EN_REG, RK806_BUCK7_EN_MASK),
+      RK806_BUCK_REG(8, RK806_BUCK8_EN_REG, RK806_BUCK8_EN_MASK),
+      RK806_BUCK_REG(9, RK806_BUCK9_EN_REG, RK806_BUCK9_EN_MASK),
+      RK806_BUCK_REG(10, RK806_BUCK10_EN_REG, RK806_BUCK10_EN_MASK),
 
-#define RK806_NLDO_REG(_id, _name, _enable_reg, _enable_mask)     \
-  {                                                               \
-    .name = _name, .id = RK806_ID_NLDO##_id,                      \
-    .n_voltages = RK806_LDO_SEL_COUNT,                            \
-    .vsel_reg = RK806_REG_NLDO##_id##_ON_VSEL,                    \
-    .vsel_mask = RK806_NLDO_VSEL_MASK, .enable_reg = _enable_reg, \
-    .enable_mask = _enable_mask, .min_uv = RK806_MIN_UV,          \
-    .max_uv = RK806_MAX_UV, .boot_on = 1, /* TODO */              \
-        .always_on = 0,                   /* TODO */              \
-  }
+      RK806_NLDO_REG(1, RK806_NLDO1_EN_REG, RK806_NLDO1_EN_MASK,
+                     CONFIG_RK806_NLDO1_2_3_SUPPLY),
+      RK806_NLDO_REG(2, RK806_NLDO2_EN_REG, RK806_NLDO2_EN_MASK,
+                     CONFIG_RK806_NLDO1_2_3_SUPPLY),
+      RK806_NLDO_REG(3, RK806_NLDO3_EN_REG, RK806_NLDO3_EN_MASK,
+                     CONFIG_RK806_NLDO1_2_3_SUPPLY),
+      RK806_NLDO_REG(4, RK806_NLDO4_EN_REG, RK806_NLDO4_EN_MASK,
+                     CONFIG_RK806_NLDO4_5_SUPPLY),
+      RK806_NLDO_REG(5, RK806_NLDO5_EN_REG, RK806_NLDO5_EN_MASK,
+                     CONFIG_RK806_NLDO4_5_SUPPLY),
 
-      RK806_NLDO_REG(1, "rk806_nldo1", RK806_NLDO1_EN_REG,
-                     RK806_NLDO1_EN_MASK),
-      RK806_NLDO_REG(2, "rk806_nldo2", RK806_NLDO2_EN_REG,
-                     RK806_NLDO2_EN_MASK),
-      RK806_NLDO_REG(3, "rk806_nldo3", RK806_NLDO3_EN_REG,
-                     RK806_NLDO3_EN_MASK),
-      RK806_NLDO_REG(4, "rk806_nldo4", RK806_NLDO4_EN_REG,
-                     RK806_NLDO4_EN_MASK),
-      RK806_NLDO_REG(5, "rk806_nldo5", RK806_NLDO5_EN_REG,
-                     RK806_NLDO5_EN_MASK),
-
-#define RK806_PLDO_REG(_id, _name, _enable_reg, _enable_mask)     \
-  {                                                               \
-    .name = _name, .id = RK806_ID_PLDO##_id,                      \
-    .n_voltages = RK806_LDO_SEL_COUNT,                            \
-    .vsel_reg = RK806_REG_PLDO##_id##_ON_VSEL,                    \
-    .vsel_mask = RK806_PLDO_VSEL_MASK, .enable_reg = _enable_reg, \
-    .enable_mask = _enable_mask, .min_uv = RK806_MIN_UV,          \
-    .max_uv = RK806_MAX_UV, .boot_on = 1, /* TODO */              \
-        .always_on = 0,                   /* TODO */              \
-  }
-
-      RK806_PLDO_REG(1, "rk806_pldo1", RK806_PLDO1_EN_REG,
-                     RK806_PLDO1_EN_MASK),
-      RK806_PLDO_REG(2, "rk806_pldo2", RK806_PLDO2_EN_REG,
-                     RK806_PLDO2_EN_MASK),
-      RK806_PLDO_REG(3, "rk806_pldo3", RK806_PLDO3_EN_REG,
-                     RK806_PLDO3_EN_MASK),
-      RK806_PLDO_REG(4, "rk806_pldo4", RK806_PLDO4_EN_REG,
-                     RK806_PLDO4_EN_MASK),
-      RK806_PLDO_REG(5, "rk806_pldo5", RK806_PLDO5_EN_REG,
-                     RK806_PLDO5_EN_MASK),
-      RK806_PLDO_REG(6, "rk806_pldo6", RK806_PLDO6_EN_REG,
-                     RK806_PLDO6_EN_MASK),
+      RK806_PLDO_REG(1, RK806_PLDO1_EN_REG, RK806_PLDO1_EN_MASK,
+                     CONFIG_RK806_PLDO1_2_3_SUPPLY),
+      RK806_PLDO_REG(2, RK806_PLDO2_EN_REG, RK806_PLDO2_EN_MASK,
+                     CONFIG_RK806_PLDO1_2_3_SUPPLY),
+      RK806_PLDO_REG(3, RK806_PLDO3_EN_REG, RK806_PLDO3_EN_MASK,
+                     CONFIG_RK806_PLDO1_2_3_SUPPLY),
+      RK806_PLDO_REG(4, RK806_PLDO4_EN_REG, RK806_PLDO4_EN_MASK,
+                     CONFIG_RK806_PLDO4_5_SUPPLY),
+      RK806_PLDO_REG(5, RK806_PLDO5_EN_REG, RK806_PLDO5_EN_MASK,
+                     CONFIG_RK806_PLDO4_5_SUPPLY),
+      RK806_PLDO_REG(6, RK806_PLDO6_EN_REG, RK806_PLDO6_EN_MASK,
+                     CONFIG_RK806_PLDO6_SUPPLY),
     };
+
+#undef RK806_PLDO_REG
+#undef RK806_NLDO_REG
+#undef RK806_BUCK_REG
 
 /****************************************************************************
  * Private Functions
@@ -352,8 +322,8 @@ static int rk806_read_reg(FAR struct rk806_dev_s *priv, uint8_t reg,
  *   Write a single 8-bit register to the RK806 over I2C.
  *
  ****************************************************************************/
-__attribute__((unused)) static int
-rk806_write_reg(FAR struct rk806_dev_s *priv, uint8_t reg, uint8_t value)
+static int rk806_write_reg(FAR struct rk806_dev_s *priv, uint8_t reg,
+                           uint8_t value)
 {
   struct i2c_msg_s msg;
   uint8_t buffer[2];
