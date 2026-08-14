@@ -400,31 +400,16 @@ void board_late_initialize(void)
   while (0);
 #endif
 
-#if defined(CONFIG_REGULATOR_RK806) && defined(CONFIG_RK3576_I2C)
-  /* Init RK806 PMIC */
-  do
-    {
-      /* I2C1 M0 for RK806 PMIC*/
-      rk3576_config_gpio(GPIO_PORT0 | GPIO_PIN_B2 | GPIO_ALT | GPIO_AF11);
-      rk3576_config_gpio(GPIO_PORT0 | GPIO_PIN_B3 | GPIO_ALT | GPIO_AF11);
+#ifdef CONFIG_KICKPI_K7_REGULATOR
+  /* Init regulator */
 
-      struct i2c_master_s *i2c1 = rk3576_i2c_initialize(1);
-
-      if (!i2c1)
-        {
-          syslog(LOG_ERR, "Failed to init I2C1\n");
-          break;
-        }
-
-      int ret = rk806_initialize(i2c1);
-      if (ret < 0)
-        {
-          syslog(LOG_ERR, "Failed to init RK806\n");
-          break;
-        }
-    }
-  while (0);
-
+  {
+    int ret = kickpi_k7_regulator_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "Failed to init kickpi-k7 regulators\n");
+      }
+  }
 #endif
 
 #ifdef CONFIG_RK3576_SDMMC
