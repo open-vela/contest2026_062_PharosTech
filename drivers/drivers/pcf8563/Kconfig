@@ -1,0 +1,54 @@
+############################################################################
+# drivers/drivers/pcf8563/Kconfig
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.  The
+# ASF licenses this file to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance with the
+# License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+# License for the specific language governing permissions and limitations
+# under the License.
+#
+############################################################################
+#
+# PCF8563 / HYM8563TS I2C real-time clock driver.
+#
+############################################################################
+
+config RTC_PCF8563
+    bool "PCF8563 / HYM8563TS RTC"
+    default n
+    select I2C
+    select RTC_DATETIME
+    select RTC_ALARM
+    depends on RTC_EXTERNAL
+    ---help---
+        Enable the PCF8563 (and compatible HYM8563TS) I2C real-time
+        clock/calendar driver.  The part provides 16 BCD-coded registers
+        at fixed I2C 7-bit slave address 0x51.
+
+        The alarm function is implemented and requires the PCF8563 INT pin
+        to be wired to a board GPIO interrupt; the board routes that interrupt
+        into pcf8563_alarm_service() (see kickpi_k7 boardinit).  If alarm
+        support is not desired, set CONFIG_RTC_ALARM to n and the alarm code
+        is compiled out (the driver then provides date/time only).
+
+if RTC_PCF8563
+
+config PCF8563_I2C_FREQUENCY
+    int "PCF8563 I2C frequency"
+    default 400000
+    range 0 400000
+    ---help---
+        I2C bus frequency in Hz used to communicate with the PCF8563.
+
+endif # RTC_PCF8563
