@@ -60,6 +60,7 @@
 
 #include <nuttx/arch.h>
 #include <nuttx/i2c/i2c_master.h>
+#include <nuttx/timers/arch_rtc.h>
 #include <nuttx/timers/rtc.h>
 #include <nuttx/wqueue.h>
 
@@ -891,6 +892,16 @@ int pcf8563_rtc_initialize(FAR struct i2c_master_s *i2c)
       rtcerr("ERROR: rtc_initialize failed: %d\n", ret);
       return ret;
     }
+
+  /* Bridge the lower-half to the arch RTC interface so the clock subsystem
+   * can seed and update the system time from this RTC.  When CONFIG_RTC_ARCH
+   * is set, at this point the arch-side weak up_rtc_getdatetime/settime and
+   * g_rtc_enabled are backed by our lower-half.  The 'sync' flag makes the
+   * kernel re-read the wall time right away (external RTC became available
+   * only now, after boot).
+   */
+
+  up_rtc_set_lowerhalf(&g_pcf8563.lower, true);
 
   return OK;
 }

@@ -45,4 +45,8 @@ if(CONFIG_RK3576_FSPI)
   list(APPEND SRCS rk3576_fspi.c)
 endif()
 
+if(CONFIG_RTC_ARCH)
+  list(APPEND SRCS rk3576_rtc.c)
+endif()
+
 target_sources(arch PRIVATE ${SRCS})

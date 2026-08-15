@@ -52,4 +52,13 @@ config KICKPI_K7_AUDIO_OUTPUT_OFF
 
 endchoice
 
+config KICKPI_K7_RTC
+	bool "On-board PCF8563 / HYM8563TS RTC (I2C2)"
+	default n
+	depends on RTC_PCF8563 && RK3576_I2C
+	---help---
+		Register the on-board HYM8563TS (PCF8563-compatible) real-time
+		clock on I2C2 as /dev/rtc0.  Muxes the I2C2 SCL (GPIO0_B7) and SDA
+		(GPIO0_C0) pins to alternate function 9 at boot.
+
 endif # ARCH_BOARD_KICKPI_K7
