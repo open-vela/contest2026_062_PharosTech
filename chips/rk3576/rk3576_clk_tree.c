@@ -347,6 +347,189 @@ static void rk3576_clk_register_pll_factors(void)
   UNUSED(aupll);
 }
 
+/****************************************************************************
+ * Name: rk3576_clk_register_axi
+ *
+ * Description:
+ *   Register the AXI (aclk) bus root clocks.  These are the parent clocks
+ *   for all AXI-domain peripherals (DMA controllers, etc.).  Each root clock
+ *   is a (mux + optional divider) chain fed by the PLL / PLL-divider sources
+ *   registered in rk3576_clk_register_pll_factors().
+ *
+ *   Register map (TRM Chapter 2):
+ *     aclk_top_biu      CLKSEL_CON09  sel[6:5] div[4:0]
+ *     aclk_bus_root     CLKSEL_CON55  sel[9]   div[8:4]
+ *     aclk_center_root  CLKSEL_CON167 sel[7:5] div[13:9]
+ ****************************************************************************/
+
+static void rk3576_clk_register_axi(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+
+  /* AXI top BIU: 2-bit mux (GPLL/CPLL/AUPLL) + 5-bit divider. */
+
+  {
+    static const char *parents[] = {
+      "clk_gpll",  /* 2'b00 */
+      "clk_cpll",  /* 2'b01 */
+      "clk_aupll", /* 2'b10 */
+    };
+
+    clk_register_mux("aclk_top_biu_sel", parents, nitems(parents),
+                     CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                     cru + RK3576_CRU_CLKSEL_CON(9), 6, 2,
+                     CLK_MUX_HIWORD_MASK);
+    clk_register_divider("aclk_top_biu", "aclk_top_biu_sel",
+                         CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                         cru + RK3576_CRU_CLKSEL_CON(9), 0, 5,
+                         CLK_DIVIDER_HIWORD_MASK);
+  }
+
+  /* AXI bus root: 1-bit mux (GPLL/CPLL) + 5-bit divider. */
+
+  {
+    static const char *parents[] = {
+      "clk_gpll", /* 1'b0 */
+      "clk_cpll", /* 1'b1 */
+    };
+
+    clk_register_mux("aclk_bus_root_sel", parents, nitems(parents),
+                     CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                     cru + RK3576_CRU_CLKSEL_CON(55), 9, 1,
+                     CLK_MUX_HIWORD_MASK);
+    clk_register_divider("aclk_bus_root", "aclk_bus_root_sel",
+                         CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                         cru + RK3576_CRU_CLKSEL_CON(55), 4, 5,
+                         CLK_DIVIDER_HIWORD_MASK);
+  }
+
+  /* AXI center root: 3-bit mux + 5-bit divider. */
+
+  {
+    static const char *parents[] = {
+      "clk_gpll",  /* 3'b000 */
+      "clk_cpll",  /* 3'b001 */
+      "clk_cpll",  /* 3'b010 — clk_spll_mux, not yet modelled */
+      "clk_aupll", /* 3'b011 */
+      "clk_cpll",  /* 3'b100 — clk_bpll_src, not yet modelled */
+    };
+
+    clk_register_mux("aclk_center_root_sel", parents, nitems(parents),
+                     CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                     cru + RK3576_CRU_CLKSEL_CON(167), 5, 3,
+                     CLK_MUX_HIWORD_MASK);
+    clk_register_divider("aclk_center_root", "aclk_center_root_sel",
+                         CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                         cru + RK3576_CRU_CLKSEL_CON(167), 9, 5,
+                         CLK_DIVIDER_HIWORD_MASK);
+  }
+}
+
+/****************************************************************************
+ * Name: rk3576_clk_register_ahb
+ *
+ * Description:
+ *   Register the AHB (hclk) bus root clocks.  These are the parent clocks
+ *   for all AHB-domain peripherals (FSPI, etc.).  No divider is modelled —
+ *   the AHB roots are pure muxes fed by GPLL/CPLL post-dividers.
+ *
+ *   Register map (TRM Chapter 2):
+ *     hclk_top_biu      CLKSEL_CON19  sel[3:2]
+ *     hclk_bus_root     CLKSEL_CON55  sel[1:0]
+ *     hclk_center_root  CLKSEL_CON168 sel[11:10]
+ ****************************************************************************/
+
+static void rk3576_clk_register_ahb(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+
+  /* Common 2-bit AHB source list:
+   * 2'b00 = GPLL/6, 2'b01 = CPLL/10, 2'b10 = CPLL/20, 2'b11 = XIN_OSC0.
+   */
+
+  static const char *parents[] = {
+    "clk_gpll_div6",
+    "clk_cpll_div10",
+    "clk_cpll_div20",
+    "xin_osc0",
+  };
+
+  clk_register_mux("hclk_top_biu", parents, nitems(parents),
+                   CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                   cru + RK3576_CRU_CLKSEL_CON(19), 2, 2, CLK_MUX_HIWORD_MASK);
+
+  clk_register_mux("hclk_bus_root", parents, nitems(parents),
+                   CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                   cru + RK3576_CRU_CLKSEL_CON(55), 0, 2, CLK_MUX_HIWORD_MASK);
+
+  clk_register_mux("hclk_center_root", parents, nitems(parents),
+                   CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                   cru + RK3576_CRU_CLKSEL_CON(168), 10, 2,
+                   CLK_MUX_HIWORD_MASK);
+
+  /* Audio-domain AHB root — parent of SAI/PDM/etc. bus interface gates.
+   * Source mux only (no divider).
+   */
+
+  clk_register_mux("hclk_audio_root", parents, nitems(parents),
+                   CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                   cru + RK3576_CRU_CLKSEL_CON(42), 0, 2, CLK_MUX_HIWORD_MASK);
+}
+
+/****************************************************************************
+ * Name: rk3576_clk_register_apb
+ *
+ * Description:
+ *   Register the APB (pclk) bus root clocks.  These are the parent clocks
+ *   for all APB-domain peripherals (UART, I2C, PWM, timers, etc.).
+ *
+ *   Register map (TRM Chapter 2):
+ *     pclk_top_root     CLKSEL_CON08  sel[8:7]
+ *     pclk_bus_root     CLKSEL_CON55  sel[3:2]
+ *     pclk_center_root  CLKSEL_CON168 sel[13:12]
+ ****************************************************************************/
+
+static void rk3576_clk_register_apb(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+
+  /* Common 2-bit APB source list:
+   * 2'b00 = CPLL/10, 2'b01 = CPLL/20, 2'b10 = XIN_OSC0.
+   */
+
+  static const char *parents[] = {
+    "clk_cpll_div10",
+    "clk_cpll_div20",
+    "xin_osc0",
+  };
+
+  clk_register_mux("pclk_top_root", parents, nitems(parents),
+                   CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                   cru + RK3576_CRU_CLKSEL_CON(8), 7, 2, CLK_MUX_HIWORD_MASK);
+
+  clk_register_mux("pclk_bus_root", parents, nitems(parents),
+                   CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                   cru + RK3576_CRU_CLKSEL_CON(55), 2, 2, CLK_MUX_HIWORD_MASK);
+
+  clk_register_mux("pclk_center_root", parents, nitems(parents),
+                   CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                   cru + RK3576_CRU_CLKSEL_CON(168), 12, 2,
+                   CLK_MUX_HIWORD_MASK);
+
+  /* PMU1-domain APB root — parent of PMU-domain peripherals (pclk_uart1,
+   * pclk_i2c0, pclk_pwm0).  Source mux only (no divider).
+   */
+
+  {
+    const unsigned long pmu1 = RK3576_PMU1_CRU_ADDR;
+
+    clk_register_mux("pclk_pmu0_root_src", parents, nitems(parents),
+                     CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                     pmu1 + RK3576_PMU1CRU_CLKSEL_CON(20), 0, 2,
+                     CLK_MUX_HIWORD_MASK);
+  }
+}
+
 /**
  * Macro: RK3576_CLK_REGISTER_I2C_ONE
  *
@@ -365,7 +548,7 @@ static void rk3576_clk_register_pll_factors(void)
  */
 
 #define RK3576_CLK_REGISTER_I2C_ONE(bus, sel_reg, sel_shift, pclk_reg,       \
-                                    pclk_bit, clk_reg, clk_bit)              \
+                                    pclk_bit, clk_reg, clk_bit, pclk_parent) \
   do                                                                         \
     {                                                                        \
       struct clk_s *_mux;                                                    \
@@ -380,8 +563,8 @@ static void rk3576_clk_register_pll_factors(void)
           break;                                                             \
         }                                                                    \
                                                                              \
-      clk_register_gate("pclk_i2c" #bus, NULL, CLK_NAME_IS_STATIC, pclk_reg, \
-                        pclk_bit,                                            \
+      clk_register_gate("pclk_i2c" #bus, pclk_parent, CLK_NAME_IS_STATIC,    \
+                        pclk_reg, pclk_bit,                                  \
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
                                                                              \
       clk_register_gate("clk_i2c" #bus, "clk_i2c" #bus "_sel",               \
@@ -417,49 +600,50 @@ static void rk3576_clk_register_i2c(void)
   /* I2C0 — PMU1 domain */
 
   RK3576_CLK_REGISTER_I2C_ONE(0, pmu1 + RK3576_PMU1CRU_CLKSEL_CON(6),
-                              7,                                     /* mux */
-                              pmu1 + RK3576_PMU1CRU_GATE_CON(5), 1,  /* pclk */
-                              pmu1 + RK3576_PMU1CRU_GATE_CON(5), 2); /* clk  */
+                              7,                                    /* mux */
+                              pmu1 + RK3576_PMU1CRU_GATE_CON(5), 1, /* pclk */
+                              pmu1 + RK3576_PMU1CRU_GATE_CON(5), 2, /* clk  */
+                              "pclk_pmu0_root_src");
 
   /* I2C1–8 — main CRU domain, CLKSEL_CON(57) consecutive 2-bit slots */
 
-  RK3576_CLK_REGISTER_I2C_ONE(1, cru + RK3576_CRU_CLKSEL_CON(57), 0,
-                              cru + RK3576_CRU_GATE_CON(12), 0,
-                              cru + RK3576_CRU_GATE_CON(12), 12);
+  RK3576_CLK_REGISTER_I2C_ONE(
+      1, cru + RK3576_CRU_CLKSEL_CON(57), 0, cru + RK3576_CRU_GATE_CON(12), 0,
+      cru + RK3576_CRU_GATE_CON(12), 12, "pclk_bus_root");
 
-  RK3576_CLK_REGISTER_I2C_ONE(2, cru + RK3576_CRU_CLKSEL_CON(57), 2,
-                              cru + RK3576_CRU_GATE_CON(12), 1,
-                              cru + RK3576_CRU_GATE_CON(12), 13);
+  RK3576_CLK_REGISTER_I2C_ONE(
+      2, cru + RK3576_CRU_CLKSEL_CON(57), 2, cru + RK3576_CRU_GATE_CON(12), 1,
+      cru + RK3576_CRU_GATE_CON(12), 13, "pclk_bus_root");
 
-  RK3576_CLK_REGISTER_I2C_ONE(3, cru + RK3576_CRU_CLKSEL_CON(57), 4,
-                              cru + RK3576_CRU_GATE_CON(12), 2,
-                              cru + RK3576_CRU_GATE_CON(12), 14);
+  RK3576_CLK_REGISTER_I2C_ONE(
+      3, cru + RK3576_CRU_CLKSEL_CON(57), 4, cru + RK3576_CRU_GATE_CON(12), 2,
+      cru + RK3576_CRU_GATE_CON(12), 14, "pclk_bus_root");
 
-  RK3576_CLK_REGISTER_I2C_ONE(4, cru + RK3576_CRU_CLKSEL_CON(57), 6,
-                              cru + RK3576_CRU_GATE_CON(12), 3,
-                              cru + RK3576_CRU_GATE_CON(12), 15);
+  RK3576_CLK_REGISTER_I2C_ONE(
+      4, cru + RK3576_CRU_CLKSEL_CON(57), 6, cru + RK3576_CRU_GATE_CON(12), 3,
+      cru + RK3576_CRU_GATE_CON(12), 15, "pclk_bus_root");
 
-  RK3576_CLK_REGISTER_I2C_ONE(5, cru + RK3576_CRU_CLKSEL_CON(57), 8,
-                              cru + RK3576_CRU_GATE_CON(12), 4,
-                              cru + RK3576_CRU_GATE_CON(13), 0);
+  RK3576_CLK_REGISTER_I2C_ONE(
+      5, cru + RK3576_CRU_CLKSEL_CON(57), 8, cru + RK3576_CRU_GATE_CON(12), 4,
+      cru + RK3576_CRU_GATE_CON(13), 0, "pclk_bus_root");
 
-  RK3576_CLK_REGISTER_I2C_ONE(6, cru + RK3576_CRU_CLKSEL_CON(57), 10,
-                              cru + RK3576_CRU_GATE_CON(12), 5,
-                              cru + RK3576_CRU_GATE_CON(13), 1);
+  RK3576_CLK_REGISTER_I2C_ONE(
+      6, cru + RK3576_CRU_CLKSEL_CON(57), 10, cru + RK3576_CRU_GATE_CON(12), 5,
+      cru + RK3576_CRU_GATE_CON(13), 1, "pclk_bus_root");
 
-  RK3576_CLK_REGISTER_I2C_ONE(7, cru + RK3576_CRU_CLKSEL_CON(57), 12,
-                              cru + RK3576_CRU_GATE_CON(12), 6,
-                              cru + RK3576_CRU_GATE_CON(13), 2);
+  RK3576_CLK_REGISTER_I2C_ONE(
+      7, cru + RK3576_CRU_CLKSEL_CON(57), 12, cru + RK3576_CRU_GATE_CON(12), 6,
+      cru + RK3576_CRU_GATE_CON(13), 2, "pclk_bus_root");
 
-  RK3576_CLK_REGISTER_I2C_ONE(8, cru + RK3576_CRU_CLKSEL_CON(57), 14,
-                              cru + RK3576_CRU_GATE_CON(12), 7,
-                              cru + RK3576_CRU_GATE_CON(13), 3);
+  RK3576_CLK_REGISTER_I2C_ONE(
+      8, cru + RK3576_CRU_CLKSEL_CON(57), 14, cru + RK3576_CRU_GATE_CON(12), 7,
+      cru + RK3576_CRU_GATE_CON(13), 3, "pclk_bus_root");
 
   /* I2C9 — CLKSEL_CON(58) */
 
-  RK3576_CLK_REGISTER_I2C_ONE(9, cru + RK3576_CRU_CLKSEL_CON(58), 0,
-                              cru + RK3576_CRU_GATE_CON(12), 8,
-                              cru + RK3576_CRU_GATE_CON(13), 4);
+  RK3576_CLK_REGISTER_I2C_ONE(
+      9, cru + RK3576_CRU_CLKSEL_CON(58), 0, cru + RK3576_CRU_GATE_CON(12), 8,
+      cru + RK3576_CRU_GATE_CON(13), 4, "pclk_bus_root");
 }
 #endif /* CONFIG_RK3576_I2C */
 
@@ -523,8 +707,8 @@ static void rk3576_clk_register_i2c(void)
                         gate_reg, sclk_bit,                                  \
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
                                                                              \
-      /* HCLK gate: AHB bus clock, no parent */                              \
-      clk_register_gate("hclk_fspi" #id, NULL,                               \
+      /* HCLK gate: AHB bus clock, parent is hclk_bus_root */                \
+      clk_register_gate("hclk_fspi" #id, "hclk_bus_root",                    \
                         CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,      \
                         gate_reg, hclk_bit,                                  \
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
@@ -587,48 +771,48 @@ static void rk3576_clk_register_fspi(void)
  *   rc_bit     - rc clk GATE bit
  */
 
-#define RK3576_CLK_REGISTER_PWM_ONE(ctrl, sel_reg, sel_shift, gate_reg,       \
-                                    pclk_bit, clk_bit, osc_bit, rc_reg,       \
-                                    rc_bit)                                   \
-  do                                                                          \
-    {                                                                         \
-      struct clk_s *_mux;                                                     \
-                                                                              \
-      _mux = clk_register_mux("clk_pwm" #ctrl "_sel", g_pwm_sel_parents,      \
-                              nitems(g_pwm_sel_parents),                      \
-                              CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,       \
-                              sel_reg, sel_shift, 2, CLK_MUX_HIWORD_MASK);    \
-      if (!_mux)                                                              \
-        {                                                                     \
-          _err("CLK: failed to register clk_pwm" #ctrl "_sel\n");             \
-          break;                                                              \
-        }                                                                     \
-                                                                              \
-      clk_register_gate("pclk_pwm" #ctrl, NULL, CLK_NAME_IS_STATIC, gate_reg, \
-                        pclk_bit,                                             \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
-                                                                              \
-      clk_register_gate("clk_pwm" #ctrl, "clk_pwm" #ctrl "_sel",              \
-                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, gate_reg,   \
-                        clk_bit,                                              \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
-                                                                              \
-      clk_register_gate("clk_pwm" #ctrl "_osc", "xin_osc0",                   \
-                        CLK_NAME_IS_STATIC, gate_reg, osc_bit,                \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
-                                                                              \
-      /* NOTE: clk_pwmX_rc is registered but currently unusable.              \
-       * The upstream clock source has not been proven to produce             \
-       * a valid clock on the PWM output.  Scope measurements showed no       \
-       * waveform even with the gate enabled and PWM_CLK_CTRL set to          \
-       * RC source.  Until the full clock chain is verified, this gate        \
-       * is effectively dead code in the tree.                                \
-       * Do NOT rely on clk_pwmX_rc for production use.                       \
-       */                                                                     \
-      clk_register_gate("clk_pwm" #ctrl "_rc", NULL, CLK_NAME_IS_STATIC,      \
-                        rc_reg, rc_bit,                                       \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
-    }                                                                         \
+#define RK3576_CLK_REGISTER_PWM_ONE(ctrl, sel_reg, sel_shift, gate_reg,     \
+                                    pclk_bit, clk_bit, osc_bit, rc_reg,     \
+                                    rc_bit, pclk_parent)                    \
+  do                                                                        \
+    {                                                                       \
+      struct clk_s *_mux;                                                   \
+                                                                            \
+      _mux = clk_register_mux("clk_pwm" #ctrl "_sel", g_pwm_sel_parents,    \
+                              nitems(g_pwm_sel_parents),                    \
+                              CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,     \
+                              sel_reg, sel_shift, 2, CLK_MUX_HIWORD_MASK);  \
+      if (!_mux)                                                            \
+        {                                                                   \
+          _err("CLK: failed to register clk_pwm" #ctrl "_sel\n");           \
+          break;                                                            \
+        }                                                                   \
+                                                                            \
+      clk_register_gate("pclk_pwm" #ctrl, pclk_parent, CLK_NAME_IS_STATIC,  \
+                        gate_reg, pclk_bit,                                 \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
+                                                                            \
+      clk_register_gate("clk_pwm" #ctrl, "clk_pwm" #ctrl "_sel",            \
+                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, gate_reg, \
+                        clk_bit,                                            \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
+                                                                            \
+      clk_register_gate("clk_pwm" #ctrl "_osc", "xin_osc0",                 \
+                        CLK_NAME_IS_STATIC, gate_reg, osc_bit,              \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
+                                                                            \
+      /* NOTE: clk_pwmX_rc is registered but currently unusable.            \
+       * The upstream clock source has not been proven to produce           \
+       * a valid clock on the PWM output.  Scope measurements showed no     \
+       * waveform even with the gate enabled and PWM_CLK_CTRL set to        \
+       * RC source.  Until the full clock chain is verified, this gate      \
+       * is effectively dead code in the tree.                              \
+       * Do NOT rely on clk_pwmX_rc for production use.                     \
+       */                                                                   \
+      clk_register_gate("clk_pwm" #ctrl "_rc", NULL, CLK_NAME_IS_STATIC,    \
+                        rc_reg, rc_bit,                                     \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
+    }                                                                       \
   while (0)
 
 /****************************************************************************
@@ -657,19 +841,20 @@ static void rk3576_clk_register_pwm(void)
 
   RK3576_CLK_REGISTER_PWM_ONE(0, pmu1 + RK3576_PMU1CRU_CLKSEL_CON(5), 2,
                               pmu1 + RK3576_PMU1CRU_GATE_CON(4), 11, 12, 13,
-                              pmu1 + RK3576_PMU1CRU_GATE_CON(5), 7);
+                              pmu1 + RK3576_PMU1CRU_GATE_CON(5), 7,
+                              "pclk_pmu0_root_src");
 
   /* PWM1 — main CRU domain */
 
-  RK3576_CLK_REGISTER_PWM_ONE(1, cru + RK3576_CRU_CLKSEL_CON(71), 8,
-                              cru + RK3576_CRU_GATE_CON(16), 10, 11, 13,
-                              cru + RK3576_CRU_GATE_CON(16), 15);
+  RK3576_CLK_REGISTER_PWM_ONE(
+      1, cru + RK3576_CRU_CLKSEL_CON(71), 8, cru + RK3576_CRU_GATE_CON(16), 10,
+      11, 13, cru + RK3576_CRU_GATE_CON(16), 15, "pclk_bus_root");
 
   /* PWM2 — main CRU domain */
 
-  RK3576_CLK_REGISTER_PWM_ONE(2, cru + RK3576_CRU_CLKSEL_CON(74), 6,
-                              cru + RK3576_CRU_GATE_CON(20), 4, 5, 7,
-                              cru + RK3576_CRU_GATE_CON(20), 6);
+  RK3576_CLK_REGISTER_PWM_ONE(
+      2, cru + RK3576_CRU_CLKSEL_CON(74), 6, cru + RK3576_CRU_GATE_CON(20), 4,
+      5, 7, cru + RK3576_CRU_GATE_CON(20), 6, "pclk_bus_root");
 }
 #endif /* CONFIG_RK3576_PWM */
 
@@ -811,8 +996,8 @@ static void rk3576_clk_register_matrix_uart(void)
           break;                                                             \
         }                                                                    \
                                                                              \
-      clk_register_gate("pclk_uart" #index, NULL, CLK_NAME_IS_STATIC,        \
-                        pclk_reg, pclk_bit,                                  \
+      clk_register_gate("pclk_uart" #index, "pclk_bus_root",                 \
+                        CLK_NAME_IS_STATIC, pclk_reg, pclk_bit,              \
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
                                                                              \
       clk_register_gate("sclk_uart" #index, "sclk_uart" #index "_div",       \
@@ -1032,7 +1217,7 @@ static void rk3576_clk_register_uart(void)
 
     /* pclk_uart1 gate */
 
-    clk_register_gate("pclk_uart1", NULL, CLK_NAME_IS_STATIC,
+    clk_register_gate("pclk_uart1", "pclk_pmu0_root_src", CLK_NAME_IS_STATIC,
                       pmu1 + RK3576_PMU1CRU_GATE_CON(5), 6,
                       CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
   }
@@ -1288,8 +1473,8 @@ static void rk3576_clk_register_matrix_audio(void)
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
                                                                               \
       /* hclk_saiX : bus gate. */                                             \
-      clk_register_gate("hclk_sai" #index, NULL, CLK_NAME_IS_STATIC,          \
-                        hclk_reg, hclk_bit,                                   \
+      clk_register_gate("hclk_sai" #index, "hclk_audio_root",                 \
+                        CLK_NAME_IS_STATIC, hclk_reg, hclk_bit,               \
                         CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
     }                                                                         \
   while (0)
@@ -1452,9 +1637,7 @@ static void rk3576_clk_register_sai(void)
  *   writes 0 to the gate bit.
  *
  *   Per the TRM the aclk gates (aclk_dmac0/1/2_en) sit at GATE_CON19 bits
- *   1/2/3.  The parent clocks are not modelled (NULL), matching the reset
- *   default: after power-on reset all aclks are ungated, so enabling the
- *   gate preserves that state for the DMA drivers.
+ *   1/2/3.  The parent clock is aclk_bus_root (AXI bus domain).
  ****************************************************************************/
 
 #ifdef CONFIG_RK3576_DMA
@@ -1464,19 +1647,19 @@ static void rk3576_clk_register_dmac(void)
 
   /* aclk_dmac0 — GATE_CON19 bit 1. */
 
-  clk_register_gate("aclk_dmac0", NULL, CLK_NAME_IS_STATIC,
+  clk_register_gate("aclk_dmac0", "aclk_bus_root", CLK_NAME_IS_STATIC,
                     cru + RK3576_CRU_GATE_CON(19), 1,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 
   /* aclk_dmac1 — GATE_CON19 bit 2. */
 
-  clk_register_gate("aclk_dmac1", NULL, CLK_NAME_IS_STATIC,
+  clk_register_gate("aclk_dmac1", "aclk_bus_root", CLK_NAME_IS_STATIC,
                     cru + RK3576_CRU_GATE_CON(19), 2,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 
   /* aclk_dmac2 — GATE_CON19 bit 3. */
 
-  clk_register_gate("aclk_dmac2", NULL, CLK_NAME_IS_STATIC,
+  clk_register_gate("aclk_dmac2", "aclk_bus_root", CLK_NAME_IS_STATIC,
                     cru + RK3576_CRU_GATE_CON(19), 3,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 }
@@ -1498,6 +1681,16 @@ static void rk3576_clk_register_dmac(void)
 void rk3576_clk_tree_initialize(void)
 {
   rk3576_clk_register_pll_factors();
+
+  /* Register the AXI/AHB/APB bus root clocks (aclk_/hclk_/pclk_ roots) so
+   * that peripheral bus-interface gates can attach to their real parents
+   * instead of NULL.
+   */
+
+  rk3576_clk_register_axi();
+  rk3576_clk_register_ahb();
+  rk3576_clk_register_apb();
+
   rk3576_clk_register_matrix_audio();
 
 #ifdef CONFIG_RK3576_I2C
