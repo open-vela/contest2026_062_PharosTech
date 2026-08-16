@@ -2653,6 +2653,69 @@ static void rk3576_clk_register_timer(void)
 #undef RK3576_CLK_REGISTER_TIMER_COMPOSITE_ONE
 
 /****************************************************************************
+ * Name: rk3576_clk_register_saradc
+ *
+ * Description:
+ *   Register the SARADC clock tree (TRM Chapter 2):
+ *
+ *     clk_saradc_sel : 1-bit mux, CLKSEL_CON58[12]
+ *                        1'b0 = clk_gpll_mux, 1'b1 = xin_osc0_func
+ *     clk_saradc_div : 8-bit divider, CLKSEL_CON58[11:4], div = con + 1
+ *                        (reset 0x3b -> /60, ~20 MHz from GPLL)
+ *     clk_saradc     : conversion clock gate, GATE_CON13[7]
+ *     pclk_saradc    : APB bus gate,          GATE_CON13[6]
+ *
+ *   MUX and DIV share CLKSEL_CON58 in non-overlapping bitfields (same
+ *   scheme as FSPI).  CLKSEL_CON58 also holds clk_i2c9_sel[1:0]; hiword-
+ *   mask writes are per-bit so there is no conflict.
+ *
+ *   The SARADC soft-reset lines (presetn/resetn_saradc, SOFTRST_CON13
+ *   bits 6/7) are not modelled here; the reset-controller framework has
+ *   no CRU provider, so the SARADC driver pulses them directly (same
+ *   scheme as rk3576_sai.c).
+ ****************************************************************************/
+
+#ifdef CONFIG_RK3576_SARADC
+static void rk3576_clk_register_saradc(void)
+{
+  /* SARADC: 1-bit source select (TRM CLKSEL_CON58[12]).
+   * 1'b0 = clk_gpll_mux, 1'b1 = xin_osc0_func.
+   */
+  static const char *g_saradc_sel_parents[] = {
+    "clk_gpll", /* 1'b0 */
+    "xin_osc0", /* 1'b1 */
+  };
+
+  const unsigned long cru = RK3576_CRU_ADDR;
+  const unsigned long sel_reg = cru + RK3576_CRU_CLKSEL_CON(58);
+  struct clk_s *mux;
+
+  mux = clk_register_mux("clk_saradc_sel", g_saradc_sel_parents,
+                         nitems(g_saradc_sel_parents),
+                         CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, 12,
+                         1, CLK_MUX_HIWORD_MASK);
+  if (!mux)
+    {
+      _err("CLK: failed to register clk_saradc_sel\n");
+      return;
+    }
+
+  clk_register_divider("clk_saradc_div", "clk_saradc_sel",
+                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, 4, 8,
+                       CLK_DIVIDER_HIWORD_MASK);
+
+  clk_register_gate("clk_saradc", "clk_saradc_div",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(13), 7,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  clk_register_gate("pclk_saradc", NULL, CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(13), 6,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+}
+#endif /* CONFIG_RK3576_SARADC */
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -2868,5 +2931,9 @@ void rk3576_clk_tree_initialize(void)
 
 #ifdef CONFIG_RK3576_TSADC
   rk3576_clk_register_tsadc();
+#endif
+
+#ifdef CONFIG_RK3576_SARADC
+  rk3576_clk_register_saradc();
 #endif
 }
