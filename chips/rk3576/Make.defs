@@ -94,3 +94,7 @@ endif
 ifeq ($(CONFIG_RK3576_RPTUN),y)
 CHIP_CSRCS += rk3576_rptun.c
 endif
+
+ifeq ($(CONFIG_RK3576_SPI),y)
+CHIP_CSRCS += rk3576_spi.c
+endif

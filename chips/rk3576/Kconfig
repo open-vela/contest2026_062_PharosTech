@@ -250,6 +250,21 @@ config RK3576_SARADC
 		core.  The conversion clock rate is fixed at build time by
 		CONFIG_RK3576_SARADC_CLK_RATE.
 
+config RK3576_SPI
+	bool "SPI (Serial Peripheral Interface) master"
+	default n
+	select SPI
+	---help---
+		Enable the RK3576 SPI master driver (Synopsys DesignWare SSI,
+		TRM Chapter 30).  Implements the NuttX SPI lower-half interface
+		(struct spi_dev_s / struct spi_ops_s).  Master mode, Motorola
+		SPI frame format, 8-bit data frames, polled FIFO transfers.
+
+		All five controllers (SPI0..SPI4) are supported; the driver is
+		data-driven at runtime.  The controller PCLK/SCLK are brought up
+		via the clock framework; SS_N/SCK/MOSI/MISO pin muxing is the
+		board's responsibility.
+
 endmenu # Rockchip RK3576 Peripheral Selection
 
 if RK3576_SARADC

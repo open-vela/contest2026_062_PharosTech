@@ -99,6 +99,14 @@
 #define RK3576_SAI8_ADDR 0x27ee0000
 #define RK3576_SAI9_ADDR 0x27ef0000
 
+/* Rockchip SPI (Serial Peripheral Interface, DesignWare SSI, TRM §30.4.1) */
+
+#define RK3576_SPI0_ADDR 0x2ACF0000
+#define RK3576_SPI1_ADDR 0x2AD00000
+#define RK3576_SPI2_ADDR 0x2AD10000
+#define RK3576_SPI3_ADDR 0x2AD20000
+#define RK3576_SPI4_ADDR 0x2AD30000
+
 /* Rockchip FSPI (Flexible Serial Peripheral Interface) */
 
 #define RK3576_FSPI0_ADDR 0x2A340000

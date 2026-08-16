@@ -461,6 +461,13 @@ static int rk3576_fracpll_set_rate(FAR struct clk_s *clk, uint32_t rate,
   return OK;
 }
 
+static const char *g_spi_sel_parents[] = {
+  "clk_gpll_div6",  /* 0b00 */
+  "clk_gpll_div8",  /* 0b01 */
+  "clk_cpll_div10", /* 0b10 */
+  "xin_osc0",       /* 0b11 */
+};
+
 /****************************************************************************
  * Name: rk3576_clk_register_pll_factors
  *
@@ -1320,6 +1327,98 @@ static void rk3576_clk_register_tsadc(void)
                           CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
   _assert_registered(clk);
 }
+
+/**
+ * Macro: RK3576_CLK_REGISTER_SPI_ONE
+ *
+ * Register one SPI controller clock tree (mux + pclk gate + clk gate).
+ * Uses #bus stringification for compile-time constant clock names.
+ *
+ * Parameters:
+ *   bus        - SPI controller index (0..4), used in name suffix
+ *   sel_reg    - CLKSEL register address
+ *   sel_shift  - MUX select field bit offset
+ *   pclk_reg   - pclk GATE register address
+ *   pclk_bit   - pclk GATE bit
+ *   clk_reg    - sclk GATE register address
+ *   clk_bit    - sclk GATE bit
+ */
+
+#define RK3576_CLK_REGISTER_SPI_ONE(bus, sel_reg, sel_shift, pclk_reg,      \
+                                    pclk_bit, clk_reg, clk_bit)             \
+  do                                                                        \
+    {                                                                       \
+      struct clk_s *_mux;                                                   \
+                                                                            \
+      _mux = clk_register_mux("clk_spi" #bus "_sel", g_spi_sel_parents,     \
+                              nitems(g_spi_sel_parents),                    \
+                              CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |    \
+                                  CLK_PARENT_NAME_IS_STATIC,                \
+                              sel_reg, sel_shift, 2, CLK_MUX_HIWORD_MASK);  \
+      if (!_mux)                                                            \
+        {                                                                   \
+          _err("CLK: failed to register clk_spi" #bus "_sel\n");            \
+          break;                                                            \
+        }                                                                   \
+                                                                            \
+      clk_register_gate("pclk_spi" #bus, NULL, CLK_NAME_IS_STATIC, pclk_reg,\
+                        pclk_bit,                                           \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
+                                                                            \
+      clk_register_gate("clk_spi" #bus, "clk_spi" #bus "_sel",              \
+                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |          \
+                            CLK_PARENT_NAME_IS_STATIC,                      \
+                        clk_reg, clk_bit,                                   \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);    \
+    }                                                                       \
+  while (0)
+
+/****************************************************************************
+ * Name: rk3576_clk_register_spi
+ *
+ * Description:
+ *   Register SPI0–SPI4 clock muxes and gates.
+ *
+ *   Each SPI has:
+ *   - clk_spiX_sel   : 2-bit mux (GPLL/6, GPLL/8, CPLL/10, XIN_OSC0)
+ *   - pclk_spiX      : APB bus interface gate
+ *   - clk_spiX       : serial functional clock gate (mux output)
+ *
+ *   SPI0:   CLKSEL_CON70 mux@[14:13]; GATE_CON15 pclk@12, GATE_CON16 clk@5
+ *   SPI1:   CLKSEL_CON71 mux@[1:0];   GATE_CON15 pclk@13, GATE_CON16 clk@6
+ *   SPI2:   CLKSEL_CON71 mux@[3:2];   GATE_CON15 pclk@14, GATE_CON16 clk@7
+ *   SPI3:   CLKSEL_CON71 mux@[5:4];   GATE_CON16 pclk@4,  GATE_CON16 clk@8
+ *   SPI4:   CLKSEL_CON71 mux@[7:6];   GATE_CON16 pclk@3,  GATE_CON16 clk@9
+ ****************************************************************************/
+
+#ifdef CONFIG_RK3576_SPI
+static void rk3576_clk_register_spi(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+
+  RK3576_CLK_REGISTER_SPI_ONE(0, cru + RK3576_CRU_CLKSEL_CON(70), 14,
+                              cru + RK3576_CRU_GATE_CON(15), 12,
+                              cru + RK3576_CRU_GATE_CON(16), 5);
+
+  RK3576_CLK_REGISTER_SPI_ONE(1, cru + RK3576_CRU_CLKSEL_CON(71), 0,
+                              cru + RK3576_CRU_GATE_CON(15), 13,
+                              cru + RK3576_CRU_GATE_CON(16), 6);
+
+  RK3576_CLK_REGISTER_SPI_ONE(2, cru + RK3576_CRU_CLKSEL_CON(71), 2,
+                              cru + RK3576_CRU_GATE_CON(15), 14,
+                              cru + RK3576_CRU_GATE_CON(16), 7);
+
+  RK3576_CLK_REGISTER_SPI_ONE(3, cru + RK3576_CRU_CLKSEL_CON(71), 4,
+                              cru + RK3576_CRU_GATE_CON(16), 4,
+                              cru + RK3576_CRU_GATE_CON(16), 8);
+
+  RK3576_CLK_REGISTER_SPI_ONE(4, cru + RK3576_CRU_CLKSEL_CON(71), 6,
+                              cru + RK3576_CRU_GATE_CON(16), 3,
+                              cru + RK3576_CRU_GATE_CON(16), 9);
+}
+#endif /* CONFIG_RK3576_SPI */
+
+#undef RK3576_CLK_REGISTER_SPI_ONE
 
 /**
  * Macro: RK3576_CLK_REGISTER_PWM_ONE
@@ -2941,4 +3040,7 @@ void rk3576_clk_tree_initialize(void)
   rk3576_clk_register_tsadc();
 
   rk3576_clk_register_saradc();
+
+  rk3576_clk_register_spi();
+
 }
