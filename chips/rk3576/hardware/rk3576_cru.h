@@ -174,4 +174,20 @@
 #define RK3576_PMU1CRU_DEEPSLOW_DETECT_CON (0x0B40)
 #define RK3576_PMU1CRU_DEEPSLOW_DETECT_ST  (0x0B44)
 
+/* -----------------------------------------------------------------------
+ * LITCORE_CRU registers (little-core power domain, 0x27240000).
+ *
+ * The little-core (LIT) cluster clocks (aclk_m_litcore, clk_litcore,
+ * pclk_litcore_root, pclk_dbg_litcore, etc.) are generated inside the
+ * LITCORE_CRU.  Its register layout mirrors the main CRU with a MODE_CON,
+ * CLKSEL_CON[] and GATE_CON[] tables at the same relative offsets.
+ *
+ * Reference: RK3576 TRM Chapter 2.11 "LITCORE_CRU".
+ */
+
+#define RK3576_LITCORECRU_MODE_CON       (0x0280)
+#define RK3576_LITCORECRU_CLKSEL_CON(n)  (0x0300 + ((n)*4))
+#define RK3576_LITCORECRU_GATE_CON(n)    (0x0800 + ((n)*4))
+#define RK3576_LITCORECRU_SOFTRST_CON(n) (0x0A00 + ((n)*4))
+
 #endif /* __ARCH_ARM64_SRC_RK3576_HARDWARE_RK3576_CRU_H */

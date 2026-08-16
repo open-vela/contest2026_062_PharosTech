@@ -530,6 +530,181 @@ static void rk3576_clk_register_apb(void)
   }
 }
 
+/* LITCORE (little-core power domain) clock sources.
+ *
+ * The little-core cluster (aclk_m_litcore / clk_litcore / pclk_litcore /
+ * pclk_dbg_litcore) is clocked from the LITCORE_CRU (0x27240000).
+ *
+ * Parent selection for clk_litcore_src_sel (2-bit, CLKSEL_CON00[13:12]):
+ *   2'b00: clk_lpll_mux
+ *   2'b01: clk_gpll_mux
+ *   2'b10: clk_litcore_pvtpll_src
+ *
+ * clk_litcore_sel (2-bit, CLKSEL_CON01[7:6]):
+ *   2'b00: clk_litcore_src_out
+ *   2'b01: clk_litcore_pvtpll_src
+ *   2'b10: clk_litcore_clean
+ */
+
+static const char *g_litcore_src_sel_parents[] = {
+  "clk_lpll",               /* 2'b00: clk_lpll_mux */
+  "clk_gpll",               /* 2'b01: clk_gpll_mux */
+  "clk_litcore_pvtpll_src", /* 2'b10: clk_litcore_pvtpll_src */
+};
+
+static const char *g_litcore_sel_parents[] = {
+  "clk_litcore_src_out",    /* 2'b00 */
+  "clk_litcore_pvtpll_src", /* 2'b01 */
+  "clk_litcore_clean",      /* 2'b10 */
+};
+
+/****************************************************************************
+ * Name: rk3576_clk_register_litcore
+ *
+ * Description:
+ *   Register the LITCORE_CRU (little-core power domain) clock tree.  This
+ *   covers the little-core cluster clock sources — clk_litcore, the AXI
+ *   matrix clock aclk_m_litcore, and the APB clock pclk_litcore_root (plus
+ *   the debug APB clock pclk_dbg_litcore).
+ *
+ *   Clock topology (LITCORE_CRU, base 0x27240000):
+ *
+ *     clk_litcore_src_sel  : 2-bit mux (CLKSEL_CON00[13:12])
+ *                            lpll / gpll / litcore_pvtpll_src
+ *     clk_litcore_src_div  : 5-bit divider (CLKSEL_CON00[11:7], div+1)
+ *     clk_litcore_src_en   : gate (GATE_CON00[2], SET_TO_DISABLE)
+ *     clk_litcore_sel      : 2-bit mux (CLKSEL_CON01[7:6])
+ *                            src_out / pvtpll_src / clean
+ *     clk_litcore          : gate (GATE_CON00[5], SET_TO_DISABLE)  <- CPU clk
+ *
+ *     aclk_m_litcore_div   : 5-bit divider (CLKSEL_CON01[12:8], div+1)
+ *     aclk_m_litcore       : gate (GATE_CON00[14], SET_TO_DISABLE)
+ *
+ *     pclk_litcore_root_sel : 1-bit mux (CLKSEL_CON01[5])
+ *                              gpll / lpll
+ *     pclk_litcore_root_div : 5-bit divider (CLKSEL_CON01[4:0], div+1)
+ *     pclk_litcore_root     : gate (GATE_CON00[4], SET_TO_DISABLE)
+ *
+ *     pclk_dbg_litcore_div  : 5-bit divider (CLKSEL_CON02[4:0], div+1)
+ *     pclk_dbg_litcore      : gate (GATE_CON00[15], SET_TO_DISABLE)
+ *
+ *   clk_litcore_pvtpll_src_sel : 1-bit mux (CLKSEL_CON01[13])
+ *                                 deepslow / litcore_pvtpll
+ ****************************************************************************/
+
+static void rk3576_clk_register_litcore(void)
+{
+  const unsigned long litcore = RK3576_LITCORE_CRU_ADDR;
+
+  /* LPLL lives in the CCI_CRU domain and is not yet modelled; register a
+   * placeholder sourced from xin_osc0 so clk_litcore_src_sel has a valid
+   * parent.  The bootloader owns the actual LPLL configuration.
+   */
+
+  clk_register_fixed_rate("clk_lpll", "xin_osc0", CLK_NAME_IS_STATIC,
+                          CONFIG_RK3576_OSC_FREQ);
+
+  /* clk_litcore_pvtpll_src : deepslow / litcore_pvtpll mux.  The PVTPLL
+   * output is not modelled, so source it from deepslow (24 MHz osc).
+   */
+
+  clk_register_fixed_rate("clk_litcore_pvtpll", "xin_osc0", CLK_NAME_IS_STATIC,
+                          CONFIG_RK3576_OSC_FREQ);
+
+  /* clk_litcore_src_sel : 2-bit mux (CLKSEL_CON00[13:12]). */
+
+  clk_register_mux("clk_litcore_src_sel", g_litcore_src_sel_parents,
+                   nitems(g_litcore_src_sel_parents),
+                   CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                   litcore + RK3576_LITCORECRU_CLKSEL_CON(0), 12, 2,
+                   CLK_MUX_HIWORD_MASK);
+
+  /* clk_litcore_src_div : 5-bit divider (CLKSEL_CON00[11:7], div+1). */
+
+  clk_register_divider("clk_litcore_src_div", "clk_litcore_src_sel",
+                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       litcore + RK3576_LITCORECRU_CLKSEL_CON(0), 7, 5,
+                       CLK_DIVIDER_HIWORD_MASK);
+
+  /* clk_litcore_src_out : source gate (GATE_CON00[2]). */
+
+  clk_register_gate("clk_litcore_src_out", "clk_litcore_src_div",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    litcore + RK3576_LITCORECRU_GATE_CON(0), 2,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* clk_litcore_sel : 2-bit mux (CLKSEL_CON01[7:6]). */
+
+  clk_register_mux(
+      "clk_litcore_sel", g_litcore_sel_parents, nitems(g_litcore_sel_parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+      litcore + RK3576_LITCORECRU_CLKSEL_CON(1), 6, 2, CLK_MUX_HIWORD_MASK);
+
+  /* clk_litcore : CPU clock gate (GATE_CON00[5]). */
+
+  clk_register_gate("clk_litcore", "clk_litcore_sel",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    litcore + RK3576_LITCORECRU_GATE_CON(0), 5,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* aclk_m_litcore_div : 5-bit divider (CLKSEL_CON01[12:8], div+1). */
+
+  clk_register_divider("aclk_m_litcore_div", "clk_litcore_src_sel",
+                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       litcore + RK3576_LITCORECRU_CLKSEL_CON(1), 8, 5,
+                       CLK_DIVIDER_HIWORD_MASK);
+
+  /* aclk_m_litcore : AXI matrix gate (GATE_CON00[14]). */
+
+  clk_register_gate("aclk_m_litcore", "aclk_m_litcore_div",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    litcore + RK3576_LITCORECRU_GATE_CON(0), 14,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* pclk_litcore_root_sel : 1-bit mux (CLKSEL_CON01[5]). */
+
+  {
+    static const char *litcore_root_sel_parents[] = {
+      "clk_gpll", /* 1'b0 */
+      "clk_lpll", /* 1'b1 */
+    };
+
+    clk_register_mux("pclk_litcore_root_sel", litcore_root_sel_parents,
+                     nitems(litcore_root_sel_parents),
+                     CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                     litcore + RK3576_LITCORECRU_CLKSEL_CON(1), 5, 1,
+                     CLK_MUX_HIWORD_MASK);
+  }
+
+  /* pclk_litcore_root_div : 5-bit divider (CLKSEL_CON01[4:0], div+1). */
+
+  clk_register_divider("pclk_litcore_root_div", "pclk_litcore_root_sel",
+                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       litcore + RK3576_LITCORECRU_CLKSEL_CON(1), 0, 5,
+                       CLK_DIVIDER_HIWORD_MASK);
+
+  /* pclk_litcore_root : APB root gate (GATE_CON00[4]). */
+
+  clk_register_gate("pclk_litcore_root", "pclk_litcore_root_div",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    litcore + RK3576_LITCORECRU_GATE_CON(0), 4,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* pclk_dbg_litcore_div : 5-bit divider (CLKSEL_CON02[4:0], div+1). */
+
+  clk_register_divider("pclk_dbg_litcore_div", "pclk_litcore_root",
+                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       litcore + RK3576_LITCORECRU_CLKSEL_CON(2), 0, 5,
+                       CLK_DIVIDER_HIWORD_MASK);
+
+  /* pclk_dbg_litcore : debug APB gate (GATE_CON00[15]). */
+
+  clk_register_gate("pclk_dbg_litcore", "pclk_dbg_litcore_div",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    litcore + RK3576_LITCORECRU_GATE_CON(0), 15,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+}
+
 /**
  * Macro: RK3576_CLK_REGISTER_I2C_ONE
  *
@@ -1690,6 +1865,7 @@ void rk3576_clk_tree_initialize(void)
   rk3576_clk_register_axi();
   rk3576_clk_register_ahb();
   rk3576_clk_register_apb();
+  rk3576_clk_register_litcore();
 
   rk3576_clk_register_matrix_audio();
 
