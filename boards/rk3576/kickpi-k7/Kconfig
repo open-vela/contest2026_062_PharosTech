@@ -30,4 +30,15 @@ config KICKPI_K7_STORAGE_AUTOMOUNT
 		card insertion and removal.  /tmp remains a safe tmpfs; persistent
 		temporary storage is published as /tmp/persist when /data is mounted.
 
+config KICKPI_K7_REGULATOR
+	bool "On-board RK806 PMIC bring-up"
+	default n
+	depends on REGULATOR_RK806 && RK3576_I2C
+	---help---
+		Initialize the soldered-on RK806 PMIC wiring for this board at boot.
+		Muxes the I2C1 M0 SCL/SDA pins and registers the RK806 regulators
+		onto the NuttX regulator framework.  Disable this if you do not need
+		the fine-grained RK806 regulator configuration and want to exclude
+		the board bring-up code from the build.
+
 endif # ARCH_BOARD_KICKPI_K7

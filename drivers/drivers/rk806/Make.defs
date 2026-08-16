@@ -1,0 +1,20 @@
+############################################################################
+# boards/rk3576/drivers/drivers/rk806/Make.defs
+#
+# Makefile (legacy) mode for the RK806 PMIC regulator driver.
+#
+# Compilation happens in nuttx/drivers/ (nuttx/drivers/platform is a symlink
+# to boards/rk3576/drivers), so paths are relative to the `platform/` link:
+# this file is reached via `include platform/drivers/rk806/Make.defs` from
+# the driver layer.  Declare the source with CSRCS += and make the .c file
+# discoverable via DEPPATH/VPATH.
+#
+# Guard on the driver enable option being == y.
+############################################################################
+
+ifeq ($(CONFIG_REGULATOR_RK806),y)
+CSRCS += rk806.c
+
+DEPPATH += --dep-path platform$(DELIM)drivers$(DELIM)rk806
+VPATH += :platform$(DELIM)drivers$(DELIM)rk806
+endif

@@ -43,5 +43,9 @@ int kickpi_k7_storage_initialize(FAR struct sdio_dev_s *sdmmc,
                                  FAR struct sdio_dev_s *emmc);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_REGULATOR
+int kickpi_k7_regulator_initialize(void);
+#endif
+
 #endif /* __ASSEMBLY__ */
 #endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */

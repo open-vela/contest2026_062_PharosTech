@@ -9,6 +9,7 @@ config NYABULA_CUSTOM_DRIVERS
 
 if NYABULA_CUSTOM_DRIVERS
 
-# TODO
+# RK806 PMIC regulator driver (kickpi-k7 / RK3576)
+source "$BINDIR/drivers/platform/drivers/rk806/Kconfig"
 
 endif

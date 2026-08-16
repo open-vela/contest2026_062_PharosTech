@@ -165,6 +165,18 @@ void board_late_initialize(void)
   rk3576_gpio_register(GPIO_PORT0 | GPIO_PIN_B4 | GPIO_OUTPUT);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_REGULATOR
+  /* Init regulator */
+
+  {
+    int ret = kickpi_k7_regulator_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "Failed to init kickpi-k7 regulators\n");
+      }
+  }
+#endif
+
 #ifdef CONFIG_RK3576_SDMMC
   /* Initialize the SD card slot (SDMMC0).  The SD card is an
    * optional peripheral: on failure only warn, do not block the boot (booting
