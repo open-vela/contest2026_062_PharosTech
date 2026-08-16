@@ -211,6 +211,20 @@ config RK3576_TSADC
 		core, GPU, NPU and DDR probes.  Read a node with e.g.
 		'sensortest ambient_temp0'.
 
+config RK3576_SARADC
+	bool "SARADC (8-channel 12-bit SAR A/D)"
+	default n
+	select ADC
+	---help---
+		Enable the RK3576 SAR-ADC lower-half driver (saradc@2ae00000,
+		TRM Chapter 18): an 8-channel single-ended 12-bit SAR A/D
+		converter, input range 0V..1.8V, up to 1 MSps @ 20 MHz.
+		Implements the NuttX adc_ops_s lower-half and registers a
+		/dev/adcN device.  Conversion is triggered on demand via
+		ANIOC_TRIGGER; the CRU clocks are obtained through the NuttX
+		CLK framework (clk_saradc / pclk_saradc registered by
+		rk3576_clk_tree.c).
+
 endmenu # Rockchip RK3576 Peripheral Selection
 
 config RK3576_OSC_FREQ
