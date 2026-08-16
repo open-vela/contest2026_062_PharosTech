@@ -60,6 +60,11 @@
 static int kickpi_k7_emmc_pinmux(void);
 #endif
 
+#ifdef CONFIG_RK3576_SARADC
+#include "rk3576_saradc.h"
+#include <nuttx/analog/adc.h>
+#endif
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -426,5 +431,27 @@ void board_late_initialize(void)
       }
   }
 #endif
+
+#ifdef CONFIG_RK3576_SARADC
+  {
+    FAR struct adc_dev_s *saradc = rk3576_saradc_initialize();
+    if (saradc == NULL)
+      {
+        syslog(LOG_ERR, "ERROR: rk3576_saradc_initialize failed\n");
+      }
+    else
+      {
+        int ret = adc_register("/dev/adc0", saradc);
+        if (ret < 0)
+          {
+            syslog(LOG_ERR, "ERROR: adc_register failed: %d\n", ret);
+          }
+        else
+          {
+            syslog(LOG_INFO, "SARADC registered as /dev/adc0\n");
+          }
+      }
+  }
+#endif /* CONFIG_RK3576_SARADC */
 }
 #endif /* CONFIG_BOARD_LATE_INITIALIZE */
