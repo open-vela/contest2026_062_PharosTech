@@ -71,18 +71,20 @@
  * MCLK=GPIO4_A2, SCLK=GPIO4_A3, LRCK=GPIO4_A5, SDO0=GPIO4_A7, SDI0=GPIO4_B3.
  */
 
-#define KICKPI_K7_SAI1_MCLK (GPIO_PORT4 | GPIO_PIN_A2 | GPIO_ALT | GPIO_AF1)
-#define KICKPI_K7_SAI1_SCLK (GPIO_PORT4 | GPIO_PIN_A3 | GPIO_ALT | GPIO_AF1)
-#define KICKPI_K7_SAI1_LRCK (GPIO_PORT4 | GPIO_PIN_A5 | GPIO_ALT | GPIO_AF1)
-#define KICKPI_K7_SAI1_SDO0 (GPIO_PORT4 | GPIO_PIN_A7 | GPIO_ALT | GPIO_AF1)
-#define KICKPI_K7_SAI1_SDI0 (GPIO_PORT4 | GPIO_PIN_B3 | GPIO_ALT | GPIO_AF1)
+#define KICKPI_K7_SAI1_MCLK (GPIO_PORT4 | GPIO_PIN_A2)
+#define KICKPI_K7_SAI1_SCLK (GPIO_PORT4 | GPIO_PIN_A3)
+#define KICKPI_K7_SAI1_LRCK (GPIO_PORT4 | GPIO_PIN_A5)
+#define KICKPI_K7_SAI1_SDO0 (GPIO_PORT4 | GPIO_PIN_A7)
+#define KICKPI_K7_SAI1_SDI0 (GPIO_PORT4 | GPIO_PIN_B3)
+#define KICKPI_K7_SAI1_AF   1
 
 /* ES8388 control bus: I2C3 default group (DTS i2c3m0-xfer, GPIO4 bank, alt
  * func 11): SCL=GPIO4_B4, SDA=GPIO4_B5.
  */
 
-#define KICKPI_K7_I2C3_SCL (GPIO_PORT4 | GPIO_PIN_B4 | GPIO_ALT | GPIO_AF11)
-#define KICKPI_K7_I2C3_SDA (GPIO_PORT4 | GPIO_PIN_B5 | GPIO_ALT | GPIO_AF11)
+#define KICKPI_K7_I2C3_SCL (GPIO_PORT4 | GPIO_PIN_B4)
+#define KICKPI_K7_I2C3_SDA (GPIO_PORT4 | GPIO_PIN_B5)
+#define KICKPI_K7_I2C3_AF  11
 
 /****************************************************************************
  * Private Data
@@ -94,6 +96,10 @@ static const struct es8388_lower_s g_es8388_lower = {
 };
 
 static bool g_audio_initialized;
+
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
 
 /****************************************************************************
  * Public Functions
@@ -124,13 +130,30 @@ int kickpi_k7_audio_initialize(void)
       return OK;
     }
 
+#define _SET_GPIO_AF(pinset, af)                                       \
+  do                                                                   \
+    {                                                                  \
+      FAR struct gpio_dev_s *handle;                                   \
+      ret = rk3576_gpio_get((pinset), &handle);                        \
+                                                                       \
+      if (ret < 0)                                                     \
+        {                                                              \
+          syslog(LOG_ERR, "ERROR: failed to get gpio dev, pinset: %u", \
+                 (pinset));                                            \
+          return ret;                                                  \
+        }                                                              \
+                                                                       \
+      rk3576_gpio_set_af(handle, (af));                                \
+    }                                                                  \
+  while (0)
+
   /* Mux the SAI1 signal group. */
 
-  rk3576_config_gpio(KICKPI_K7_SAI1_MCLK);
-  rk3576_config_gpio(KICKPI_K7_SAI1_SCLK);
-  rk3576_config_gpio(KICKPI_K7_SAI1_LRCK);
-  rk3576_config_gpio(KICKPI_K7_SAI1_SDO0);
-  rk3576_config_gpio(KICKPI_K7_SAI1_SDI0);
+  _SET_GPIO_AF(KICKPI_K7_SAI1_MCLK, KICKPI_K7_SAI1_AF);
+  _SET_GPIO_AF(KICKPI_K7_SAI1_SCLK, KICKPI_K7_SAI1_AF);
+  _SET_GPIO_AF(KICKPI_K7_SAI1_LRCK, KICKPI_K7_SAI1_AF);
+  _SET_GPIO_AF(KICKPI_K7_SAI1_SDO0, KICKPI_K7_SAI1_AF);
+  _SET_GPIO_AF(KICKPI_K7_SAI1_SDI0, KICKPI_K7_SAI1_AF);
 
   /* This K7-specific hiword-masked route is board policy, not a property of
 
@@ -145,8 +168,8 @@ int kickpi_k7_audio_initialize(void)
 
   /* Mux the I2C3 control bus (SCL/SDA). */
 
-  rk3576_config_gpio(KICKPI_K7_I2C3_SCL);
-  rk3576_config_gpio(KICKPI_K7_I2C3_SDA);
+  _SET_GPIO_AF(KICKPI_K7_I2C3_SCL, KICKPI_K7_I2C3_AF);
+  _SET_GPIO_AF(KICKPI_K7_I2C3_SDA, KICKPI_K7_I2C3_AF);
 
   i2c = rk3576_i2c_initialize(KICKPI_K7_ES8388_I2C_BUS);
   if (i2c == NULL)

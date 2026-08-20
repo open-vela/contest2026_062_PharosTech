@@ -34,6 +34,10 @@
 #include <stdint.h>
 #include <syslog.h>
 
+#ifdef CONFIG_DEV_GPIO
+#include <nuttx/ioexpander/gpio.h>
+#endif
+
 #ifdef CONFIG_RK3576_SDMMC
 #include "rk3576_sdmmc.h"
 #include <nuttx/mmcsd.h>
@@ -158,11 +162,33 @@ void board_late_initialize(void)
   /* Perform board initialization */
 
 #ifdef CONFIG_DEV_GPIO
-  /* setup gpio driver */
-  rk3576_gpio_init();
+  /* Claim the LED GPIO pin and register it as /dev/gpio0.  The handle is
+   * owned by this board code; gpio_pin_register() attaches the upper-half
+   * file operations so user space can drive it.
+   */
 
-  /* register LED GPIO pin */
-  rk3576_gpio_register(GPIO_PORT0 | GPIO_PIN_B4 | GPIO_OUTPUT);
+  do
+    {
+      FAR struct gpio_dev_s *led;
+      int ret;
+
+      ret = rk3576_gpio_get(GPIO_PORT0 | GPIO_PIN_B4, &led);
+      if (ret < 0)
+        {
+          syslog(LOG_ERR, "ERROR: rk3576_gpio_get(LED) failed: %d\n", ret);
+          break;
+        }
+      /* Configure the pin as an output before exposing it to user space. */
+
+      rk3576_gpio_set_mode(led, RK3576_GPIO_OUTPUT);
+
+      ret = gpio_pin_register(led, 0);
+      if (ret < 0)
+        {
+          syslog(LOG_ERR, "ERROR: gpio_pin_register(LED) failed: %d\n", ret);
+        }
+    }
+  while (0);
 #endif
 
 #ifdef CONFIG_RK3576_SDMMC
