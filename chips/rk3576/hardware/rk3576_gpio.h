@@ -238,20 +238,6 @@ extern const struct rk3576_iomux_group g_iomux_groups[RK3576_GPIO_NPORTS][4];
 #define RK3576_DRV_BITS_PER_PIN 4
 #define RK3576_DRV_PINS_PER_REG 4
 
-/* Common drive strength levels (logical level, NOT hardware register value).
- * Use rk3576_drive_level_to_hw() to convert to hardware format.
- */
-#define RK3576_DRIVE_LEVEL_0 0 /* 100 ohms */
-#define RK3576_DRIVE_LEVEL_1                                                \
-  1                            /*  66 ohms (6-level only; error on 4-level) \
-                                */
-#define RK3576_DRIVE_LEVEL_2 2 /*  50 ohms */
-#define RK3576_DRIVE_LEVEL_3                                                \
-  3                            /*  40 ohms (6-level only; error on 4-level) \
-                                */
-#define RK3576_DRIVE_LEVEL_4 4 /*  33 ohms */
-#define RK3576_DRIVE_LEVEL_5 5 /*  25 ohms */
-
 /* Determine whether a GPIO uses 4-level or 6-level drive strength */
 #define RK3576_DRIVE_IS_4LEVEL(port, pin)                           \
   (((port) == 0 && (pin) < 12) || /* GPIO0_A[0:7] + GPIO0_B[0:3] */ \
