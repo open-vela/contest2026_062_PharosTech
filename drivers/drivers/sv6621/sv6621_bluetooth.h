@@ -44,6 +44,8 @@ void sv6621_bluetooth_detach(FAR struct sv6621_dev_s *dev);
 int sv6621_bluetooth_start(FAR struct sv6621_dev_s *dev,
                            FAR const struct sv6621_firmware_s *nvram,
                            int device_id);
+bool sv6621_bluetooth_is_started(FAR struct sv6621_dev_s *dev);
+void sv6621_bluetooth_offline(FAR struct sv6621_dev_s *dev, int error);
 
 #endif /* CONFIG_SV6621_BLUETOOTH */
 #endif /* __DRIVERS_WIRELESS_SEEKWAVE_SV6621_SV6621_BLUETOOTH_H */

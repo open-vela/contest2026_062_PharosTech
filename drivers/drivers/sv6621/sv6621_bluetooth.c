@@ -707,4 +707,52 @@ int sv6621_bluetooth_start(FAR struct sv6621_dev_s *dev,
   return 0;
 }
 
+bool sv6621_bluetooth_is_started(FAR struct sv6621_dev_s *dev)
+{
+  FAR struct sv6621_bluetooth_s *bluetooth = &g_sv6621_bluetooth;
+  bool started = false;
+
+  if (dev != NULL && bluetooth->dev == dev &&
+      nxmutex_lock(&bluetooth->state_lock) >= 0)
+    {
+      started = bluetooth->initialized;
+      nxmutex_unlock(&bluetooth->state_lock);
+    }
+
+  return started;
+}
+
+void sv6621_bluetooth_offline(FAR struct sv6621_dev_s *dev, int error)
+{
+  FAR struct sv6621_bluetooth_s *bluetooth = &g_sv6621_bluetooth;
+  static uint8_t hardware_error[] = { 0x10, 0x01, 0x00 };
+  bool notify = false;
+
+  if (dev == NULL || bluetooth->dev != dev)
+    {
+      return;
+    }
+
+  if (nxmutex_lock(&bluetooth->state_lock) >= 0)
+    {
+      notify = bluetooth->initialized && bluetooth->opened &&
+               bluetooth->driver.receive != NULL;
+      bluetooth->initialized = false;
+      bluetooth->command_result = error < 0 ? error : -EIO;
+      if (bluetooth->command_pending)
+        {
+          bluetooth->command_pending = false;
+          nxsem_post(&bluetooth->command_completion);
+        }
+
+      nxmutex_unlock(&bluetooth->state_lock);
+    }
+
+  if (notify)
+    {
+      (void)bluetooth->driver.receive(&bluetooth->driver, BT_EVT,
+                                      hardware_error, sizeof(hardware_error));
+    }
+}
+
 #endif /* CONFIG_SV6621_BLUETOOTH */
