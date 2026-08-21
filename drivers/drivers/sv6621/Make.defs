@@ -20,6 +20,10 @@ CSRCS += sv6621_station.c sv6621_stats.c sv6621_transport.c
 CSRCS += sv6621_tx.c sv6621_wifi.c sv6621_wpa_crypto.c
 CSRCS += sv6621_wpa_eapol.c sv6621_wpa_handshake.c
 
+ifeq ($(CONFIG_SV6621_BLUETOOTH),y)
+CSRCS += sv6621_bluetooth.c
+endif
+
 DEPPATH += --dep-path platform$(DELIM)drivers$(DELIM)sv6621
 VPATH += :platform$(DELIM)drivers$(DELIM)sv6621
 endif

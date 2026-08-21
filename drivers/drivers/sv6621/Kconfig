@@ -31,6 +31,17 @@ config SV6621_PM
 		coordinator must suspend the firmware from thread context before deep
 		sleep; the PM callback only checks readiness and schedules resume work.
 
+config SV6621_BLUETOOTH
+	bool "SeekWave SV6621 Bluetooth HCI over SDIO"
+	default n
+	depends on SV6621
+	select DRIVERS_BLUETOOTH
+	select UART_BTH4
+	---help---
+		Expose the Bluetooth controller inside the SV6621 combo through the
+		NuttX H4 pseudo-UART device.  Bluetooth HCI command/event, ACL and ISO
+		traffic uses SDIO virtual channels shared with the Wi-Fi transport.
+
 config SV6621_RXPRIO
 	int "SeekWave receive thread priority"
 	default 100

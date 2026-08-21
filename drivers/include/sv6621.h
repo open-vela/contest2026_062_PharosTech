@@ -471,6 +471,10 @@ struct sv6621_config_s
   struct sv6621_firmware_s dram;
   struct sv6621_firmware_s nvram;
   struct sv6621_firmware_s calibration;
+#ifdef CONFIG_SV6621_BLUETOOTH
+  struct sv6621_firmware_s bluetooth_nv;
+  int bluetooth_device_id;
+#endif
   FAR const struct sv6621_regulatory_domain_s *regulatory;
   FAR const struct sv6621_regulatory_domain_s *regulatory_domains;
   size_t regulatory_domain_count;
@@ -524,6 +528,9 @@ int sv6621_rekey_ap(FAR struct sv6621_dev_s *dev);
 int sv6621_suspend(FAR struct sv6621_dev_s *dev,
                    FAR const struct sv6621_suspend_s *config);
 int sv6621_resume(FAR struct sv6621_dev_s *dev);
+#ifdef CONFIG_SV6621_BLUETOOTH
+int sv6621_start_bluetooth(FAR struct sv6621_dev_s *dev);
+#endif
 
 #ifdef __cplusplus
 }

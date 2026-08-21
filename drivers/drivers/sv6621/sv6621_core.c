@@ -2512,10 +2512,22 @@ int sv6621_create(FAR const struct sv6621_config_s *config,
       goto unsubscribe_service;
     }
 
-  ret = nxsem_init(&dev->recovery_sem, 0, 0);
+#ifdef CONFIG_SV6621_BLUETOOTH
+  ret = sv6621_bluetooth_attach(dev);
   if (ret < 0)
     {
       goto unsubscribe_command;
+    }
+#endif
+
+  ret = nxsem_init(&dev->recovery_sem, 0, 0);
+  if (ret < 0)
+    {
+#ifdef CONFIG_SV6621_BLUETOOTH
+      goto detach_bluetooth;
+#else
+      goto unsubscribe_command;
+#endif
     }
 
   ret = nxsem_init(&dev->recovery_exit_sem, 0, 0);
@@ -2591,6 +2603,10 @@ destroy_recovery_exit_sem:
   nxsem_destroy(&dev->recovery_exit_sem);
 destroy_recovery_sem:
   nxsem_destroy(&dev->recovery_sem);
+#ifdef CONFIG_SV6621_BLUETOOTH
+detach_bluetooth:
+  sv6621_bluetooth_detach(dev);
+#endif
 unsubscribe_command:
   sv6621_packet_unsubscribe(&dev->router, SV6621_CHANNEL_WIFI_COMMAND,
                             sv6621_command_channel_consumer, &dev->command);
@@ -2663,6 +2679,9 @@ void sv6621_destroy(FAR struct sv6621_dev_s *dev)
   work_cancel_sync(LPWORK, &dev->event_work);
   work_cancel_sync(LPWORK, &dev->scan_work);
   work_cancel_sync(LPWORK, &dev->station_work);
+#ifdef CONFIG_SV6621_BLUETOOTH
+  sv6621_bluetooth_detach(dev);
+#endif
   sv6621_packet_unsubscribe(&dev->router, SV6621_CHANNEL_WIFI_COMMAND,
                             sv6621_command_channel_consumer, &dev->command);
   sv6621_packet_unsubscribe(&dev->router, SV6621_CHANNEL_LOOPCHECK,
@@ -3022,6 +3041,35 @@ unlock_lifecycle:
   nxmutex_unlock(&dev->lifecycle_lock);
   return ret;
 }
+
+#ifdef CONFIG_SV6621_BLUETOOTH
+int sv6621_start_bluetooth(FAR struct sv6621_dev_s *dev)
+{
+  enum sv6621_state_e state;
+  int ret;
+
+  if (dev == NULL)
+    {
+      return -EINVAL;
+    }
+
+  ret = nxmutex_lock(&dev->status_lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  state = dev->status.state;
+  nxmutex_unlock(&dev->status_lock);
+  if (state != SV6621_STATE_WIFI_READY)
+    {
+      return -EAGAIN;
+    }
+
+  return sv6621_bluetooth_start(dev, &dev->config.bluetooth_nv,
+                                dev->config.bluetooth_device_id);
+}
+#endif
 
 int sv6621_stop(FAR struct sv6621_dev_s *dev)
 {
