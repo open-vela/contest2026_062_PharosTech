@@ -67,6 +67,7 @@ struct sv6621_service_s
   mutex_t lock;
   sem_t bsp_completion;
   sem_t wifi_completion;
+  sem_t bt_completion;
   struct sv6621_service_status_s status;
   sv6621_service_event_t event;
   FAR void *event_arg;
@@ -87,6 +88,11 @@ int sv6621_service_wait_bsp(FAR struct sv6621_service_s *service,
 int sv6621_service_start_wifi(FAR struct sv6621_service_s *service,
                               FAR struct sv6621_transport_s *transport,
                               uint32_t timeout_ms);
+int sv6621_service_start_bluetooth(FAR struct sv6621_service_s *service,
+                                   FAR struct sv6621_transport_s *transport,
+                                   uint32_t timeout_ms);
+int sv6621_service_stop_bluetooth(FAR struct sv6621_service_s *service,
+                                  FAR struct sv6621_transport_s *transport);
 void sv6621_service_channel_consumer(uint8_t channel,
                                      FAR const uint8_t encoded[4],
                                      FAR const uint8_t *payload, size_t length,
