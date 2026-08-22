@@ -530,6 +530,7 @@ int sv6621_suspend(FAR struct sv6621_dev_s *dev,
 int sv6621_resume(FAR struct sv6621_dev_s *dev);
 #ifdef CONFIG_SV6621_BLUETOOTH
 int sv6621_start_bluetooth(FAR struct sv6621_dev_s *dev);
+int sv6621_stop_bluetooth(FAR struct sv6621_dev_s *dev);
 #endif
 
 #ifdef __cplusplus

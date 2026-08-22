@@ -43,6 +43,7 @@
 
 #include <nuttx/mutex.h>
 #include <nuttx/semaphore.h>
+#include <nuttx/signal.h>
 #include <nuttx/wireless/bluetooth/bt_driver.h>
 
 #include "sv6621_bluetooth.h"
@@ -73,6 +74,7 @@
 #define SV6621_BT_NV_LOG_TAG                0x05
 #define SV6621_BT_COMMAND_TIMEOUT_MS        1000
 #define SV6621_BT_READY_TIMEOUT_MS          3000
+#define SV6621_BT_STOP_GRACE_MS             250
 #define SV6621_BT_MAX_FRAME                 2048
 #define SV6621_BT_TX_CAPACITY               2560
 
@@ -714,6 +716,49 @@ int sv6621_bluetooth_start(FAR struct sv6621_dev_s *dev,
   bluetooth->initialized = true;
   wlinfo("SV6621 Bluetooth controller ready: revision=0x%04x\n",
          bluetooth->controller_revision);
+  return 0;
+}
+
+int sv6621_bluetooth_stop(FAR struct sv6621_dev_s *dev)
+{
+  FAR struct sv6621_bluetooth_s *bluetooth = &g_sv6621_bluetooth;
+  int ret;
+
+  if (dev == NULL || bluetooth->dev != dev)
+    {
+      return -EINVAL;
+    }
+
+  ret = nxmutex_lock(&bluetooth->state_lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (!bluetooth->initialized)
+    {
+      nxmutex_unlock(&bluetooth->state_lock);
+      return 0;
+    }
+
+  if (bluetooth->opened || bluetooth->command_pending)
+    {
+      nxmutex_unlock(&bluetooth->state_lock);
+      return -EBUSY;
+    }
+
+  ret = sv6621_service_stop_bluetooth(&bluetooth->dev->service,
+                                      bluetooth->dev->config.transport);
+  if (ret < 0)
+    {
+      nxmutex_unlock(&bluetooth->state_lock);
+      return ret;
+    }
+
+  nxsig_usleep(SV6621_BT_STOP_GRACE_MS * 1000);
+  bluetooth->initialized = false;
+  bluetooth->controller_revision = 0;
+  nxmutex_unlock(&bluetooth->state_lock);
   return 0;
 }
 

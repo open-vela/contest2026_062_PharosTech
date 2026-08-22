@@ -3068,9 +3068,16 @@ int sv6621_start_bluetooth(FAR struct sv6621_dev_s *dev)
       return -EINVAL;
     }
 
+  ret = nxmutex_lock(&dev->lifecycle_lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
   ret = nxmutex_lock(&dev->status_lock);
   if (ret < 0)
     {
+      nxmutex_unlock(&dev->lifecycle_lock);
       return ret;
     }
 
@@ -3078,11 +3085,34 @@ int sv6621_start_bluetooth(FAR struct sv6621_dev_s *dev)
   nxmutex_unlock(&dev->status_lock);
   if (state != SV6621_STATE_WIFI_READY)
     {
+      nxmutex_unlock(&dev->lifecycle_lock);
       return -EAGAIN;
     }
 
-  return sv6621_bluetooth_start(dev, &dev->config.bluetooth_nv,
-                                dev->config.bluetooth_device_id);
+  ret = sv6621_bluetooth_start(dev, &dev->config.bluetooth_nv,
+                               dev->config.bluetooth_device_id);
+  nxmutex_unlock(&dev->lifecycle_lock);
+  return ret;
+}
+
+int sv6621_stop_bluetooth(FAR struct sv6621_dev_s *dev)
+{
+  int ret;
+
+  if (dev == NULL)
+    {
+      return -EINVAL;
+    }
+
+  ret = nxmutex_lock(&dev->lifecycle_lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = sv6621_bluetooth_stop(dev);
+  nxmutex_unlock(&dev->lifecycle_lock);
+  return ret;
 }
 #endif
 
