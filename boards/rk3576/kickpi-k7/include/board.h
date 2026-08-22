@@ -58,6 +58,11 @@
 int kickpi_k7_audio_initialize(void);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_WIFI
+int kickpi_k7_wifi_prepare_sleep(void);
+int kickpi_k7_wifi_abort_sleep(void);
+#endif
+
 #endif /* __ASSEMBLY__ */
 
 /****************************************************************************
