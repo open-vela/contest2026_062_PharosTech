@@ -687,8 +687,9 @@ static void rk3576_schmitt_set(uint32_t ioc_base, unsigned int port,
  *
  * Description:
  *   Per-group GIC ISR.  Each bank has 4 interrupt lines (one per 8-pin
- *   group A/B/C/D).  Reads the bank's INT_STATUS, dispatches to the claimed
- *   handle's callback via the single table, then writes PORTA_EOI.
+ *   group A/B/C/D).  Reads the bank's INT_STATUS, acknowledges (EOI) all
+ *   pending pins up front, then dispatches each pending pin's callback from
+ *   the captured snapshot.
  *
  *   arg encoding: low 3 bits = port, bits [4:3] = group (0-3).
  *
@@ -700,8 +701,9 @@ static int rk3576_gpio_isr(int irq, void *context, void *arg)
   unsigned int port = encoded & 0x7;
   unsigned int group = (encoded >> 3) & 0x3;
   unsigned int pin_start = group * 8;
-  unsigned int pin_end = pin_start + 8;
   uint32_t status;
+  uint32_t eoi_low;
+  uint32_t eoi_high;
   int pin;
 
   if (port >= RK3576_GPIO_NPORTS)
@@ -712,13 +714,30 @@ static int rk3576_gpio_isr(int irq, void *context, void *arg)
 
   status = getreg32(RK3576_GPIO_INT_STATUS(port));
 
-  /* Limit to this group's 8-pin range */
+  /* Limit to this group's 8-pin range. */
 
-  status &= ((1u << pin_end) - 1) ^ ((1u << pin_start) - 1);
+  status &= (0xffu << pin_start);
+
+  /* Acknowledge (EOI, write-1-clear) every pending pin immediately */
+
+  eoi_low = status & 0xffffu; /* pending pins 0-15  */
+  eoi_high = status >> 16;    /* pending pins 16-31 */
+
+  if (eoi_low != 0)
+    {
+      putreg32((eoi_low << 16) | eoi_low, RK3576_GPIO_PORTA_EOI(port));
+    }
+
+  if (eoi_high != 0)
+    {
+      putreg32((eoi_high << 16) | eoi_high, RK3576_GPIO_PORTA_EOI(port) + 4);
+    }
 
   while (status != 0)
     {
-      FAR struct rk3576_gpio_dev_s *idev;
+      FAR struct rk3576_gpio_dev_s *idev = NULL;
+      rk3576_gpio_irq_callback_t callback = NULL;
+      bool irq_enabled = false;
       irqstate_t flags;
 
       pin = __builtin_ctz(status);
@@ -729,6 +748,13 @@ static int rk3576_gpio_isr(int irq, void *context, void *arg)
        * underneath us), or put() has already removed it and we read NULL and
        * simply skip it.  We take the spin-lock with interrupts disabled
        * (spin_lock_irqsave) because we are in interrupt context.
+       *
+       * The callback/irq_enabled pair is snapshotted under the same lock so
+       * a concurrent irq_attach()/irq_disable() cannot flip either field
+       * between our check and our invocation: once irq_disable() returns
+       * (INTMASK set, irq_enabled cleared), an in-flight ISR cannot observe
+       * a stale "enabled" state and call a callback the driver believes is
+       * detached.  We invoke only the snapshot, outside the lock.
        */
 
       flags = spin_lock_irqsave(&g_gpio_lock);
@@ -736,15 +762,17 @@ static int rk3576_gpio_isr(int irq, void *context, void *arg)
       if (idev != NULL)
         {
           atomic_add(&idev->refs, 1);
+          callback = idev->callback;
+          irq_enabled = idev->irq_enabled;
         }
 
       spin_unlock_irqrestore(&g_gpio_lock, flags);
 
       if (idev != NULL)
         {
-          if (idev->callback != NULL && idev->irq_enabled)
+          if (callback != NULL && irq_enabled)
             {
-              idev->callback(&idev->gpio, (uint8_t)pin);
+              callback(&idev->gpio, (uint8_t)pin);
             }
 
           /* Release our borrowed reference; 1 -> 0 means we were the last
@@ -757,8 +785,6 @@ static int rk3576_gpio_isr(int irq, void *context, void *arg)
               kmm_free(idev);
             }
         }
-
-      RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_PORTA_EOI(port), pin, 1);
 
       status &= ~RK3576_GPIO_PIN_BIT(pin);
     }
@@ -1228,11 +1254,11 @@ int rk3576_gpio_get(gpio_pinset_t pinset, FAR struct gpio_dev_s **handle)
   RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INTMASK(port), pin, 1);
   RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_PORTA_EOI(port), pin, 1);
 
-  /* Publish the handle.  No other task can be claiming this pin now (the
-   * marker still holds), so this write is safe without extra locking.
-   */
+  /* Publish the handle under g_gpio_lock */
 
+  flags = spin_lock_irqsave(&g_gpio_lock);
   g_gpio_devs[port][pin] = dev;
+  spin_unlock_irqrestore(&g_gpio_lock, flags);
 
   *handle = &dev->gpio;
   return OK;
@@ -1440,7 +1466,8 @@ void rk3576_gpio_set_af(FAR struct gpio_dev_s *handle, unsigned int af)
  *
  * Description:
  *   Set only the GPIO direction (input/output) of a claimed pin.  Sets the
- *   DDR bit and selects GPIO (IOMUX AF0).
+ *   DDR bit.  All other pin parameters (including the IOMUX alternate
+ *   function) are left unchanged.
  *
  ****************************************************************************/
 
@@ -1454,10 +1481,6 @@ void rk3576_gpio_set_mode(FAR struct gpio_dev_s *handle,
   DEBUGASSERT(mode == RK3576_GPIO_INPUT || mode == RK3576_GPIO_OUTPUT);
 
   flags = spin_lock_irqsave(&g_gpio_lock);
-
-  /* Select GPIO function (AF0) then set direction. */
-
-  rk3576_iomux_set(RK3576_IOC_ADDR, dev->port, dev->pin, 0);
 
   if (mode == RK3576_GPIO_OUTPUT)
     {
@@ -1657,12 +1680,13 @@ void rk3576_gpio_irq_enable(FAR struct gpio_dev_s *handle)
 
   group = dev->pin / 8;
 
+  flags = spin_lock_irqsave(&g_gpio_lock);
+
   if (dev->irq_enabled)
     {
+      spin_unlock_irqrestore(&g_gpio_lock, flags);
       return;
     }
-
-  flags = spin_lock_irqsave(&g_gpio_lock);
 
   /* Bring up the GIC line on the 0->1 refcount transition. */
 
