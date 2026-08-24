@@ -34,15 +34,13 @@
  *   to a state that matches the programmed alarm fields (for a minute alarm
  *   this is the top of the target minute, i.e. hh:mm:00).
  *
- *   Consequently a relative-alarm request (RTC_SET_RELATIVE, e.g. "alarm
- *   N") can only be honored to minute accuracy: the seconds component of the
- *   computed absolute target is discarded, so the alarm fires early by
- *   (target seconds) mod 60, i.e. 0..59 seconds before the wall-clock
- *   second anticipated by a sub-minute request.  When the target minute
- *   equals the current minute, the alarm may fire almost immediately (at
- *   the next minute increment).  This is inherent to the part, not a driver
- *   defect.  Use a system timer (sleep/hrtimer/watchdog) if second-accurate
- *   wakeups are required.
+ *   A relative-alarm request (RTC_SET_RELATIVE, e.g. "alarm N") can only be
+ *   honored to minute accuracy: a target with a nonzero second component is
+ *   rounded UP to the next minute (see pcf8563_setrelative()), so the alarm
+ *   fires at a minute boundary 0..59 seconds AFTER the wall-clock second
+ *   anticipated by a sub-minute request -- it never fires early.  Use a
+ *   system timer (sleep/hrtimer/watchdog) if second-accurate wakeups are
+ *   required.
  *
  ****************************************************************************/
 
@@ -60,6 +58,8 @@
 
 #include <nuttx/arch.h>
 #include <nuttx/i2c/i2c_master.h>
+#include <nuttx/mutex.h>
+#include <nuttx/spinlock.h>
 #include <nuttx/timers/arch_rtc.h>
 #include <nuttx/timers/rtc.h>
 #include <nuttx/wqueue.h>
@@ -119,8 +119,8 @@
 /* Control/status 2 (01h) bits. */
 
 #define PCF8563_CS2_TI_TP (1 << 4) /* Timer INT pulse mode (unused here) */
-#define PCF8563_CS2_AF    (1 << 3) /* Alarm flag (write 1 to clear) */
-#define PCF8563_CS2_TF    (1 << 2) /* Timer flag (write 1 to clear) */
+#define PCF8563_CS2_AF    (1 << 3) /* Alarm flag (write 0 to clear) */
+#define PCF8563_CS2_TF    (1 << 2) /* Timer flag (write 0 to clear) */
 #define PCF8563_CS2_AIE   (1 << 1) /* Alarm interrupt enable */
 #define PCF8563_CS2_TIE   (1 << 0) /* Timer interrupt enable (unused here) */
 
@@ -164,11 +164,18 @@ struct pcf8563_dev_s
   FAR struct i2c_master_s *i2c; /* Contained I2C bus driver reference */
 
 #ifdef CONFIG_RTC_ALARM
-  /* Alarm callback state.  When an alarm is set, the upper half provides a
-   * callback + private arg that must be invoked (from a worker, not the raw
-   * ISR) when the alarm fires.
+  /* Alarm state.  setalarm(), cancelalarm() and the alarm worker share the
+   * callback/private pointers and the status-register updates; 'lock'
+   * serializes all of them so a cancel cannot race a queued callback and a
+   * setalarm cannot race a running worker.  'pending_lock' makes the
+   * ISR-side test-and-set of alarm_pending atomic on SMP (the GPIO interrupt
+   * may be delivered on any CPU and race the worker's own clear of the
+   * latch); it is a spinlock because pcf8563_alarm_service() runs in
+   * interrupt context where sleeping is not allowed.
    */
 
+  mutex_t lock;                  /* Serializes alarm state & register writes */
+  spinlock_t pending_lock;       /* Guards alarm_pending test-and-set (ISR) */
   rtc_alarm_callback_t alarm_cb; /* Upper-half alarm callback */
   FAR void *alarm_priv;          /* Opaque arg for the callback */
   struct work_s work;            /* Deferred alarm handling work */
@@ -329,19 +336,23 @@ static int pcf8563_get_datetime(FAR struct rtc_time *rtctime)
   rtctime->tm_wday = (int)pcf8563_bcd2bin(buffer[4] & PCF8563_WEEKDAYS_MASK);
   rtctime->tm_mon = (int)pcf8563_bcd2bin(buffer[5] & PCF8563_MONTHS_MASK) - 1;
 
-  /* Years since 1900.  The century bit (C) is inspected to distinguish
-   * 20xx from 21xx.  PCF8563 does not hold the full century, only a
-   * toggling flag; assume 2000..2099 by default, extending to the next
-   * century when the flag is set.
+  /* Century flag (bit 7 of the century/months register): per the datasheet
+   * the C bit toggles when the two-digit year wraps 99->00.
+   * C=0 means 20xx and C=1 means 19xx, keeping tm_year correct over
+   * the 1900-2099 range the part can represent (an inverted mapping
+   * would mislabel e.g. 2024 as 2124).
    */
 
-  year = pcf8563_bcd2bin(buffer[6]);
   if (buffer[5] & PCF8563_CM_CENTURY)
     {
-      year += 100;
+      year = 1900 + pcf8563_bcd2bin(buffer[6]); /* 19xx */
+    }
+  else
+    {
+      year = 2000 + pcf8563_bcd2bin(buffer[6]); /* 20xx */
     }
 
-  rtctime->tm_year = (int)year;
+  rtctime->tm_year = (int)(year - 1900); /* years since 1900 */
 
   /* Unused fields. */
 
@@ -403,18 +414,29 @@ static int pcf8563_set_datetime(FAR const struct rtc_time *rtctime)
 
   buffer[5] = (uint8_t)(rtctime->tm_wday & PCF8563_WEEKDAYS_MASK);
 
-  /* Month (1..12) + century flag. */
+  /* Month (1..12). */
+
+  buffer[6] = pcf8563_bin2bcd((unsigned int)(rtctime->tm_mon + 1));
+
+  /* Map tm_year (years since 1900) to the two-digit year plus the century
+   * bit, matching the convention in pcf8563_get_datetime(): 1900-1999 ->
+   * C=1, 2000-2099 -> C=0.
+   */
 
   year = (unsigned int)rtctime->tm_year;
-  buffer[6] = pcf8563_bin2bcd((unsigned int)(rtctime->tm_mon + 1));
-  if (year >= 100)
+  if (year < 100)
     {
+      /* 1900-1999: C=1 */
+
       buffer[6] |= PCF8563_CM_CENTURY;
+      buffer[7] = pcf8563_bin2bcd(year);
     }
+  else
+    {
+      /* 2000-2099: C=0, lower two digits */
 
-  /* Year (00..99), lower two digits. */
-
-  buffer[7] = pcf8563_bin2bcd(year % 100);
+      buffer[7] = pcf8563_bin2bcd(year - 100);
+    }
 
   ret =
       pcf8563_write_reg(PCF8563_REG_VL_SECONDS, buffer, 1 + PCF8563_TIMEREGS);
@@ -510,12 +532,7 @@ static int pcf8563_setalarm(FAR struct rtc_lowerhalf_s *lower,
   uint8_t regs[4 + 1];
   int ret;
 
-  /* Vector the alarm callback through the compacted lower-half state.  The
-   * callback is invoked later from the worker (interrupt context).
-   */
-
-  g_pcf8563.dev.alarm_cb = alarminfo->cb;
-  g_pcf8563.dev.alarm_priv = alarminfo->priv;
+  nxmutex_lock(&g_pcf8563.dev.lock);
 
   /* Register base address 09h, followed by the four alarm registers:
    *   [0] 09h minute_alarm   (AE_M + BCD minute)
@@ -534,13 +551,16 @@ static int pcf8563_setalarm(FAR struct rtc_lowerhalf_s *lower,
   if (ret < 0)
     {
       rtcerr("ERROR: pcf8563_write_reg (alarm) failed: %d\n", ret);
+      nxmutex_unlock(&g_pcf8563.dev.lock);
       return ret;
     }
 
   /* Enable the alarm interrupt (AIE).  Write the register address (01h) as
    * the first byte followed by the new value.  Note: pcf8563_write_reg()
    * treats buffer[0] as the register address and the remaining bytes as
-   * data, so the data must be offset by one.
+   * data, so the data must be offset by one.  Writing 0 to the AF/TF bits
+   * in the same access also clears any stale alarm flag, so a previously
+   * fired alarm cannot immediately re-assert INT once AIE is set.
    */
 
   {
@@ -550,9 +570,19 @@ static int pcf8563_setalarm(FAR struct rtc_lowerhalf_s *lower,
     if (ret < 0)
       {
         rtcerr("ERROR: pcf8563_write_reg (AIE) failed: %d\n", ret);
+        nxmutex_unlock(&g_pcf8563.dev.lock);
         return ret;
       }
   }
+
+  /* Vector the alarm callback through the compacted lower-half state.  The
+   * callback is invoked later from the worker (thread context).
+   */
+
+  g_pcf8563.dev.alarm_cb = alarminfo->cb;
+  g_pcf8563.dev.alarm_priv = alarminfo->priv;
+
+  nxmutex_unlock(&g_pcf8563.dev.lock);
 
   return OK;
 }
@@ -595,6 +625,25 @@ static int pcf8563_setrelative(FAR struct rtc_lowerhalf_s *lower,
       return -EINVAL;
     }
 
+  /* The PCF8563 alarm compares only minute/hour/day/weekday; seconds never
+   * participate (AF is asserted at the increment to the programmed minute,
+   * i.e. at second 0).  A target with a nonzero second component is rounded
+   * UP to the next minute so the alarm never fires early: it fires at the
+   * next minute boundary, up to 59 s after the sub-minute target.  Without
+   * this, a target that lands inside the current minute (e.g. "alarm 5")
+   * would program an already-passed minute and never fire.
+   */
+
+  if (setalarm.tm_sec != 0)
+    {
+      time += 60 - setalarm.tm_sec;
+
+      if (gmtime_r(&time, &setalarm) == NULL)
+        {
+          return -EINVAL;
+        }
+    }
+
   {
     struct lower_setalarm_s lalarm;
 
@@ -620,6 +669,8 @@ static int pcf8563_cancelalarm(FAR struct rtc_lowerhalf_s *lower, int alarmid)
   uint8_t regs[5];
   int ret;
 
+  nxmutex_lock(&g_pcf8563.dev.lock);
+
   regs[0] = PCF8563_REG_MINUTE_ALARM;
 
   /* Disable all four alarm fields (AE_x = 1). */
@@ -633,10 +684,14 @@ static int pcf8563_cancelalarm(FAR struct rtc_lowerhalf_s *lower, int alarmid)
   if (ret < 0)
     {
       rtcerr("ERROR: pcf8563_write_reg (alarm clear) failed: %d\n", ret);
+      nxmutex_unlock(&g_pcf8563.dev.lock);
       return ret;
     }
 
-  /* Disable the alarm interrupt. */
+  /* Disable the alarm interrupt.  Writing 0 to AF/TF here also clears any
+   * pending alarm flag, so a stale AF cannot re-assert INT once AIE is
+   * re-enabled by a later setalarm().
+   */
 
   regs[0] = PCF8563_REG_CTRL_STATUS2;
   regs[1] = 0;
@@ -644,6 +699,7 @@ static int pcf8563_cancelalarm(FAR struct rtc_lowerhalf_s *lower, int alarmid)
   if (ret < 0)
     {
       rtcerr("ERROR: pcf8563_write_reg (AIE clear) failed: %d\n", ret);
+      nxmutex_unlock(&g_pcf8563.dev.lock);
       return ret;
     }
 
@@ -651,6 +707,8 @@ static int pcf8563_cancelalarm(FAR struct rtc_lowerhalf_s *lower, int alarmid)
 
   g_pcf8563.dev.alarm_cb = NULL;
   g_pcf8563.dev.alarm_priv = NULL;
+
+  nxmutex_unlock(&g_pcf8563.dev.lock);
 
   return OK;
 }
@@ -700,9 +758,25 @@ static int pcf8563_rdalarm(FAR struct rtc_lowerhalf_s *lower,
 static void pcf8563_alarm_worker(FAR void *arg)
 {
   uint8_t status2;
+  rtc_alarm_callback_t cb;
+  FAR void *priv;
+  irqstate_t flags;
   int ret;
 
+  /* Release the pending latch.  The latch is shared with the ISR-side
+   * test-and-set, so it must be cleared atomically on SMP.
+   */
+
+  flags = spin_lock_irqsave(&g_pcf8563.dev.pending_lock);
   g_pcf8563.dev.alarm_pending = false;
+  spin_unlock_irqrestore(&g_pcf8563.dev.pending_lock, flags);
+
+  /* Serialize register access and callback state with setalarm() /
+   * cancelalarm().  The upper-half callback is invoked after the lock is
+   * released so it may itself re-arm or cancel the alarm.
+   */
+
+  nxmutex_lock(&g_pcf8563.dev.lock);
 
   /* Read Control/status 2. */
 
@@ -710,6 +784,7 @@ static void pcf8563_alarm_worker(FAR void *arg)
   if (ret < 0)
     {
       rtcerr("ERROR: pcf8563_read_reg (status2) failed: %d\n", ret);
+      nxmutex_unlock(&g_pcf8563.dev.lock);
       return;
     }
 
@@ -719,35 +794,45 @@ static void pcf8563_alarm_worker(FAR void *arg)
 
   if ((status2 & PCF8563_CS2_AF) == 0)
     {
+      nxmutex_unlock(&g_pcf8563.dev.lock);
       return;
     }
 
-  /* Clear the alarm flag (and timer flag).  Writing 1 to AF/TF clears them;
-   * buffer layout is [address, data] to match pcf8563_write_reg().
+  /* Clear the alarm flag.  PCF8563 AF/TF are write-0-to-clear: writing 1
+   * leaves the flag unchanged, and the write access is ANDed with the
+   * current register value, so a raw write of AF|TF would neither clear AF
+   * nor preserve AIE/TIE.  Read-modify-write status2, clearing only AF.
    */
 
+  status2 &= ~PCF8563_CS2_AF;
   {
-    uint8_t clear[2] = { PCF8563_REG_CTRL_STATUS2,
-                         PCF8563_CS2_AF | PCF8563_CS2_TF };
+    uint8_t clear[2] = { PCF8563_REG_CTRL_STATUS2, status2 };
 
     ret = pcf8563_write_reg(clear[0], clear, sizeof(clear));
     if (ret < 0)
       {
         rtcerr("ERROR: pcf8563_write_reg (clear AF) failed: %d\n", ret);
+        nxmutex_unlock(&g_pcf8563.dev.lock);
         return;
       }
   }
+
+  /* Snapshot the callback under the lock, then release the lock before
+   * invoking the callback (the callback may re-arm or cancel the alarm).
+   */
+
+  cb = g_pcf8563.dev.alarm_cb;
+  priv = g_pcf8563.dev.alarm_priv;
+
+  nxmutex_unlock(&g_pcf8563.dev.lock);
 
   /* Notify the upper half.  The alarm is one-shot; it will not re-fire until
    * setalarm() is called again.  The callback may be NULL if the alarm was
    * cancelled between arming and firing.
    */
 
-  if (g_pcf8563.dev.alarm_cb != NULL)
+  if (cb != NULL)
     {
-      rtc_alarm_callback_t cb = g_pcf8563.dev.alarm_cb;
-      FAR void *priv = g_pcf8563.dev.alarm_priv;
-
       cb(priv, 0);
     }
 }
@@ -764,13 +849,38 @@ static void pcf8563_alarm_worker(FAR void *arg)
 
 void pcf8563_alarm_service(FAR void *arg)
 {
+  irqstate_t flags;
+  int ret;
+
+  /* Test-and-set the pending latch atomically: on SMP the GPIO interrupt
+   * may be delivered on any CPU and race the worker's own clear of the
+   * latch, so a plain volatile read-modify-write is not sufficient.
+   * spin_lock_irqsave() is safe here (interrupt context; the critical
+   * section is only a boolean).
+   */
+
+  flags = spin_lock_irqsave(&g_pcf8563.dev.pending_lock);
   if (g_pcf8563.dev.alarm_pending)
     {
+      spin_unlock_irqrestore(&g_pcf8563.dev.pending_lock, flags);
       return;
     }
 
   g_pcf8563.dev.alarm_pending = true;
-  work_queue(HPWORK, &g_pcf8563.dev.work, pcf8563_alarm_worker, NULL, 0);
+  spin_unlock_irqrestore(&g_pcf8563.dev.pending_lock, flags);
+
+  ret = work_queue(HPWORK, &g_pcf8563.dev.work, pcf8563_alarm_worker, NULL, 0);
+  if (ret < 0)
+    {
+      /* Enqueue failed: release the latch so a later interrupt can retry;
+       * otherwise alarm_pending stays set forever and every subsequent
+       * alarm would be silently dropped.
+       */
+
+      flags = spin_lock_irqsave(&g_pcf8563.dev.pending_lock);
+      g_pcf8563.dev.alarm_pending = false;
+      spin_unlock_irqrestore(&g_pcf8563.dev.pending_lock, flags);
+    }
 }
 #endif /* CONFIG_RTC_ALARM */
 
@@ -879,6 +989,16 @@ int pcf8563_rtc_initialize(FAR struct i2c_master_s *i2c)
   /* Remember the I2C device. */
 
   g_pcf8563.dev.i2c = i2c;
+
+#ifdef CONFIG_RTC_ALARM
+  /* Initialize the alarm state locks: the mutex serializes register/callback
+   * updates between threads; the spinlock makes the ISR-side pending latch
+   * test-and-set atomic on SMP.
+   */
+
+  nxmutex_init(&g_pcf8563.dev.lock);
+  spin_lock_init(&g_pcf8563.dev.pending_lock);
+#endif
 
   /* Bind the ops vtable to the lower-half instance. */
 
