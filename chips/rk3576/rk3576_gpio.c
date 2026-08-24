@@ -199,34 +199,35 @@ static bool g_gpio_claimed[RK3576_GPIO_NPORTS][RK3576_GPIO_NPINS];
 static struct rk3576_gpio_dev_s
     *g_gpio_devs[RK3576_GPIO_NPORTS][RK3576_GPIO_NPINS];
 
-/* Per-bank GIC interrupt lines: 4 groups (A/B/C/D) per bank.  Each group
- * covers 8 pins.  Attached/enabled on demand (not all at boot).
+/* Per-bank GIC interrupt line.  Each RK3576 bank funnels *all* of its pin
+ * interrupts onto a single output (gpio_int_flag0): the GPIO_REG_GROUP /
+ * REG_GROUP1..3 routing registers are left at their reset value, under which
+ * every pin routes to flag0 (hardware default) — see RK3576 TRM §21.3.4.
+ *
+ * So although each bank exposes four GIC lines (GPIOx_0..3), only GPIOx_0 is
+ * actually driven unless REG_GROUP is reprogrammed to split the 32 pins
+ * across flag1..3.  This driver uses exactly one GIC line per bank (GPIOx_0)
+ * and scans the full 32-bit INT_STATUS in the ISR, which matches the default
+ * routing and keeps the "8-pin group = one GIC line" assumption from silently
+ * losing interrupts on pins 8..31.
  */
 
-static const unsigned int g_gpio_group_irqs[RK3576_GPIO_NPORTS][4] = {
-  { RK3576_IRQ_GPIO0_0, RK3576_IRQ_GPIO0_1, RK3576_IRQ_GPIO0_2,
-    RK3576_IRQ_GPIO0_3 },
-  { RK3576_IRQ_GPIO1_0, RK3576_IRQ_GPIO1_1, RK3576_IRQ_GPIO1_2,
-    RK3576_IRQ_GPIO1_3 },
-  { RK3576_IRQ_GPIO2_0, RK3576_IRQ_GPIO2_1, RK3576_IRQ_GPIO2_2,
-    RK3576_IRQ_GPIO2_3 },
-  { RK3576_IRQ_GPIO3_0, RK3576_IRQ_GPIO3_1, RK3576_IRQ_GPIO3_2,
-    RK3576_IRQ_GPIO3_3 },
-  { RK3576_IRQ_GPIO4_0, RK3576_IRQ_GPIO4_1, RK3576_IRQ_GPIO4_2,
-    RK3576_IRQ_GPIO4_3 },
+static const unsigned int g_gpio_bank_irqs[RK3576_GPIO_NPORTS] = {
+  RK3576_IRQ_GPIO0_0, RK3576_IRQ_GPIO1_0, RK3576_IRQ_GPIO2_0,
+  RK3576_IRQ_GPIO3_0, RK3576_IRQ_GPIO4_0,
 };
 
-/* Whether each group's GIC IRQ has been attached (irq_attach) yet. */
+/* Whether each bank's GIC IRQ has been attached (irq_attach) yet. */
 
-static bool g_gpio_group_irq_attached[RK3576_GPIO_NPORTS][4];
+static bool g_gpio_bank_irq_attached[RK3576_GPIO_NPORTS];
 
-/* Per-group GIC-line reference count: number of pins in that 8-pin group
- * currently enabled (INTMASK cleared).  When it drops to 0 the group's GIC
- * line is disabled (up_disable_irq); when it rises from 0 the line is
- * enabled (up_enable_irq).
+/* Per-bank GIC-line reference count: number of pins in that bank currently
+ * enabled (INTMASK cleared).  When it drops to 0 the bank's GIC line is
+ * disabled (up_disable_irq); when it rises from 0 the line is enabled
+ * (up_enable_irq).
  */
 
-static int g_gpio_group_irq_refcount[RK3576_GPIO_NPORTS][4];
+static int g_gpio_bank_irq_refcount[RK3576_GPIO_NPORTS];
 
 /****************************************************************************
  * Private Function Prototypes
@@ -686,21 +687,19 @@ static void rk3576_schmitt_set(uint32_t ioc_base, unsigned int port,
  * Name: rk3576_gpio_isr
  *
  * Description:
- *   Per-group GIC ISR.  Each bank has 4 interrupt lines (one per 8-pin
- *   group A/B/C/D).  Reads the bank's INT_STATUS, acknowledges (EOI) all
- *   pending pins up front, then dispatches each pending pin's callback from
+ *   Per-bank GIC ISR.  Each bank funnels all of its pin interrupts onto a
+ *   single GIC line (GPIOx_0, see the g_gpio_bank_irqs table above), so this
+ *   ISR reads the bank's full 32-bit INT_STATUS, acknowledges (EOI) every
+ *   pending pin up front, then dispatches each pending pin's callback from
  *   the captured snapshot.
  *
- *   arg encoding: low 3 bits = port, bits [4:3] = group (0-3).
+ *   arg encoding: low 3 bits = port.
  *
  ****************************************************************************/
 
 static int rk3576_gpio_isr(int irq, void *context, void *arg)
 {
-  unsigned int encoded = (unsigned int)(uintptr_t)arg;
-  unsigned int port = encoded & 0x7;
-  unsigned int group = (encoded >> 3) & 0x3;
-  unsigned int pin_start = group * 8;
+  unsigned int port = (unsigned int)(uintptr_t)arg & 0x7;
   uint32_t status;
   uint32_t eoi_low;
   uint32_t eoi_high;
@@ -713,10 +712,6 @@ static int rk3576_gpio_isr(int irq, void *context, void *arg)
     }
 
   status = getreg32(RK3576_GPIO_INT_STATUS(port));
-
-  /* Limit to this group's 8-pin range. */
-
-  status &= (0xffu << pin_start);
 
   /* Acknowledge (EOI, write-1-clear) every pending pin immediately */
 
@@ -1604,7 +1599,15 @@ void rk3576_gpio_set_int_pol(FAR struct gpio_dev_s *handle,
  *
  * Description:
  *   Attach/detach a driver-level interrupt callback on a claimed pin.
- *   Attaching a non-NULL callback lazily brings up the group's GIC IRQ.
+ *
+ *   - Attaching a non-NULL callback installs the bank's GIC IRQ on demand
+ *     (first pin in the bank to attach) and commits the callback.  The
+ *     interrupt itself is not unmasked here; call rk3576_gpio_irq_enable().
+ *   - "Attaching" NULL detaches: the callback is cleared and, if this pin's
+ *     interrupt was currently enabled, it is torn down as well (INTMASK set,
+ *     irq_enabled cleared, and the bank's GIC-line reference count dropped,
+ *     disabling the GIC line on the 0 transition).  After a detach the pin
+ *     produces no interrupts at all.
  *
  ****************************************************************************/
 
@@ -1612,46 +1615,56 @@ int rk3576_gpio_irq_attach(FAR struct gpio_dev_s *handle,
                            rk3576_gpio_irq_callback_t callback)
 {
   FAR struct rk3576_gpio_dev_s *dev = (FAR struct rk3576_gpio_dev_s *)handle;
-  unsigned int group;
   irqstate_t flags;
   int ret;
 
   DEBUGASSERT(dev != NULL);
 
-  group = dev->pin / 8;
-
-  /* On a genuine attach (non-NULL callback) where this group's GIC vector is
+  /* On a genuine attach (non-NULL callback) where this bank's GIC vector is
    * not yet installed, install it BEFORE committing the callback.  This way,
    * if irq_attach() fails, dev->callback is left untouched and the pin stays
    * in its previous consistent state (no half-set callback).  The check
    * (attached flag -> irq_attach -> set flag) stays in one critical section
    * so it cannot race with a concurrent attach of another pin in the same
-   * 8-pin group.  irq_attach() merely writes the g_irqvector[] table and is
-   * safe to call while holding the spin-lock.
+   * bank.  irq_attach() merely writes the g_irqvector[] table and is safe to
+   * call while holding the spin-lock.
    */
 
   flags = spin_lock_irqsave(&g_gpio_lock);
 
-  if (callback != NULL && !g_gpio_group_irq_attached[dev->port][group])
+  if (callback != NULL && !g_gpio_bank_irq_attached[dev->port])
     {
-      int irq = g_gpio_group_irqs[dev->port][group];
-      uintptr_t arg = (uintptr_t)((group << 3) | dev->port);
+      int irq = g_gpio_bank_irqs[dev->port];
+      uintptr_t arg = (uintptr_t)dev->port;
 
       ret = irq_attach(irq, rk3576_gpio_isr, (void *)arg);
       if (ret < 0)
         {
           spin_unlock_irqrestore(&g_gpio_lock, flags);
-          gpioerr("ERROR: Failed to attach IRQ %u (GPIO%u_%u): %d\n", irq,
-                  dev->port, group, ret);
+          gpioerr("ERROR: Failed to attach IRQ %u (GPIO%u): %d\n", irq,
+                  dev->port, ret);
           return ret;
         }
 
-      g_gpio_group_irq_attached[dev->port][group] = true;
+      g_gpio_bank_irq_attached[dev->port] = true;
     }
 
   /* Commit the callback only after the GIC vector is in place (or was
    * already in place), so a failed irq_attach() never leaves dev->callback
-   * pointing at a callback whose vector was not installed. */
+   * pointing at a callback whose vector was not installed.
+   *
+   * On detach (callback == NULL) we also tear down this pin's interrupt if
+   * any.  The teardown runs inside the same critical section (it is designed
+   * to be called with g_gpio_lock held) so it cannot race with an in-flight
+   * ISR, and the "borrowed ref" snapshot in the ISR guarantees a concurrent
+   * ISR either sees irq_enabled=false (and skips the callback) or has already
+   * taken its reference before we clear it.
+   */
+
+  if (callback == NULL)
+    {
+      rk3576_gpio_irq_disable_internal(dev);
+    }
 
   dev->callback = callback;
 
@@ -1665,7 +1678,7 @@ int rk3576_gpio_irq_attach(FAR struct gpio_dev_s *handle,
  *
  * Description:
  *   Unmask the interrupt on a claimed pin.  Unmasks INTMASK and enables the
- *   group's GIC line (on the 0->1 refcount transition); the caller must have
+ *   bank's GIC line (on the 0->1 refcount transition); the caller must have
  *   attached the GIC vector via rk3576_gpio_irq_attach() beforehand.
  *
  ****************************************************************************/
@@ -1673,12 +1686,9 @@ int rk3576_gpio_irq_attach(FAR struct gpio_dev_s *handle,
 void rk3576_gpio_irq_enable(FAR struct gpio_dev_s *handle)
 {
   FAR struct rk3576_gpio_dev_s *dev = (FAR struct rk3576_gpio_dev_s *)handle;
-  unsigned int group;
   irqstate_t flags;
 
   DEBUGASSERT(dev != NULL);
-
-  group = dev->pin / 8;
 
   flags = spin_lock_irqsave(&g_gpio_lock);
 
@@ -1688,14 +1698,14 @@ void rk3576_gpio_irq_enable(FAR struct gpio_dev_s *handle)
       return;
     }
 
-  /* Bring up the GIC line on the 0->1 refcount transition. */
+  /* Bring up the bank's GIC line on the 0->1 refcount transition. */
 
-  if (g_gpio_group_irq_refcount[dev->port][group] == 0)
+  if (g_gpio_bank_irq_refcount[dev->port] == 0)
     {
-      up_enable_irq(g_gpio_group_irqs[dev->port][group]);
+      up_enable_irq(g_gpio_bank_irqs[dev->port]);
     }
 
-  g_gpio_group_irq_refcount[dev->port][group]++;
+  g_gpio_bank_irq_refcount[dev->port]++;
 
   /* Open INTEN for this pin (never touched elsewhere; only INTMASK gates
    * delivery) and clear any stale pending interrupt before unmasking.
@@ -1714,8 +1724,8 @@ void rk3576_gpio_irq_enable(FAR struct gpio_dev_s *handle)
  *
  * Description:
  *   Core IRQ-teardown for a single claimed pin, executed with g_gpio_lock
- *   already held: mask INTMASK, clear irq_enabled, drop the 8-pin group's
- *   GIC-line reference count and disable that line on the 1->0 transition.
+ *   already held: mask INTMASK, clear irq_enabled, drop the bank's GIC-line
+ *   reference count and disable that line on the 1->0 transition.
  *   Assumes dev->irq_enabled is true; no-op otherwise.
  *
  *   Shared by rk3576_gpio_irq_disable() (which takes the lock itself) and
@@ -1726,26 +1736,22 @@ void rk3576_gpio_irq_enable(FAR struct gpio_dev_s *handle)
 
 static void rk3576_gpio_irq_disable_internal(FAR struct rk3576_gpio_dev_s *dev)
 {
-  unsigned int group;
-
   if (!dev->irq_enabled)
     {
       return;
     }
 
-  group = dev->pin / 8;
-
   RK3576_GPIO_V2_WRITE_BIT(RK3576_GPIO_INTMASK(dev->port), dev->pin, 1);
   dev->irq_enabled = false;
 
-  DEBUGASSERT(g_gpio_group_irq_refcount[dev->port][group] > 0);
-  g_gpio_group_irq_refcount[dev->port][group]--;
+  DEBUGASSERT(g_gpio_bank_irq_refcount[dev->port] > 0);
+  g_gpio_bank_irq_refcount[dev->port]--;
 
-  /* Drop the GIC line on the 1->0 refcount transition. */
+  /* Drop the bank's GIC line on the 1->0 refcount transition. */
 
-  if (g_gpio_group_irq_refcount[dev->port][group] == 0)
+  if (g_gpio_bank_irq_refcount[dev->port] == 0)
     {
-      up_disable_irq(g_gpio_group_irqs[dev->port][group]);
+      up_disable_irq(g_gpio_bank_irqs[dev->port]);
     }
 }
 
@@ -1754,7 +1760,7 @@ static void rk3576_gpio_irq_disable_internal(FAR struct rk3576_gpio_dev_s *dev)
  *
  * Description:
  *   Mask the interrupt on a claimed pin.  Masks INTMASK and, when no pin in
- *   the same 8-pin group remains enabled, disables the group's GIC line.
+ *   the same bank remains enabled, disables the bank's GIC line.
  *
  ****************************************************************************/
 

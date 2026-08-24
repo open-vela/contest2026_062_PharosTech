@@ -375,8 +375,16 @@ void rk3576_gpio_write_bit(FAR struct gpio_dev_s *handle, bool value);
  *   claimed pin.  Thread-safe: the callback slot is guarded by the GPIO
  *   spinlock, so drivers must NOT write the gpio_dev_s fields directly.
  *
- *   Attaching a non-NULL callback also lazily attaches (irq_attach) and
- *   enables the group's GIC interrupt line the first time.
+ *   Attaching a non-NULL callback also lazily attaches (irq_attach) and,
+ *   on the first pin in the bank to attach, enables the bank's GIC
+ *   interrupt line (GPIOx_0; see the driver core).  The pin's interrupt is
+ *   not unmasked here — call rk3576_gpio_irq_enable() afterward.
+ *
+ *   Passing NULL detaches: the callback is cleared and, if this pin's
+ *   interrupt was currently enabled, it is torn down as well (INTMASK set,
+ *   irq_enabled cleared, and the bank's GIC-line reference count dropped,
+ *   disabling the GIC line when the last pin in the bank is released).
+ *   After a detach the pin produces no interrupts at all.
  *
  * Input Parameters:
  *   handle   - Handle from rk3576_gpio_get().
@@ -395,13 +403,13 @@ int rk3576_gpio_irq_attach(FAR struct gpio_dev_s *handle,
  *
  * Description:
  *   Enable (unmask) the GPIO interrupt on a claimed pin and enable the
- *   group's GIC interrupt line.
+ *   bank's GIC interrupt line.
  *
  *   The caller MUST call rk3576_gpio_irq_attach() (with a non-NULL callback)
- *   before the first rk3576_gpio_irq_enable() so the group's GIC vector is
+ *   before the first rk3576_gpio_irq_enable() so the bank's GIC vector is
  *   installed; enable only unmasks the pin and brings up the GIC line.
  *
- *   Each call increments the group's reference count and unmasks INTMASK for
+ *   Each call increments the bank's reference count and unmasks INTMASK for
  *   the pin.  Call rk3576_gpio_irq_disable() to reverse it.
  *
  * Input Parameters:
@@ -417,10 +425,10 @@ void rk3576_gpio_irq_enable(FAR struct gpio_dev_s *handle);
  * Description:
  *   Disable (mask) the GPIO interrupt on a claimed pin.
  *
- *   Masks INTMASK for the pin and decrements the group's reference count.
- *   When no pin in the same 8-pin group remains enabled, the group's GIC
- *   interrupt line is also disabled (up_disable_irq) to stop delivery at the
- *   GIC level.
+ *   Masks INTMASK for the pin and decrements the bank's reference count.
+ *   When no pin in the same bank remains enabled, the bank's GIC interrupt
+ *   line is also disabled (up_disable_irq) to stop delivery at the GIC
+ *   level.
  *
  * Input Parameters:
  *   handle - Handle from rk3576_gpio_get().
