@@ -130,21 +130,24 @@ int kickpi_k7_audio_initialize(void)
       return OK;
     }
 
-#define _SET_GPIO_AF(pinset, af)                                       \
-  do                                                                   \
-    {                                                                  \
-      FAR struct gpio_dev_s *handle;                                   \
-      ret = rk3576_gpio_get((pinset), &handle);                        \
-                                                                       \
-      if (ret < 0)                                                     \
-        {                                                              \
-          syslog(LOG_ERR, "ERROR: failed to get gpio dev, pinset: %u", \
-                 (pinset));                                            \
-          return ret;                                                  \
-        }                                                              \
-                                                                       \
-      rk3576_gpio_set_af(handle, (af));                                \
-    }                                                                  \
+#define _SET_GPIO_AF(pinset, af)                       \
+  do                                                   \
+    {                                                  \
+      static FAR struct gpio_dev_s *handle;            \
+      if (handle == NULL)                              \
+        {                                              \
+          ret = rk3576_gpio_get((pinset), &handle);    \
+          if (ret < 0)                                 \
+            {                                          \
+              syslog(LOG_ERR,                          \
+                     "ERROR: failed to get gpio dev, " \
+                     "pinset: %u\n",                   \
+                     (pinset));                        \
+              return ret;                              \
+            }                                          \
+        }                                              \
+      rk3576_gpio_set_af(handle, (af));                \
+    }                                                  \
   while (0)
 
   /* Mux the SAI1 signal group. */

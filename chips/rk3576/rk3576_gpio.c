@@ -1607,7 +1607,22 @@ void rk3576_gpio_set_int_pol(FAR struct gpio_dev_s *handle,
  *     interrupt was currently enabled, it is torn down as well (INTMASK set,
  *     irq_enabled cleared, and the bank's GIC-line reference count dropped,
  *     disabling the GIC line on the 0 transition).  After a detach the pin
- *     produces no interrupts at all.
+ *     produces no new interrupts at all.
+ *
+ *   Concurrency (detach):
+ *   - Memory safety is guaranteed by the ISR's borrowed reference: an
+ *     in-flight ISR holds a +1 refcount on the handle, so it can never touch
+ *     freed memory, and detach neither drops that reference nor frees the
+ *     handle.
+ *   - However, detach is ASYNCHRONOUS: it only guarantees that NO NEW
+ *     invocation of the callback will start after it returns.  An ISR that
+ *     already snapshotted a non-NULL enabled callback before the detach may
+ *     still call that old callback once after detach returns.  Callers that
+ *     free (or otherwise invalidate) state captured by the callback MUST
+ *     defer that teardown until any in-flight callback has returned, or
+ *     otherwise ensure the referenced state is safe to destroy lazily.
+ *     This matches NuttX's /dev/gpioN upper-half usage, whose handler only
+ *     performs asynchronous notification and needs no synchronous wait.
  *
  ****************************************************************************/
 
@@ -1655,10 +1670,15 @@ int rk3576_gpio_irq_attach(FAR struct gpio_dev_s *handle,
    *
    * On detach (callback == NULL) we also tear down this pin's interrupt if
    * any.  The teardown runs inside the same critical section (it is designed
-   * to be called with g_gpio_lock held) so it cannot race with an in-flight
-   * ISR, and the "borrowed ref" snapshot in the ISR guarantees a concurrent
-   * ISR either sees irq_enabled=false (and skips the callback) or has already
-   * taken its reference before we clear it.
+   * to be called with g_gpio_lock held).  Within this section we atomically
+   * mask INTMASK, clear irq_enabled and NULL out the callback, so:
+   *   - a concurrent ISR that has NOT yet snapshot the pin sees
+   *     irq_enabled=false and skips the callback; and
+   *   - a concurrent ISR that ALREADY snapshot a non-NULL enabled callback
+   *     (before we took the lock) may still invoke that old callback once
+   *     after we return.  That is safe against UAF (it holds a borrowed
+   *     reference on the handle) but is not synchronized; see the
+   *     "ASYNCHRONOUS" concurrency note in the function header comment.
    */
 
   if (callback == NULL)

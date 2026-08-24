@@ -384,7 +384,18 @@ void rk3576_gpio_write_bit(FAR struct gpio_dev_s *handle, bool value);
  *   interrupt was currently enabled, it is torn down as well (INTMASK set,
  *   irq_enabled cleared, and the bank's GIC-line reference count dropped,
  *   disabling the GIC line when the last pin in the bank is released).
- *   After a detach the pin produces no interrupts at all.
+ *   After a detach the pin produces no new interrupts.
+ *
+ *   Concurrency (detach): detach is ASYNCHRONOUS.  Memory safety is
+ *   guaranteed by the ISR's borrowed reference (an in-flight ISR holds a +1
+ *   refcount on the handle and can never touch freed memory), but detach
+ *   only guarantees that no NEW callback invocation starts after it returns.
+ *   An ISR that already snapshotted a non-NULL enabled callback before the
+ *   detach may still call that old callback once afterwards.  Callers that
+ *   free (or otherwise invalidate) state referenced by the callback MUST
+ *   defer that teardown until any in-flight callback has returned, or ensure
+ *   the state is safe to destroy lazily.  This matches NuttX's /dev/gpioN
+ *   upper-half handler, which only performs asynchronous notification.
  *
  * Input Parameters:
  *   handle   - Handle from rk3576_gpio_get().
