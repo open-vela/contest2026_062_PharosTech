@@ -359,7 +359,8 @@ static void rk3576_clk_register_pll_factors(void)
  *   Register map (TRM Chapter 2):
  *     aclk_top_biu      CLKSEL_CON09  sel[6:5] div[4:0]
  *     aclk_bus_root     CLKSEL_CON55  sel[9]   div[8:4]
- *     aclk_center_root  CLKSEL_CON167 sel[7:5] div[13:9]
+ *     aclk_center_root  sel@CON168[7:5]  div@CON167[13:9]
+ *       (mux and divider sit in different CLKSEL registers)
  ****************************************************************************/
 
 static void rk3576_clk_register_axi(void)
@@ -377,7 +378,7 @@ static void rk3576_clk_register_axi(void)
 
     clk_register_mux("aclk_top_biu_sel", parents, nitems(parents),
                      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
-                     cru + RK3576_CRU_CLKSEL_CON(9), 6, 2,
+                     cru + RK3576_CRU_CLKSEL_CON(9), 5, 2,
                      CLK_MUX_HIWORD_MASK);
     clk_register_divider("aclk_top_biu", "aclk_top_biu_sel",
                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
@@ -403,7 +404,12 @@ static void rk3576_clk_register_axi(void)
                          CLK_DIVIDER_HIWORD_MASK);
   }
 
-  /* AXI center root: 3-bit mux + 5-bit divider. */
+  /* AXI center root: 3-bit mux + 5-bit divider.
+   *   mux (aclk_center_root_sel) @ CLKSEL_CON168[7:5]
+   *   div (aclk_center_root_div) @ CLKSEL_CON167[13:9]  (div_con + 1)
+   *   Unlike aclk_top_biu/aclk_bus_root, the center-root mux and divider
+   *   live in DIFFERENT CLKSEL registers (per TRM CON167/CON168).
+   */
 
   {
     static const char *parents[] = {
@@ -416,7 +422,7 @@ static void rk3576_clk_register_axi(void)
 
     clk_register_mux("aclk_center_root_sel", parents, nitems(parents),
                      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
-                     cru + RK3576_CRU_CLKSEL_CON(167), 5, 3,
+                     cru + RK3576_CRU_CLKSEL_CON(168), 5, 3,
                      CLK_MUX_HIWORD_MASK);
     clk_register_divider("aclk_center_root", "aclk_center_root_sel",
                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
@@ -595,21 +601,32 @@ static const char *g_litcore_sel_parents[] = {
 static void rk3576_clk_register_litcore(void)
 {
   const unsigned long litcore = RK3576_LITCORE_CRU_ADDR;
+  struct rk3576_fracpll_s lpll_priv;
+  struct clk_s *lpll;
+  static const char *lpll_parents[] = { "xin_osc0" };
 
-  /* LPLL lives in the CCI_CRU domain and is not yet modelled; register a
-   * placeholder sourced from xin_osc0 so clk_litcore_src_sel has a valid
-   * parent.  The bootloader owns the actual LPLL configuration.
+  /* LPLL (FRACPLL) — lives in the CCI_CRU domain at 0x27248000.
+   * Rate is derived from LPLL_CON(0..2) registers at runtime using the
+   * FRACPLL formula: FOUT = ((m + k/65536) * FIN) / (p * 2^s).
+   * Parent is xin_osc0 so the CLK framework provides 24 MHz to recalc_rate.
    */
 
-  clk_register_fixed_rate("clk_lpll", "xin_osc0", CLK_NAME_IS_STATIC,
-                          CONFIG_RK3576_OSC_FREQ);
+  lpll_priv.con_base = RK3576_CCI_CRU_ADDR + RK3576_CCICRU_LPLL_CON(0);
 
-  /* clk_litcore_pvtpll_src : deepslow / litcore_pvtpll mux.  The PVTPLL
-   * output is not modelled, so source it from deepslow (24 MHz osc).
+  lpll = clk_register("clk_lpll", lpll_parents, 1,
+                      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                      &g_rk3576_fracpll_ops, &lpll_priv, sizeof(lpll_priv));
+  DEBUGASSERT(lpll);
+  UNUSED(lpll);
+
+  /* clk_litcore_pvtpll : PVT (Process-Voltage-Temperature) monitoring PLL.
+   * This PLL's frequency varies with process corner, supply voltage, and
+   * die temperature.  It is NOT a stable clock source — it is used for
+   * performance monitoring and dynamic frequency scaling feedback.
+   * Register with NULL parent and 0 Hz to indicate unknown/dynamic rate.
    */
 
-  clk_register_fixed_rate("clk_litcore_pvtpll", "xin_osc0", CLK_NAME_IS_STATIC,
-                          CONFIG_RK3576_OSC_FREQ);
+  clk_register_fixed_rate("clk_litcore_pvtpll", NULL, CLK_NAME_IS_STATIC, 0);
 
   /* clk_litcore_src_sel : 2-bit mux (CLKSEL_CON00[13:12]). */
 

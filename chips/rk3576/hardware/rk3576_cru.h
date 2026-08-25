@@ -190,4 +190,16 @@
 #define RK3576_LITCORECRU_GATE_CON(n)    (0x0800 + ((n)*4))
 #define RK3576_LITCORECRU_SOFTRST_CON(n) (0x0A00 + ((n)*4))
 
+/* -----------------------------------------------------------------------
+ * CCI_CRU registers (CCI power domain, 0x27248000).
+ *
+ * The LPLL (Little-core PLL) resides in the CCI_CRU and feeds the
+ * little-core cluster.  It is a FRACPLL with the same register layout
+ * as other Rockchip FRACPLLs.
+ *
+ * Reference: RK3576 TRM Chapter 2.12 "CCI_CRU".
+ */
+
+#define RK3576_CCICRU_LPLL_CON(n) (0x0040 + ((n)*4))
+
 #endif /* __ARCH_ARM64_SRC_RK3576_HARDWARE_RK3576_CRU_H */
