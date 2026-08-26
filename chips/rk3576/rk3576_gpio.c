@@ -170,6 +170,12 @@ struct rk3576_gpio_dev_s
    *     is still using it.
    *   - The final release (1 -> 0) frees the struct, on whichever thread
    *     dropped the last reference (ISR or put()).
+   *
+   * Because the refcount also tracks in-flight ISR callbacks, the
+   * exclusive-claim marker g_gpio_claimed for the pin is only released
+   * together with this final free (see rk3576_gpio_put): until then the
+   * pin cannot be re-claimed, so a stale callback can never race a new
+   * owner's reconfiguration of the same physical pin.
    */
 
   atomic_t refs;
@@ -185,6 +191,15 @@ static spinlock_t g_gpio_lock = SP_UNLOCKED;
  * the claim check can be done and committed in a tiny critical section,
  * while the actual kmm_zalloc() and hardware configuration happen outside
  * the spin-lock (they are slow and may context-switch).
+ *
+ * The marker is CLEARED only at the point the last reference to the handle
+ * is dropped (the final kmm_free), whether that happens on the releasing
+ * thread or on an in-flight ISR.  It is deliberately NOT cleared at the
+ * start of rk3576_gpio_put(): an ISR may still be executing a callback
+ * against this pin via a borrowed reference, and re-claiming the pin at
+ * that moment would let a new owner reconfigure the hardware while the old
+ * callback can still poke the same physical pin.  Keeping the claim set
+ * until the last reference drains preserves single occupancy.
  */
 
 static bool g_gpio_claimed[RK3576_GPIO_NPORTS][RK3576_GPIO_NPINS];
@@ -777,6 +792,17 @@ static int rk3576_gpio_isr(int irq, void *context, void *arg)
 
           if (atomic_sub(&idev->refs, 1) == 1)
             {
+              /* We hold the last reference: this ISR performs the final
+               * free.  put() has already unpublished the handle and masked
+               * the interrupt; clear the claim marker (under the lock,
+               * safe in interrupt context) so the pin becomes re-claimable
+               * only after the last in-flight callback has fully drained,
+               * then free.
+               */
+
+              flags = spin_lock_irqsave(&g_gpio_lock);
+              g_gpio_claimed[idev->port][idev->pin] = false;
+              spin_unlock_irqrestore(&g_gpio_lock, flags);
               kmm_free(idev);
             }
         }
@@ -1292,15 +1318,31 @@ int rk3576_gpio_put(FAR struct gpio_dev_s *handle)
    */
 
   g_gpio_devs[dev->port][dev->pin] = NULL;
-  g_gpio_claimed[dev->port][dev->pin] = false;
 
   if (atomic_sub(&dev->refs, 1) == 1)
     {
+      /* No ISR had borrowed this handle (refs old value 1 -> 0): this put()
+       * is the final user and performs the free.  Clear the claim marker
+       * while still holding the lock, so the pin becomes re-claimable only
+       * now that no in-flight callback could still touch it; free outside.
+       */
+
+      g_gpio_claimed[dev->port][dev->pin] = false;
       spin_unlock_irqrestore(&g_gpio_lock, flags);
       kmm_free(dev);
     }
   else
     {
+      /* An ISR still holds a borrowed reference (refs did not reach 0): it
+       * is executing a callback against this very pin.  Deliberately do NOT
+       * clear g_gpio_claimed here -- doing so would let another caller
+       * re-claim the pin and reconfigure the hardware while the old ISR
+       * callback (still holding the old handle) can still poke the same
+       * physical pin.  Keep the claim until that in-flight ISR drops its
+       * last reference (which performs the final free and clears the
+       * claim), preserving single occupancy.
+       */
+
       spin_unlock_irqrestore(&g_gpio_lock, flags);
     }
 
