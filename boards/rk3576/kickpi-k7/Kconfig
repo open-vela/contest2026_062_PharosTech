@@ -30,4 +30,26 @@ config KICKPI_K7_STORAGE_AUTOMOUNT
 		card insertion and removal.  /tmp remains a safe tmpfs; persistent
 		temporary storage is published as /tmp/persist when /data is mounted.
 
+choice
+	prompt "Default audio output route"
+	default KICKPI_K7_AUDIO_OUTPUT_AUTO
+	depends on KICKPI_K7_AUDIO
+
+config KICKPI_K7_AUDIO_OUTPUT_AUTO
+	bool "Automatic (headphones take priority)"
+
+config KICKPI_K7_AUDIO_OUTPUT_HEADPHONES
+	bool "Headphones only"
+
+config KICKPI_K7_AUDIO_OUTPUT_SPEAKER
+	bool "Speaker only"
+
+config KICKPI_K7_AUDIO_OUTPUT_BOTH
+	bool "Headphones and speaker"
+
+config KICKPI_K7_AUDIO_OUTPUT_OFF
+	bool "All outputs off"
+
+endchoice
+
 endif # ARCH_BOARD_KICKPI_K7
