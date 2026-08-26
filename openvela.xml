@@ -2,6 +2,7 @@
 <manifest>
   <remote fetch="../open-vela/" name="openvela"/>
   <remote fetch="../" name="git"/>
+  <remote fetch="https://github.com/BeaconCat/" name="beaconcat"/>
   <default remote="openvela" revision="dev-ai-contest-2026"/>
 
   <project path="apps" name="nuttx-apps"/>
@@ -183,7 +184,9 @@
   <project path="frameworks/system/utils" name="frameworks_system_utils"/>
   <project path="frameworks/system/utils/uv" name="frameworks_system_utils_uv"/>
   <project path="frameworks/system/vibrator" name="frameworks_system_vibrator"/>
-  <project path="nuttx" name="nuttx">
+  <!-- Reviewed in https://github.com/BeaconCat/nuttx/pull/9 -->
+  <project path="nuttx" name="nuttx" remote="beaconcat"
+           revision="beaconcat/rk3576-xhci-host">
     <linkfile src="tools/build.sh" dest="build.sh"/>
   </project>
   <project path="nuttx/drivers/mtd/dhara" name="nuttx_drivers_mtd_dhara"/>

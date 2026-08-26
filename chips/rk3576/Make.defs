@@ -47,12 +47,20 @@ ifeq ($(CONFIG_RK3576_USB),y)
 CHIP_CSRCS += rk3576_usb.c
 endif
 
+ifeq ($(CONFIG_RK3576_USBHOST),y)
+CHIP_CSRCS += rk3576_usbhost.c
+endif
+
 ifeq ($(CONFIG_RK3576_EMMC),y)
 CHIP_CSRCS += rk3576_emmc.c
 endif
 
+ifneq ($(filter y,$(CONFIG_RK3576_DMA) $(CONFIG_RK3576_USBHOST)),)
+CHIP_CSRCS += rk3576_addrenv.c
+endif
+
 ifeq ($(CONFIG_RK3576_DMA),y)
-CHIP_CSRCS += rk3576_addrenv.c rk3576_dma.c
+CHIP_CSRCS += rk3576_dma.c
 endif
 
 ifeq ($(CONFIG_RK3576_DMA_ALLOC),y)

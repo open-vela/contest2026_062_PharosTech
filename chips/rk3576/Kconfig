@@ -134,6 +134,21 @@ config RK3576_USB
 		high-speed, for CDC/ACM and ADB gadget use cases.  The host
 		(xHCI) role can be added alongside.
 
+config RK3576_USBHOST
+	bool "RK3576 USB OTG1 xHCI host controller"
+	default n
+	select USBHOST
+	select USBHOST_WAITER
+	select USBHOST_XHCI
+	select USBHOST_HUB
+	select USBHOST_ASYNCH
+	select SCHED_HPWORK
+	select SCHED_LPWORK
+	---help---
+		Enable the RK3576 USB OTG1 controller at 0x23400000 in host mode
+		and attach its memory-mapped xHCI controller to the NuttX USB host
+		stack.  Board code remains responsible for VBUS power.
+
 config RK3576_DMA
 	bool "DMA (ARM PL330 / DMA-330)"
 	default n

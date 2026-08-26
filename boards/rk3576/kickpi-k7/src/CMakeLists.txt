@@ -9,6 +9,10 @@ if(CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT)
   list(APPEND SRCS kickpi_k7_storage.c)
 endif()
 
+if(CONFIG_KICKPI_K7_USBHOST)
+  list(APPEND SRCS kickpi_k7_usbhost.c)
+endif()
+
 target_sources(board PRIVATE ${SRCS})
 
 if(CONFIG_ETC_ROMFS)

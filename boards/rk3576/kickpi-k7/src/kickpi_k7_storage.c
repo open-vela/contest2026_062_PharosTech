@@ -40,6 +40,7 @@
 #include <nuttx/fs/fs.h>
 #include <nuttx/fs/partition.h>
 #include <nuttx/sdio.h>
+#include <nuttx/usb/usbhost.h>
 #include <nuttx/wqueue.h>
 
 #include "kickpi_k7.h"
@@ -58,6 +59,7 @@
 #define KICKPI_K7_STORAGE_DATA_MOUNT     "/data"
 #define KICKPI_K7_STORAGE_SD_MOUNT       "/sd"
 #define KICKPI_K7_STORAGE_EMMC_MOUNT     "/emmc"
+#define KICKPI_K7_STORAGE_USB_MOUNT      "/usb"
 #define KICKPI_K7_STORAGE_PERSIST_TMP    KICKPI_K7_STORAGE_DATA_MOUNT "/tmp"
 
 /****************************************************************************
@@ -83,6 +85,7 @@ struct kickpi_k7_storage_media_s
   bool removable;
   bool mounted;
   bool primary;
+  bool fixed_mount;
   uint8_t retries;
   char mountpoint[KICKPI_K7_STORAGE_PATH_MAX];
 };
@@ -103,6 +106,16 @@ static struct kickpi_k7_storage_media_s g_emmc_media = {
   .blockdev = "/dev/mmcsd1",
   .secondary_mount = KICKPI_K7_STORAGE_EMMC_MOUNT,
 };
+
+#ifdef CONFIG_USBHOST_MSC_NOTIFIER
+static struct kickpi_k7_storage_media_s g_usb_media = {
+  .name = "usb",
+  .blockdev = "/dev/sda",
+  .secondary_mount = KICKPI_K7_STORAGE_USB_MOUNT,
+  .removable = true,
+  .fixed_mount = true,
+};
+#endif
 
 static FAR struct kickpi_k7_storage_media_s *g_primary_media;
 static struct work_s g_sd_work;
@@ -243,6 +256,7 @@ static int kickpi_k7_storage_mount(FAR struct kickpi_k7_storage_media_s *media)
 {
   FAR struct kickpi_k7_storage_candidate_s *candidate;
   FAR const char *mountpoint;
+  FAR const char *fstype;
   FAR const char *source = media->blockdev;
   bool mountpoint_created = false;
   int ret;
@@ -256,8 +270,10 @@ static int kickpi_k7_storage_mount(FAR struct kickpi_k7_storage_media_s *media)
              media->name);
     }
 
-  mountpoint = g_primary_media == NULL ? KICKPI_K7_STORAGE_DATA_MOUNT
-                                       : media->secondary_mount;
+  mountpoint = !media->fixed_mount && g_primary_media == NULL
+                   ? KICKPI_K7_STORAGE_DATA_MOUNT
+                   : media->secondary_mount;
+  fstype = media->fixed_mount ? "fatfs" : "vfat";
 
   if (mkdir(mountpoint, 0770) == 0)
     {
@@ -271,14 +287,14 @@ static int kickpi_k7_storage_mount(FAR struct kickpi_k7_storage_media_s *media)
   while ((candidate = kickpi_k7_storage_best_candidate(media)) != NULL)
     {
       candidate->score = -1;
-      if (mount(candidate->path, mountpoint, "vfat", 0, NULL) == 0)
+      if (mount(candidate->path, mountpoint, fstype, 0, NULL) == 0)
         {
           source = candidate->path;
           goto mounted;
         }
     }
 
-  if (mount(media->blockdev, mountpoint, "vfat", 0, NULL) < 0)
+  if (mount(media->blockdev, mountpoint, fstype, 0, NULL) < 0)
     {
       ret = -errno;
       kickpi_k7_storage_remove_partitions(media);
@@ -293,7 +309,7 @@ static int kickpi_k7_storage_mount(FAR struct kickpi_k7_storage_media_s *media)
 mounted:
   strlcpy(media->mountpoint, mountpoint, sizeof(media->mountpoint));
   media->mounted = true;
-  media->primary = g_primary_media == NULL;
+  media->primary = !media->fixed_mount && g_primary_media == NULL;
   if (media->primary)
     {
       g_primary_media = media;
@@ -405,6 +421,49 @@ static void kickpi_k7_storage_sd_event(FAR void *arg, bool inserted)
              MSEC2TICK(KICKPI_K7_STORAGE_SETTLE_MS));
 }
 
+#ifdef CONFIG_USBHOST_MSC_NOTIFIER
+static void kickpi_k7_storage_usb_connect(FAR void *arg)
+{
+  FAR struct kickpi_k7_storage_media_s *media = arg;
+  int ret;
+
+  usbhost_msc_notifier_setup(kickpi_k7_storage_usb_connect,
+                             WORK_USB_MSC_CONNECT, 'a', media);
+
+  if (!media->mounted)
+    {
+      ret = kickpi_k7_storage_mount(media);
+      if (ret < 0)
+        {
+          syslog(LOG_WARNING, "WARNING: storage: USB mount failed: %d\n", ret);
+        }
+    }
+}
+
+static void kickpi_k7_storage_usb_disconnect(FAR void *arg)
+{
+  FAR struct kickpi_k7_storage_media_s *media = arg;
+  int ret = OK;
+
+  usbhost_msc_notifier_setup(kickpi_k7_storage_usb_disconnect,
+                             WORK_USB_MSC_DISCONNECT, 'a', media);
+
+  if (media->mounted)
+    {
+      ret = kickpi_k7_storage_unmount(media);
+    }
+  else
+    {
+      kickpi_k7_storage_remove_partitions(media);
+    }
+
+  if (ret < 0)
+    {
+      syslog(LOG_WARNING, "WARNING: storage: USB unmount failed: %d\n", ret);
+    }
+}
+#endif
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -413,6 +472,22 @@ int kickpi_k7_storage_initialize(FAR struct sdio_dev_s *sdmmc,
                                  FAR struct sdio_dev_s *emmc)
 {
   int ret;
+
+#ifdef CONFIG_USBHOST_MSC_NOTIFIER
+  ret = usbhost_msc_notifier_setup(kickpi_k7_storage_usb_connect,
+                                   WORK_USB_MSC_CONNECT, 'a', &g_usb_media);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = usbhost_msc_notifier_setup(kickpi_k7_storage_usb_disconnect,
+                                   WORK_USB_MSC_DISCONNECT, 'a', &g_usb_media);
+  if (ret < 0)
+    {
+      return ret;
+    }
+#endif
 
   if (mount(NULL, "/tmp", "tmpfs", 0, NULL) < 0 && errno != EBUSY)
     {

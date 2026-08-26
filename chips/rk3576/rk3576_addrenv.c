@@ -63,6 +63,17 @@
  ****************************************************************************/
 
 /****************************************************************************
+ * Name: up_addrenv_pa_to_va
+ *
+ * Description:
+ *   Convert an identity-mapped DMA physical address back to a CPU pointer.
+ *   RK3576 flat builds keep DMA buffers identity mapped.
+ *
+ ****************************************************************************/
+
+FAR void *up_addrenv_pa_to_va(uintptr_t paddr) { return (FAR void *)paddr; }
+
+/****************************************************************************
  * Name: up_addrenv_va_to_pa
  *
  * Description:

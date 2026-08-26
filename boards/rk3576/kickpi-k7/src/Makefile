@@ -45,6 +45,10 @@ ifeq ($(CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT),y)
 CSRCS += kickpi_k7_storage.c
 endif
 
+ifeq ($(CONFIG_KICKPI_K7_USBHOST),y)
+CSRCS += kickpi_k7_usbhost.c
+endif
+
 ifeq ($(CONFIG_ETC_ROMFS),y)
   RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS
 endif

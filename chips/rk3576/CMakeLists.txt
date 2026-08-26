@@ -25,12 +25,20 @@ if(CONFIG_RK3576_USB)
   list(APPEND SRCS rk3576_usb.c)
 endif()
 
+if(CONFIG_RK3576_USBHOST)
+  list(APPEND SRCS rk3576_usbhost.c)
+endif()
+
 if(CONFIG_RK3576_EMMC)
   list(APPEND SRCS rk3576_emmc.c)
 endif()
 
+if(CONFIG_RK3576_DMA OR CONFIG_RK3576_USBHOST)
+  list(APPEND SRCS rk3576_addrenv.c)
+endif()
+
 if(CONFIG_RK3576_DMA)
-  list(APPEND SRCS rk3576_addrenv.c rk3576_dma.c)
+  list(APPEND SRCS rk3576_dma.c)
 endif()
 
 if(CONFIG_RK3576_DMA_ALLOC)

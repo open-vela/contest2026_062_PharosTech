@@ -98,6 +98,12 @@ jobs:
           git fetch ci ${{ env.MANIFEST_COMMIT }}
           git checkout FETCH_HEAD
 
+      - name: Resync target manifest dependencies
+        run: |
+          cd ${{ env.OPENVELA_DIR }}
+          cp "${{ env.REPO_NAME }}/openvela.xml" .repo/manifests/openvela.xml
+          repo sync -c -j4 nuttx
+
       # CMake 构建
       - name: Build (CMake)
         id: cmake_build

@@ -1,5 +1,5 @@
 /****************************************************************************
- * chips/rk3576/rk3576_usb.h
+ * boards/rk3576/kickpi-k7/src/kickpi_k7_usbhost.c
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -20,65 +20,75 @@
  *
  ****************************************************************************/
 
-#ifndef __ARCH_ARM64_SRC_RK3576_RK3576_USB_H
-#define __ARCH_ARM64_SRC_RK3576_RK3576_USB_H
-
 /****************************************************************************
  * Included Files
  ****************************************************************************/
 
 #include <nuttx/config.h>
 
-struct usbhost_connection_s;
+#ifdef CONFIG_KICKPI_K7_USBHOST
+
+#include <errno.h>
+
+#include <nuttx/arch.h>
+#include <nuttx/usb/usbhost.h>
+
+#include "kickpi_k7.h"
+#include "rk3576_gpio.h"
+#include "rk3576_usb.h"
 
 /****************************************************************************
- * Public Function Prototypes
+ * Pre-processor Definitions
  ****************************************************************************/
 
-#ifndef __ASSEMBLY__
+#define KICKPI_K7_USBHOST_VBUS           (GPIO_PORT3 | GPIO_PIN_D6 | GPIO_OUTPUT)
 
-#ifdef __cplusplus
-#define EXTERN extern "C"
-extern "C" {
-#else
-#define EXTERN extern
-#endif
+#define KICKPI_K7_USBHOST_POWER_DELAY_MS 600
+#define KICKPI_K7_USBHOST_POWER_OFF_MS   100
 
 /****************************************************************************
- * Name: rk3576_usb_initialize
- *
- * Description:
- *   Bring up the RK3576 USB OTG0 controller (Synopsys DWC3 at 0x23000000)
- *   in peripheral (device) mode and hook it into the NuttX USB device
- *   stack.  Called implicitly by usbdev_register() when the first class
- *   driver binds, but a board may call it early to fail fast.
- *
- * Returned Value:
- *   OK on success; a negated errno on failure (e.g. the core ID register
- *   does not read back as a DWC3).
- *
+ * Private Data
  ****************************************************************************/
 
-int rk3576_usb_initialize(void);
+static FAR struct usbhost_connection_s *g_kickpi_k7_usbhost;
 
 /****************************************************************************
- * Name: rk3576_usbhost_initialize
- *
- * Description:
- *   Put USB1 into host mode and attach its xHCI register window and fixed
- *   interrupt to the NuttX USB host stack.
- *
- * Returned Value:
- *   A USB host connection on success; NULL on failure.
- *
+ * Public Functions
  ****************************************************************************/
 
-FAR struct usbhost_connection_s *rk3576_usbhost_initialize(void);
+int kickpi_k7_usbhost_initialize(void)
+{
+  int ret;
 
-#undef EXTERN
-#ifdef __cplusplus
+  if (g_kickpi_k7_usbhost != NULL)
+    {
+      return OK;
+    }
+
+  ret = rk3576_config_gpio(KICKPI_K7_USBHOST_VBUS);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  up_mdelay(KICKPI_K7_USBHOST_POWER_OFF_MS);
+  rk3576_gpio_write(KICKPI_K7_USBHOST_VBUS, true);
+
+  /* GPIO3_D6 enables both load switches supplying VBUS to the three
+   * external downstream ports.  Allow the GL3510 crystal and regulators
+   * to settle before xHCI probes an already-connected root port.
+   */
+
+  up_mdelay(KICKPI_K7_USBHOST_POWER_DELAY_MS);
+
+  g_kickpi_k7_usbhost = rk3576_usbhost_initialize();
+  if (g_kickpi_k7_usbhost == NULL)
+    {
+      rk3576_gpio_write(KICKPI_K7_USBHOST_VBUS, false);
+      return -ENODEV;
+    }
+
+  return OK;
 }
-#endif
 
-#endif /* __ASSEMBLY__ */
-#endif /* __ARCH_ARM64_SRC_RK3576_RK3576_USB_H */
+#endif /* CONFIG_KICKPI_K7_USBHOST */

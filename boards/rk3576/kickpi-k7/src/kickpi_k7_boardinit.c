@@ -216,6 +216,16 @@ void board_late_initialize(void)
   }
 #endif
 
+#ifdef CONFIG_KICKPI_K7_USBHOST
+  {
+    int ret = kickpi_k7_usbhost_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: USB-A host initialization failed: %d\n", ret);
+      }
+  }
+#endif
+
 #ifdef CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT
   {
     int ret = kickpi_k7_storage_initialize(

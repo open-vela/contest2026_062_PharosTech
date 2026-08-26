@@ -71,7 +71,17 @@
 
 /* USB OTG (Synopsys DesignWare USB3 / DWC3) */
 
-#define RK3576_USB0_ADDR 0x23000000 /* USB OTG0 (DWC3)       */
+#define RK3576_USB0_ADDR 0x23000000 /* USB OTG0 (DWC3) */
+#define RK3576_USB1_ADDR 0x23400000 /* USB OTG1 (DWC3) */
+
+/* USB and PIPE PHY register files */
+
+#define RK3576_USB_GRF_ADDR       0x2601e000
+#define RK3576_PHP_GRF_ADDR       0x26020000
+#define RK3576_PMU0_GRF_ADDR      0x26024000
+#define RK3576_PIPE_PHY1_GRF_ADDR 0x2602a000
+#define RK3576_USB2PHY_GRF_ADDR   0x2602e000
+#define RK3576_COMBPHY1_ADDR      0x2b060000
 
 /* I2C controller (Synopsys/Rockchip RK I2C, "rk3399-i2c" compatible). */
 

@@ -30,4 +30,15 @@ config KICKPI_K7_STORAGE_AUTOMOUNT
 		card insertion and removal.  /tmp remains a safe tmpfs; persistent
 		temporary storage is published as /tmp/persist when /data is mounted.
 
+config KICKPI_K7_USBHOST
+	bool "Three-port USB-A host"
+	default n
+	depends on RK3576_USBHOST && RK3576_GPIO
+	select USBHOST_MSC
+	select USBHOST_HIDKBD
+	select USBHOST_HIDMOUSE
+	---help---
+		Enable GPIO3_D6 VBUS and initialize USB1 xHCI for the on-board
+		GL3510 SuperSpeed hub and the three external USB-A ports.
+
 endif # ARCH_BOARD_KICKPI_K7
