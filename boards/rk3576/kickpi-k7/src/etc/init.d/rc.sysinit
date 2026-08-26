@@ -25,3 +25,7 @@
 #ifdef CONFIG_FS_PROCFS
 mount -t procfs CONFIG_NSH_PROC_MOUNTPOINT
 #endif
+
+#ifdef CONFIG_FS_TMPFS
+mount -t tmpfs tmpfs /tmp
+#endif
