@@ -1,0 +1,23 @@
+config SYSTEM_AUDIOCTL
+	tristate "KICKPI-K7 audio control"
+	default n
+	depends on KICKPI_K7_AUDIO
+	---help---
+		Control ES8388 routing and hardware channel processing through
+		/dev/audio/pcm0 ioctls.
+
+if SYSTEM_AUDIOCTL
+
+config SYSTEM_AUDIOCTL_PROGNAME
+	string "Program name"
+	default "audioctl"
+
+config SYSTEM_AUDIOCTL_PRIORITY
+	int "audioctl task priority"
+	default 100
+
+config SYSTEM_AUDIOCTL_STACKSIZE
+	int "audioctl stack size"
+	default 4096
+
+endif
