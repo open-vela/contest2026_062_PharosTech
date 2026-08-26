@@ -788,21 +788,26 @@ static int pcf8563_rdalarm(FAR struct rtc_lowerhalf_s *lower,
  *
  ****************************************************************************/
 
-static void pcf8563_alarm_worker(FAR void *arg)
+static void pcf8563_alarm_release_pending_latch(void)
 {
-  uint8_t status2;
-  rtc_alarm_callback_t cb;
-  FAR void *priv;
   irqstate_t flags;
-  int ret;
 
-  /* Release the pending latch.  The latch is shared with the ISR-side
-   * test-and-set, so it must be cleared atomically on SMP.
+  /* The latch is shared with the ISR-side test-and-set, so it must be
+   * cleared atomically on SMP.
    */
 
   flags = spin_lock_irqsave(&g_pcf8563.dev.pending_lock);
   g_pcf8563.dev.alarm_pending = false;
   spin_unlock_irqrestore(&g_pcf8563.dev.pending_lock, flags);
+}
+
+static void pcf8563_alarm_worker(FAR void *arg)
+{
+  uint8_t status2;
+  uint8_t regs[5];
+  rtc_alarm_callback_t cb;
+  FAR void *priv;
+  int ret;
 
   /* Serialize register access and callback state with setalarm() /
    * cancelalarm().  The upper-half callback is invoked after the lock is
@@ -817,8 +822,7 @@ static void pcf8563_alarm_worker(FAR void *arg)
   if (ret < 0)
     {
       rtcerr("ERROR: pcf8563_read_reg (status2) failed: %d\n", ret);
-      nxmutex_unlock(&g_pcf8563.dev.lock);
-      return;
+      goto out;
     }
 
   /* Was the alarm flag set?  If not, nothing to do (e.g. a spurious or
@@ -827,47 +831,84 @@ static void pcf8563_alarm_worker(FAR void *arg)
 
   if ((status2 & PCF8563_CS2_AF) == 0)
     {
-      nxmutex_unlock(&g_pcf8563.dev.lock);
-      return;
+      goto out;
     }
 
-  /* Clear the alarm flag.  PCF8563 AF/TF are write-0-to-clear: writing 1
-   * leaves the flag unchanged, and the write access is ANDed with the
-   * current register value, so a raw write of AF|TF would neither clear AF
-   * nor preserve AIE/TIE.  Read-modify-write status2, clearing only AF.
+  /* First (one-shot) alarm fire.  The PCF8563 re-asserts AF and keeps INT
+   * active every time the clock matches the programmed alarm fields, so to
+   * honor the one-shot NuttX RTC model we must, while handling this fire:
+   *   - clear AF and disable AIE (status2 read-modify-write, keeping
+   *     TIE/TF/TI_TP), releasing the INT pin;
+   *   - disable all alarm fields (AE_x = 1) so a later match cannot
+   *     re-trigger;
+   *   - drop the callback so it is not invoked again.
    */
 
-  status2 &= ~PCF8563_CS2_AF;
+  status2 &= ~(PCF8563_CS2_AF | PCF8563_CS2_AIE);
   {
-    uint8_t clear[2] = { PCF8563_REG_CTRL_STATUS2, status2 };
+    uint8_t data[2] = { PCF8563_REG_CTRL_STATUS2, status2 };
 
-    ret = pcf8563_write_reg(clear[0], clear, sizeof(clear));
+    ret = pcf8563_write_reg(data[0], data, sizeof(data));
     if (ret < 0)
       {
-        rtcerr("ERROR: pcf8563_write_reg (clear AF) failed: %d\n", ret);
-        nxmutex_unlock(&g_pcf8563.dev.lock);
-        return;
+        rtcerr("ERROR: pcf8563_write_reg (clear AF/AIE) failed: %d\n", ret);
+        goto out;
       }
   }
 
-  /* Snapshot the callback under the lock, then release the lock before
-   * invoking the callback (the callback may re-arm or cancel the alarm).
+  /* Disable all four alarm fields (AE_x = 1) so the one-shot alarm cannot
+   * fire again on a later (e.g. next minute/day) match.
+   */
+
+  regs[0] = PCF8563_REG_MINUTE_ALARM;
+  regs[1] = PCF8563_AE_M;
+  regs[2] = PCF8563_AE_H;
+  regs[3] = PCF8563_AE_D;
+  regs[4] = PCF8563_AE_W;
+
+  ret = pcf8563_write_reg(PCF8563_REG_MINUTE_ALARM, regs, sizeof(regs));
+  if (ret < 0)
+    {
+      rtcerr("ERROR: pcf8563_write_reg (alarm disable) failed: %d\n", ret);
+      goto out;
+    }
+
+  /* Drop the callback reference and snapshot it so the notification
+   * reflects the alarm that just fired.  The callback may be NULL if the
+   * alarm was cancelled between arming and firing.
    */
 
   cb = g_pcf8563.dev.alarm_cb;
   priv = g_pcf8563.dev.alarm_priv;
+  g_pcf8563.dev.alarm_cb = NULL;
+  g_pcf8563.dev.alarm_priv = NULL;
 
   nxmutex_unlock(&g_pcf8563.dev.lock);
 
+  /* Release the pending latch only now, once the ISR source (AF, and the INT
+   * pin while AF/AIE are set) has been cleared.  Releasing it earlier would
+   * let the still-asserted INT re-arm the latch and spam the work queue with
+   * further workers until AF was cleared.  On the error path below the latch
+   * is released too, so a later interrupt (or freshly re-armed alarm) can
+   * retry instead of being silently dropped forever.
+   */
+
+  pcf8563_alarm_release_pending_latch();
+
   /* Notify the upper half.  The alarm is one-shot; it will not re-fire until
-   * setalarm() is called again.  The callback may be NULL if the alarm was
-   * cancelled between arming and firing.
+   * setalarm() is called again.
    */
 
   if (cb != NULL)
     {
       cb(priv, 0);
     }
+
+  return;
+
+out:
+  nxmutex_unlock(&g_pcf8563.dev.lock);
+  pcf8563_alarm_release_pending_latch();
 }
 
 /****************************************************************************
@@ -910,9 +951,7 @@ void pcf8563_alarm_service(FAR void *arg)
        * alarm would be silently dropped.
        */
 
-      flags = spin_lock_irqsave(&g_pcf8563.dev.pending_lock);
-      g_pcf8563.dev.alarm_pending = false;
-      spin_unlock_irqrestore(&g_pcf8563.dev.pending_lock, flags);
+      pcf8563_alarm_release_pending_latch();
     }
 }
 #endif /* CONFIG_RTC_ALARM */
