@@ -8,6 +8,11 @@
   -->
   <include name="openvela.xml"/>
 
+  <!-- Track the reviewed ES8388 integration branch until it is upstreamed. -->
+  <remote name="beaconcat" fetch="https://github.com/BeaconCat/"/>
+  <extend-project name="nuttx" remote="beaconcat"
+                  revision="refs/heads/beaconcat/integrate-es8388"/>
+
   <project path="contest2026_062_PharosTech" name="contest2026_062_PharosTech">
     <linkfile src="boards" dest="vendor/rockchip/boards"/>
     <linkfile src="chips" dest="vendor/rockchip/chips"/>
