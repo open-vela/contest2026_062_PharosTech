@@ -555,24 +555,40 @@ static int pcf8563_setalarm(FAR struct rtc_lowerhalf_s *lower,
       return ret;
     }
 
-  /* Enable the alarm interrupt (AIE).  Write the register address (01h) as
-   * the first byte followed by the new value.  Note: pcf8563_write_reg()
-   * treats buffer[0] as the register address and the remaining bytes as
-   * data, so the data must be offset by one.  Writing 0 to the AF/TF bits
-   * in the same access also clears any stale alarm flag, so a previously
-   * fired alarm cannot immediately re-assert INT once AIE is set.
+  /* Enable the alarm interrupt (AIE) and clear any stale alarm flag (AF),
+   * preserving the timer state.  A raw whole-byte write to Control/status 2
+   * is wrong: the PCF8563 performs a logic AND on register writes (a 1 keeps
+   * the bit, a 0 clears it) to protect the AF/TF flags, so writing a fixed
+   * byte would (a) never set AIE if it was previously 0, and (b) clobber an
+   * active timer (TIE/TF).  Do a read-modify-write instead: read the current
+   * value, set AIE, clear only AF, and leave TIE/TF/TI_TP untouched.
    */
 
   {
-    uint8_t status2[2] = { PCF8563_REG_CTRL_STATUS2, PCF8563_CS2_AIE };
+    uint8_t status2;
 
-    ret = pcf8563_write_reg(status2[0], status2, sizeof(status2));
+    ret = pcf8563_read_reg(PCF8563_REG_CTRL_STATUS2, &status2, 1);
     if (ret < 0)
       {
-        rtcerr("ERROR: pcf8563_write_reg (AIE) failed: %d\n", ret);
+        rtcerr("ERROR: pcf8563_read_reg (status2) failed: %d\n", ret);
         nxmutex_unlock(&g_pcf8563.dev.lock);
         return ret;
       }
+
+    status2 |= PCF8563_CS2_AIE; /* Enable alarm interrupt */
+    status2 &= ~PCF8563_CS2_AF; /* Clear stale alarm flag */
+
+    {
+      uint8_t data[2] = { PCF8563_REG_CTRL_STATUS2, status2 };
+
+      ret = pcf8563_write_reg(data[0], data, sizeof(data));
+      if (ret < 0)
+        {
+          rtcerr("ERROR: pcf8563_write_reg (AIE) failed: %d\n", ret);
+          nxmutex_unlock(&g_pcf8563.dev.lock);
+          return ret;
+        }
+    }
   }
 
   /* Vector the alarm callback through the compacted lower-half state.  The
@@ -688,20 +704,37 @@ static int pcf8563_cancelalarm(FAR struct rtc_lowerhalf_s *lower, int alarmid)
       return ret;
     }
 
-  /* Disable the alarm interrupt.  Writing 0 to AF/TF here also clears any
-   * pending alarm flag, so a stale AF cannot re-assert INT once AIE is
-   * re-enabled by a later setalarm().
+  /* Disable the alarm interrupt (AIE) and clear any pending alarm flag (AF),
+   * preserving the timer state.  As in setalarm(), a raw whole-byte write is
+   * wrong for the same AND-write reason: writing 0 would also clear TIE/TF
+   * and break a running timer.  Read-modify-write instead keeps TIE/TF.
    */
 
-  regs[0] = PCF8563_REG_CTRL_STATUS2;
-  regs[1] = 0;
-  ret = pcf8563_write_reg(PCF8563_REG_CTRL_STATUS2, regs, 2);
-  if (ret < 0)
+  {
+    uint8_t status2;
+
+    ret = pcf8563_read_reg(PCF8563_REG_CTRL_STATUS2, &status2, 1);
+    if (ret < 0)
+      {
+        rtcerr("ERROR: pcf8563_read_reg (status2) failed: %d\n", ret);
+        nxmutex_unlock(&g_pcf8563.dev.lock);
+        return ret;
+      }
+
+    status2 &= ~(PCF8563_CS2_AIE | PCF8563_CS2_AF); /* Disable, clear AF */
+
     {
-      rtcerr("ERROR: pcf8563_write_reg (AIE clear) failed: %d\n", ret);
-      nxmutex_unlock(&g_pcf8563.dev.lock);
-      return ret;
+      uint8_t data[2] = { PCF8563_REG_CTRL_STATUS2, status2 };
+
+      ret = pcf8563_write_reg(data[0], data, sizeof(data));
+      if (ret < 0)
+        {
+          rtcerr("ERROR: pcf8563_write_reg (AIE clear) failed: %d\n", ret);
+          nxmutex_unlock(&g_pcf8563.dev.lock);
+          return ret;
+        }
     }
+  }
 
   /* Drop the callback reference. */
 
