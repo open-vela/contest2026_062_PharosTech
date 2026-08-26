@@ -12,5 +12,6 @@
     <linkfile src="boards" dest="vendor/rockchip/boards"/>
     <linkfile src="chips" dest="vendor/rockchip/chips"/>
     <linkfile src="app/k7flash" dest="apps/examples/k7flash"/>
+    <linkfile src="app/audioctl" dest="apps/system/audioctl"/>
   </project>
 </manifest>
