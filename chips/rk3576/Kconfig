@@ -314,6 +314,8 @@ config RK3576_MIPI_DSI
 	bool "MIPI DSI host controller"
 	default n
 	depends on RK3576_MIPI_DCPHY
+	select DRIVERS_VIDEO
+	select MIPI_DSI
 	---help---
 		Enable the RK3576 MIPI DSI host controller (DSIHOST @ 0x27d80000).
 		Depends on the MIPI DCPHY which drives the physical D-PHY lanes.

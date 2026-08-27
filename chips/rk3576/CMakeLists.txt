@@ -89,4 +89,12 @@ if(CONFIG_RK3576_SPI)
   list(APPEND SRCS rk3576_spi.c)
 endif()
 
+if(CONFIG_RK3576_MIPI_DCPHY)
+  list(APPEND SRCS rk3576_mipi_dcphy.c)
+endif()
+
+if(CONFIG_RK3576_MIPI_DSI)
+  list(APPEND SRCS rk3576_mipi_dsi.c)
+endif()
+
 target_sources(arch PRIVATE ${SRCS})
