@@ -144,6 +144,8 @@ struct rk3576_sai_buffer_s
   void *arg;                         /* Client callback argument          */
   struct ap_buffer_s *apb;           /* The audio buffer                  */
   int result;                        /* Transfer result                   */
+  bool mono;                         /* Select one sample per RX frame    */
+  uint8_t sample_bytes;              /* RX PCM width, zero for TX         */
 };
 
 /* State for one SAI controller instance. */
@@ -638,23 +640,24 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
    */
 
   slotbits = priv->datalen <= 16 ? 16 : 32;
-  xcr = SAI_XCR_DELAY_EN | SAI_XCR_CSR(1) | SAI_XCR_SNB(priv->channels) |
-        SAI_XCR_VDJ | SAI_XCR_SBW(slotbits) | SAI_XCR_VDW(priv->datalen);
+  /* I2S retains two wire slots even for hardware-selected mono samples. */
+
+  xcr = SAI_XCR_DELAY_EN | SAI_XCR_CSR(1) | SAI_XCR_SNB(2) | SAI_XCR_VDJ |
+        SAI_XCR_SBW(slotbits) | SAI_XCR_VDW(priv->datalen);
 
   /* SCLK = MCLK / N; N is the integer mclk/bclk ratio for the current
    * sample rate / channels / slot width.  Fall back to 1 (no division)
    * when the ratio is not an exact integer.
    */
 
-  mdiv = priv->channels * slotbits * priv->samplerate;
+  mdiv = 2 * slotbits * priv->samplerate;
   mdiv =
       (mdiv == 0 || priv->mclk_freq % mdiv != 0) ? 1 : priv->mclk_freq / mdiv;
 
   if (!shared)
     {
       rk3576_sai_putreg(priv, RK3576_SAI_FSCR,
-                        SAI_FSCR_EDGE_SEL |
-                            SAI_FSCR_FW(priv->channels * slotbits) |
+                        SAI_FSCR_EDGE_SEL | SAI_FSCR_FW(2 * slotbits) |
                             SAI_FSCR_FPW(slotbits));
       rk3576_sai_putreg(priv, RK3576_SAI_CKR, SAI_CKR_MDIV(mdiv));
     }
@@ -1063,6 +1066,21 @@ static void rk3576_sai_worker(void *arg)
       leave_critical_section(flags);
 
       DEBUGASSERT(bfc != NULL && bfc->callback != NULL);
+      if (bfc->result == OK && bfc->mono && bfc->sample_bytes == 2)
+        {
+          uint16_t *dest = (uint16_t *)&bfc->apb->samp[bfc->apb->curbyte];
+          size_t count = (bfc->apb->nbytes - bfc->apb->curbyte) /
+                         sizeof(uint32_t);
+          size_t i;
+
+          for (i = 0; i < count; i++)
+            {
+              dest[i] = dest[i * 2];
+            }
+
+          bfc->apb->nbytes = bfc->apb->curbyte + count * sizeof(uint16_t);
+        }
+
       bfc->callback(&priv->dev, bfc->apb, bfc->arg, bfc->result);
 
       apb_free(bfc->apb);
@@ -1276,6 +1294,8 @@ static int rk3576_sai_send(struct i2s_dev_s *dev, struct ap_buffer_s *apb,
     }
 
   priv->txenab = true;
+  bfc->mono = false;
+  bfc->sample_bytes = 0;
 
   apb_reference(apb);
 
@@ -1341,6 +1361,8 @@ static int rk3576_sai_receive(struct i2s_dev_s *dev, struct ap_buffer_s *apb,
     }
 
   priv->rxenab = true;
+  bfc->mono = priv->channels == 1;
+  bfc->sample_bytes = priv->datalen / 8;
 
   /* Report the full buffer as filled on success (single-shot capture). */
 
