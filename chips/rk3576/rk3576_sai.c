@@ -174,6 +174,8 @@ struct rk3576_sai_s
   bool txenab;               /* True: current run is TX               */
   bool rxenab;               /* True: current run is RX               */
   bool running;              /* True: controller armed for a run      */
+  bool initialized;          /* Controller setup completed            */
+  struct rk3576_sai_s *peer; /* Opposite direction, shared registers   */
   struct wdog_s dog;         /* Transfer timeout watchdog             */
   sq_queue_t pend;           /* Queue of pending transfers            */
   sq_queue_t act;            /* Queue of active transfers             */
@@ -341,6 +343,8 @@ static struct rk3576_sai_s g_rk3576_sai[10] = {
 #undef RK3576_SAI_INSTANCE
 
 #define RK3576_SAI_NINSTANCES (sizeof(g_rk3576_sai) / sizeof(g_rk3576_sai[0]))
+
+static struct rk3576_sai_s g_rk3576_sai_rx[RK3576_SAI_NINSTANCES];
 
 /****************************************************************************
  * Private Functions
@@ -589,6 +593,7 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
   uint32_t xcr;
   uint32_t mdiv;
   uint32_t slotbits;
+  bool shared = priv->peer != NULL && priv->peer->running;
   int ret;
 
   /* Ensure the transfer engine is stopped and its logic is cleared before
@@ -600,12 +605,26 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
    * the clear, then stop it again before reconfiguration.
    */
 
-  rk3576_sai_putreg(priv, RK3576_SAI_XFER, 0);
-  rk3576_sai_putreg(priv, RK3576_SAI_XFER, SAI_XFER_CLK);
+  if (shared && (priv->samplerate != priv->peer->samplerate ||
+                 priv->datalen != priv->peer->datalen ||
+                 priv->mclk_freq != priv->peer->mclk_freq))
+    {
+      return -EBUSY;
+    }
+
+  if (!shared)
+    {
+      rk3576_sai_putreg(priv, RK3576_SAI_XFER, 0);
+      rk3576_sai_putreg(priv, RK3576_SAI_XFER, SAI_XFER_CLK);
+    }
   up_udelay(2);
-  ret = rk3576_sai_clearlogic(
-      priv, (priv->txenab ? SAI_CLR_TXC : SAI_CLR_RXC) | SAI_CLR_FSC);
-  rk3576_sai_putreg(priv, RK3576_SAI_XFER, 0);
+  ret =
+      rk3576_sai_clearlogic(priv, (priv->txenab ? SAI_CLR_TXC : SAI_CLR_RXC) |
+                                      (shared ? 0 : SAI_CLR_FSC));
+  if (!shared)
+    {
+      rk3576_sai_putreg(priv, RK3576_SAI_XFER, 0);
+    }
   if (ret < 0)
     {
       return ret;
@@ -631,50 +650,52 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
   mdiv =
       (mdiv == 0 || priv->mclk_freq % mdiv != 0) ? 1 : priv->mclk_freq / mdiv;
 
-  if (priv->txenab)
+  if (!shared)
     {
-      rk3576_sai_putreg(priv, RK3576_SAI_TXCR, xcr);
       rk3576_sai_putreg(priv, RK3576_SAI_FSCR,
                         SAI_FSCR_EDGE_SEL |
                             SAI_FSCR_FW(priv->channels * slotbits) |
                             SAI_FSCR_FPW(slotbits));
       rk3576_sai_putreg(priv, RK3576_SAI_CKR, SAI_CKR_MDIV(mdiv));
-      rk3576_sai_putreg(priv, RK3576_SAI_MONO_CR,
-                        priv->channels == 1 ? SAI_MONO_CR_TX_MONO_EN : 0);
+    }
+
+  if (priv->txenab)
+    {
+      rk3576_sai_putreg(priv, RK3576_SAI_TXCR, xcr);
+      rk3576_sai_modifyreg(priv, RK3576_SAI_MONO_CR, SAI_MONO_CR_TX_MONO_EN,
+                           priv->channels == 1 ? SAI_MONO_CR_TX_MONO_EN : 0);
 
       rk3576_sai_putreg(priv, RK3576_SAI_TX_SHIFT, SAI_XSHIFT_FS_1CYCLE);
 
       /* Path select routing (Debian golden). */
 
-      rk3576_sai_putreg(priv, RK3576_SAI_PATH_SEL, 0x0000e4e4);
+      if (!shared)
+        {
+          rk3576_sai_putreg(priv, RK3576_SAI_PATH_SEL, 0x0000e4e4);
+        }
 
-      rk3576_sai_putreg(priv, RK3576_SAI_DMACR,
-                        SAI_DMACR_TDE |
-                            SAI_DMACR_TDL(RK3576_SAI_TX_WATERMARK));
+      rk3576_sai_modifyreg(
+          priv, RK3576_SAI_DMACR, SAI_DMACR_TDE | SAI_DMACR_TDL_MASK,
+          SAI_DMACR_TDE | SAI_DMACR_TDL(RK3576_SAI_TX_WATERMARK));
 
       /* Enable the TX-underrun interrupt for diagnostics. */
 
-      rk3576_sai_putreg(priv, RK3576_SAI_INTCR, SAI_INTCR_TXUIE);
+      rk3576_sai_modifyreg(priv, RK3576_SAI_INTCR, 0, SAI_INTCR_TXUIE);
     }
   else
     {
       rk3576_sai_putreg(priv, RK3576_SAI_RXCR, xcr);
-      rk3576_sai_putreg(priv, RK3576_SAI_FSCR,
-                        SAI_FSCR_EDGE_SEL |
-                            SAI_FSCR_FW(priv->channels * slotbits) |
-                            SAI_FSCR_FPW(slotbits));
-      rk3576_sai_putreg(priv, RK3576_SAI_CKR, SAI_CKR_MDIV(mdiv));
-      rk3576_sai_putreg(priv, RK3576_SAI_MONO_CR,
-                        priv->channels == 1 ? SAI_MONO_CR_RX_MONO_EN : 0);
+      rk3576_sai_modifyreg(priv, RK3576_SAI_MONO_CR, SAI_MONO_CR_RX_MONO_EN,
+                           priv->channels == 1 ? SAI_MONO_CR_RX_MONO_EN : 0);
       rk3576_sai_putreg(priv, RK3576_SAI_RX_SHIFT, SAI_XSHIFT_FS_1CYCLE);
 
       /* RX DMA request when FIFO level >= watermark + 1. */
 
-      rk3576_sai_putreg(priv, RK3576_SAI_DMACR,
-                        SAI_DMACR_RDE |
-                            SAI_DMACR_RDL(RK3576_SAI_RX_WATERMARK));
+      rk3576_sai_modifyreg(
+          priv, RK3576_SAI_DMACR, SAI_DMACR_RDE | SAI_DMACR_RDL_MASK,
+          SAI_DMACR_RDE | SAI_DMACR_RDL(RK3576_SAI_RX_WATERMARK));
 
-      rk3576_sai_putreg(priv, RK3576_SAI_INTCR, SAI_INTCR_RXOIE);
+      rk3576_sai_modifyreg(priv, RK3576_SAI_INTCR, 0, SAI_INTCR_RXOIE);
     }
 
   /* Acquire a DMA channel bound to the active direction's request line. */
@@ -685,7 +706,9 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
   if (priv->dma == NULL)
     {
       i2serr("ERROR: no free DMA channel\n");
-      rk3576_sai_putreg(priv, RK3576_SAI_INTCR, 0);
+      rk3576_sai_modifyreg(priv, RK3576_SAI_INTCR,
+                           priv->txenab ? SAI_INTCR_TXUIE : SAI_INTCR_RXOIE,
+                           0);
       return -EBUSY;
     }
 
@@ -711,8 +734,16 @@ static void rk3576_sai_stop(struct rk3576_sai_s *priv)
       return;
     }
 
-  rk3576_sai_putreg(priv, RK3576_SAI_XFER, 0);
-  rk3576_sai_putreg(priv, RK3576_SAI_INTCR, 0);
+  rk3576_sai_modifyreg(priv, RK3576_SAI_XFER,
+                       priv->txenab ? SAI_XFER_TXS : SAI_XFER_RXS, 0);
+  rk3576_sai_modifyreg(priv, RK3576_SAI_INTCR,
+                       priv->txenab ? SAI_INTCR_TXUIE : SAI_INTCR_RXOIE, 0);
+  rk3576_sai_modifyreg(priv, RK3576_SAI_DMACR,
+                       priv->txenab ? SAI_DMACR_TDE : SAI_DMACR_RDE, 0);
+  if (priv->peer == NULL || !priv->peer->running)
+    {
+      rk3576_sai_putreg(priv, RK3576_SAI_XFER, 0);
+    }
 
   if (priv->dma != NULL)
     {
@@ -1089,13 +1120,32 @@ static int rk3576_sai_txchannels(struct i2s_dev_s *dev, uint8_t channels)
 
   /* Cached; applied in rk3576_sai_startup() while the engine is stopped. */
 
+  if (priv->running && (priv->rxenab || priv->channels != channels))
+    {
+      return -EBUSY;
+    }
+
   priv->channels = channels;
   return OK;
 }
 
 static int rk3576_sai_rxchannels(struct i2s_dev_s *dev, uint8_t channels)
 {
-  return rk3576_sai_txchannels(dev, channels);
+  struct rk3576_sai_s *priv =
+      &g_rk3576_sai_rx[((struct rk3576_sai_s *)dev)->busno];
+
+  if (channels < 1 || channels > 2)
+    {
+      return -EINVAL;
+    }
+
+  if (priv->running && (priv->txenab || priv->channels != channels))
+    {
+      return -EBUSY;
+    }
+
+  priv->channels = channels;
+  return OK;
 }
 
 /****************************************************************************
@@ -1111,8 +1161,19 @@ static uint32_t rk3576_sai_txsamplerate(struct i2s_dev_s *dev, uint32_t rate)
 
   if (priv->running)
     {
-      i2serr("ERROR: cannot change SAI%d rate while running\n", priv->busno);
-      return 0;
+      return priv->samplerate == rate ? rate * priv->datalen : 0;
+    }
+
+  if (priv->peer != NULL && priv->peer->running)
+    {
+      if (priv->peer->samplerate != rate)
+        {
+          return 0;
+        }
+
+      priv->samplerate = rate;
+      priv->mclk_freq = priv->peer->mclk_freq;
+      return rate * priv->datalen;
     }
 
   /* The codec sets its required MCLK before setting the sample rate.  Keep
@@ -1140,7 +1201,9 @@ static uint32_t rk3576_sai_txsamplerate(struct i2s_dev_s *dev, uint32_t rate)
 
 static uint32_t rk3576_sai_rxsamplerate(struct i2s_dev_s *dev, uint32_t rate)
 {
-  return rk3576_sai_txsamplerate(dev, rate);
+  struct rk3576_sai_s *rx =
+      &g_rk3576_sai_rx[((struct rk3576_sai_s *)dev)->busno];
+  return rk3576_sai_txsamplerate(&rx->dev, rate);
 }
 
 /****************************************************************************
@@ -1163,7 +1226,9 @@ static uint32_t rk3576_sai_txdatawidth(struct i2s_dev_s *dev, int bits)
 
 static uint32_t rk3576_sai_rxdatawidth(struct i2s_dev_s *dev, int bits)
 {
-  return rk3576_sai_txdatawidth(dev, bits);
+  struct rk3576_sai_s *rx =
+      &g_rk3576_sai_rx[((struct rk3576_sai_s *)dev)->busno];
+  return rk3576_sai_txdatawidth(&rx->dev, bits);
 }
 
 /****************************************************************************
@@ -1246,7 +1311,8 @@ static int rk3576_sai_receive(struct i2s_dev_s *dev, struct ap_buffer_s *apb,
                               i2s_callback_t callback, void *arg,
                               uint32_t timeout)
 {
-  struct rk3576_sai_s *priv = (struct rk3576_sai_s *)dev;
+  struct rk3576_sai_s *priv =
+      &g_rk3576_sai_rx[((struct rk3576_sai_s *)dev)->busno];
   struct rk3576_sai_buffer_s *bfc;
   irqstate_t flags;
   int ret;
@@ -1317,7 +1383,22 @@ static uint32_t rk3576_sai_setmclk(struct i2s_dev_s *dev, uint32_t frequency)
 {
   struct rk3576_sai_s *priv = (struct rk3576_sai_s *)dev;
 
-  return rk3576_sai_setclock(priv, frequency) < 0 ? 0 : priv->mclk_freq;
+  if (priv->running || (priv->peer != NULL && priv->peer->running))
+    {
+      return frequency == priv->mclk_freq ? frequency : 0;
+    }
+
+  if (rk3576_sai_setclock(priv, frequency) < 0)
+    {
+      return 0;
+    }
+
+  if (priv->peer != NULL)
+    {
+      priv->peer->mclk_freq = priv->mclk_freq;
+    }
+
+  return priv->mclk_freq;
 }
 
 /****************************************************************************
@@ -1348,6 +1429,7 @@ static int rk3576_sai_ioctl(struct i2s_dev_s *dev, int cmd, unsigned long arg)
 struct i2s_dev_s *rk3576_sai_initialize(int busno)
 {
   struct rk3576_sai_s *priv;
+  struct rk3576_sai_s *rx;
   int ret;
 
   if (busno < 0 || busno >= RK3576_SAI_NINSTANCES)
@@ -1357,6 +1439,29 @@ struct i2s_dev_s *rk3576_sai_initialize(int busno)
     }
 
   priv = &g_rk3576_sai[busno];
+  if (priv->initialized)
+    {
+      return &priv->dev;
+    }
+
+  rx = &g_rk3576_sai_rx[busno];
+  rx->dev.ops = &g_rk3576_sai_ops;
+  rx->base = priv->base;
+  rx->irq = priv->irq;
+  rx->busno = priv->busno;
+  rx->dma_ctrl = priv->dma_ctrl;
+  rx->dma_rx_req = priv->dma_rx_req;
+  rx->rx_cap = priv->rx_cap;
+  rx->samplerate = priv->samplerate;
+  rx->datalen = priv->datalen;
+  rx->channels = priv->channels;
+  rx->mclk_freq = priv->mclk_freq;
+  rx->peer = priv;
+  priv->peer = rx;
+  nxmutex_init(&rx->lock);
+  nxsem_init(&rx->bufsem, 0, 0);
+  nxsem_reset(&priv->bufsem, 0);
+  rk3576_sai_bufinit(rx);
 
   /* Buffer pool + controller clocks. */
 
@@ -1382,6 +1487,10 @@ struct i2s_dev_s *rk3576_sai_initialize(int busno)
     }
 
   up_enable_irq(priv->irq);
+  rx->hclk = priv->hclk;
+  rx->mclk_gate = priv->mclk_gate;
+  priv->initialized = true;
+  rx->initialized = true;
 
   i2sinfo("SAI%d ready: base=0x%08" PRIxPTR " version=0x%08" PRIx32 "\n",
           busno, priv->base, rk3576_sai_getreg(priv, RK3576_SAI_VERSION));
