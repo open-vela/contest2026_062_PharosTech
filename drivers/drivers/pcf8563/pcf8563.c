@@ -86,6 +86,15 @@
 #define CONFIG_PCF8563_I2C_FREQUENCY 400000
 #endif
 
+/* When clearing AF/AIE fails the PCF8563 keeps the INT pin low.  The board
+ * interrupt is falling-edge sensitive, so no new edge ever arrives to re-arm
+ * the worker; the alarm would otherwise be lost forever.  The worker instead
+ * leaves the pending latch set and re-queues itself after this delay to retry
+ * the (typically transient) I2C failure.
+ */
+
+#define PCF8563_ALARM_RETRY_DELAY_MSEC 200
+
 /* I2C 7-bit slave address (fixed, not configurable on the part). */
 
 #define PCF8563_I2C_ADDRESS 0x51
@@ -807,6 +816,7 @@ static void pcf8563_alarm_worker(FAR void *arg)
   uint8_t regs[5];
   rtc_alarm_callback_t cb;
   FAR void *priv;
+  bool need_retry;
   int ret;
 
   /* Serialize register access and callback state with setalarm() /
@@ -822,6 +832,13 @@ static void pcf8563_alarm_worker(FAR void *arg)
   if (ret < 0)
     {
       rtcerr("ERROR: pcf8563_read_reg (status2) failed: %d\n", ret);
+
+      /* AF may still be asserted, holding the INT pin low.  With the
+       * falling-edge board interrupt no new edge will re-enter the ISR, so
+       * must not just drop the latch: stall it and retry shortly.
+       */
+
+      need_retry = true;
       goto out;
     }
 
@@ -831,6 +848,7 @@ static void pcf8563_alarm_worker(FAR void *arg)
 
   if ((status2 & PCF8563_CS2_AF) == 0)
     {
+      need_retry = false;
       goto out;
     }
 
@@ -852,9 +870,26 @@ static void pcf8563_alarm_worker(FAR void *arg)
     if (ret < 0)
       {
         rtcerr("ERROR: pcf8563_write_reg (clear AF/AIE) failed: %d\n", ret);
+
+        /* AF/AIE are still set, so INT stays low (falling-edge board) and no
+         * new edge will ever come.  Stall the latch and retry shortly.
+         */
+
+        need_retry = true;
         goto out;
       }
   }
+
+  /* From here the fire has been acknowledged and consumed: AF is cleared and
+   * AIE disabled, so INT is released and no notification can be re-triggered.
+   * Snapshot and drop the callback now so a later register error cannot
+   * swallow the upper-half notification below.
+   */
+
+  cb = g_pcf8563.dev.alarm_cb;
+  priv = g_pcf8563.dev.alarm_priv;
+  g_pcf8563.dev.alarm_cb = NULL;
+  g_pcf8563.dev.alarm_priv = NULL;
 
   /* Disable all four alarm fields (AE_x = 1) so the one-shot alarm cannot
    * fire again on a later (e.g. next minute/day) match.
@@ -869,35 +904,27 @@ static void pcf8563_alarm_worker(FAR void *arg)
   ret = pcf8563_write_reg(PCF8563_REG_MINUTE_ALARM, regs, sizeof(regs));
   if (ret < 0)
     {
-      rtcerr("ERROR: pcf8563_write_reg (alarm disable) failed: %d\n", ret);
-      goto out;
+      /* The alarm is already consumed (AF/AIE cleared), so this cannot cause
+       * a repeated notification.  The only residual risk is re-matching the
+       * fields on a later minute/day, which is benign and erased by the next
+       * setalarm().  Log and continue to deliver the notification.
+       */
+
+      rtcerr("ERROR: pcf8563_write_reg (alarm disable) failed, "
+             "notification still delivered: %d\n",
+             ret);
     }
 
-  /* Drop the callback reference and snapshot it so the notification
-   * reflects the alarm that just fired.  The callback may be NULL if the
-   * alarm was cancelled between arming and firing.
-   */
-
-  cb = g_pcf8563.dev.alarm_cb;
-  priv = g_pcf8563.dev.alarm_priv;
-  g_pcf8563.dev.alarm_cb = NULL;
-  g_pcf8563.dev.alarm_priv = NULL;
+  need_retry = false;
 
   nxmutex_unlock(&g_pcf8563.dev.lock);
 
-  /* Release the pending latch only now, once the ISR source (AF, and the INT
-   * pin while AF/AIE are set) has been cleared.  Releasing it earlier would
-   * let the still-asserted INT re-arm the latch and spam the work queue with
-   * further workers until AF was cleared.  On the error path below the latch
-   * is released too, so a later interrupt (or freshly re-armed alarm) can
-   * retry instead of being silently dropped forever.
+  /* The fire is fully consumed: release the pending latch.  Notify the upper
+   * half afterwards; the alarm is one-shot and will not re-fire until
+   * setalarm() is called again.
    */
 
   pcf8563_alarm_release_pending_latch();
-
-  /* Notify the upper half.  The alarm is one-shot; it will not re-fire until
-   * setalarm() is called again.
-   */
 
   if (cb != NULL)
     {
@@ -908,6 +935,25 @@ static void pcf8563_alarm_worker(FAR void *arg)
 
 out:
   nxmutex_unlock(&g_pcf8563.dev.lock);
+
+  if (need_retry)
+    {
+      /* The alarm is not yet consumed (AF/AIE still set, INT held low) and
+       * the board interrupt is falling-edge, so no new edge will re-enter
+       * the ISR.  Keep the latch asserted to stop the ISR stacking further
+       * workers, and re-queue ourselves after a short delay to retry the
+       * (typically transient) I2C failure; otherwise the alarm would be
+       * dropped forever.
+       */
+
+      ret = work_queue(HPWORK, &g_pcf8563.dev.work, pcf8563_alarm_worker, NULL,
+                       MSEC2TICK(PCF8563_ALARM_RETRY_DELAY_MSEC));
+      if (ret == OK)
+        {
+          return;
+        }
+    }
+
   pcf8563_alarm_release_pending_latch();
 }
 
