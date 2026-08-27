@@ -67,6 +67,7 @@
 #define KICKPI_K7_ES8388_I2C_FREQ   100000 /* 100 kHz control clock     */
 #define KICKPI_K7_SAI_BUS           1      /* SAI1                      */
 #define KICKPI_K7_PCM_DEVNAME       "pcm0"
+#define KICKPI_K7_PCM_INPUT_DEVNAME "pcm_in0"
 
 #define KICKPI_K7_HP_DETECT_POLL_MS 100
 #define KICKPI_K7_HP_DEBOUNCE_COUNT 2
@@ -122,6 +123,7 @@ static bool g_headphones_connected;
 static bool g_headphones_sample;
 static uint8_t g_headphones_debounce;
 static FAR struct audio_lowerhalf_s *g_es8388;
+static FAR struct audio_lowerhalf_s *g_es8388_input;
 static FAR struct gpio_dev_s *g_headphone_gpio;
 static FAR struct gpio_dev_s *g_speaker_gpio;
 static struct work_s g_headphone_work;
@@ -197,6 +199,7 @@ static void kickpi_k7_audio_headphone_worker(void *arg)
                                      (unsigned long)(uintptr_t)&control);
           if (ret >= 0 && control.route == ES8388_OUTPUT_ROUTE_AUTO)
             {
+              control.mask = ES8388_CONTROL_OUTPUT;
               g_es8388->ops->ioctl(g_es8388, ES8388IOC_SET_CONTROL,
                                    (unsigned long)(uintptr_t)&control);
             }
@@ -333,7 +336,9 @@ int kickpi_k7_audio_initialize(void)
     }
 
   memset(&control, 0, sizeof(control));
+  control.mask = ES8388_CONTROL_ALL;
   control.route = ES8388_OUTPUT_ROUTE_AUTO;
+  control.input_route = ES8388_INPUT_ROUTE_LINE2;
   ret = g_es8388->ops->ioctl(g_es8388, ES8388IOC_SET_CONTROL,
                              (unsigned long)(uintptr_t)&control);
   if (ret < 0)
@@ -357,8 +362,38 @@ int kickpi_k7_audio_initialize(void)
       return ret;
     }
 
-  syslog(LOG_INFO, "INFO: audio ready: /dev/audio/%s (ES8388 on SAI1)\n",
-         KICKPI_K7_PCM_DEVNAME);
+  /* Use a raw codec instance for capture.  PCM decode is output-only; the
+   *
+   * input device accepts empty audio pipeline buffers filled by SAI RX.
+   */
+
+  g_es8388_input = es8388_initialize(i2c, i2s, &g_es8388_lower);
+  if (g_es8388_input == NULL)
+    {
+      syslog(LOG_ERR, "ERROR: ES8388 capture init failed\n");
+      return -ENODEV;
+    }
+
+  ret = g_es8388_input->ops->ioctl(g_es8388_input, ES8388IOC_SET_CONTROL,
+                                   (unsigned long)(uintptr_t)&control);
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: ES8388 capture control init failed: %d\n", ret);
+      return ret;
+    }
+
+  ret = audio_register(KICKPI_K7_PCM_INPUT_DEVNAME, g_es8388_input);
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: audio_register(%s) failed: %d\n",
+             KICKPI_K7_PCM_INPUT_DEVNAME, ret);
+      return ret;
+    }
+
+  syslog(LOG_INFO,
+         "INFO: audio ready: /dev/audio/%s and %s "
+         "(ES8388 on SAI1)\n",
+         KICKPI_K7_PCM_DEVNAME, KICKPI_K7_PCM_INPUT_DEVNAME);
   g_audio_initialized = true;
   work_queue(LPWORK, &g_headphone_work, kickpi_k7_audio_headphone_worker, NULL,
              MSEC2TICK(KICKPI_K7_HP_DETECT_POLL_MS));
