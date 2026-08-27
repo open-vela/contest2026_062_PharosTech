@@ -112,6 +112,7 @@ static bool kickpi_k7_audio_headphones_connected(void);
 static const struct es8388_lower_s g_es8388_lower = {
   .frequency = KICKPI_K7_ES8388_I2C_FREQ,
   .address = KICKPI_K7_ES8388_I2C_ADDR,
+  .stream_type = AUDIO_TYPE_OUTPUT,
   .swap_dac_lr = true,
   .set_output = kickpi_k7_audio_set_output_power,
   .resolve_output = kickpi_k7_audio_resolve_output,
@@ -124,6 +125,7 @@ static bool g_headphones_sample;
 static uint8_t g_headphones_debounce;
 static FAR struct audio_lowerhalf_s *g_es8388;
 static FAR struct audio_lowerhalf_s *g_es8388_input;
+static struct es8388_lower_s g_es8388_capture_lower;
 static FAR struct gpio_dev_s *g_headphone_gpio;
 static FAR struct gpio_dev_s *g_speaker_gpio;
 static struct work_s g_headphone_work;
@@ -367,7 +369,9 @@ int kickpi_k7_audio_initialize(void)
    * input device accepts empty audio pipeline buffers filled by SAI RX.
    */
 
-  g_es8388_input = es8388_initialize(i2c, i2s, &g_es8388_lower);
+  g_es8388_capture_lower = g_es8388_lower;
+  g_es8388_capture_lower.stream_type = AUDIO_TYPE_INPUT;
+  g_es8388_input = es8388_initialize(i2c, i2s, &g_es8388_capture_lower);
   if (g_es8388_input == NULL)
     {
       syslog(LOG_ERR, "ERROR: ES8388 capture init failed\n");
