@@ -2900,6 +2900,125 @@ static void rk3576_clk_register_saradc(void)
 }
 
 /****************************************************************************
+ * Name: rk3576_clk_register_dsi
+ *
+ * Description:
+ *   Register the MIPI DSI host controller (DSIHOST0) clocks.
+ *
+ *   DSIHOST0 (CRU domain):
+ *     - clk_dsihost0_sel : 3-bit mux (6 parents), CLKSEL_CON151[9:7]
+ *     - clk_dsihost0_div : 7-bit divider (div_con + 1), CLKSEL_CON151[6:0]
+ *     - clk_dsihost0     : functional clock gate, GATE_CON64[6]
+ *     - pclk_dsihost0    : APB bus interface gate, GATE_CON64[5]
+ *
+ *   clk_dsihost0_sel references clk_spll/clk_vpll/clk_bpll/clk_lpll which
+ *   are not yet registered; they remain orphan until those PLLs are added.
+ ****************************************************************************/
+
+#ifdef CONFIG_RK3576_MIPI_DSI
+static void rk3576_clk_register_dsi(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+  struct clk_s *mux;
+
+  /* DSIHOST0 sclk source selection (6 parents, 3-bit select).
+   * Order matches TRM CLKSEL_CON151[9:7] encoding:
+   *   0b000: clk_gpll_mux / 0b001: clk_cpll_mux / 0b010: clk_spll_mux
+   *   0b011: clk_vpll_mux / 0b100: clk_bpll_src / 0b101: clk_lpll_src
+   *
+   * clk_spll/clk_vpll/clk_bpll/clk_lpll are NOT yet registered — they
+   * remain orphan until those PLLs are added to the clock tree.  The CLK
+   * framework handles orphan parents gracefully (reparent on late
+   * registration), so referencing them here is safe.
+   */
+
+  static const char *dsi_sclk_parents[] = {
+    "clk_gpll", /* 0b000 */
+    "clk_cpll", /* 0b001 */
+    "clk_spll", /* 0b010 — not yet registered (orphan) */
+    "clk_vpll", /* 0b011 — not yet registered (orphan) */
+    "clk_bpll", /* 0b100 — not yet registered (orphan) */
+    "clk_lpll", /* 0b101 — not yet registered (orphan) */
+  };
+
+  /* clk_dsihost0_sel : 3-bit source mux (6 parents).
+   * CLKSEL_CON151[9:7]; shares the register with clk_hdmitx0_arc
+   * ([15]/[14:10]) — non-overlapping bitfields.
+   */
+
+  mux = clk_register_mux(
+      "clk_dsihost0_sel", dsi_sclk_parents, nitems(dsi_sclk_parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(151), 7, 3, CLK_MUX_HIWORD_MASK);
+  if (!mux)
+    {
+      _err("CLK: failed to register clk_dsihost0_sel\n");
+      return;
+    }
+
+  /* clk_dsihost0_div : 7-bit integer divider (div_con + 1).
+   * CLKSEL_CON151[6:0].
+   */
+
+  clk_register_divider("clk_dsihost0_div", "clk_dsihost0_sel",
+                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       cru + RK3576_CRU_CLKSEL_CON(151), 0, 7,
+                       CLK_DIVIDER_HIWORD_MASK);
+
+  /* clk_dsihost0 : functional clock gate, GATE_CON64[6]. */
+
+  clk_register_gate("clk_dsihost0", "clk_dsihost0_div",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(64), 6,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* pclk_dsihost0 : APB bus interface gate, GATE_CON64[5]. */
+
+  clk_register_gate("pclk_dsihost0", NULL, CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(64), 5,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+}
+#endif /* CONFIG_RK3576_MIPI_DSI */
+
+/****************************************************************************
+ * Name: rk3576_clk_register_dcphy
+ *
+ * Description:
+ *   Register the MIPI D/C-PHY combo PHY (DCPHY) clocks.
+ *
+ *   The DCPHY is shared between the DSI (display, TX) and CSI (camera,
+ *   RX) hosts, so its clocks are modelled separately from either host
+ *   controller.
+ *
+ *   MIPI DCPHY (PMU1CRU domain):
+ *     - pclk_mipi_dcphy  : PHY APB gate, PMU1CRU_GATE_CON00[2]
+ *     - pclk_dcphy_grf   : PHY GRF gate, PMU1CRU_GATE_CON00[3]
+ *
+ *   The PHY PLL reference clock is selectable internally (24 MHz OSC by
+ *   default, or SPLL via clk_divfree), so it does NOT pass through the
+ *   CRU clock tree and is not modelled here.
+ ****************************************************************************/
+
+#ifdef CONFIG_RK3576_MIPI_DCPHY
+static void rk3576_clk_register_dcphy(void)
+{
+  const unsigned long pmu1 = RK3576_PMU1_CRU_ADDR;
+
+  /* pclk_mipi_dcphy : PHY APB gate, PMU1CRU_GATE_CON00[2]. */
+
+  clk_register_gate("pclk_mipi_dcphy", NULL, CLK_NAME_IS_STATIC,
+                    pmu1 + RK3576_PMU1CRU_GATE_CON(0), 2,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* pclk_dcphy_grf : PHY GRF gate, PMU1CRU_GATE_CON00[3]. */
+
+  clk_register_gate("pclk_dcphy_grf", NULL, CLK_NAME_IS_STATIC,
+                    pmu1 + RK3576_PMU1CRU_GATE_CON(0), 3,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+}
+#endif /* CONFIG_RK3576_MIPI_DCPHY */
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -3102,4 +3221,12 @@ void rk3576_clk_tree_initialize(void)
   rk3576_clk_register_saradc();
 
   rk3576_clk_register_spi();
+
+#ifdef CONFIG_RK3576_MIPI_DCPHY
+  rk3576_clk_register_dcphy();
+#endif
+
+#ifdef CONFIG_RK3576_MIPI_DSI
+  rk3576_clk_register_dsi();
+#endif
 }

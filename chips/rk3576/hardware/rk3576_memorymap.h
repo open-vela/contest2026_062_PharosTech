@@ -117,6 +117,12 @@
 #define RK3576_SPI3_ADDR 0x2AD20000
 #define RK3576_SPI4_ADDR 0x2AD30000
 
+/* MIPI DSI host controller + MIPI D-PHY (DCPHY) */
+
+#define RK3576_DSIHOST_ADDR   0x27D80000 /* DSI host controller (DSI2.0) */
+#define RK3576_DCPHY_ADDR     0x2B020000 /* MIPI D/C-PHY combo APB */
+#define RK3576_DCPHY_GRF_ADDR 0x26034000 /* MIPI DCPHY GRF */
+
 /* Rockchip FSPI (Flexible Serial Peripheral Interface) */
 
 #define RK3576_FSPI0_ADDR 0x2A340000
