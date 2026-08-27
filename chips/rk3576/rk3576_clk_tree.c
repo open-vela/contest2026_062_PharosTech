@@ -43,13 +43,13 @@
 #include <errno.h>
 #include <nuttx/config.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <sys/param.h>
 
+#include <nuttx/arch.h>
 #include <nuttx/clk/clk.h>
 #include <nuttx/clk/clk_provider.h>
 
-#include "arm64_internal.h"
+#include "arm64_arch.h"
 #include "hardware/rk3576_cru.h"
 #include "hardware/rk3576_memorymap.h"
 #include "rk3576_clk_tree.h"
@@ -77,15 +77,86 @@
 struct rk3576_fracpll_s
 {
   uintptr_t con_base; /* CON0 register address (CON1/2 are +4/+8) */
+  uintptr_t lock_reg; /* Lock status register address (optional) */
+  uint8_t lock_bit;   /* Lock bit position in lock_reg (0-31, 0 if unused) */
 };
 
 /* Forward declaration */
 
 static uint32_t rk3576_fracpll_recalc_rate(struct clk_s *clk,
                                            uint32_t parent_rate);
+static int rk3576_fracpll_set_rate(FAR struct clk_s *clk, uint32_t rate,
+                                   uint32_t parent_rate);
+static uint32_t rk3576_fracpll_round_rate(FAR struct clk_s *clk, uint32_t rate,
+                                          FAR uint32_t *parent_rate);
 
-static const struct clk_ops_s g_rk3576_fracpll_ops = {
+/* Rate table entry for FRACPLL */
+struct rk3576_pll_rate
+{
+  uint32_t rate; /* Target frequency in Hz */
+  uint8_t p;     /* REFDIV */
+  uint16_t m;    /* FBDIV */
+  uint8_t s;     /* POSTDIV2 */
+  int16_t k;     /* FRAC (two's complement) */
+};
+
+/* LPLL rate table — verified against Linux rockchip rk3576_pll_rates[]
+ * (drivers/clk/rockchip/clk-rk3576.c).  Each entry is (rate, p, m, s, k)
+ * in the Linux (rate, _p, _m, _s, _k) encoding.  Only frequencies present
+ * in the upstream table are kept; the FRACPLL formula is
+ *   FOUT = ((m + k/65536) * 24MHz) / (p * 2^s)
+ * so m must be large enough for the VCO to reach the FRACPLL lock range
+ * (950MHz..3800MHz) — this is why m is ~200-368, never the CPU divider
+ * value that was previously (incorrectly) placed here.
+ */
+/* clang-format off */
+static const struct rk3576_pll_rate g_lpll_rate_table[] = {
+  { 2400000000, 2, 200, 0, 0 },
+  { 2304000000, 2, 192, 0, 0 },
+  { 2208000000, 2, 368, 1, 0 },
+  { 2184000000, 2, 364, 1, 0 },
+  { 2088000000, 2, 348, 1, 0 },
+  { 2040000000, 2, 340, 1, 0 },
+  { 2016000000, 2, 336, 1, 0 },
+  { 1992000000, 2, 332, 1, 0 },
+  { 1896000000, 2, 316, 1, 0 },
+  { 1800000000, 2, 300, 1, 0 },
+  { 1704000000, 2, 284, 1, 0 },
+  { 1608000000, 2, 268, 1, 0 },
+  { 1584000000, 2, 264, 1, 0 },
+  { 1560000000, 2, 260, 1, 0 },
+  { 1536000000, 2, 256, 1, 0 },
+  { 1512000000, 2, 252, 1, 0 },
+  { 1488000000, 2, 248, 1, 0 },
+  { 1464000000, 2, 244, 1, 0 },
+  { 1440000000, 2, 240, 1, 0 },
+  { 1416000000, 2, 236, 1, 0 },
+  { 1392000000, 2, 232, 1, 0 },
+  { 1320000000, 2, 220, 1, 0 },
+  { 1200000000, 2, 200, 1, 0 },
+  { 1008000000, 2, 336, 2, 0 },
+  {  816000000, 2, 272, 2, 0 },
+  {  600000000, 2, 200, 2, 0 },
+  {  408000000, 2, 272, 3, 0 },
+  {  312000000, 2, 208, 3, 0 },
+  {  216000000, 2, 288, 4, 0 },
+  {   96000000, 2, 256, 5, 0 },
+};
+/* clang-format on */
+
+#define G_LPLL_RATE_TABLE_SIZE nitems(g_lpll_rate_table)
+
+/* Read-only ops for GPLL/CPLL/AUPLL — prevents propagation from child clocks
+ */
+static const struct clk_ops_s g_rk3576_fracpll_readonly_ops = {
   .recalc_rate = rk3576_fracpll_recalc_rate,
+};
+
+/* Configurable ops for LPLL only — allows clk_set_rate(clk_lpll, ...) */
+static const struct clk_ops_s g_rk3576_fracpll_configurable_ops = {
+  .recalc_rate = rk3576_fracpll_recalc_rate,
+  .round_rate = rk3576_fracpll_round_rate,
+  .set_rate = rk3576_fracpll_set_rate,
 };
 
 /****************************************************************************
@@ -147,6 +218,178 @@ static uint32_t rk3576_fracpll_recalc_rate(struct clk_s *clk,
   denominator = (uint64_t)p * 65536 * (1ULL << s);
 
   return (uint32_t)(numerator / denominator);
+}
+
+/****************************************************************************
+ * Name: rk3576_fracpll_find_rate
+ *
+ * Description:
+ *   Find the closest matching rate from the LPLL rate table.
+ *   Returns pointer to the best match, or NULL if no valid entry found.
+ ****************************************************************************/
+
+static const struct rk3576_pll_rate *
+rk3576_fracpll_find_rate(uint32_t target_rate)
+{
+  const struct rk3576_pll_rate *best = NULL;
+  uint32_t best_diff = UINT32_MAX;
+  int i;
+
+  for (i = 0; i < G_LPLL_RATE_TABLE_SIZE; i++)
+    {
+      uint32_t diff;
+      uint32_t table_rate = g_lpll_rate_table[i].rate;
+
+      if (table_rate == target_rate)
+        {
+          return &g_lpll_rate_table[i];
+        }
+
+      diff = (target_rate > table_rate) ? (target_rate - table_rate)
+                                        : (table_rate - target_rate);
+
+      if (diff < best_diff)
+        {
+          best_diff = diff;
+          best = &g_lpll_rate_table[i];
+        }
+    }
+
+  return best;
+}
+
+/****************************************************************************
+ * Name: rk3576_fracpll_round_rate
+ *
+ * Description:
+ *   Round the requested rate to the nearest supported frequency from the
+ *   LPLL rate table.  This is called by the CLK framework during rate
+ *   negotiation to determine what rate the PLL can actually produce.
+ ****************************************************************************/
+
+static uint32_t rk3576_fracpll_round_rate(FAR struct clk_s *clk, uint32_t rate,
+                                          FAR uint32_t *parent_rate)
+{
+  const struct rk3576_pll_rate *entry;
+
+  DEBUGASSERT(clk);
+  DEBUGASSERT(parent_rate);
+  DEBUGASSERT(*parent_rate == CONFIG_RK3576_OSC_FREQ);
+
+  entry = rk3576_fracpll_find_rate(rate);
+  if (!entry)
+    {
+      _err("CLK: no valid LPLL rate found for %u Hz\n", rate);
+      return 0;
+    }
+
+  /* Return the actual achievable rate */
+  return entry->rate;
+}
+
+/****************************************************************************
+ * Name: rk3576_fracpll_set_rate
+ *
+ * Description:
+ *   Reprogram the FRACPLL to the target frequency.
+ *
+ *   Sequence (reference: Linux rockchip_rk3588_pll_set_params, which the
+ *   RK3576 LPLL (pll_rk3588_core) uses):
+ *   1. Power down PLL     (CON1[13] PWRDOWN = 1)
+ *   2. Write new m/p/s/k to CON0/1/2 using hiword-mask
+ *      (CON1 must keep PWRDOWN=1 while being reprogrammed)
+ *   3. Power up PLL       (CON1[13] PWRDOWN = 0)
+ *   4. Poll lock bit (CON6[15]) until PLL locks (timeout ~1ms)
+ *
+ *   bit13 of CON1 is PWRDOWN (active high).  Setting it powers the PLL
+ *   down; clearing it lets the PLL run.  Getting this backwards means the
+ *   PLL is left powered down and can never lock.
+ *
+ *   NOTE: Caller must ensure CPU is on a safe clock source before calling
+ *   this function (see rk3576_clk_set_litcore_cpufreq).
+ ****************************************************************************/
+
+static int rk3576_fracpll_set_rate(FAR struct clk_s *clk, uint32_t rate,
+                                   uint32_t parent_rate)
+{
+  struct rk3576_fracpll_s *pll = clk->private_data;
+  const struct rk3576_pll_rate *entry;
+  uint32_t con0, con1, con2;
+  uint32_t regval;
+  int timeout;
+
+  DEBUGASSERT(pll);
+  DEBUGASSERT(parent_rate == CONFIG_RK3576_OSC_FREQ);
+
+  /* Find the closest supported rate */
+  entry = rk3576_fracpll_find_rate(rate);
+  if (!entry)
+    {
+      _err("CLK: unsupported LPLL rate %u Hz\n", rate);
+      return -EINVAL;
+    }
+
+  _info("CLK: reprogramming LPLL from %u Hz to %u Hz (m=%u p=%u s=%u k=%d)\n",
+        clk->rate, entry->rate, entry->m, entry->p, entry->s, entry->k);
+
+  /* Step 1: Power down PLL (CON1[13] PWRDOWN = 1). */
+
+  regval = getreg32(pll->con_base + 4); /* CON1 */
+  regval |= RK3576_LPLL_CON1_PWRDOWN;
+  putreg32(regval | (0xffff << 16), pll->con_base + 4);
+
+  /* Small delay to ensure power-down takes effect */
+  up_udelay(1);
+
+  /* Step 2: Write new parameters using hiword-mask. */
+
+  /* CON0: m[9:0], bypass cleared */
+  con0 = (entry->m & RK3576_LPLL_CON0_M_MASK) << RK3576_LPLL_CON0_M_SHIFT;
+  putreg32(con0 | (0xffff << 16), pll->con_base);
+
+  /* CON1: p[5:0], s[8:6] — keep PWRDOWN=1 so the PLL stays off while being
+   * reprogrammed.  Do NOT clear PWRDOWN here or the PLL may attempt to run
+   * with intermediate/undefined dividers.
+   */
+  con1 = ((entry->p & RK3576_LPLL_CON1_P_MASK) << RK3576_LPLL_CON1_P_SHIFT) |
+         ((entry->s & RK3576_LPLL_CON1_S_MASK) << RK3576_LPLL_CON1_S_SHIFT) |
+         RK3576_LPLL_CON1_PWRDOWN;
+  putreg32(con1 | (0xffff << 16), pll->con_base + 4);
+
+  /* CON2: k[15:0] */
+  con2 = (uint16_t)entry->k;
+  putreg32(con2 | (0xffff << 16), pll->con_base + 8);
+
+  /* Step 3: Power up PLL (CON1[13] PWRDOWN = 0). */
+
+  regval = getreg32(pll->con_base + 4); /* CON1 */
+  regval &= ~RK3576_LPLL_CON1_PWRDOWN;
+  putreg32(regval | (0xffff << 16), pll->con_base + 4);
+
+  /* Step 4: Poll lock bit (CON6[15]) */
+
+  if (pll->lock_reg && pll->lock_bit < 32)
+    {
+      timeout = 1000; /* 1ms timeout */
+      while (timeout-- > 0)
+        {
+          regval = getreg32(pll->lock_reg);
+          if (regval & (1 << pll->lock_bit))
+            {
+              break;
+            }
+          up_udelay(1);
+        }
+
+      if (timeout <= 0)
+        {
+          _err("CLK: LPLL failed to lock!\n");
+          return -ETIMEDOUT;
+        }
+    }
+
+  _info("CLK: LPLL locked at %u Hz\n", entry->rate);
+  return OK;
 }
 
 /* Shared parent name arrays for muxes.
@@ -292,14 +535,18 @@ static void rk3576_clk_register_pll_factors(void)
                           CONFIG_RK3576_OSC_FREQ);
 
   /* GPLL (FRACPLL) — rate derived from GPLL_CON(0..2) at runtime.
+   * Uses read-only ops to prevent child clocks from changing PLL frequency.
    * Parent is xin_osc0 so the CLK framework provides 24 MHz to recalc_rate.
    */
 
   gpll_priv.con_base = RK3576_CRU_ADDR + RK3576_CRU_GPLL_CON(0);
+  gpll_priv.lock_reg = 0;
+  gpll_priv.lock_bit = 0;
 
   gpll = clk_register("clk_gpll", g_pll_parents, 1,
                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-                      &g_rk3576_fracpll_ops, &gpll_priv, sizeof(gpll_priv));
+                      &g_rk3576_fracpll_readonly_ops, &gpll_priv,
+                      sizeof(gpll_priv));
   DEBUGASSERT(gpll);
   UNUSED(gpll);
 
@@ -315,14 +562,18 @@ static void rk3576_clk_register_pll_factors(void)
                             8);
 
   /* CPLL (FRACPLL) — rate derived from CPLL_CON(0..2) at runtime.
+   * Uses read-only ops to prevent child clocks from changing PLL frequency.
    * Parent is xin_osc0 so the CLK framework provides 24 MHz to recalc_rate.
    */
 
   cpll_priv.con_base = RK3576_CRU_ADDR + RK3576_CRU_CPLL_CON(0);
+  cpll_priv.lock_reg = 0;
+  cpll_priv.lock_bit = 0;
 
   cpll = clk_register("clk_cpll", g_pll_parents, 1,
                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-                      &g_rk3576_fracpll_ops, &cpll_priv, sizeof(cpll_priv));
+                      &g_rk3576_fracpll_readonly_ops, &cpll_priv,
+                      sizeof(cpll_priv));
   DEBUGASSERT(cpll);
   UNUSED(cpll);
 
@@ -336,12 +587,16 @@ static void rk3576_clk_register_pll_factors(void)
                             1, 20);
 
   /* AUPLL (FRACPLL) — rate derived from AUPLL_CON(0..2) at runtime.
+   * Uses read-only ops to prevent child clocks from changing PLL frequency.
    * Parent is xin_osc0 so the CLK framework provides 24 MHz to recalc_rate.
    */
   aupll_priv.con_base = RK3576_CRU_ADDR + RK3576_CRU_AUPLL_CON(0);
+  aupll_priv.lock_reg = 0;
+  aupll_priv.lock_bit = 0;
   aupll = clk_register("clk_aupll", g_pll_parents, 1,
                        CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-                       &g_rk3576_fracpll_ops, &aupll_priv, sizeof(aupll_priv));
+                       &g_rk3576_fracpll_readonly_ops, &aupll_priv,
+                       sizeof(aupll_priv));
 
   DEBUGASSERT(aupll);
   UNUSED(aupll);
@@ -608,14 +863,18 @@ static void rk3576_clk_register_litcore(void)
   /* LPLL (FRACPLL) — lives in the CCI_CRU domain at 0x27248000.
    * Rate is derived from LPLL_CON(0..2) registers at runtime using the
    * FRACPLL formula: FOUT = ((m + k/65536) * FIN) / (p * 2^s).
+   * Uses configurable ops to allow clk_set_rate(clk_lpll, ...) for CPU freq.
    * Parent is xin_osc0 so the CLK framework provides 24 MHz to recalc_rate.
    */
 
   lpll_priv.con_base = RK3576_CCI_CRU_ADDR + RK3576_CCICRU_LPLL_CON(0);
+  lpll_priv.lock_reg = RK3576_CCI_CRU_ADDR + RK3576_CCICRU_LPLL_CON(6);
+  lpll_priv.lock_bit = 15; /* LPLL_CON6[15] = lpll_lock */
 
   lpll = clk_register("clk_lpll", lpll_parents, 1,
                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-                      &g_rk3576_fracpll_ops, &lpll_priv, sizeof(lpll_priv));
+                      &g_rk3576_fracpll_configurable_ops, &lpll_priv,
+                      sizeof(lpll_priv));
   DEBUGASSERT(lpll);
   UNUSED(lpll);
 
@@ -636,10 +895,13 @@ static void rk3576_clk_register_litcore(void)
                    litcore + RK3576_LITCORECRU_CLKSEL_CON(0), 12, 2,
                    CLK_MUX_HIWORD_MASK);
 
-  /* clk_litcore_src_div : 5-bit divider (CLKSEL_CON00[11:7], div+1). */
+  /* clk_litcore_src_div : 5-bit divider (CLKSEL_CON00[11:7], div+1).
+   * NOTE: No CLK_SET_RATE_PARENT — this divider is fixed per the CPU
+   * frequency table.  Changing it should NOT propagate to LPLL.
+   */
 
   clk_register_divider("clk_litcore_src_div", "clk_litcore_src_sel",
-                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       CLK_NAME_IS_STATIC,
                        litcore + RK3576_LITCORECRU_CLKSEL_CON(0), 7, 5,
                        CLK_DIVIDER_HIWORD_MASK);
 
@@ -664,10 +926,13 @@ static void rk3576_clk_register_litcore(void)
                     litcore + RK3576_LITCORECRU_GATE_CON(0), 5,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 
-  /* aclk_m_litcore_div : 5-bit divider (CLKSEL_CON01[12:8], div+1). */
+  /* aclk_m_litcore_div : 5-bit divider (CLKSEL_CON01[12:8], div+1).
+   * NOTE: No CLK_SET_RATE_PARENT — changing aclk rate should NOT propagate
+   * to LPLL.  The divider is fixed per the CPU frequency table.
+   */
 
   clk_register_divider("aclk_m_litcore_div", "clk_litcore_src_sel",
-                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       CLK_NAME_IS_STATIC,
                        litcore + RK3576_LITCORECRU_CLKSEL_CON(1), 8, 5,
                        CLK_DIVIDER_HIWORD_MASK);
 
@@ -693,10 +958,13 @@ static void rk3576_clk_register_litcore(void)
                      CLK_MUX_HIWORD_MASK);
   }
 
-  /* pclk_litcore_root_div : 5-bit divider (CLKSEL_CON01[4:0], div+1). */
+  /* pclk_litcore_root_div : 5-bit divider (CLKSEL_CON01[4:0], div+1).
+   * NOTE: No CLK_SET_RATE_PARENT — changing APB rate should NOT propagate
+   * to LPLL.  The divider is fixed per the CPU frequency table.
+   */
 
   clk_register_divider("pclk_litcore_root_div", "pclk_litcore_root_sel",
-                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       CLK_NAME_IS_STATIC,
                        litcore + RK3576_LITCORECRU_CLKSEL_CON(1), 0, 5,
                        CLK_DIVIDER_HIWORD_MASK);
 
@@ -707,10 +975,13 @@ static void rk3576_clk_register_litcore(void)
                     litcore + RK3576_LITCORECRU_GATE_CON(0), 4,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 
-  /* pclk_dbg_litcore_div : 5-bit divider (CLKSEL_CON02[4:0], div+1). */
+  /* pclk_dbg_litcore_div : 5-bit divider (CLKSEL_CON02[4:0], div+1).
+   * NOTE: No CLK_SET_RATE_PARENT — changing debug APB rate should NOT
+   * propagate to LPLL.  The divider is fixed per the CPU frequency table.
+   */
 
   clk_register_divider("pclk_dbg_litcore_div", "pclk_litcore_root",
-                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       CLK_NAME_IS_STATIC,
                        litcore + RK3576_LITCORECRU_CLKSEL_CON(2), 0, 5,
                        CLK_DIVIDER_HIWORD_MASK);
 
@@ -1860,6 +2131,141 @@ static void rk3576_clk_register_dmac(void)
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: rk3576_clk_set_litcore_cpufreq
+ *
+ * Description:
+ *   Set the LITTLE-core (litcore) CPU frequency once at boot by specifying
+ *   the desired frequency in MHz (e.g. 1200 for 1.2 GHz).  The value must
+ *   match one of the LPLL frequency table entries exactly (see
+ *   enum rk3576_litcore_rate_e); otherwise -EINVAL is returned and the CPU
+ *   frequency is left at the bootloader-configured value.
+ *
+ *   This is a one-shot configuration helper — it does NOT implement DVFS.
+ *   It configures the LIT core only; the big-core cluster (BPLL) has its
+ *   own clock path and is not touched here.
+ *
+ *   The switch sequence mirrors the Linux CPUFreq transition model.  While
+ *   LPLL is being reprogrammed the PLL is momentarily unlocked, so the
+ *   CPU clock source must first be moved to a safe parent (clk_gpll) and
+ *   switched back to clk_lpll only after the PLL has re-locked:
+ *
+ *     1. Reparent clk_litcore_src_sel -> clk_gpll  (safe source)
+ *     2. clk_set_rate(clk_lpll,      target rate) (reprogram LPLL)
+ *     3. Reparent clk_litcore_src_sel -> clk_lpll  (trim-to-lock, switch back)
+ *     4. clk_set_rate(clk_litcore_src_div, target) (normalize to 1:1)
+ *
+ *   Step 4 must run AFTER switching back to clk_lpll (rather than while the
+ *   source is clk_gpll) so the divider's parent_rate is the new LPLL rate
+ *   and the framework picks div_con = 0 (divide-by-1), giving CPU == LPLL.
+ *
+ *   NOTE: On arm64, up_udelay() and the systick are driven by the generic
+ *   arch timer whose frequency is constant — a one-time CPU clock change
+ *   therefore does not require re-calibrating loops_per_msec.
+ *
+ * Input Parameters:
+ *   mhz - Desired LITTLE-core CPU frequency in MHz.
+ *
+ * Returned Value:
+ *   Zero on success; a negated errno on failure (-EINVAL if the frequency
+ *   is not an exact entry of the LPLL table).
+ ****************************************************************************/
+
+int rk3576_clk_set_litcore_cpufreq(uint32_t mhz)
+{
+  FAR struct clk_s *litcore_src_sel;
+  FAR struct clk_s *gpll;
+  FAR struct clk_s *lpll;
+  FAR struct clk_s *src_div;
+  uint32_t want_hz = mhz * 1000000UL;
+  uint32_t target_rate = 0;
+  int i;
+  int ret;
+
+  /* Look up the requested MHz in the LPLL rate table.  Only an exact match
+   * is accepted so a typo in the Kconfig value cannot silently pick a
+   * slightly-different gear.
+   */
+
+  for (i = 0; i < G_LPLL_RATE_TABLE_SIZE; i++)
+    {
+      if (g_lpll_rate_table[i].rate == want_hz)
+        {
+          target_rate = want_hz;
+          break;
+        }
+    }
+
+  if (target_rate == 0)
+    {
+      _err("CLK: no LPLL frequency table entry for %" PRIu32 " MHz\n", mhz);
+      return -EINVAL;
+    }
+
+  litcore_src_sel = clk_get("clk_litcore_src_sel");
+  gpll = clk_get("clk_gpll");
+  lpll = clk_get("clk_lpll");
+  src_div = clk_get("clk_litcore_src_div");
+  if (!litcore_src_sel || !gpll || !lpll || !src_div)
+    {
+      _err("CLK: failed to resolve litcore CPU clocks\n");
+      return -ENOENT;
+    }
+
+  /* Step 1 — reparent to GPLL (safe source) so the CPU keeps running
+   * while LPLL is power-cycled and reprogrammed.
+   */
+
+  ret = clk_set_parent(litcore_src_sel, gpll);
+  if (ret < 0)
+    {
+      _err("CLK: failed to switch CPU source to GPLL: %d\n", ret);
+      return ret;
+    }
+
+  /* Step 2 — reprogram LPLL to the target frequency.  LVGL/board init is
+   * single-threaded at this point, so there is no race with other drivers.
+   */
+
+  ret = clk_set_rate(lpll, target_rate);
+  if (ret < 0)
+    {
+      _err("CLK: failed to set LPLL to %" PRIu32 " Hz: %d\n", target_rate,
+           ret);
+
+      /* Best-effort trim-to-lock: switch back to LPLL and bail out. */
+
+      clk_set_parent(litcore_src_sel, lpll);
+      return ret;
+    }
+
+  /* Step 3 — reparent back to LPLL now that it is stable. */
+
+  ret = clk_set_parent(litcore_src_sel, lpll);
+  if (ret < 0)
+    {
+      _err("CLK: failed to switch CPU source back to LPLL: %d\n", ret);
+      return ret;
+    }
+
+  /* Step 4 — normalize clk_litcore_src_div to 1:1 so the CPU runs at the
+   * exact LPLL output frequency.  This divider has no CLK_SET_RATE_PARENT,
+   * so set it explicitly, AFTER switching back to clk_lpll.  Now
+   * parent_rate == target_rate so the divider clamps to div_con = 0
+   * (divide-by-1) and CPU rate == LPLL rate.
+   */
+
+  ret = clk_set_rate(src_div, target_rate);
+  if (ret < 0)
+    {
+      _err("CLK: failed to normalize litcore src_div: %d\n", ret);
+      return ret;
+    }
+
+  _info("CLK: litcore CPU running at %" PRIu32 " Hz\n", target_rate);
+  return OK;
+}
 
 /****************************************************************************
  * Name: rk3576_clk_tree_initialize

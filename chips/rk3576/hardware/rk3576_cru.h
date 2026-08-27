@@ -202,4 +202,23 @@
 
 #define RK3576_CCICRU_LPLL_CON(n) (0x0040 + ((n)*4))
 
+/* LPLL CON register bit fields
+ *
+ * Bit 13 of CON1 is the PLL power-down (PWRDOWN) control, active high:
+ *   1 = PLL powered down (not running), 0 = PLL running.
+ * This matches the RK3588 PLL definition (RK3588_PLLCON1_PWRDOWN = BIT(13)).
+ * See the FRACPLL set_rate sequence in rk3576_clk_tree.c.
+ */
+#define RK3576_LPLL_CON0_BYPASS  BIT(15)
+#define RK3576_LPLL_CON0_M_SHIFT 0
+#define RK3576_LPLL_CON0_M_MASK  0x3ff
+
+#define RK3576_LPLL_CON1_PWRDOWN BIT(13)
+#define RK3576_LPLL_CON1_S_SHIFT 6
+#define RK3576_LPLL_CON1_S_MASK  0x7
+#define RK3576_LPLL_CON1_P_SHIFT 0
+#define RK3576_LPLL_CON1_P_MASK  0x3f
+
+#define RK3576_LPLL_CON6_LOCK    BIT(15)
+
 #endif /* __ARCH_ARM64_SRC_RK3576_HARDWARE_RK3576_CRU_H */

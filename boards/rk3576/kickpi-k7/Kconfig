@@ -7,6 +7,25 @@ config ARCH_BOARD_KICKPI_K7
 
 if ARCH_BOARD_KICKPI_K7
 
+config KICKPI_K7_LITCORE_CPU_FREQ
+	int "LITTLE-core CPU boot frequency (MHz)"
+	default 1800
+	range 96 2400
+	---help---
+		Boot-time LITTLE-core (litcore) CPU frequency, in MHz.  Applied once
+		during board_late_initialize() via rk3576_clk_set_litcore_cpufreq()
+		after the clock tree is initialized.  Only the standard RK3576 LPLL
+		gears are accepted (96, 216, 312, 408, 600, 816, 1008, 1200, 1320,
+		1392, 1416, 1440, 1464, 1488, 1512, 1536, 1560, 1584, 1608, 1704,
+		1800, 1896, 1992, 2016, 2040, 2088, 2184, 2208, 2304, 2400); any
+		other value is rejected at runtime and the bootloader-configured
+		rate is kept.
+		This is a one-shot setting (no DVFS) and affects the LIT core only;
+		the big-core cluster (BPLL) has its own path.
+
+		Set to 0 to skip the frequency change entirely and keep the
+		bootloader-configured CPU rate.
+
 config KICKPI_K7_AUDIO
 	bool "On-board ES8388 audio (SAI1 + I2C3)"
 	default n
