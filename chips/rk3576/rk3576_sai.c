@@ -972,6 +972,12 @@ static void rk3576_sai_dmacallback(struct dma_chan_s *chan, void *arg,
 
   wd_cancel(&priv->dog);
   rk3576_sai_schedule(priv, result);
+  if (result == OK && priv->running && !sq_empty(&priv->pend))
+    {
+      /* Keep the FIFO serviced while the completion worker is pending. */
+
+      rk3576_sai_dmasetup(priv);
+    }
 }
 
 /****************************************************************************
