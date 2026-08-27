@@ -1066,19 +1066,37 @@ static void rk3576_sai_worker(void *arg)
       leave_critical_section(flags);
 
       DEBUGASSERT(bfc != NULL && bfc->callback != NULL);
-      if (bfc->result == OK && bfc->mono && bfc->sample_bytes == 2)
+      if (bfc->result == OK && bfc->sample_bytes != 0 &&
+          (bfc->mono || bfc->sample_bytes == 3))
         {
-          uint16_t *dest = (uint16_t *)&bfc->apb->samp[bfc->apb->curbyte];
-          size_t count = (bfc->apb->nbytes - bfc->apb->curbyte) /
-                         sizeof(uint32_t);
+          uint8_t *dest = &bfc->apb->samp[bfc->apb->curbyte];
+          size_t length = bfc->apb->nbytes - bfc->apb->curbyte;
+          size_t stride = bfc->mono ? 2 : 1;
+          size_t container_bytes = bfc->sample_bytes == 2 ? 2 : 4;
+          size_t count = length / container_bytes / stride;
           size_t i;
 
           for (i = 0; i < count; i++)
             {
-              dest[i] = dest[i * 2];
+              uint32_t sample;
+              size_t byte;
+
+              if (container_bytes == 2)
+                {
+                  sample = ((uint16_t *)dest)[i * stride];
+                }
+              else
+                {
+                  sample = ((uint32_t *)dest)[i * stride];
+                }
+
+              for (byte = 0; byte < bfc->sample_bytes; byte++)
+                {
+                  dest[i * bfc->sample_bytes + byte] = sample >> (8 * byte);
+                }
             }
 
-          bfc->apb->nbytes = bfc->apb->curbyte + count * sizeof(uint16_t);
+          bfc->apb->nbytes = bfc->apb->curbyte + count * bfc->sample_bytes;
         }
 
       bfc->callback(&priv->dev, bfc->apb, bfc->arg, bfc->result);
