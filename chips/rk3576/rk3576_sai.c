@@ -64,6 +64,7 @@
 #include <nuttx/audio/i2s.h>
 #include <nuttx/clk/clk.h>
 #include <nuttx/irq.h>
+#include <nuttx/kmalloc.h>
 #include <nuttx/mutex.h>
 #include <nuttx/queue.h>
 #include <nuttx/semaphore.h>
@@ -146,6 +147,9 @@ struct rk3576_sai_buffer_s
   int result;                        /* Transfer result                   */
   bool mono;                         /* Select one sample per RX frame    */
   uint8_t sample_bytes;              /* RX PCM width, zero for TX         */
+  uint32_t *txwords;                 /* Expanded packed-24 TX samples     */
+  size_t txbytes;                    /* Expanded DMA transfer length      */
+  bool packed_tx;                    /* Packed-24 transfer, possibly empty */
 };
 
 /* State for one SAI controller instance. */
@@ -173,6 +177,8 @@ struct rk3576_sai_s
   uint32_t samplerate;       /* Sample rate (Hz)                      */
   uint8_t datalen;           /* Valid data width (bits)               */
   uint8_t channels;          /* Channels (slots per frame)            */
+  uint8_t txpartial[6];      /* Incomplete packed-24 stereo frame     */
+  uint8_t ntxpartial;        /* Bytes retained across submissions     */
   bool txenab;               /* True: current run is TX               */
   bool rxenab;               /* True: current run is RX               */
   bool running;              /* True: controller armed for a run      */
@@ -246,6 +252,9 @@ static int rk3576_sai_receive(struct i2s_dev_s *dev, struct ap_buffer_s *apb,
 static uint32_t rk3576_sai_getmclk(struct i2s_dev_s *dev);
 static uint32_t rk3576_sai_setmclk(struct i2s_dev_s *dev, uint32_t frequency);
 static int rk3576_sai_ioctl(struct i2s_dev_s *dev, int cmd, unsigned long arg);
+static int rk3576_sai_pack24(struct rk3576_sai_s *priv,
+                             struct rk3576_sai_buffer_s *bfc,
+                             struct ap_buffer_s *apb);
 
 /****************************************************************************
  * Private Data
@@ -666,7 +675,9 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
     {
       rk3576_sai_putreg(priv, RK3576_SAI_TXCR, xcr);
       rk3576_sai_modifyreg(priv, RK3576_SAI_MONO_CR, SAI_MONO_CR_TX_MONO_EN,
-                           priv->channels == 1 ? SAI_MONO_CR_TX_MONO_EN : 0);
+                           priv->channels == 1 && priv->datalen != 24
+                               ? SAI_MONO_CR_TX_MONO_EN
+                               : 0);
 
       rk3576_sai_putreg(priv, RK3576_SAI_TX_SHIFT, SAI_XSHIFT_FS_1CYCLE);
 
@@ -790,6 +801,7 @@ static void rk3576_sai_dmasetup(struct rk3576_sai_s *priv)
       return;
     }
 
+again:
   /* No pending work: quiesce the controller. */
 
   if (sq_empty(&priv->pend))
@@ -818,6 +830,13 @@ static void rk3576_sai_dmasetup(struct rk3576_sai_s *priv)
   DEBUGASSERT(bfc != NULL && bfc->apb != NULL);
   apb = bfc->apb;
 
+  if (bfc->packed_tx && bfc->txbytes == 0)
+    {
+      sq_addlast((sq_entry_t *)bfc, &priv->act);
+      rk3576_sai_schedule(priv, OK);
+      goto again;
+    }
+
   samp = (uintptr_t)&apb->samp[apb->curbyte];
 
   /* The SAI TX/RX FIFO data register is 32 bits wide and packs the audio
@@ -834,6 +853,11 @@ static void rk3576_sai_dmasetup(struct rk3576_sai_s *priv)
   if (priv->txenab)
     {
       nbytes = apb->nbytes - apb->curbyte;
+      if (bfc->packed_tx)
+        {
+          samp = (uintptr_t)bfc->txwords;
+          nbytes = bfc->txbytes;
+        }
       cfg.direction = DMA_MEM_TO_DEV;
       cfg.dst_drq = priv->dma_tx_req;
 
@@ -1105,6 +1129,8 @@ static void rk3576_sai_worker(void *arg)
           bfc->apb->nbytes = bfc->apb->curbyte + count * bfc->sample_bytes;
         }
 
+      kmm_free(bfc->txwords);
+      bfc->txwords = NULL;
       bfc->callback(&priv->dev, bfc->apb, bfc->arg, bfc->result);
 
       apb_free(bfc->apb);
@@ -1263,6 +1289,7 @@ static uint32_t rk3576_sai_txdatawidth(struct i2s_dev_s *dev, int bits)
     }
 
   priv->datalen = bits;
+  priv->ntxpartial = 0;
   return priv->samplerate * bits;
 }
 
@@ -1274,12 +1301,79 @@ static uint32_t rk3576_sai_rxdatawidth(struct i2s_dev_s *dev, int bits)
 }
 
 /****************************************************************************
+ * Name: rk3576_sai_pack24
+ *
+ * Description:
+ *   Expand packed little-endian PCM in thread context.  Preserve partial
+ *   frames across buffers; never expand the caller's allocation in place.
+ *
+ ****************************************************************************/
+
+static int rk3576_sai_pack24(struct rk3576_sai_s *priv,
+                             struct rk3576_sai_buffer_s *bfc,
+                             struct ap_buffer_s *apb)
+{
+  const uint8_t *src = &apb->samp[apb->curbyte];
+  size_t length = apb->nbytes - apb->curbyte;
+  size_t previous = priv->ntxpartial;
+  size_t total = length + previous;
+  size_t frame = 3 * priv->channels;
+  size_t complete = total / frame * frame;
+  size_t slots = priv->channels == 1 ? 2 : 1;
+  size_t i;
+
+  if ((apb->flags & AUDIO_APB_FINAL) != 0 && complete != total)
+    {
+      return -EINVAL;
+    }
+
+  bfc->txbytes = complete / 3 * slots * sizeof(uint32_t);
+  if (bfc->txbytes != 0)
+    {
+      bfc->txwords = kmm_malloc(bfc->txbytes);
+      if (bfc->txwords == NULL)
+        {
+          return -ENOMEM;
+        }
+    }
+
+  for (i = 0; i < complete / 3; i++)
+    {
+      uint32_t sample = 0;
+      size_t byte;
+
+      for (byte = 0; byte < 3; byte++)
+        {
+          size_t offset = i * 3 + byte;
+          uint8_t value = offset < previous ? priv->txpartial[offset]
+                                            : src[offset - previous];
+          sample |= (uint32_t)value << (byte * 8);
+        }
+
+      /* The FIFO still consumes both I2S slots in mono mode. */
+
+      bfc->txwords[i * slots] = sample;
+      if (slots == 2)
+        {
+          bfc->txwords[i * slots + 1] = sample;
+        }
+    }
+
+  for (i = complete; i < total; i++)
+    {
+      priv->txpartial[i - complete] =
+          i < previous ? priv->txpartial[i] : src[i - previous];
+    }
+
+  priv->ntxpartial = total - complete;
+  return OK;
+}
+
+/****************************************************************************
  * Name: rk3576_sai_send
  *
  * Description:
- *   Enqueue an audio buffer for playback and start the transfer if idle.
- *   Returns after enqueuing; the completion callback fires from the work
- *   queue when the DMA finishes.
+ *   Queue a playback buffer.  Completion runs on the work queue.
  *
  ****************************************************************************/
 
@@ -1320,6 +1414,16 @@ static int rk3576_sai_send(struct i2s_dev_s *dev, struct ap_buffer_s *apb,
   priv->txenab = true;
   bfc->mono = false;
   bfc->sample_bytes = 0;
+  bfc->txwords = NULL;
+  bfc->packed_tx = priv->datalen == 24;
+  if (bfc->packed_tx)
+    {
+      ret = rk3576_sai_pack24(priv, bfc, apb);
+      if (ret < 0)
+        {
+          goto errout;
+        }
+    }
 
   apb_reference(apb);
 
@@ -1387,6 +1491,8 @@ static int rk3576_sai_receive(struct i2s_dev_s *dev, struct ap_buffer_s *apb,
   priv->rxenab = true;
   bfc->mono = priv->channels == 1;
   bfc->sample_bytes = priv->datalen / 8;
+  bfc->txwords = NULL;
+  bfc->packed_tx = false;
 
   /* Report the full buffer as filled on success (single-shot capture). */
 
