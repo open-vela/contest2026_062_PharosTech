@@ -660,7 +660,8 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
     {
       rk3576_sai_putreg(priv, RK3576_SAI_RXCR, xcr);
       rk3576_sai_putreg(priv, RK3576_SAI_FSCR,
-                        SAI_FSCR_FW(priv->channels * slotbits) |
+                        SAI_FSCR_EDGE_SEL |
+                            SAI_FSCR_FW(priv->channels * slotbits) |
                             SAI_FSCR_FPW(slotbits));
       rk3576_sai_putreg(priv, RK3576_SAI_CKR, SAI_CKR_MDIV(mdiv));
       rk3576_sai_putreg(priv, RK3576_SAI_MONO_CR,
