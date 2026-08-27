@@ -54,6 +54,7 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
 
 #include <nuttx/arch.h>
@@ -94,6 +95,25 @@
  */
 
 #define PCF8563_ALARM_RETRY_DELAY_MSEC 200
+
+/* The PCF8563 alarm compares only minute/hour/day fields (no month/year),
+ * so a one-shot alarm fires at the next occurrence of the programmed
+ * day-of-month + time after it is armed.  To keep that behaviour
+ * unambiguous we reject any target whose offset from "now" cannot be
+ * represented by a single, well-defined future match (see the delta check
+ * in pcf8563_setalarm_internal()): a zero/negative offset would match an
+ * already-passed minute and fire immediately/stale, and an offset beyond
+ * PCF8563_ALARM_MAX_SECONDS (28 days) might first match an intermediate
+ * day-of-month in a stale month and falsely consume the one-shot alarm.
+ *
+ * The 28-day cap is chosen so that a target day-of-month that has already
+ * passed this month but still falls within the window resolves to its next
+ * (i.e. the intended) occurrence in the following month, while never being
+ * far enough out to alias onto an unintended earlier month.  This makes the
+ * API predictable at the cost of at most ~3 days of maximum alarm range.
+ */
+
+#define PCF8563_ALARM_MAX_SECONDS (28 * 24 * 60 * 60)
 
 /* I2C 7-bit slave address (fixed, not configurable on the part). */
 
@@ -483,7 +503,19 @@ static int pcf8563_rdtime(FAR struct rtc_lowerhalf_s *lower,
 static int pcf8563_settime(FAR struct rtc_lowerhalf_s *lower,
                            FAR const struct rtc_time *rtctime)
 {
-  return pcf8563_set_datetime(rtctime);
+  int ret;
+
+  /* Serialize against alarm register access: rdalarm() derives the next
+   * alarm fire time from the *current* time plus the programmed alarm
+   * fields, so a concurrent change of the time would otherwise race that
+   * derivation and produce a day/minute off-by-one.
+   */
+
+  nxmutex_lock(&g_pcf8563.dev.lock);
+  ret = pcf8563_set_datetime(rtctime);
+  nxmutex_unlock(&g_pcf8563.dev.lock);
+
+  return ret;
 }
 
 /****************************************************************************
@@ -517,31 +549,78 @@ static bool pcf8563_havesettime(FAR struct rtc_lowerhalf_s *lower)
 
 #ifdef CONFIG_RTC_ALARM
 /****************************************************************************
- * Name: pcf8563_setalarm
+ * Name: pcf8563_setalarm_internal
  *
  * Description:
- *   Set an alarm on the PCF8563.
+ *   Program the alarm registers and enable/arm the alarm interrupt.  The
+ *   caller MUST already hold g_pcf8563.dev.lock; this function neither locks
+ *   nor unlocks.
  *
  *   The PCF8563 compares each *enabled* alarm field against the current time
- *   and raises the alarm flag once all match.  Alarms are one-shot in the
- *   NuttX RTC model (mirroring pl031): it fires once when the time reaches
- *   the programmed minute/hour/day.
+ *   and raises the alarm flag once all match.  We enable the minute, hour
+ *   and day fields and leave the weekday field disabled.  (The PCF8563 has
+ *   no month alarm field, so day-of-month + time is the closest
+ *   representation of a one-shot absolute alarm.)
  *
- *   We enable the minute, hour and day fields and leave the weekday field
- *   disabled.  (The PCF8563 has no month alarm field, so day-of-month + time
- *   is the closest representation of a one-shot absolute alarm.)  When the
- *   programmed time is reached, AF is set and -- if AIE is enabled -- the
- *   INT pin asserts, which the board routes to pcf8563_alarm_service().
+ *   The alarm target must lie within PCF8563_ALARM_MAX_SECONDS (28 days) of
+ *   'now'; requests further out (or in the past) are rejected with -ERANGE.
+ *   Within that window the target day-of-month occurs exactly once, so the
+ *   alarm cannot fire early at a stale intermediate month.
+ *
+ * Input Parameters:
+ *   lower     - Lower half state (unused here, kept for symmetry).
+ *   alarminfo - Absolute alarm time + callback + private arg.
+ *   now       - Current time snapshot, or NULL to read it now (still under
+ *               the caller-held lock).
  *
  ****************************************************************************/
 
-static int pcf8563_setalarm(FAR struct rtc_lowerhalf_s *lower,
-                            FAR const struct lower_setalarm_s *alarminfo)
+static int
+pcf8563_setalarm_internal(FAR struct rtc_lowerhalf_s *lower,
+                          FAR const struct lower_setalarm_s *alarminfo,
+                          FAR const struct rtc_time *now)
 {
   uint8_t regs[4 + 1];
+  struct rtc_time now_local;
+  time_t now_t;
+  time_t target_t;
+  time_t delta;
   int ret;
 
-  nxmutex_lock(&g_pcf8563.dev.lock);
+  /* The caller may already have read the current time (setrelative reuses
+   * it), otherwise read it here; both paths run under the caller-held lock
+   * so the snapshot is stable.
+   */
+
+  if (now == NULL)
+    {
+      ret = pcf8563_get_datetime(&now_local);
+      if (ret < 0)
+        {
+          rtcerr("ERROR: pcf8563_get_datetime (setalarm) failed: %d\n", ret);
+          return ret;
+        }
+
+      now = &now_local;
+    }
+
+  /* Reject targets that cannot be represented unambiguously by the
+   * minute/hour/day comparison: compute the offset from "now" and require it
+   * to be strictly within the 28-day window.  A target in the past (negative
+   * offset) would immediately match an already-passed minute and fire early,
+   * so it is rejected too.
+   */
+
+  now_t = timegm((FAR struct tm *)now);
+  target_t = timegm((FAR struct tm *)&alarminfo->time);
+
+  delta = target_t - now_t;
+  if (delta <= 0 || delta > PCF8563_ALARM_MAX_SECONDS)
+    {
+      rtcerr("ERROR: pcf8563_setalarm target out of range (delta=%lld)\n",
+             (long long)delta);
+      return -ERANGE;
+    }
 
   /* Register base address 09h, followed by the four alarm registers:
    *   [0] 09h minute_alarm   (AE_M + BCD minute)
@@ -560,7 +639,6 @@ static int pcf8563_setalarm(FAR struct rtc_lowerhalf_s *lower,
   if (ret < 0)
     {
       rtcerr("ERROR: pcf8563_write_reg (alarm) failed: %d\n", ret);
-      nxmutex_unlock(&g_pcf8563.dev.lock);
       return ret;
     }
 
@@ -580,7 +658,6 @@ static int pcf8563_setalarm(FAR struct rtc_lowerhalf_s *lower,
     if (ret < 0)
       {
         rtcerr("ERROR: pcf8563_read_reg (status2) failed: %d\n", ret);
-        nxmutex_unlock(&g_pcf8563.dev.lock);
         return ret;
       }
 
@@ -594,7 +671,6 @@ static int pcf8563_setalarm(FAR struct rtc_lowerhalf_s *lower,
       if (ret < 0)
         {
           rtcerr("ERROR: pcf8563_write_reg (AIE) failed: %d\n", ret);
-          nxmutex_unlock(&g_pcf8563.dev.lock);
           return ret;
         }
     }
@@ -607,9 +683,28 @@ static int pcf8563_setalarm(FAR struct rtc_lowerhalf_s *lower,
   g_pcf8563.dev.alarm_cb = alarminfo->cb;
   g_pcf8563.dev.alarm_priv = alarminfo->priv;
 
+  return OK;
+}
+
+/****************************************************************************
+ * Name: pcf8563_setalarm
+ *
+ * Description:
+ *   Set a one-shot absolute alarm.  Acquires the lock, then delegates to
+ *   pcf8563_setalarm_internal() with 'now' = NULL (read under lock).
+ *
+ ****************************************************************************/
+
+static int pcf8563_setalarm(FAR struct rtc_lowerhalf_s *lower,
+                            FAR const struct lower_setalarm_s *alarminfo)
+{
+  int ret;
+
+  nxmutex_lock(&g_pcf8563.dev.lock);
+  ret = pcf8563_setalarm_internal(lower, alarminfo, NULL);
   nxmutex_unlock(&g_pcf8563.dev.lock);
 
-  return OK;
+  return ret;
 }
 
 /****************************************************************************
@@ -624,16 +719,37 @@ static int pcf8563_setalarm(FAR struct rtc_lowerhalf_s *lower,
 static int pcf8563_setrelative(FAR struct rtc_lowerhalf_s *lower,
                                FAR const struct lower_setrelative_s *alarminfo)
 {
+  struct lower_setalarm_s lalarm;
   struct rtc_time rtctime;
   struct tm setalarm;
   time_t time;
   int ret;
 
-  /* Read the current time first. */
+  /* Reject relative targets outside the representable window early: the
+   * alarm compares only minute/hour/day, so anything beyond 28 days (or a
+   * non-positive offset) cannot fire at a well-defined single date.  A
+   * non-positive reltime would program an already-passed minute and fire
+   * immediately/stale.
+   */
+
+  if (alarminfo->reltime <= 0 ||
+      alarminfo->reltime > PCF8563_ALARM_MAX_SECONDS)
+    {
+      rtcerr("ERROR: pcf8563_setrelative reltime out of range (%lld)\n",
+             (long long)alarminfo->reltime);
+      return -ERANGE;
+    }
+
+  /* Read the current time and program the target under one lock so the
+   * read and the register write are a single stable snapshot.
+   */
+
+  nxmutex_lock(&g_pcf8563.dev.lock);
 
   ret = pcf8563_get_datetime(&rtctime);
   if (ret < 0)
     {
+      nxmutex_unlock(&g_pcf8563.dev.lock);
       return ret;
     }
 
@@ -647,6 +763,7 @@ static int pcf8563_setrelative(FAR struct rtc_lowerhalf_s *lower,
 
   if (gmtime_r(&time, &setalarm) == NULL)
     {
+      nxmutex_unlock(&g_pcf8563.dev.lock);
       return -EINVAL;
     }
 
@@ -665,20 +782,25 @@ static int pcf8563_setrelative(FAR struct rtc_lowerhalf_s *lower,
 
       if (gmtime_r(&time, &setalarm) == NULL)
         {
+          nxmutex_unlock(&g_pcf8563.dev.lock);
           return -EINVAL;
         }
     }
 
-  {
-    struct lower_setalarm_s lalarm;
+  /* Reuse the already-read current time (rtctime) as the delta annotation
+   * for pcf8563_setalarm_internal(), avoiding a second I2C read.
+   */
 
-    lalarm.id = alarminfo->id;
-    lalarm.cb = alarminfo->cb;
-    lalarm.priv = alarminfo->priv;
-    lalarm.time = *(FAR struct rtc_time *)&setalarm;
+  lalarm.id = alarminfo->id;
+  lalarm.cb = alarminfo->cb;
+  lalarm.priv = alarminfo->priv;
+  lalarm.time = *(FAR struct rtc_time *)&setalarm;
 
-    return pcf8563_setalarm(lower, &lalarm);
-  }
+  ret = pcf8563_setalarm_internal(lower, &lalarm, &rtctime);
+
+  nxmutex_unlock(&g_pcf8563.dev.lock);
+
+  return ret;
 }
 
 /****************************************************************************
@@ -766,19 +888,102 @@ static int pcf8563_cancelalarm(FAR struct rtc_lowerhalf_s *lower, int alarmid)
 static int pcf8563_rdalarm(FAR struct rtc_lowerhalf_s *lower,
                            FAR struct lower_rdalarm_s *alarminfo)
 {
+  struct rtc_time now;
+  struct tm candidate;
   uint8_t buffer[4];
+  time_t now_t;
+  time_t cand_t;
+  int amin;
+  int ahour;
+  int aday;
   int ret;
+
+  /* The PCF8563 alarm has no month/year compare registers, so the registers
+   * only tell us minute/hour/day.  We rebuild the complete next fire time by
+   * combining those field values with the *current* date: the alarm fires at
+   * the next occurrence (this month, or next month if already past) of the
+   * programmed day + hour + minute.  The current time and the alarm
+   * registers must be read under the same lock so a concurrent settime() or
+   * time rollover cannot skew the result by a day or a minute.
+   */
+
+  nxmutex_lock(&g_pcf8563.dev.lock);
+
+  ret = pcf8563_get_datetime(&now);
+  if (ret < 0)
+    {
+      rtcerr("ERROR: pcf8563_get_datetime (rdalarm) failed: %d\n", ret);
+      nxmutex_unlock(&g_pcf8563.dev.lock);
+      return ret;
+    }
 
   ret = pcf8563_read_reg(PCF8563_REG_MINUTE_ALARM, buffer, 4);
   if (ret < 0)
     {
       rtcerr("ERROR: pcf8563_read_reg (alarm) failed: %d\n", ret);
+      nxmutex_unlock(&g_pcf8563.dev.lock);
       return ret;
     }
 
-  alarminfo->time->tm_min = (int)pcf8563_bcd2bin(buffer[0] & ~PCF8563_AE_M);
-  alarminfo->time->tm_hour = (int)pcf8563_bcd2bin(buffer[1] & ~PCF8563_AE_H);
-  alarminfo->time->tm_mday = (int)pcf8563_bcd2bin(buffer[2] & ~PCF8563_AE_D);
+  amin = (int)pcf8563_bcd2bin(buffer[0] & ~PCF8563_AE_M);
+  ahour = (int)pcf8563_bcd2bin(buffer[1] & ~PCF8563_AE_H);
+  aday = (int)pcf8563_bcd2bin(buffer[2] & ~PCF8563_AE_D);
+
+  nxmutex_unlock(&g_pcf8563.dev.lock);
+
+  /* Build this month's candidate as year/month/day + hour:min, with seconds
+   * forced to 0 (the alarm asserts at the top of the target minute).  The
+   * alarm fields carry no month/year, so we anchor the candidate to the
+   * current month/year and resolve "already passed" below by rolling forward
+   * one month.  struct rtc_time in this driver holds UTC (see
+   * pcf8563_get_datetime), so timegm() (which treats fields as UTC and
+   * ignores tm_isdst) is used rather than local-time mktime().
+   */
+
+  memset(&candidate, 0, sizeof(candidate));
+  candidate.tm_year = now.tm_year;
+  candidate.tm_mon = now.tm_mon;
+  candidate.tm_mday = aday;
+  candidate.tm_hour = ahour;
+  candidate.tm_min = amin;
+  candidate.tm_sec = 0;
+
+  /* timegm() normalizes out-of-range fields: a day larger than the current
+   * month's length overflows into the following month, and a day already
+   * passed this month is handled by the explicit one-month roll forward
+   * below.
+   */
+
+  now_t = timegm((FAR struct tm *)&now);
+  cand_t = timegm(&candidate);
+
+  /* If the candidate is strictly before the current time, the alarm fires
+   * next month instead (timegm() normalizes a month overflow, carrying to
+   * the next year when crossing December).
+   */
+
+  if (cand_t < now_t)
+    {
+      candidate.tm_mon += 1;
+      cand_t = timegm(&candidate);
+    }
+
+  /* Rebuild the full broken-out time from the normalized epoch value. */
+
+  if (gmtime_r(&cand_t, &candidate) == NULL)
+    {
+      return -EINVAL;
+    }
+
+  alarminfo->time->tm_sec = candidate.tm_sec;
+  alarminfo->time->tm_min = candidate.tm_min;
+  alarminfo->time->tm_hour = candidate.tm_hour;
+  alarminfo->time->tm_mday = candidate.tm_mday;
+  alarminfo->time->tm_mon = candidate.tm_mon;
+  alarminfo->time->tm_year = candidate.tm_year;
+  alarminfo->time->tm_wday = candidate.tm_wday;
+  alarminfo->time->tm_yday = candidate.tm_yday;
+  alarminfo->time->tm_isdst = candidate.tm_isdst;
 
   return OK;
 }
