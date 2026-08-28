@@ -324,6 +324,7 @@ config RK3576_VOP
 	bool "Video Output Processor (VOP)"
 	default n
 	select DRIVERS_VIDEO
+	select VIDEO_FB
 	depends on RK3576_DMA_ALLOC
 	---help---
 		Enable the RK3576 Video Output Processor (VOP @ 0x27d00000).

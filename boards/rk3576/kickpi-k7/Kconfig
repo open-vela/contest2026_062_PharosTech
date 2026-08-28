@@ -189,4 +189,18 @@ config KICKPI_K7_USBHOST
 		Enable GPIO3_D6 VBUS and initialize USB1 xHCI for the on-board
 		GL3510 SuperSpeed hub and the three external USB-A ports.
 
+config KICKPI_K7_MIPI_DSI
+	bool "On-board MIPI DSI LCD panel (DCPHY + DSI + VOP)"
+	default n
+	depends on RK3576_MIPI_DCPHY
+	depends on RK3576_MIPI_DSI
+	depends on RK3576_VOP
+	depends on RK3576_PWM
+	depends on RK3576_GPIO
+	---help---
+		Wire up the on-board MIPI DSI LCD panel: configure the panel control
+		pins (reset / power-enable) and backlight PWM, bring up the RK3576
+		DCPHY + DSI-2 host, send the panel DCS init sequence, then enable
+		video and register the VOP framebuffer (/dev/fbN).
+
 endif # ARCH_BOARD_KICKPI_K7

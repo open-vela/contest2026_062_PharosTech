@@ -84,6 +84,21 @@
  * Private Types
  ****************************************************************************/
 
+/* DSI-2 host operating mode.  The enum mirrors the controller's own
+ * DSI2_MODE_CTRL operating modes (Command / Video), while also reflecting
+ * the link lifecycle the driver owns, including the DCPHY: the PHY is
+ * powered up as soon as the host enters Command mode (on initialize) so
+ * that the DCS init sequence can be sent, and only later transitions to
+ * Video mode on request.  Board code never touches the PHY directly.
+ */
+
+enum rk3576_dsi_mode_e
+{
+  RK3576_DSI_MODE_OFF = 0, /* Not initialized */
+  RK3576_DSI_MODE_COMMAND, /* Command mode: PHY powered, DCS usable */
+  RK3576_DSI_MODE_VIDEO,   /* Video mode: pixel stream active */
+};
+
 struct rk3576_dsi_s
 {
   struct mipi_dsi_host host;    /* Must be first */
@@ -93,7 +108,7 @@ struct rk3576_dsi_s
   struct clk_s *pclk;           /* pclk_dsihost0 APB clock */
   struct rk3576_dsi_config cfg; /* Link/PHY configuration */
   bool initialized;             /* Core powered up + clocks enabled once */
-  bool powered;                 /* Controller powered up */
+  enum rk3576_dsi_mode_e mode;  /* Current DSI2_MODE_CTRL operating mode */
 };
 
 /****************************************************************************
@@ -106,6 +121,7 @@ static int rk3576_dsi_detach(FAR struct mipi_dsi_host *host,
                              FAR struct mipi_dsi_device *device);
 static ssize_t rk3576_dsi_transfer(FAR struct mipi_dsi_host *host,
                                    FAR const struct mipi_dsi_msg *msg);
+static int rk3576_dsi_phy_power_up(FAR struct rk3576_dsi_s *priv);
 
 /****************************************************************************
  * Private Data
@@ -546,7 +562,13 @@ static ssize_t rk3576_dsi_transfer(FAR struct mipi_dsi_host *host,
       return ret;
     }
 
-  if (!priv->powered)
+  /* The CRI command path needs a powered (Command/Video) link.  The
+   * controller is always powered after initialize() transitions it to
+   * Command mode, so reject transfers only before that point.
+   */
+
+  if (priv->mode != RK3576_DSI_MODE_COMMAND &&
+      priv->mode != RK3576_DSI_MODE_VIDEO)
     {
       ret = -EPERM;
       goto errout_unlock;
@@ -593,6 +615,49 @@ static ssize_t rk3576_dsi_transfer(FAR struct mipi_dsi_host *host,
 errout_unlock:
   nxmutex_unlock(&priv->lock);
   return ret;
+}
+
+/****************************************************************************
+ * Name: rk3576_dsi_phy_power_up
+ *
+ * Description:
+ *   Bring up the DCPHY (init + power on) on behalf of the DSI host.  This
+ *   encapsulates all PHY-facing detail inside the DSI driver: board code
+ *   only talks to the DSI host API and never to the DCPHY directly.
+ *
+ *   Called once from rk3576_mipi_dsi_initialize() when the host first
+ *   enters Command mode, so that the panel DCS init sequence can be
+ *   transmitted over the (now live) D-PHY lanes.
+ *
+ * Input Parameters:
+ *   priv - DSI driver instance (lock held by caller).
+ *
+ * Returned Value:
+ *   OK on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+static int rk3576_dsi_phy_power_up(FAR struct rk3576_dsi_s *priv)
+{
+  int ret;
+
+  ret = rk3576_dcphy_init();
+  if (ret < 0)
+    {
+      gerr("ERROR: DSI failed to init DCPHY: %d\n", ret);
+      return ret;
+    }
+
+  ret =
+      rk3576_dcphy_power_on((uint8_t)priv->cfg.lanes, true, priv->cfg.hs_rate);
+  if (ret < 0)
+    {
+      gerr("ERROR: DSI failed to power on DCPHY: %d\n", ret);
+      rk3576_dcphy_power_off();
+      return ret;
+    }
+
+  return OK;
 }
 
 /****************************************************************************
@@ -702,14 +767,34 @@ rk3576_mipi_dsi_initialize(FAR const struct rk3576_dsi_config *config)
 
   priv->cfg = *config;
 
+  /* Bring up the DCPHY (init + power on) so the panel DCS init sequence
+   * can be transmitted immediately after this call.  All PHY detail is
+   * encapsulated in rk3576_dsi_phy_power_up().
+   */
+
+  ret = rk3576_dsi_phy_power_up(priv);
+  if (ret < 0)
+    {
+      gerr("ERROR: DSI failed to power up DCPHY: %d\n", ret);
+      goto errout_disable_pclk;
+    }
+
+  /* Enter Command mode: this is the default operating state where CRI
+   * command transfers (DCS init / reads) work over the powered PHY.
+   */
+
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_MODE_CTRL, DSI2_MODE_COMMAND);
+
   priv->host.bus = 0;
   priv->host.ops = &g_rk3576_dsi_ops;
-  priv->powered = true;
+  priv->mode = RK3576_DSI_MODE_COMMAND;
   priv->initialized = true;
 
   nxmutex_unlock(&priv->lock);
   return &priv->host;
 
+errout_disable_pclk:
+  clk_disable(priv->pclk);
 errout_disable_sclk:
   clk_disable(priv->sclk);
 errout_unlock:
@@ -829,6 +914,19 @@ int rk3576_mipi_dsi_enable_video(
       return ret;
     }
 
+  /* Video mode may only be entered from Command mode, at which point the
+   * DCPHY is already powered (brought up by initialize()).  This keeps the
+   * PHY lifecycle inside the DSI driver and decouples it from the video
+   * timing programming -- the DCS init sequence runs earlier, in Command
+   * mode, over the same power link.
+   */
+
+  if (priv->mode != RK3576_DSI_MODE_COMMAND)
+    {
+      ret = -EBUSY;
+      goto errout_unlock;
+    }
+
   lanes = priv->cfg.lanes;
   bpp = (uint32_t)mipi_dsi_pixel_format_to_bpp(priv->cfg.format);
   if (bpp == 0 || lanes == 0 || lanes > 4)
@@ -942,18 +1040,13 @@ int rk3576_mipi_dsi_enable_video(
 
   rk3576_dsi_putreg(base, RK3576_DSI2_MANUAL_MODE_CFG, DSI2_MANUAL_MODE_EN);
 
-  /* Power on the DCPHY at the configured high-speed data rate. */
-
-  ret = rk3576_dcphy_power_on((uint8_t)lanes, true, priv->cfg.hs_rate);
-  if (ret < 0)
-    {
-      gerr("ERROR: DSI failed to power on DCPHY: %d\n", ret);
-      goto errout_unlock;
-    }
-
-  /* Switch the host into Video mode. */
+  /* Switch the host into Video mode.  The DCPHY is already powered (it was
+   * brought up when the host entered Command mode), so no PHY programming
+   * happens here.
+   */
 
   rk3576_dsi_putreg(base, RK3576_DSI2_MODE_CTRL, DSI2_MODE_VIDEO);
+  priv->mode = RK3576_DSI_MODE_VIDEO;
 
   nxmutex_unlock(&priv->lock);
   return OK;
@@ -987,16 +1080,24 @@ int rk3576_mipi_dsi_disable_video(FAR struct mipi_dsi_host *host)
       return ret;
     }
 
-  /* Return the host to Idle mode, then power off the PHY. */
-
-  rk3576_dsi_putreg(priv->base, RK3576_DSI2_MODE_CTRL, DSI2_MODE_IDLE);
-
-  ret = rk3576_dcphy_power_off();
-  if (ret < 0)
+  if (priv->mode != RK3576_DSI_MODE_VIDEO)
     {
-      gerr("ERROR: DSI failed to power off DCPHY: %d\n", ret);
+      ret = -EBUSY;
+      goto errout_unlock;
     }
 
+  /* Return to Command mode so that DCS commands remain usable.  The DCPHY
+   * stays powered (it is owned by the DSI driver and only taken down on a
+   * full shutdown); low-power policy can be added later if needed.
+   */
+
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_MODE_CTRL, DSI2_MODE_COMMAND);
+  priv->mode = RK3576_DSI_MODE_COMMAND;
+
+  nxmutex_unlock(&priv->lock);
+  return OK;
+
+errout_unlock:
   nxmutex_unlock(&priv->lock);
   return ret;
 }

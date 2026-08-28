@@ -439,6 +439,19 @@ void board_late_initialize(void)
   }
 #endif
 
+#ifdef CONFIG_KICKPI_K7_MIPI_DSI
+  /* Bring up the on-board MIPI DSI LCD panel (DCPHY + DSI + VOP). */
+
+  {
+    int ret = kickpi_k7_mipi_dsi_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: kickpi_k7_mipi_dsi_initialize failed: %d\n",
+               ret);
+      }
+  }
+#endif
+
 #ifdef CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT
   {
     int ret = kickpi_k7_storage_initialize(

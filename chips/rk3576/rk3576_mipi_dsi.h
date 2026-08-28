@@ -29,13 +29,17 @@
  * optionally registers it with mipi_dsi_host_register() so that LCD panel
  * drivers can bind to it via mipi_dsi_device.
  *
- * The primary operating mode is Video mode: the host is configured to
- * stream pixel data received from the VOP through the IPI (Image Pixel
- * Interface) with the panel timing programmed via
- * rk3576_mipi_dsi_enable_video().  Command-mode transfer (DCS init /
- * generic read-write) is handled through the DSI-2 Command Interface (CRI)
- * register bank and remains available as a secondary, "future support"
- * path (it is also used at panel bring-up to send the DCS init sequence).
+ * The DSI driver owns the whole link lifecycle, including the DCPHY: board
+ * code never talks to the PHY directly.  rk3576_mipi_dsi_initialize()
+ * brings up the DCPHY and enters Command mode, so the panel DCS init
+ * sequence can be transmitted over the (live) D-PHY lanes immediately.
+ * rk3576_mipi_dsi_enable_video() then programs the IPI (Image Pixel
+ * Interface) timing and transitions the host to Video mode, where pixel
+ * data from the VOP is streamed to the panel.
+ *
+ * Command-mode transfer (DCS init / generic read-write) is handled through
+ * the DSI-2 Command Interface (CRI) register bank and is usable in both
+ * Command and Video operating states.
  *
  * The VOP (video processor) that feeds the IPI is outside the scope of
  * this driver and is wired up by a separate framebuffer/VOP driver.

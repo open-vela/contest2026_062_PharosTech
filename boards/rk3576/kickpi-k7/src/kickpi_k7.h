@@ -89,5 +89,27 @@ int kickpi_k7_lcd_initialize(void);
 int kickpi_k7_usbhost_initialize(void);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_MIPI_DSI
+/****************************************************************************
+ * Name: kickpi_k7_mipi_dsi_initialize
+ *
+ * Description:
+ *   Board-level wiring for the on-board MIPI DSI LCD panel: configure the
+ *   panel control pins (reset / power-enable) and backlight PWM, bring up
+ *   the RK3576 DCPHY + DSI-2 host, register the DSI host/panel device, send
+ *   the panel DCS init sequence, then enable video and register the VOP
+ *   framebuffer (/dev/fbN).
+ *
+ *   Caller must have brought up the RK3576 clock tree
+ *   (rk3576_clk_tree_initialize() in board_late_initialize()).
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int kickpi_k7_mipi_dsi_initialize(void);
+#endif
+
 #endif /* __ASSEMBLY__ */
 #endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */

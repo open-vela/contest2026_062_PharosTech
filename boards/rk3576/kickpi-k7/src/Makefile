@@ -47,6 +47,10 @@ ifeq ($(CONFIG_KICKPI_K7_AUDIO),y)
 CSRCS += kickpi_k7_audio.c
 endif
 
+ifeq ($(CONFIG_KICKPI_K7_MIPI_DSI),y)
+CSRCS += kickpi_k7_mipi_dsi.c
+endif
+
 ifeq ($(CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT),y)
 CSRCS += kickpi_k7_storage.c
 endif
