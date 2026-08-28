@@ -1193,6 +1193,11 @@ static int rk3576_sai_txchannels(struct i2s_dev_s *dev, uint8_t channels)
       return -EBUSY;
     }
 
+  if (priv->channels != channels)
+    {
+      priv->ntxpartial = 0;
+    }
+
   priv->channels = channels;
   return OK;
 }
