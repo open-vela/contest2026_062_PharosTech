@@ -127,7 +127,9 @@
 
 /* Poll bound for the self-clearing SAI_CLR logic-clear operation. */
 
-#define RK3576_SAI_CLR_RETRIES 1000
+#define RK3576_SAI_CLR_RETRIES     1000
+#define RK3576_SAI_IDLE_RETRIES    2000
+#define RK3576_SAI_IDLE_POLL_US    10
 
 /****************************************************************************
  * Private Types
@@ -182,6 +184,7 @@ struct rk3576_sai_s
   bool txenab;               /* True: current run is TX               */
   bool rxenab;               /* True: current run is RX               */
   bool running;              /* True: controller armed for a run      */
+  bool prepared;             /* Explicit TX lifecycle owns clocks      */
   bool initialized;          /* Controller setup completed            */
   struct rk3576_sai_s *peer; /* Opposite direction, shared registers   */
   struct wdog_s dog;         /* Transfer timeout watchdog             */
@@ -252,6 +255,7 @@ static int rk3576_sai_receive(struct i2s_dev_s *dev, struct ap_buffer_s *apb,
 static uint32_t rk3576_sai_getmclk(struct i2s_dev_s *dev);
 static uint32_t rk3576_sai_setmclk(struct i2s_dev_s *dev, uint32_t frequency);
 static int rk3576_sai_ioctl(struct i2s_dev_s *dev, int cmd, unsigned long arg);
+static int rk3576_sai_wait_idle(struct rk3576_sai_s *priv, bool frame);
 static int rk3576_sai_pack24(struct rk3576_sai_s *priv,
                              struct rk3576_sai_buffer_s *bfc,
                              struct ap_buffer_s *apb);
@@ -743,6 +747,7 @@ static int rk3576_sai_startup(struct rk3576_sai_s *priv)
 
 static void rk3576_sai_stop(struct rk3576_sai_s *priv)
 {
+  priv->prepared = false;
   if (!priv->running)
     {
       return;
@@ -806,7 +811,14 @@ again:
 
   if (sq_empty(&priv->pend))
     {
-      rk3576_sai_stop(priv);
+      if (priv->prepared)
+        {
+          rk3576_sai_modifyreg(priv, RK3576_SAI_INTCR, SAI_INTCR_TXUIE, 0);
+        }
+      else
+        {
+          rk3576_sai_stop(priv);
+        }
       return;
     }
 
@@ -996,6 +1008,10 @@ static void rk3576_sai_dmacallback(struct dma_chan_s *chan, void *arg,
 
   wd_cancel(&priv->dog);
   rk3576_sai_schedule(priv, result);
+  if (priv->prepared && sq_empty(&priv->pend))
+    {
+      rk3576_sai_modifyreg(priv, RK3576_SAI_INTCR, SAI_INTCR_TXUIE, 0);
+    }
   if (result == OK && priv->running && !sq_empty(&priv->pend))
     {
       /* Keep the FIFO serviced while the completion worker is pending. */
@@ -1559,15 +1575,128 @@ static uint32_t rk3576_sai_setmclk(struct i2s_dev_s *dev, uint32_t frequency)
 }
 
 /****************************************************************************
+ * Name: rk3576_sai_wait_idle
+ ****************************************************************************/
+
+static int rk3576_sai_wait_idle(struct rk3576_sai_s *priv, bool frame)
+{
+  uint32_t version = rk3576_sai_getreg(priv, RK3576_SAI_VERSION);
+  uint32_t offset = RK3576_SAI_XFER;
+  uint32_t mask = frame ? SAI_XFER_FS_IDLE : SAI_XFER_TX_IDLE;
+  int i;
+
+  if (version >= RK3576_SAI_VER_2307)
+    {
+      offset = RK3576_SAI_STATUS;
+      mask = frame ? SAI_STATUS_FS_IDLE : SAI_STATUS_TX_IDLE;
+      if (version >= RK3576_SAI_VER_2311)
+        {
+          mask >>= 1;
+        }
+    }
+
+  for (i = 0; i < RK3576_SAI_IDLE_RETRIES; i++)
+    {
+      if ((rk3576_sai_getreg(priv, offset) & mask) != 0)
+        {
+          return OK;
+        }
+      up_udelay(RK3576_SAI_IDLE_POLL_US);
+    }
+  return -ETIMEDOUT;
+}
+
+/****************************************************************************
  * Name: rk3576_sai_ioctl
+ *
+ * Description:
+ *   TX prepare/drain/shutdown, using the generic audio-I2S ioctl convention.
+ *   Poll only from thread context, keeping the peer's frame clock intact.
+ *
  ****************************************************************************/
 
 static int rk3576_sai_ioctl(struct i2s_dev_s *dev, int cmd, unsigned long arg)
 {
-  UNUSED(dev);
-  UNUSED(cmd);
-  UNUSED(arg);
-  return -ENOTTY;
+  struct rk3576_sai_s *priv = (struct rk3576_sai_s *)dev;
+  int ret = OK;
+  int i;
+
+  if (arg == 0 || (cmd != AUDIOIOC_START && cmd != AUDIOIOC_STOP &&
+                   cmd != AUDIOIOC_SHUTDOWN))
+    {
+      return -ENOTTY;
+    }
+  ret = nxmutex_lock(&priv->lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+  if (!sq_empty(&priv->act) || !sq_empty(&priv->pend))
+    {
+      ret = -EBUSY;
+      goto out;
+    }
+
+  if (cmd == AUDIOIOC_START)
+    {
+      priv->txenab = true;
+      priv->rxenab = false;
+      if (!priv->running)
+        {
+          ret = rk3576_sai_startup(priv);
+        }
+      if (ret >= 0)
+        {
+          priv->prepared = true;
+          up_udelay(20);
+          rk3576_sai_modifyreg(priv, RK3576_SAI_XFER, 0,
+                               SAI_XFER_CLK | SAI_XFER_FSS);
+        }
+    }
+  else if (priv->running)
+    {
+      rk3576_sai_modifyreg(priv, RK3576_SAI_INTCR, SAI_INTCR_TXUIE, 0);
+      for (i = 0; i < RK3576_SAI_IDLE_RETRIES; i++)
+        {
+          if ((rk3576_sai_getreg(priv, RK3576_SAI_TXFIFOLR) &
+               SAI_TXFIFOLR_LEVEL_MASK) == 0)
+            {
+              break;
+            }
+          up_udelay(RK3576_SAI_IDLE_POLL_US);
+        }
+      ret = i == RK3576_SAI_IDLE_RETRIES ? -ETIMEDOUT : OK;
+      rk3576_sai_modifyreg(priv, RK3576_SAI_XFER, SAI_XFER_TXS, 0);
+      if (rk3576_sai_wait_idle(priv, false) < 0)
+        {
+          ret = -ETIMEDOUT;
+        }
+
+      if (cmd == AUDIOIOC_SHUTDOWN)
+        {
+          priv->prepared = false;
+          if (priv->peer == NULL || !priv->peer->running)
+            {
+              rk3576_sai_modifyreg(priv, RK3576_SAI_XFER, SAI_XFER_FSS, 0);
+              if (rk3576_sai_wait_idle(priv, true) < 0)
+                {
+                  ret = -ETIMEDOUT;
+                }
+            }
+          rk3576_sai_stop(priv);
+        }
+    }
+out:
+  if (cmd == AUDIOIOC_SHUTDOWN && !priv->running)
+    {
+      priv->prepared = false;
+    }
+  if (ret < 0)
+    {
+      i2serr("ERROR: TX lifecycle command %d failed: %d\n", cmd, ret);
+    }
+  nxmutex_unlock(&priv->lock);
+  return ret;
 }
 
 /****************************************************************************

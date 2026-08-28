@@ -112,6 +112,14 @@
 #define RK3576_SAI_RX_SHIFT      0x0068 /* RX shift                        */
 #define RK3576_SAI_RD_STATUS     0x006c /* Read status                     */
 #define RK3576_SAI_VERSION       0x0070 /* Version (RO, reset 0x23073576)  */
+#define RK3576_SAI_STATUS        0x006c /* Stream idle status, v2307+     */
+#define RK3576_SAI_VER_2307      0x23073576
+#define RK3576_SAI_VER_2311      0x23112118
+#define SAI_STATUS_TX_IDLE       (1 << 2)
+#define SAI_STATUS_FS_IDLE       (1 << 1)
+#define SAI_XFER_TX_IDLE         (1 << 7)
+#define SAI_XFER_FS_IDLE         (1 << 6)
+#define SAI_TXFIFOLR_LEVEL_MASK  0x00ffffff
 
 /* SAI_TXCR (0x00) / SAI_RXCR (0x08) shared layout *********************/
 
