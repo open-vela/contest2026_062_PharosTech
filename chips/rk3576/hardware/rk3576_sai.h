@@ -119,7 +119,9 @@
 #define SAI_STATUS_FS_IDLE       (1 << 1)
 #define SAI_XFER_TX_IDLE         (1 << 7)
 #define SAI_XFER_FS_IDLE         (1 << 6)
+#define SAI_TXFIFOLR_LANE0_MASK  0x3f
 #define SAI_TXFIFOLR_LEVEL_MASK  0x00ffffff
+#define SAI_TXFIFOLR_GROUP_BITS  6
 
 /* SAI_TXCR (0x00) / SAI_RXCR (0x08) shared layout *********************/
 

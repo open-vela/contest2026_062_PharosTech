@@ -130,6 +130,7 @@
 #define RK3576_SAI_CLR_RETRIES     1000
 #define RK3576_SAI_IDLE_RETRIES    2000
 #define RK3576_SAI_IDLE_POLL_US    10
+#define RK3576_SAI_PREFILL_RETRIES 100
 
 /****************************************************************************
  * Private Types
@@ -915,9 +916,39 @@ again:
                       priv->base + RK3576_SAI_RXDR, nbytes);
     }
 
+  if (ret >= 0 && priv->txenab &&
+      (rk3576_sai_getreg(priv, RK3576_SAI_XFER) & SAI_XFER_TXS) == 0)
+    {
+      unsigned int minimum = priv->datalen > 16 ? 2 : 1;
+      unsigned int attempt;
+
+      minimum = MIN(minimum, nbytes / sizeof(uint32_t));
+      for (attempt = 0; attempt < RK3576_SAI_PREFILL_RETRIES; attempt++)
+        {
+          uint32_t levels = rk3576_sai_getreg(priv, RK3576_SAI_TXFIFOLR) &
+                            SAI_TXFIFOLR_LEVEL_MASK;
+          unsigned int words = 0;
+          while (levels != 0)
+            {
+              words += levels & SAI_TXFIFOLR_LANE0_MASK;
+              levels >>= SAI_TXFIFOLR_GROUP_BITS;
+            }
+          if (words >= minimum)
+            {
+              break;
+            }
+          up_udelay(1);
+        }
+      if (attempt == RK3576_SAI_PREFILL_RETRIES)
+        {
+          DMA_STOP(priv->dma);
+          ret = -ETIMEDOUT;
+        }
+    }
+
   if (ret < 0)
     {
-      i2serr("ERROR: DMA_START failed: %d\n", ret);
+      i2serr("ERROR: DMA start or FIFO prefill failed: %d\n", ret);
       sq_rem((sq_entry_t *)bfc, &priv->act);
       bfc->result = ret;
       sq_addlast((sq_entry_t *)bfc, &priv->done);
