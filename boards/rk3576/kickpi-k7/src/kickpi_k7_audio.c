@@ -131,6 +131,8 @@ static FAR struct gpio_dev_s *g_headphone_gpio;
 static FAR struct gpio_dev_s *g_speaker_gpio;
 static struct work_s g_headphone_work;
 static mutex_t g_audio_lock = NXMUTEX_INITIALIZER;
+static mutex_t g_speaker_lock = NXMUTEX_INITIALIZER;
+static bool g_speaker_enabled;
 
 /****************************************************************************
  * Private Functions
@@ -156,8 +158,26 @@ static enum es8388_output_route_e kickpi_k7_audio_resolve_output(void)
 static void kickpi_k7_audio_set_output_power(enum es8388_output_route_e route,
                                              bool enable)
 {
-  bool speaker = enable && (route == ES8388_OUTPUT_ROUTE_LINE2 ||
-                            route == ES8388_OUTPUT_ROUTE_BOTH);
+  bool speaker =
+      route == ES8388_OUTPUT_ROUTE_LINE2 || route == ES8388_OUTPUT_ROUTE_BOTH;
+
+  if (nxmutex_lock(&g_speaker_lock) < 0)
+    {
+      return;
+    }
+
+  /* Muted speaker idle retains amplifier bias: cycling EN for every stream
+   * produces an audible transient even with zero PCM data.  An explicit
+   * NONE or headphones-only route still powers it down.  Never power it up
+   * just because an idle stream selects the speaker route.
+   */
+
+  speaker = speaker && (enable || g_speaker_enabled);
+  if (speaker == g_speaker_enabled)
+    {
+      nxmutex_unlock(&g_speaker_lock);
+      return;
+    }
 
   if (speaker)
     {
@@ -165,11 +185,14 @@ static void kickpi_k7_audio_set_output_power(enum es8388_output_route_e route,
     }
 
   rk3576_gpio_write_bit(g_speaker_gpio, speaker);
+  g_speaker_enabled = speaker;
 
   if (!speaker)
     {
       usleep(KICKPI_K7_SPK_DISABLE_MS * USEC_PER_MSEC);
     }
+
+  nxmutex_unlock(&g_speaker_lock);
 }
 
 static void kickpi_k7_audio_headphone_worker(void *arg)
