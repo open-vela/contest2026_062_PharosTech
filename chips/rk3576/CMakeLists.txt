@@ -97,4 +97,8 @@ if(CONFIG_RK3576_MIPI_DSI)
   list(APPEND SRCS rk3576_mipi_dsi.c)
 endif()
 
+if(CONFIG_RK3576_VOP)
+  list(APPEND SRCS rk3576_vop.c)
+endif()
+
 target_sources(arch PRIVATE ${SRCS})

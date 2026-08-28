@@ -117,6 +117,10 @@
 #define RK3576_SPI3_ADDR 0x2AD20000
 #define RK3576_SPI4_ADDR 0x2AD30000
 
+/* Video Output Processor (VOP) */
+
+#define RK3576_VOP_ADDR 0x27D00000 /* VOP (VO0 domain, 64KB) */
+
 /* MIPI DSI host controller + MIPI D-PHY (DCPHY) */
 
 #define RK3576_DSIHOST_ADDR   0x27D80000 /* DSI host controller (DSI2.0) */

@@ -323,11 +323,17 @@ config RK3576_MIPI_DSI
 config RK3576_VOP
 	bool "Video Output Processor (VOP)"
 	default n
+	select DRIVERS_VIDEO
+	depends on RK3576_DMA_ALLOC
 	---help---
 		Enable the RK3576 Video Output Processor (VOP @ 0x27d00000).
 		The VOP pulls pixel data from DDR, composes overlays, and drives the
 		display interface clocks (dclk_vp0/1/2). dclk_vp0 is the pixel clock
 		that feeds the MIPI DSI host's IPI.
+
+		The framebuffer is allocated from the RK3576 DMA heap because the
+		VOP window address register is 32-bit (MMU bypass); hence this
+		driver depends on RK3576_DMA_ALLOC.
 
 endmenu # Rockchip RK3576 Peripheral Selection
 
