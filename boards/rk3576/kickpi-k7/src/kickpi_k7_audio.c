@@ -41,6 +41,7 @@
 #include <syslog.h>
 #include <unistd.h>
 
+#include <nuttx/atomic.h>
 #include <nuttx/audio/audio.h>
 #include <nuttx/audio/es8388.h>
 #include <nuttx/audio/i2s.h>
@@ -120,7 +121,7 @@ static const struct es8388_lower_s g_es8388_lower = {
 };
 
 static bool g_audio_initialized;
-static bool g_headphones_connected;
+static atomic_t g_headphones_connected;
 static bool g_headphones_sample;
 static uint8_t g_headphones_debounce;
 static FAR struct audio_lowerhalf_s *g_es8388;
@@ -143,13 +144,13 @@ static bool kickpi_k7_audio_read_headphones(void)
 
 static bool kickpi_k7_audio_headphones_connected(void)
 {
-  return g_headphones_connected;
+  return atomic_read(&g_headphones_connected) != 0;
 }
 
 static enum es8388_output_route_e kickpi_k7_audio_resolve_output(void)
 {
-  return g_headphones_connected ? ES8388_OUTPUT_ROUTE_LINE1
-                                : ES8388_OUTPUT_ROUTE_LINE2;
+  return kickpi_k7_audio_headphones_connected() ? ES8388_OUTPUT_ROUTE_LINE1
+                                                : ES8388_OUTPUT_ROUTE_LINE2;
 }
 
 static void kickpi_k7_audio_set_output_power(enum es8388_output_route_e route,
@@ -189,14 +190,14 @@ static void kickpi_k7_audio_headphone_worker(void *arg)
     }
 
   if (g_headphones_debounce == KICKPI_K7_HP_DEBOUNCE_COUNT &&
-      sample != g_headphones_connected)
+      sample != kickpi_k7_audio_headphones_connected())
     {
       ret = nxmutex_lock(&g_audio_lock);
       if (ret >= 0)
         {
           struct es8388_control_s control;
 
-          g_headphones_connected = sample;
+          atomic_set(&g_headphones_connected, sample);
           ret = g_es8388->ops->ioctl(g_es8388, ES8388IOC_GET_CONTROL,
                                      (unsigned long)(uintptr_t)&control);
           if (ret >= 0 && control.route == ES8388_OUTPUT_ROUTE_AUTO)
@@ -264,8 +265,8 @@ int kickpi_k7_audio_initialize(void)
   rk3576_gpio_set_pull(g_headphone_gpio, RK3576_GPIO_PULLUP);
   rk3576_gpio_set_schmitt(g_headphone_gpio, true);
   rk3576_gpio_set_mode(g_headphone_gpio, RK3576_GPIO_INPUT);
-  g_headphones_connected = kickpi_k7_audio_read_headphones();
-  g_headphones_sample = g_headphones_connected;
+  atomic_set(&g_headphones_connected, kickpi_k7_audio_read_headphones());
+  g_headphones_sample = kickpi_k7_audio_headphones_connected();
   g_headphones_debounce = KICKPI_K7_HP_DEBOUNCE_COUNT;
 
 #define _SET_GPIO_AF(pinset, af)                       \
