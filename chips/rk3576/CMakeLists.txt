@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-set(SRCS rk3576_boot.c rk3576_serial.c rk3576_clk_tree.c)
+set(SRCS rk3576_boot.c rk3576_serial.c rk3576_clk_tree.c rk3576_addrenv.c)
 
 if(CONFIG_PM)
   list(APPEND SRCS rk3576_pminitialize.c)
