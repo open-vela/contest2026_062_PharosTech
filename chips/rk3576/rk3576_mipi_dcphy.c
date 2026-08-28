@@ -184,26 +184,23 @@ static inline void rk3576_dcphy_putreg(uintptr_t base, uint32_t offset,
 
 static void rk3576_dcphy_assert_reset(struct rk3576_dcphy_s *priv)
 {
-  /* Hiword-mask write: clear bit (active-low reset -> assert by writing 0
-   * to the reset bit via the 16-bit hiword write-1-to-set convention used
-   * by the CRU SOFTRST registers).
-   *
-   * Rockchip CRU soft-reset registers use hiword(-mask) semantics: the
-   * upper 16 bits are the write-mask, the lower 16 bits carry the value.
-   * For an active-low reset line, "assert" = set the reset bit to 0.
+  /* Assert M_RESETN.  PMU1CRU_SOFTRST_CON01[3] is "When high, reset relative
+   * logic" (TRM Part 1): writing 1 asserts the reset, writing 0 releases it.
+   * This is the standard Rockchip CRU soft-reset polarity (bit=1 -> reset),
+   * NOT an active-low line.  The hiword mask (bit 16+3) makes bit 3 writable.
    */
 
   putreg32((1u << (16 + RK3576_DCPHY_M_RESETN_BIT)) |
-               (0u << RK3576_DCPHY_M_RESETN_BIT),
+               (1u << RK3576_DCPHY_M_RESETN_BIT),
            priv->pmu1cru + RK3576_PMU1CRU_SOFTRST_CON(1));
 }
 
 static void rk3576_dcphy_deassert_reset(struct rk3576_dcphy_s *priv)
 {
-  /* Deassert = set the reset bit to 1 (active-low). */
+  /* Deassert M_RESETN: write 0 to release the reset. */
 
   putreg32((1u << (16 + RK3576_DCPHY_M_RESETN_BIT)) |
-               (1u << RK3576_DCPHY_M_RESETN_BIT),
+               (0u << RK3576_DCPHY_M_RESETN_BIT),
            priv->pmu1cru + RK3576_PMU1CRU_SOFTRST_CON(1));
 }
 
@@ -434,6 +431,25 @@ static void rk3576_dcphy_configure_pll(struct rk3576_dcphy_s *priv)
   rk3576_dcphy_putreg(base, RK3576_DCPHY_PLL_CON2,
                       ((uint32_t)priv->pll.m << DCPHY_PLL_CON2_M_SHIFT) &
                           DCPHY_PLL_CON2_M_MASK);
+
+  /* PLL gate/reset source select: tie to the ENABLE phase (matches the
+   * Rockchip reference driver phy-rockchip-samsung-dcphy.c).
+   */
+
+  rk3576_dcphy_putreg(base, RK3576_DCPHY_PLL_CON5,
+                      DCPHY_PLL_CON5_RESET_N_SEL |
+                          DCPHY_PLL_CON5_PLL_ENABLE_SEL);
+
+  /* PLL lock / stabilization counters (TRM 21.6.3 step 4).  Reset values
+   * are 0, which would assert PLL_LOCK immediately and skip the ~200us
+   * PLL stabilization window; program them like the reference driver so
+   * the shared clocks (incl. M_TXWORDCLKHS) are truly stable before use.
+   */
+
+  rk3576_dcphy_putreg(base, RK3576_DCPHY_PLL_CON7,
+                      DCPHY_PLL_CON7_LOCK_CNT_DEFAULT);
+  rk3576_dcphy_putreg(base, RK3576_DCPHY_PLL_CON8,
+                      DCPHY_PLL_CON8_STB_CNT_DEFAULT);
 }
 
 /****************************************************************************
@@ -793,6 +809,15 @@ int rk3576_dcphy_power_on(uint8_t lanes, bool dphy, uint32_t hs_rate)
   /* Deassert M_RESETN (step 10). */
 
   rk3576_dcphy_deassert_reset(priv);
+
+  /* After releasing M_RESETN, the initial deskew calibration (TSKEWCAL)
+   * runs for up to ~100us; wait for it to settle before the DSI host
+   * starts issuing commands, otherwise the TX HS state machine lacks a
+   * stable clock.  Matches the reference driver's usleep_range(100,110)
+   * following reset deassert.
+   */
+
+  up_udelay(150);
 
   priv->lanes = lanes;
   priv->dphy = dphy;

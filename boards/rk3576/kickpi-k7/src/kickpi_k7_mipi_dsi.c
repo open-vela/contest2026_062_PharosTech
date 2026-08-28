@@ -58,6 +58,7 @@
  * Included Files
  ****************************************************************************/
 
+#include <assert.h>
 #include <errno.h>
 #include <nuttx/config.h>
 #include <stdbool.h>
@@ -68,6 +69,7 @@
 
 #include <nuttx/arch.h>
 #include <nuttx/timers/pwm.h>
+#include <nuttx/video/mipi_display.h>
 #include <nuttx/video/mipi_dsi.h>
 
 #include "rk3576_gpio.h"
@@ -130,6 +132,12 @@
 #define KICKPI_K7_BL_DEVNAME  "pwm0"
 #define KICKPI_K7_BL_FREQ_HZ  1000
 #define KICKPI_K7_BL_DUTY     (1 << 15) /* 50% duty (ub16_t) */
+
+/* Backlight PWM output pin: GPIO0_B5 muxed to PWM1_CH1_M0 (AF 0xc = 12,
+ * per the RK3576 TRM IOMUX table for GPIO0_B5). */
+
+#define KICKPI_K7_BL_PWM_PIN (GPIO_PORT0 | GPIO_PIN_B5)
+#define KICKPI_K7_BL_PWM_AF  12
 
 /* MIPI packet types used by this panel's DCS init sequence. */
 
@@ -393,6 +401,16 @@ static const struct rk3576_dsi_video_timing g_kickpi_k7_mipi_dsi_timing = {
   .pixel_clock = KICKPI_K7_MIPI_DSI_PIXCLK,
 };
 
+/* GPIO handles claimed once in configure_pins() and cached here.  They are
+ * deliberately NOT re-acquired later: the RK3576 GPIO driver enforces
+ * single-occupancy, so a second rk3576_gpio_get() on the same pin fails
+ * with -EBUSY (and the board code would otherwise silently fail to release
+ * the panel reset).
+ */
+
+static FAR struct gpio_dev_s *g_kickpi_k7_mipi_dsi_pwren = NULL;
+static FAR struct gpio_dev_s *g_kickpi_k7_mipi_dsi_rst = NULL;
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -409,25 +427,35 @@ static const struct rk3576_dsi_video_timing g_kickpi_k7_mipi_dsi_timing = {
 
 static void kickpi_k7_mipi_dsi_configure_pins(void)
 {
-  FAR struct gpio_dev_s *handle;
+  int ret;
 
   /* Power enable: high = panel powered. */
 
-  if (rk3576_gpio_get(KICKPI_K7_MIPI_DSI_PWREN, &handle) == OK)
+  if (!g_kickpi_k7_mipi_dsi_pwren)
     {
-      rk3576_gpio_set_mode(handle, RK3576_GPIO_OUTPUT);
-      rk3576_gpio_write_bit(handle, true);
+      ret = rk3576_gpio_get(KICKPI_K7_MIPI_DSI_PWREN,
+                            &g_kickpi_k7_mipi_dsi_pwren);
+      DEBUGASSERT(ret == OK);
     }
+
+  rk3576_gpio_set_mode(g_kickpi_k7_mipi_dsi_pwren, RK3576_GPIO_OUTPUT);
+  rk3576_gpio_write_bit(g_kickpi_k7_mipi_dsi_pwren, true);
 
   /* Reset: hold asserted, then release after a settle delay (driven later
-   * once the panel power has stabilised).
+   * once the panel power has stabilised).  The handle is claimed once here
+   * and cached; release_reset() reuses it instead of re-acquiring, because
+   * a second rk3576_gpio_get() on the same pin would be rejected by the
+   * single-occupancy check (-EBUSY).
    */
 
-  if (rk3576_gpio_get(KICKPI_K7_MIPI_DSI_RST, &handle) == OK)
+  if (!g_kickpi_k7_mipi_dsi_rst)
     {
-      rk3576_gpio_set_mode(handle, RK3576_GPIO_OUTPUT);
-      rk3576_gpio_write_bit(handle, false);
+      ret = rk3576_gpio_get(KICKPI_K7_MIPI_DSI_RST, &g_kickpi_k7_mipi_dsi_rst);
+      DEBUGASSERT(ret == OK);
     }
+
+  rk3576_gpio_set_mode(g_kickpi_k7_mipi_dsi_rst, RK3576_GPIO_OUTPUT);
+  rk3576_gpio_write_bit(g_kickpi_k7_mipi_dsi_rst, false);
 }
 
 /****************************************************************************
@@ -435,36 +463,48 @@ static void kickpi_k7_mipi_dsi_configure_pins(void)
  *
  * Description:
  *   De-assert the panel reset line after a nominal power-up settle delay
- *   (a few ms).
+ *   (a few ms).  Uses the RST handle cached by configure_pins().
  *
  ****************************************************************************/
 
 static void kickpi_k7_mipi_dsi_release_reset(void)
 {
-  FAR struct gpio_dev_s *handle;
-
   up_mdelay(5);
 
-  if (rk3576_gpio_get(KICKPI_K7_MIPI_DSI_RST, &handle) == OK)
-    {
-      rk3576_gpio_set_mode(handle, RK3576_GPIO_OUTPUT);
-      rk3576_gpio_write_bit(handle, true);
-    }
+  rk3576_gpio_write_bit(g_kickpi_k7_mipi_dsi_rst, true);
 }
 
 /****************************************************************************
  * Name: kickpi_k7_mipi_dsi_backlight_enable
  *
  * Description:
- *   Bring up PWM1 channel 1 as the backlight driver and start it at the
- *   configured duty cycle.
+ *   Mux GPIO0_B5 to the PWM1_CH1 alternate function, then bring up PWM1
+ *   channel 1 as the backlight driver and start it at the configured duty
+ *   cycle.  The pin mux must be done before rk3576_pwm_initialize() — the
+ *   PWM lower-half driver never configures GPIO (see its header comment).
  *
  ****************************************************************************/
 
 static void kickpi_k7_mipi_dsi_backlight_enable(void)
 {
+  static FAR struct gpio_dev_s *bl_handle = NULL;
   FAR struct pwm_lowerhalf_s *pwm;
   struct pwm_info_s info;
+  int ret;
+
+  /* Claim the backlight pin once and route it to PWM1_CH1_M0 (AF12). */
+
+  if (bl_handle == NULL)
+    {
+      ret = rk3576_gpio_get(KICKPI_K7_BL_PWM_PIN, &bl_handle);
+      if (ret < 0)
+        {
+          syslog(LOG_ERR, "ERROR: backlight GPIO claim failed: %d\n", ret);
+          return;
+        }
+    }
+
+  rk3576_gpio_set_af(bl_handle, KICKPI_K7_BL_PWM_AF);
 
   pwm = rk3576_pwm_initialize(KICKPI_K7_BL_PWM_CTRL, KICKPI_K7_BL_PWM_CH);
   if (pwm == NULL)
@@ -596,6 +636,27 @@ int kickpi_k7_mipi_dsi_initialize(void)
     {
       return ret;
     }
+
+  /* Verify the panel is on the link by reading its DCS power mode.  This is
+   * a Bus-Turnaround (BTA) read, so it only succeeds if the panel is truly
+   * connected and answering — a timeout here means the init writes drained
+   * but nothing ever came back over lane 0.
+   */
+
+  {
+    uint8_t pwrmode = 0;
+    ssize_t n = mipi_dsi_dcs_read(dev, MIPI_DCS_GET_POWER_MODE, &pwrmode, 1);
+
+    if (n == 1)
+      {
+        syslog(LOG_INFO, "kickpi-k7: panel power mode = 0x%02x\n", pwrmode);
+      }
+    else
+      {
+        syslog(LOG_WARNING, "kickpi-k7: panel power mode read failed: %d\n",
+               (int)n);
+      }
+  }
 
   /* 4. Program the DSI video timing and switch to Video mode. */
 

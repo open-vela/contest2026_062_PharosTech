@@ -149,6 +149,43 @@
 #define DCPHY_PLL_CON2_M_MASK  (0x3ff)
 
 /* -----------------------------------------------------------------------
+ * PLL_CON5 (0x0114) — PLL clock gating / reset source select.
+ *
+ *   RESET_N_SEL    [10]: 0 = release clock divider reset when PLL_EN is
+ *                         set; 1 = release when ENABLE(GNR_CON0[0]) is set.
+ *   PLL_ENABLE_SEL [8] : 0 = enable PLL buffering when PLL_EN is set;
+ *                         1 = enable when ENABLE(GNR_CON0[0]) is set.
+ *
+ * The Rockchip reference driver (phy-rockchip-samsung-dcphy.c) always
+ * programs RESET_N_SEL | PLL_ENABLE_SEL to tie PLL gate/reset to the
+ * ENABLE phase; keep the same value for alignment.
+ * -----------------------------------------------------------------------
+ */
+
+#define DCPHY_PLL_CON5_RESET_N_SEL    (1u << 10)
+#define DCPHY_PLL_CON5_PLL_ENABLE_SEL (1u << 8)
+
+/* -----------------------------------------------------------------------
+ * PLL_CON7 (0x011C) — PLL_LOCK_CNT [15:0]
+ *   TRM 21.6.3 step (4): the PLL lock counter counts up after PLL_EN is
+ *   set and PLL_LOCK (PLL_STAT0[0]) is asserted when it reaches this
+ *   value.  Roughly 200us is needed to lock; 0xf000 matches the Rockchip
+ *   reference driver.
+ * -----------------------------------------------------------------------
+ */
+
+#define DCPHY_PLL_CON7_LOCK_CNT_DEFAULT 0xf000u
+
+/* -----------------------------------------------------------------------
+ * PLL_CON8 (0x0120) — PLL_STB_CNT [15:0]
+ *   PLL stabilization counter (frequency-hop / stabilization timing).
+ *   0xf000 matches the Rockchip reference driver.
+ * -----------------------------------------------------------------------
+ */
+
+#define DCPHY_PLL_CON8_STB_CNT_DEFAULT 0xf000u
+
+/* -----------------------------------------------------------------------
  * PLL_STAT0 (0x0140)
  * -----------------------------------------------------------------------
  */

@@ -80,6 +80,21 @@
 
 #define RK3576_DSI_POLL_LOOPS (1000000)
 
+/* DSI2_PHY_LP2HS_MAN_CFG / HS2LP_MAN_CFG field (bits 28:0, 13.16 fixed). */
+
+#define DSI2_PHY_LP2HS_TIME_MASK 0x1fffffffu
+#define DSI2_PHY_HS2LP_TIME_MASK 0x1fffffffu
+
+/* DSI2_INT_ST_TO (0x0410) timeout error flags (TRM 18.4.x). */
+
+#define DSI2_INT_ST_TO_ERR_HSTX     (1u << 0) /* HS TX timeout */
+#define DSI2_INT_ST_TO_ERR_HSTXRDY  (1u << 1) /* HS TX ready timeout */
+#define DSI2_INT_ST_TO_ERR_LPRX     (1u << 2) /* LP RX timeout */
+#define DSI2_INT_ST_TO_ERR_LPTXRDY  (1u << 3) /* LP TX data timeout */
+#define DSI2_INT_ST_TO_ERR_LPTXTRIG (1u << 4) /* LP TX trigger timeout */
+#define DSI2_INT_ST_TO_ERR_LPTXULPS (1u << 5) /* LP TX ULPS timeout */
+#define DSI2_INT_ST_TO_ERR_BTA      (1u << 6) /* BTA timeout */
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -122,6 +137,7 @@ static int rk3576_dsi_detach(FAR struct mipi_dsi_host *host,
 static ssize_t rk3576_dsi_transfer(FAR struct mipi_dsi_host *host,
                                    FAR const struct mipi_dsi_msg *msg);
 static int rk3576_dsi_phy_power_up(FAR struct rk3576_dsi_s *priv);
+static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv);
 
 /****************************************************************************
  * Private Data
@@ -180,6 +196,9 @@ static int rk3576_dsi_wait_cri_idle(struct rk3576_dsi_s *priv)
 
       up_udelay(1);
     }
+
+  _err("wait cri idle timeout: DSI2_CORE_STATUS=0x%08x\n",
+       (unsigned)rk3576_dsi_getreg(priv->base, RK3576_DSI2_CORE_STATUS));
 
   return -ETIMEDOUT;
 }
@@ -264,8 +283,12 @@ static int rk3576_dsi_detach(FAR struct mipi_dsi_host *host,
  * Name: rk3576_dsi_write_long
  *
  * Description:
- *   Transmit a long packet: write the header then stream payload words to
- *   DSI2_CRI_TX_PLD, one 32-bit word (up to 4 payload bytes) at a time.
+ *   Transmit a long packet: stream the payload words to DSI2_CRI_TX_PLD
+ *   first (one 32-bit word at a time), then write the packet header to
+ *   DSI2_CRI_TX_HDR last, which triggers the CRI state machine to send the
+ *   packet.  This "payload before header" order matches the Rockchip
+ *   reference driver (dw-mipi-dsi2-rockchip.c): the CRI consumes payload
+ *   already staged in the FIFO once the header is written.
  ****************************************************************************/
 
 static ssize_t rk3576_dsi_write_long(struct rk3576_dsi_s *priv,
@@ -287,26 +310,9 @@ static ssize_t rk3576_dsi_write_long(struct rk3576_dsi_s *priv,
       return ret;
     }
 
-  /* Build the long-packet header: word count in wc_msb/lsb, virtual
-   * channel, data type, long-packet flag and TX mode (HS unless LPM).
+  /* Stream payload in 32-bit words (byte_0/1/2/3) BEFORE the header, so the
+   * payload is staged in the CRI FIFO when the header triggers the send.
    */
-
-  hdr = (uint32_t)(channel & DSI2_CRI_TX_HDR_VC_MASK)
-        << DSI2_CRI_TX_HDR_VC_SHIFT;
-  hdr |= (uint32_t)(dtype & DSI2_CRI_TX_HDR_DT_MASK)
-         << DSI2_CRI_TX_HDR_DT_SHIFT;
-  hdr |= ((uint32_t)(len >> 8) & 0xff) << DSI2_CRI_TX_HDR_WC_MSB_SHIFT;
-  hdr |= ((uint32_t)(len >> 0) & 0xff) << DSI2_CRI_TX_HDR_WC_LSB_SHIFT;
-  hdr |= DSI2_CRI_TX_HDR_LONG;
-
-  if (use_lpm)
-    {
-      hdr |= DSI2_CRI_TX_HDR_TX_MODE;
-    }
-
-  rk3576_dsi_putreg(base, RK3576_DSI2_CRI_TX_HDR, hdr);
-
-  /* Stream payload in 32-bit words (byte_0/1/2/3). */
 
   while (remaining > 0)
     {
@@ -324,6 +330,26 @@ static ssize_t rk3576_dsi_write_long(struct rk3576_dsi_s *priv,
       offset += nbytes;
       remaining -= nbytes;
     }
+
+  /* Build the long-packet header: word count in wc_msb/lsb, virtual
+   * channel, data type, long-packet flag and TX mode (HS unless LPM).
+   * Writing the header is what kicks off transmission.
+   */
+
+  hdr = (uint32_t)(channel & DSI2_CRI_TX_HDR_VC_MASK)
+        << DSI2_CRI_TX_HDR_VC_SHIFT;
+  hdr |= (uint32_t)(dtype & DSI2_CRI_TX_HDR_DT_MASK)
+         << DSI2_CRI_TX_HDR_DT_SHIFT;
+  hdr |= ((uint32_t)(len >> 8) & 0xff) << DSI2_CRI_TX_HDR_WC_MSB_SHIFT;
+  hdr |= ((uint32_t)(len >> 0) & 0xff) << DSI2_CRI_TX_HDR_WC_LSB_SHIFT;
+  hdr |= DSI2_CRI_TX_HDR_LONG;
+
+  if (use_lpm)
+    {
+      hdr |= DSI2_CRI_TX_HDR_TX_MODE;
+    }
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_CRI_TX_HDR, hdr);
 
   /* Wait for the write to drain. */
 
@@ -661,6 +687,187 @@ static int rk3576_dsi_phy_power_up(FAR struct rk3576_dsi_s *priv)
 }
 
 /****************************************************************************
+ * Name: rk3576_dsi_phy_link_cfg
+ *
+ * Description:
+ *   Configure the DSI-2 controller's PHY-facing link options that the CRI
+ *   command path depends on but which are left at their reset values by
+ *   rk3576_dsi_phy_power_up().  These are required for the very first DCS
+ *   init command to complete:
+ *
+ *   - DSI2_PHY_CLK_CFG.phy_lptx_clk_div: the TX Escape clock.  Reset value
+ *     0 turns the escape clock OFF (TRM 18.4.x: 5'b00000 = "phy_lptx_clk
+ *     turned off").  The escape clock drives the LP TX driver and is the
+ *     timebase for every controller timeout, so without it the CRI cannot
+ *     complete even the LP->HS (SoT) handshake that precedes a command, and
+ *     DSI2_CORE_STATUS.cri_busy never clears.  The Escape clock must be <=
+ *     20 MHz (D-PHY spec is 20 MHz max), so divide sys_clk down to at most
+ *     20 MHz: phy_lptx_clk = sys_clk / (2 * div).
+ *
+ *   - DSI2_PHY_CLK_CFG.clk_type: non-continuous clock lane (matches the
+ *     panel, and lets the controller drop the clock lane in LP).
+ *
+ *   - DSI2_DSI_GENERAL_CFG.BTA_EN / EOTP_TX_EN: Bus Turnaround (needed for
+ *     DCS reads) and End-of-Transmission packet (long packets).
+ *
+ *   Called once from rk3576_mipi_dsi_initialize(), after the DCPHY is up
+ *   but before the host enters Command mode.
+ ****************************************************************************/
+
+static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
+{
+  uint32_t sclk_rate;
+  uint32_t esc_div;
+  uint32_t clk_cfg;
+
+  /* Escape clock: phy_lptx_clk = sys_clk / (2 * esc_div) <= 20 MHz. */
+
+  sclk_rate = priv->sclk != NULL ? clk_get_rate(priv->sclk) : 0;
+
+  /* ceil(sclk_rate / 40 MHz): phy_lptx_clk = sys_clk / (2 * esc_div) <= 20
+   * MHz. */
+
+  esc_div = (sclk_rate + 40000000u - 1u) / 40000000u;
+  if (esc_div == 0)
+    {
+      esc_div = 1;
+    }
+
+  if (esc_div > 31)
+    {
+      esc_div = 31;
+    }
+
+  /* clk_type = NON-CONTINUOUS during bring-up.  The reference driver
+   * (dw-mipi-dsi2-rockchip.c) forces the clock lane non-continuous BEFORE
+   * the initial deskew calibration, commenting: "clk_type should be
+   * NON_CONTINUOUS_CLK before initial deskew calibration be sent".  A
+   * continuous clock lane leaves the lane in HS (never dropping to LP-11),
+   * which stalls the Host↔PHY TXPPI handshake (the word sticks in phy_txhs,
+   * phy_tx_ready FSM stays at INIT, cri_busy never clears) on this IP.
+   * The lane is switched back to continuous later if the panel requires it.
+   */
+
+  clk_cfg = (uint32_t)esc_div << DSI2_PHY_CLK_LPTX_DIV_SHIFT;
+  clk_cfg |= DSI2_PHY_CLK_TYPE_NONCONTINUOUS;
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_CLK_CFG, clk_cfg);
+
+  /* BTA (Bus Turnaround) only; EoTp TX disabled.  Non-continuous clock
+   * lane + EoTp is known to stall the DSI-2 PHY HS send FSM on some
+   * Rockchip revisions: the lane leaves stopstate but the payload in
+   * phy_txhs is never consumed.  BTA must stay enabled for DCS reads.
+   */
+
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_DSI_GENERAL_CFG,
+                    DSI2_GENERAL_BTA_EN);
+
+  /* phy_sys_ratio (DSI2_PHY_SYS_RATIO_MAN_CFG): HSTX clock / SYS clock,
+   * expressed as 1 integral + 16 fractional bits ([16:0]).
+   *
+   * The DSI-2 controller has three clock domains: ipi_clk (pixels),
+   * sys_clk (CRI/system) and phy_hstx_clk (PHY high-speed).  A command is
+   * generated in the sys_clk domain (CRI) and consumed in the phy_hstx_clk
+   * domain (phy_txhs FIFO).  The CDC handshake between those two domains
+   * cannot complete without a correct phy_sys_ratio; the reset value 0
+   * means "hstx/sys = 0", which stalls the command exactly at the
+   * sys->hstx crossing (payload stuck in phy_txhs, cri_busy never clears,
+   * no timeout interrupt because the SoT never starts).
+   *
+   * phy_hstx_clk follows the same DCPHY HSTX_CLK_SEL divider as the
+   * LP2HS/HS2LP timings below (see rk3576_dcphy_configure_tx_clock_lane).
+   */
+
+  {
+    uint64_t phy_hstx_clk = priv->cfg.hs_rate < 1500000000u
+                                ? (uint64_t)priv->cfg.hs_rate / 2u
+                                : (uint64_t)priv->cfg.hs_rate / 16u;
+    uint32_t sys_ratio;
+
+    if (sclk_rate != 0)
+      {
+        sys_ratio = (uint32_t)((phy_hstx_clk << 16) / sclk_rate);
+      }
+    else
+      {
+        /* No sys_clk rate available: fall back to ratio = 1.0. */
+
+        sys_ratio = 1u << 16;
+      }
+
+    sys_ratio &= DSI2_PHY_SYS_RATIO_MASK;
+    rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_SYS_RATIO_MAN_CFG,
+                      sys_ratio);
+  }
+
+  /* LP->HS / HS->LP switching times.  Reset value 0 leaves the controller
+   * with no notion of how long the PHY takes to switch lane direction, so
+   * the CRI command (which must switch LP->HS before its HS payload) stalls
+   * in the PHY send stage.  Compute the times from the D-PHY standard
+   * timings and express them as a 13.16 fixed-point count of phy_hstx_clk
+   * periods, as required by TRM 18.4.x.
+   *
+   * phy_hstx_clk is the DCPHY HS-TX state-machine clock, which is derived
+   * from the serial (bit) clock by the DCPHY HSTX_CLK_SEL divider (TRM
+   * 21.6.x):
+   *   - data rate < 1500 Mbps: divide-by-2  (HSTX_CLK_SEL = 1'b1)
+   *   - data rate >= 1500 Mbps: divide-by-16 (HSTX_CLK_SEL = 1'b0)
+   *
+   * The DSI driver does not reprogram HSTX_CLK_SEL; the DCPHY driver sets
+   * it in rk3576_dcphy_configure_tx_clock_lane().  These two must agree,
+   * otherwise the LP2HS/HS2LP times are off by a factor of 8 and the CRI
+   * command stalls in the PHY send stage (payload stuck in phy_txhs).
+   */
+
+  {
+    uint64_t hstx_clk;
+    uint64_t period_ps;
+    uint64_t ui_ps;
+    uint64_t hs_prepare_ps;
+    uint64_t hs_zero_ps;
+    uint64_t lp2hs_ps;
+    uint64_t hs_trail_ps;
+    uint64_t hs_exit_ps;
+    uint64_t hs2lp_ps;
+    uint32_t lp2hs_time;
+    uint32_t hs2lp_time;
+
+    /* Match the DCPHY HSTX_CLK_SEL decision: /2 below 1500 Mbps, /16 above. */
+
+    hstx_clk = priv->cfg.hs_rate < 1500000000u
+                   ? (uint64_t)priv->cfg.hs_rate / 2u
+                   : (uint64_t)priv->cfg.hs_rate / 16u;
+    period_ps = 1000000000000ULL / hstx_clk;                /* ps per cycle */
+    ui_ps = 1000000000000ULL / (uint64_t)priv->cfg.hs_rate; /* 1 UI, ps */
+
+    /* D-PHY standard times (in ps): TLPX=50ns; THS-PREPARE=40ns+4UI;
+     * THS-ZERO=105ns+6UI; THS-TRAIL=max(60ns+4UI, 8UI); THS-EXIT=100ns.
+     */
+
+    hs_prepare_ps = 40000ULL + 4u * ui_ps;
+    hs_zero_ps = 105000ULL + 6u * ui_ps;
+    lp2hs_ps = 50000ULL + hs_prepare_ps + hs_zero_ps;
+
+    {
+      uint64_t trail_8ui = 8u * ui_ps;
+      uint64_t trail_60 = 60000ULL + 4u * ui_ps;
+
+      hs_trail_ps = (trail_8ui > trail_60) ? trail_8ui : trail_60;
+    }
+
+    hs_exit_ps = 100000ULL;
+    hs2lp_ps = hs_trail_ps + hs_exit_ps;
+
+    lp2hs_time = (uint32_t)((lp2hs_ps << 16) / period_ps);
+    hs2lp_time = (uint32_t)((hs2lp_ps << 16) / period_ps);
+
+    rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_LP2HS_MAN_CFG,
+                      lp2hs_time & DSI2_PHY_LP2HS_TIME_MASK);
+    rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_HS2LP_MAN_CFG,
+                      hs2lp_time & DSI2_PHY_HS2LP_TIME_MASK);
+  }
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -672,7 +879,6 @@ FAR struct mipi_dsi_host *
 rk3576_mipi_dsi_initialize(FAR const struct rk3576_dsi_config *config)
 {
   struct rk3576_dsi_s *priv = &g_dsi;
-  uint32_t regval;
   uint32_t phy_mode;
   int ret;
 
@@ -705,7 +911,30 @@ rk3576_mipi_dsi_initialize(FAR const struct rk3576_dsi_config *config)
       return NULL;
     }
 
-  /* Obtain the controller clocks (registered by rk3576_clk_tree.c). */
+  /* Obtain the controller clocks (registered by rk3576_clk_tree.c).
+   *
+   * NOTE: clk_dsihost0_sel's reset parent is clk_spll_mux (sel=0b010), but
+   * clk_spll (and clk_vpll/clk_bpll/clk_lpll) are not yet registered in the
+   * clock tree, so clk_get_rate() on clk_dsihost0 reads back 0 even though
+   * the hardware clock is running.  A zero sys_clk breaks the CRI escape
+   * clock derivation below (phy_lptx_clk_div).  Until those PLLs are
+   * modelled, reparent the DSI sclk mux onto clk_gpll (1188 MHz), which IS
+   * registered, so clk_get_rate() returns the true rate.
+   */
+
+  {
+    struct clk_s *dsi_sel = clk_get("clk_dsihost0_sel");
+    struct clk_s *gpll = clk_get("clk_gpll");
+
+    if (dsi_sel != NULL && gpll != NULL)
+      {
+        ret = clk_set_parent(dsi_sel, gpll);
+        if (ret < 0)
+          {
+            gerr("ERROR: DSI failed to reparent sclk onto gpll: %d\n", ret);
+          }
+      }
+  }
 
   priv->sclk = clk_get("clk_dsihost0");
   if (priv->sclk == NULL)
@@ -735,13 +964,44 @@ rk3576_mipi_dsi_initialize(FAR const struct rk3576_dsi_config *config)
       goto errout_disable_sclk;
     }
 
-  /* Power up the core and release the soft-resets. */
+  /* Keep the core held in reset while the PHY interface and DCPHY are
+   * configured, then release the soft resets (active-low).  This matches
+   * the Rockchip reference driver (dw-mipi-dsi2.c): DSI2_PWR_UP is kept at
+   * RESET until after the PHY is fully powered, and the soft-resets are
+   * deasserted before the PHY configuration.  Releasing SYS/PHY/IPI resets
+   * while the core is powered but before the PHY is brought up was found to
+   * leave the HS-TX datapath in a stuck state (phy_txhs FIFO stopped, all
+   * FSMs at INIT, cri_busy never clears).
+   */
 
-  regval = rk3576_dsi_getreg(priv->base, RK3576_DSI2_PWR_UP);
-  regval |= DSI2_PWR_UP_PWR_UP;
-  rk3576_dsi_putreg(priv->base, RK3576_DSI2_PWR_UP, regval);
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_PWR_UP, 0x0);
 
-  /* Release all soft resets (active-low). */
+  /* CRU-level APB/presetn reset for the DSI host.  The reference driver
+   * (dw_mipi_dsi2_host_softrst) asserts then deasserts its APB reset BEFORE
+   * the SOFT_RESET pulse; both live in CRU_SOFTRST_CON64 (0x0B00):
+   *   bit5 resetn_dsihost0  — functional reset ("when high, reset")
+   *   bit4 presetn_dsihost0 — APB reset ("when high, reset")
+   * Skipping this leaves the internal command/tx FSMs (sys_cmd, phy_tx_ready)
+   * stuck at INIT: APB writes to the CRI registers are accepted and the FIFO
+   * drains, but no state machine ever consumes the command, so the lanes
+   * never leave stop-state.  Hiword-mask write: bit 16+N makes bit N writable.
+   */
+
+  {
+    uintptr_t crurst = RK3576_CRU_ADDR + 0x0B00;
+    uint32_t rstmask = (1u << 5) | (1u << 4);
+
+    putreg32((rstmask << 16) | rstmask, crurst); /* assert */
+    up_udelay(20);
+    putreg32(rstmask << 16, crurst); /* deassert */
+    up_udelay(20);
+  }
+
+  /* Pulse the soft resets low then release (active-low, same as the
+   * reference driver's dw_mipi_dsi2_host_softrst). */
+
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_SOFT_RESET, 0x0);
+  up_udelay(100);
 
   rk3576_dsi_putreg(priv->base, RK3576_DSI2_SOFT_RESET,
                     DSI2_SOFT_RESET_SYS_RSTN | DSI2_SOFT_RESET_PHY_RSTN |
@@ -754,11 +1014,13 @@ rk3576_mipi_dsi_initialize(FAR const struct rk3576_dsi_config *config)
    * (see TRM 21.6.4.2).  If C-PHY support is ever required, extend this
    * site (and the DCPHY driver) instead of relying on register defaults.
    *
-   * The PPI width is 32-bit (matches the VOP 32-bit pixel interface); the
-   * lane count comes from the caller's configuration.
+   * The PPI width is fixed to 16 bits by the RK3576 DCPHY (see the
+   * Rockchip reference driver dw-mipi-dsi2-rockchip.c and TRM 21.6.4); a
+   * mismatch here leaves the HS payload stranded in the phy_txhs FIFO.
+   * The lane count comes from the caller's configuration.
    */
 
-  phy_mode = DSI2_PHY_MODE_PPI_WIDTH_32 |
+  phy_mode = DSI2_PHY_MODE_PPI_WIDTH_16 |
              DSI2_PHY_MODE_PHY_LANES(config->lanes) |
              DSI2_PHY_MODE_PHY_TYPE_DPHY;
   rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_MODE_CFG, phy_mode);
@@ -779,11 +1041,99 @@ rk3576_mipi_dsi_initialize(FAR const struct rk3576_dsi_config *config)
       goto errout_disable_pclk;
     }
 
-  /* Enter Command mode: this is the default operating state where CRI
-   * command transfers (DCS init / reads) work over the powered PHY.
+  /* Program the PHY-facing link options required by the CRI command path
+   * (escape clock, lane clock mode, BTA/EoTp).  Must happen after the DCPHY
+   * is up but before Command mode, so the first DCS init command can be
+   * transmitted.
    */
 
+  rk3576_dsi_phy_link_cfg(priv);
+
+  /* Force manual timing mode.  In Command mode the controller ignores IPI
+   * (there is no video frame), so the auto-calculation path can never
+   * measure the PHY timings it needs; manual mode makes the controller use
+   * the MAN_CFG registers (escape clock, LP2HS/HS2LP ratios) programmed
+   * above instead.  Without this, a CRI command's HS payload stalls in the
+   * phy_txhs FIFO and cri_busy never clears.
+   */
+
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_MANUAL_MODE_CFG,
+                    DSI2_MANUAL_MODE_EN);
+
+  /* Power up the core.  Per the reference driver this must happen AFTER the
+   * PHY interface is configured and the DCPHY is powered/locked, so the
+   * controller's internal clock domain crossing (sys -> hstx) is
+   * established against a live, stable PHY clock.
+   */
+
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_PWR_UP, DSI2_PWR_UP_PWR_UP);
+
+  /* Arm the HS-TX high-speed timeouts so a stuck HS send (payload stalled
+   * in phy_txhs without ever entering HS) raises err_to_hstx / err_to_hstxrdy
+   * in DSI2_INT_ST_TO instead of silently hanging.  All DSI2_TIMEOUT_*_CFG
+   * counters reset to 0 (= disabled), which is why INT_ST_TO stays 0 even
+   * when the CRI never completes.  The counters tick on phy_lptx_clk
+   * (<= 20 MHz); 0xffff is a generous ~3.2 ms window.
+   */
+
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_TIMEOUT_HSTX_CFG, 0xffff);
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_TIMEOUT_HSTXRDY_CFG, 0xffff);
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_TIMEOUT_LPTXRDY_CFG, 0xffff);
+
+  /* Unmask the timeout interrupt report bits (write 1 to unmask). */
+
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_INT_MASK_TO,
+                    (1u << 1)       /* err_to_hstxrdy */
+                        | (1u << 0) /* err_to_hstx */
+                        | (1u << 3) /* err_to_lptxrdy */);
+
+  /* Program the TX virtual channel.  The CRI header carries a per-message
+   * VC, but the reference driver (dw-mipi-dsi2.c) also writes
+   * DSI2_DSI_VCID_CFG for the fixed host channel; leaving it at reset (0) can
+   * misroute the command. */
+
+  rk3576_dsi_putreg(priv->base, RK3576_DSI2_DSI_VCID_CFG, 0x0);
+
+  /* Do NOT enter AUTOCALC here.  Auto-Calculation mode "stops the data
+   * reception from the IPI, CRI, and PRI interfaces" (TRM 18.3.1) while it
+   * computes PHY timings, and in the manual-timing path there is no IPI
+   * video frame to measure, so AUTOCALC never completes — MODE_STATUS stays
+   * stuck at AUTOCALC (0x1) and every CRI command is silently dropped
+   * (cri_busy clears instantly, the FIFO drains, but no state machine
+   * consumes it and the lanes never leave stop-state).
+   *
+   * The reference driver reaches Command mode directly from pre_enable
+   * without any AUTOCALC pass (it only runs AUTOCALC later, in enable(),
+   * and only when auto_calc_mode is set).  The Host↔PHY deskew handshake is
+   * established by the CRU APB reset done above plus the DCPHY startup
+   * sequence, not by AUTOCALC.
+   */
+
+  /* Enter Command mode and wait for MODE_STATUS to actually settle. */
+
   rk3576_dsi_putreg(priv->base, RK3576_DSI2_MODE_CTRL, DSI2_MODE_COMMAND);
+
+  {
+    uint32_t mode;
+    int poll;
+
+    for (poll = 0; poll < RK3576_DSI_POLL_LOOPS; poll++)
+      {
+        mode = rk3576_dsi_getreg(priv->base, RK3576_DSI2_MODE_STATUS) & 0x7;
+        if (mode == DSI2_MODE_COMMAND)
+          {
+            break;
+          }
+
+        up_udelay(1);
+      }
+
+    if (poll == RK3576_DSI_POLL_LOOPS)
+      {
+        gerr("ERROR: DSI failed to enter Command mode (MODE_STATUS=0x%x)\n",
+             (unsigned)mode);
+      }
+  }
 
   priv->host.bus = 0;
   priv->host.ops = &g_rk3576_dsi_ops;
