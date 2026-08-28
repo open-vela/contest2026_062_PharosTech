@@ -3019,6 +3019,260 @@ static void rk3576_clk_register_dcphy(void)
 #endif /* CONFIG_RK3576_MIPI_DCPHY */
 
 /****************************************************************************
+ * Name: rk3576_clk_register_vop
+ *
+ * Description:
+ *   Register the VOP (Video Output Processor) clocks.
+ *
+ *   The VOP pulls pixel data from DDR over the BIU/VO0 channel, composes
+ *   overlay planes, and drives the display interface pixel clocks.  The
+ *   clock tree splits into:
+ *
+ *   1. Core bus clocks (aclk/hclk/pclk_vop + *_root) — CRU_CLKSEL_CON144
+ *      mux/div + CRU_GATE_CON61 gates.
+ *   2. Video-port pixel clocks (dclk_vp0/1/2) — CRU_CLKSEL_CON145/146/147
+ *      source mux/div + CRU_CLKSEL_CON147 final select + CON61/62 gates.
+ *
+ *   dclk_vp0 is the pixel clock that drives the MIPI DSI host IPI (video
+ *   mode); its rate = hs_rate * lanes / bpp.
+ *
+ *   Below the TRM mux names are mapped to the CLK-framework clock names:
+ *     clk_gpll_mux/clk_cpll_mux/clk_aupll_mux -> clk_gpll/clk_cpll/clk_aupll
+ *     clk_spll_mux/clk_vpll_mux/clk_bpll_src/clk_lpll_src -> orphan (not yet
+ *       registered; the framework reparents them on late registration).
+ *
+ *   Register summary (all SET_TO_DISABLE for gates):
+ *     CLKSEL_CON144 (0x0540): aclk_vop_root_sel[7:5] div[4:0],
+ *                              hclk_vop_root_sel[11:10],
+ *pclk_vop_root_sel[13:12] CLKSEL_CON145 (0x0544): dclk_vp0_src_sel[10:8]
+ *div[7:0] CLKSEL_CON146 (0x0548): dclk_vp1_src_sel[10:8] div[7:0]
+ *     CLKSEL_CON147 (0x054C): dclk_vp2_sel[13]/vp1_sel[12]/vp0_sel[11]
+ *                              + dclk_vp2_src_sel[10:8] div[7:0]
+ *     GATE_CON61   (0x08F4): aclk_vop_root_en[0], hclk_vop_root_en[2],
+ *                              pclk_vop_root_en[3], aclk_vop_biu_en[4],
+ *                              aclk_vop2_biu_en[5], hclk_vop_biu_en[6],
+ *                              pclk_vop_biu_en[7], hclk_vop_en[8],
+ *                              aclk_vop_en[9], dclk_vp0_src_en[10],
+ *                              dclk_vp1_src_en[11], dclk_vp2_src_en[12],
+ *                              dclk_vp0_en[13]
+ *     GATE_CON62   (0x08F8): dclk_vp1_en[0], dclk_vp2_en[1],
+ *                              pclk_vop2_biu_en[2], pclk_vopgrf_en[3]
+ ****************************************************************************/
+
+#ifdef CONFIG_RK3576_VOP
+static void rk3576_clk_register_vop(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+
+  /* aclk_vop_root 3-bit mux parents (CLKSEL_CON144[7:5]). */
+
+  static const char *aclk_vop_root_parents[] = {
+    "clk_gpll",  /* 3'b000: clk_gpll_mux */
+    "clk_cpll",  /* 3'b001: clk_cpll_mux */
+    "clk_aupll", /* 3'b010: clk_aupll_mux */
+    "clk_spll",  /* 3'b011: clk_spll_mux — orphan */
+    "clk_lpll",  /* 3'b100: clk_lpll_src — orphan */
+  };
+
+  /* hclk_vop_root 2-bit mux parents (CLKSEL_CON144[11:10]). */
+
+  static const char *hclk_vop_root_parents[] = {
+    "clk_gpll_div6",  /* 2'b00 */
+    "clk_cpll_div10", /* 2'b01 */
+    "clk_cpll_div20", /* 2'b10 */
+    "xin_osc0",       /* 2'b11 */
+  };
+
+  /* pclk_vop_root 2-bit mux parents (CLKSEL_CON144[13:12]). */
+
+  static const char *pclk_vop_root_parents[] = {
+    "clk_cpll_div10", /* 2'b00 */
+    "clk_cpll_div20", /* 2'b01 */
+    "xin_osc0",       /* 2'b10 */
+  };
+
+  /* dclk_vpx_src 3-bit mux parents (CLKSEL_CON145/146/147 [10:8]).
+   * Identical for vp0/vp1/vp2.
+   */
+
+  static const char *dclk_vp_src_parents[] = {
+    "clk_gpll", /* 3'b000: clk_gpll_mux */
+    "clk_cpll", /* 3'b001: clk_cpll_mux */
+    "clk_vpll", /* 3'b010: clk_vpll_mux — orphan */
+    "clk_bpll", /* 3'b011: clk_bpll_src — orphan */
+    "clk_lpll", /* 3'b100: clk_lpll_src — orphan */
+  };
+
+  /* dclk_vpx final select parents (CLKSEL_CON147[13:11]): 0 = *_src,
+   * 1 = clk_hdmiphy_pixel0_o (HDMI PHY pixel clock). */
+
+  static const char *dclk_vp0_sel_parents[] = {
+    "dclk_vp0_src",         /* 1'b0 */
+    "clk_hdmiphy_pixel0_o", /* 1'b1 — orphan (HDMI PHY) */
+  };
+
+  static const char *dclk_vp1_sel_parents[] = {
+    "dclk_vp1_src",         /* 1'b0 */
+    "clk_hdmiphy_pixel0_o", /* 1'b1 — orphan (HDMI PHY) */
+  };
+
+  static const char *dclk_vp2_sel_parents[] = {
+    "dclk_vp2_src",         /* 1'b0 */
+    "clk_hdmiphy_pixel0_o", /* 1'b1 — orphan (HDMI PHY) */
+  };
+
+  /* --- Core bus clocks (aclk/hclk/pclk_vop) --- */
+
+  /* aclk_vop_root: 3-bit mux + 5-bit divider + gate (CON144 + CON61[0]). */
+
+  clk_register_mux(
+      "aclk_vop_root_sel", aclk_vop_root_parents,
+      nitems(aclk_vop_root_parents), CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(144), 5, 3, CLK_MUX_HIWORD_MASK);
+  clk_register_divider("aclk_vop_root_div", "aclk_vop_root_sel",
+                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       cru + RK3576_CRU_CLKSEL_CON(144), 0, 5,
+                       CLK_DIVIDER_HIWORD_MASK);
+  clk_register_gate("aclk_vop_root", "aclk_vop_root_div",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 0,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* hclk_vop_root: 2-bit mux + gate (CON144 + CON61[2]). */
+
+  clk_register_mux(
+      "hclk_vop_root_sel", hclk_vop_root_parents,
+      nitems(hclk_vop_root_parents), CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(144), 10, 2, CLK_MUX_HIWORD_MASK);
+  clk_register_gate("hclk_vop_root", "hclk_vop_root_sel",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 2,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* pclk_vop_root: 2-bit mux + gate (CON144 + CON61[3]). */
+
+  clk_register_mux(
+      "pclk_vop_root_sel", pclk_vop_root_parents,
+      nitems(pclk_vop_root_parents), CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(144), 12, 2, CLK_MUX_HIWORD_MASK);
+  clk_register_gate("pclk_vop_root", "pclk_vop_root_sel",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 3,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* VOP BIU/system bus gates (no mux — parented from their roots). */
+
+  clk_register_gate("aclk_vop_biu", "aclk_vop_root",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 4,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  clk_register_gate("aclk_vop2_biu", "aclk_vop_root",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 5,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  clk_register_gate("hclk_vop_biu", "hclk_vop_root",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 6,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  clk_register_gate("pclk_vop_biu", "pclk_vop_root",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 7,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  clk_register_gate("hclk_vop", "hclk_vop_root",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 8,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  clk_register_gate("aclk_vop", "aclk_vop_root",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 9,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* pclk_vopgrf / pclk_vop2_biu (CON62[3]/[2]). */
+
+  clk_register_gate("pclk_vop2_biu", NULL, CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(62), 2,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  clk_register_gate("pclk_vopgrf", NULL, CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(62), 3,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* --- Video-port pixel clocks (dclk_vp0/1/2) --- */
+
+  /* dclk_vp0: src mux/div (CON145) -> gate (CON61[10]) -> final select
+   * (CON147[11]) -> gate (CON61[13]). */
+
+  clk_register_mux(
+      "dclk_vp0_src_sel", dclk_vp_src_parents, nitems(dclk_vp_src_parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(145), 8, 3, CLK_MUX_HIWORD_MASK);
+  clk_register_divider("dclk_vp0_src_div", "dclk_vp0_src_sel",
+                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       cru + RK3576_CRU_CLKSEL_CON(145), 0, 8,
+                       CLK_DIVIDER_HIWORD_MASK);
+  clk_register_gate("dclk_vp0_src", "dclk_vp0_src_div",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 10,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  clk_register_mux(
+      "dclk_vp0_sel", dclk_vp0_sel_parents, nitems(dclk_vp0_sel_parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(147), 11, 1, CLK_MUX_HIWORD_MASK);
+  clk_register_gate("dclk_vp0", "dclk_vp0_sel",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 13,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* dclk_vp1: src mux/div (CON146) -> gate (CON61[11]) -> final select
+   * (CON147[12]) -> gate (CON62[0]). */
+
+  clk_register_mux(
+      "dclk_vp1_src_sel", dclk_vp_src_parents, nitems(dclk_vp_src_parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(146), 8, 3, CLK_MUX_HIWORD_MASK);
+  clk_register_divider("dclk_vp1_src_div", "dclk_vp1_src_sel",
+                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       cru + RK3576_CRU_CLKSEL_CON(146), 0, 8,
+                       CLK_DIVIDER_HIWORD_MASK);
+  clk_register_gate("dclk_vp1_src", "dclk_vp1_src_div",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 11,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  clk_register_mux(
+      "dclk_vp1_sel", dclk_vp1_sel_parents, nitems(dclk_vp1_sel_parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(147), 12, 1, CLK_MUX_HIWORD_MASK);
+  clk_register_gate("dclk_vp1", "dclk_vp1_sel",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(62), 0,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  /* dclk_vp2: src mux/div (CON147) -> gate (CON61[12]) -> final select
+   * (CON147[13]) -> gate (CON62[1]). */
+
+  clk_register_mux(
+      "dclk_vp2_src_sel", dclk_vp_src_parents, nitems(dclk_vp_src_parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(147), 8, 3, CLK_MUX_HIWORD_MASK);
+  clk_register_divider("dclk_vp2_src_div", "dclk_vp2_src_sel",
+                       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                       cru + RK3576_CRU_CLKSEL_CON(147), 0, 8,
+                       CLK_DIVIDER_HIWORD_MASK);
+  clk_register_gate("dclk_vp2_src", "dclk_vp2_src_div",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(61), 12,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  clk_register_mux(
+      "dclk_vp2_sel", dclk_vp2_sel_parents, nitems(dclk_vp2_sel_parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(147), 13, 1, CLK_MUX_HIWORD_MASK);
+  clk_register_gate("dclk_vp2", "dclk_vp2_sel",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(62), 1,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+}
+#endif /* CONFIG_RK3576_VOP */
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -3228,5 +3482,9 @@ void rk3576_clk_tree_initialize(void)
 
 #ifdef CONFIG_RK3576_MIPI_DSI
   rk3576_clk_register_dsi();
+#endif
+
+#ifdef CONFIG_RK3576_VOP
+  rk3576_clk_register_vop();
 #endif
 }
