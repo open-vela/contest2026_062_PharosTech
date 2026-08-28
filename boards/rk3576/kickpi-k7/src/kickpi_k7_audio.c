@@ -339,7 +339,7 @@ int kickpi_k7_audio_initialize(void)
     }
 
   memset(&control, 0, sizeof(control));
-  control.mask = ES8388_CONTROL_ALL;
+  control.mask = ES8388_CONTROL_OUTPUT;
   control.route = ES8388_OUTPUT_ROUTE_AUTO;
   control.input_route = ES8388_INPUT_ROUTE_LINE2;
   ret = g_es8388->ops->ioctl(g_es8388, ES8388IOC_SET_CONTROL,
@@ -379,6 +379,7 @@ int kickpi_k7_audio_initialize(void)
       return -ENODEV;
     }
 
+  control.mask = ES8388_CONTROL_INPUT;
   ret = g_es8388_input->ops->ioctl(g_es8388_input, ES8388IOC_SET_CONTROL,
                                    (unsigned long)(uintptr_t)&control);
   if (ret < 0)
