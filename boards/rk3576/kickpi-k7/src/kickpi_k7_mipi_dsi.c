@@ -472,6 +472,8 @@ static void kickpi_k7_mipi_dsi_release_reset(void)
   up_mdelay(5);
 
   rk3576_gpio_write_bit(g_kickpi_k7_mipi_dsi_rst, true);
+
+  up_mdelay(120);
 }
 
 /****************************************************************************
