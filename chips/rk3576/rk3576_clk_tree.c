@@ -2209,6 +2209,14 @@ static void rk3576_clk_register_dmac(void)
  *   It configures the LIT core only; the big-core cluster (BPLL) has its
  *   own clock path and is not touched here.
  *
+ *   Scope note: this helper reprograms LPLL and normalizes the CPU source
+ *   divider only.  It deliberately does NOT re-scale the dependent bus
+ *   dividers (aclk_m_litcore / pclk_dbg_litcore / CCI) nor change the
+ *   regulator OPP voltage, both of which a full DVFS transition would
+ *   require.  All LPLL gears remain selectable; whether a given gear is
+ *   stable on a particular part depends on its silicon quality and supply
+ *   voltage and is left for the caller to validate.
+ *
  *   The switch sequence mirrors the Linux CPUFreq transition model.  While
  *   LPLL is being reprogrammed the PLL is momentarily unlocked, so the
  *   CPU clock source must first be moved to a safe parent (clk_gpll) and

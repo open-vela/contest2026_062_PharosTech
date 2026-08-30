@@ -133,18 +133,17 @@ void board_late_initialize(void)
 
   /* Set the LITTLE-core (litcore) CPU frequency once at boot.  This is a
    * one-shot configuration (no DVFS): the desired rate comes from
-   * CONFIG_KICKPI_K7_LITCORE_CPU_FREQ (MHz) and is applied by looking it
-   * up in the LPLL frequency table, switching the CPU clock source safely
-   * through GPLL while LPLL is being reprogrammed.  Must run after
+   * CONFIG_KICKPI_K7_LITCORE_CPU_FREQ_MHZ (MHz) and is applied by looking
+   * it up in the LPLL frequency table, switching the CPU clock source
+   * safely through GPLL while LPLL is being reprogrammed.  Must run after
    * rk3576_clk_tree_initialize() and before starting external/peripheral
    * clocks that depend on the final CPU rate.
-   * Set CONFIG_KICKPI_K7_LITCORE_CPU_FREQ=0 to skip this and keep the
-   * bootloader-configured rate.
+   * Disable CONFIG_KICKPI_K7_LITCORE_CPU_FREQ_SET to skip this and keep
+   * the bootloader-configured rate.
    * NOTE: LIT core only — the big-core cluster (BPLL) has its own path.
    */
 
-#ifdef CONFIG_KICKPI_K7_LITCORE_CPU_FREQ
-#if CONFIG_KICKPI_K7_LITCORE_CPU_FREQ > 0
+#ifdef CONFIG_KICKPI_K7_LITCORE_CPU_FREQ_SET
   {
     /* Build-time guard: reject a Kconfig frequency that is not one of the
      * standard RK3576 LPLL gears, so a misconfiguration fails the compile
@@ -152,20 +151,20 @@ void board_late_initialize(void)
      */
 
     _Static_assert(
-        RK3576_LITCORE_CPU_FREQ_IS_VALID(CONFIG_KICKPI_K7_LITCORE_CPU_FREQ),
-        "CONFIG_KICKPI_K7_LITCORE_CPU_FREQ is not a supported RK3576 LPLL "
-        "gear (e.g. 2400, 2208, 1800, 1200, 1008, 600, 96 ...)");
+        RK3576_LITCORE_CPU_FREQ_IS_VALID(
+            CONFIG_KICKPI_K7_LITCORE_CPU_FREQ_MHZ),
+        "CONFIG_KICKPI_K7_LITCORE_CPU_FREQ_MHZ is not a supported RK3576 "
+        "LPLL gear (e.g. 1800, 1200, 1008, 600, 96 ...)");
 
     int ret =
-        rk3576_clk_set_litcore_cpufreq(CONFIG_KICKPI_K7_LITCORE_CPU_FREQ);
+        rk3576_clk_set_litcore_cpufreq(CONFIG_KICKPI_K7_LITCORE_CPU_FREQ_MHZ);
     if (ret < 0)
       {
         syslog(LOG_ERR,
                "ERROR: rk3576_clk_set_litcore_cpufreq(%d MHz) failed: %d\n",
-               CONFIG_KICKPI_K7_LITCORE_CPU_FREQ, ret);
+               CONFIG_KICKPI_K7_LITCORE_CPU_FREQ_MHZ, ret);
       }
   }
-#endif
 #endif
 
 #ifdef CONFIG_RK3576_UART
