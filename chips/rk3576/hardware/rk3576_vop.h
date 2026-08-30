@@ -292,6 +292,21 @@
 #define RK3576_VOP_POST_OUT_RGB666     (0x1 << RK3576_VOP_POST_OUT_MODE_SHIFT)
 #define RK3576_VOP_POST_OUT_RGB565     (0x2 << RK3576_VOP_POST_OUT_MODE_SHIFT)
 
+/* POST_CORE_CLK (0x000C) field definitions — the VOP-internal pixel clock
+ * dividers.  RK3576 VP0 is dual-pixel (pixel_rate = 2), so Linux's
+ * rk3576_calc_cru_cfg() programs:
+ *   core_dclk_div (dclk_core_sel, bit0) = 1  -> dclk_core = dclk / 2
+ *   dclk_div2     (dclk_out_sel,  bit2) = 0  -> dclk_out  = dclk_core
+ * With dclk = 64 M the scan is driven by dclk_core = 32 M, which matches
+ * the panel's 64 M pixel rate (dual-pixel: 2 pixels per dclk_core cycle).
+ * Leaving bit0 = 0 (reset default) doubles dclk_core to 64 M -> the VOP
+ * scans at 2x the panel frame rate and the DSI IPI never locks (INT_ST_IPI
+ * stays 0, all-black panel).
+ */
+
+#define RK3576_VOP_POST_CORE_CLK_DCLK_CORE_SEL (1u << 0) /* 0=dclk, 1=dclk/2 */
+#define RK3576_VOP_POST_CORE_CLK_DCLK_OUT_SEL  (1u << 2) /* 0=dclk, 1=dclk/2 */
+
 /* POST_DSP_BG field definitions. */
 
 #define RK3576_VOP_POST_BG_DISPLAY_EN  (1 << 31) /* BG display en */

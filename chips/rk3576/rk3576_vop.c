@@ -497,6 +497,7 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
   uint32_t post_base = RK3576_VOP_POST(priv->base, priv->cfg.port);
   uint32_t sys_base = RK3576_VOP_SYS_CTRL(priv->base);
   uint32_t iface_off = g_rk3576_vop_iface_regs[priv->cfg.iface];
+  uint32_t esmart_base = RK3576_VOP_ESMART(priv->base, 0);
   uint32_t regval;
 
   /* POST: RGB888 output mode, clear standby.  POST_DSP_CTRL is a mirror
@@ -517,7 +518,22 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
    *
    * Set out_en + clk_out_en + port_sel, and keep hsync/vsync Positive +
    * regdone_imd_en (mirror -> real immediately).  cmd_mode stays 0 (Video).
+   *
+   * CRITICAL pixel-clock configuration (Linux rk3576_calc_cru_cfg()):
+   * RK3576 VP0 is dual-pixel (pixel_rate=2), so the POST scan clock must be
+   * HALF the panel pixel clock.  With dclk=64M the VOP-internal dclk_core
+   * must be 32M (dclk/2), selected by POST_CORE_CLK.dclk_core_sel=1.  The
+   * MIPI interface then takes dclk_core directly (mipi0_dclk_sel=0) and
+   * divides by 2 (mipi0_pixclk_div=0) to feed the DSI IPI 16M
+   * (= crtc_clock/4, matching PHY_IPI_RATIO=1.5).  Leaving dclk_core_sel=0
+   * doubles the scan rate: dsp_vcnt0 runs at 2x and the pixel stream never
+   * aligns with the DSI IPI clock domain -> all-black.
    */
+
+  /* dclk_core_sel = 1 (dclk_core = dclk/2 = 32M), dclk_out_sel = 0. */
+
+  rk3576_vop_putreg(priv, post_base + RK3576_VOP_POST_CORE_CLK,
+                    RK3576_VOP_POST_CORE_CLK_DCLK_CORE_SEL);
 
   regval = RK3576_VOP_IFACE_CLK_OUT_EN | RK3576_VOP_IFACE_OUT_EN |
            RK3576_VOP_IFACE_VSYNC_POL | RK3576_VOP_IFACE_HSYNC_POL |
@@ -551,6 +567,37 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
   rk3576_vop_putreg(priv, sys_base + RK3576_VOP_SYS_WIN_REG_CFG_DONE,
                     RK3576_VOP_WIN_CFG_DONE_LOAD_CTRL |
                         RK3576_VOP_WIN_CFG_DONE_ESMART0);
+
+  /* --- Probe A: immediately read back both cfg_done registers to prove
+   * whether the reg_load_esmart0_en write actually latched (TRM says these
+   * are ordinary RW bits that hold 1 until cleared -- so right after the
+   * write, WIN_CFG_DONE low-16 must show bit4=1 and REG_CFG_DONE must show
+   * bit15(sw_global_regdone_en, reset=1) still set).  If either reads 0
+   * here, the hiword write-mask write is being swallowed. --- */
+
+  syslog(LOG_INFO,
+         "vop-probe-A: after cfg_done REG_CFG_DONE=%08x "
+         "WIN_CFG_DONE=%08x\n",
+         rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_REG_CFG_DONE),
+         rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_WIN_REG_CFG_DONE));
+
+  /* --- Probe B: read back the ESMART mirror registers right after the
+   * load trigger.  NOTE: reading the *mirror* (unloaded) register shows the
+   * value software wrote; the real-side copy only appears after a frame
+   * boundary.  Compare these against the later "real" dump: if mirror has
+   * the value but real=0, the load never crossed the frame boundary. --- */
+
+  syslog(LOG_INFO,
+         "vop-probe-B: ESMART0 CTRL0=%08x REGION0_CTRL=%08x "
+         "YRGB_MST=%08x VIR=%08x (mirror/real ambiguous, compare w/ dump)\n",
+         rk3576_vop_getreg(priv,
+                           esmart_base + RK3576_VOP_ESMART_CTRL0),
+         rk3576_vop_getreg(priv,
+                           esmart_base + RK3576_VOP_ESMART_REGION0_CTRL),
+         rk3576_vop_getreg(priv,
+                           esmart_base + RK3576_VOP_ESMART_REGION0_YRGB_MST),
+         rk3576_vop_getreg(priv,
+                           esmart_base + RK3576_VOP_ESMART_REGION0_VIR));
 
   /* Bound the AXI0 outstanding transactions (IMD registers take effect
    * immediately, no cfg_done needed).  The ESMART scan-out DMA goes out on
@@ -883,7 +930,32 @@ int rk3576_vop_initialize(FAR const struct rk3576_vop_config *config)
       ret = -ENOMEM;
       goto errout_with_priv;
     }
-  memset(priv->fbmem, 0xff, priv->fblen);
+
+  /* Fill the framebuffer with a 16x16-pixel black/white checkerboard test
+   * pattern (each cell RWGB888 -> 0x00/0xff for every byte).  A uniform
+   * fill (0xff or 0x00) makes every byte identical, so the MIPI data lane
+   * carries a constant bit stream with no transitions -- useless for
+   * verifying pixel packing on the scope.  The checkerboard toggles the
+   * bytes so the HS data lanes visibly toggle while scanning. */
+
+  {
+    uint8_t *fb = (uint8_t *)priv->fbmem;
+    uint32_t x;
+    uint32_t y;
+
+    for (y = 0; y < priv->cfg.yres; y++)
+      {
+        for (x = 0; x < priv->cfg.xres; x++)
+          {
+            uint8_t v = (((x / 16u) + (y / 16u)) & 1u) ? 0xff : 0x00;
+            uint32_t p = (y * priv->stride) + (x * 3);
+
+            fb[p + 0] = v; /* R */
+            fb[p + 1] = v; /* G */
+            fb[p + 2] = v; /* B */
+          }
+      }
+  }
 
   /* Bring up clocks and release resets. */
 
@@ -956,31 +1028,65 @@ int rk3576_vop_initialize(FAR const struct rk3576_vop_config *config)
            "vop-dump: fbmem va=%p pa=%p (expect equal) stride=%u fblen=%u\n",
            priv->fbmem, (void *)fb_pa, priv->stride, (unsigned int)priv->fblen);
 
+    /* --- Probe C: read the WIN_CFG_DONE / REG_CFG_DONE a second time (now
+     * several ms after configure_port fired them).  TRM says a load bit
+     * holds 1 "until cleared", so if it was 1 in probe-A and 0 here, some
+     * later write or a frame-boundary auto-clear wiped it. --- */
+
     syslog(LOG_INFO,
-           "vop-dump: ESMART0 CTRL0=%08x REGION0_CTRL=%08x YRGB_MST=%08x "
-           "VIR=%08x\n",
-           rk3576_vop_getreg(priv, esmart_base + RK3576_VOP_ESMART_CTRL0),
-           rk3576_vop_getreg(priv,
-                             esmart_base + RK3576_VOP_ESMART_REGION0_CTRL),
-           rk3576_vop_getreg(priv,
-                             esmart_base + RK3576_VOP_ESMART_REGION0_YRGB_MST),
-           rk3576_vop_getreg(priv,
-                             esmart_base + RK3576_VOP_ESMART_REGION0_VIR));
+           "vop-probe-C: now REG_CFG_DONE=%08x WIN_CFG_DONE=%08x\n",
+           rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_REG_CFG_DONE),
+           rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_WIN_REG_CFG_DONE));
+
+    {
+      uint32_t esmart_ctrl0 =
+        rk3576_vop_getreg(priv, esmart_base + RK3576_VOP_ESMART_CTRL0);
+
+      syslog(LOG_INFO,
+             "vop-dump: ESMART0 CTRL0=%08x (frm_resetn_en[bit31]=%u) "
+             "REGION0_CTRL=%08x YRGB_MST=%08x VIR=%08x\n",
+             esmart_ctrl0,
+             (unsigned)((esmart_ctrl0 >> 31) & 1),
+             rk3576_vop_getreg(priv,
+                               esmart_base + RK3576_VOP_ESMART_REGION0_CTRL),
+             rk3576_vop_getreg(priv,
+                               esmart_base + RK3576_VOP_ESMART_REGION0_YRGB_MST),
+             rk3576_vop_getreg(priv,
+                               esmart_base + RK3576_VOP_ESMART_REGION0_VIR));
+    }
 
     syslog(LOG_INFO,
            "vop-dump: OVERLAY_PORT%u_LAYER_SEL=%08x (expect layer0=Esmart0)\n",
            (unsigned int)priv->cfg.port,
            rk3576_vop_getreg(priv, ovl_base + RK3576_VOP_OVERLAY_LAYER_SEL));
 
-    syslog(LOG_INFO,
-           "vop-dump: POST%u_DSP_CTRL=%08x MIPI0_INFACE_CTRL=%08x "
-           "REG_CFG_DONE=%08x WIN_CFG_DONE=%08x\n",
-           (unsigned int)priv->cfg.port,
-           rk3576_vop_getreg(priv, post_base + RK3576_VOP_POST_DSP_CTRL),
-           rk3576_vop_getreg(priv, sys_base + iface_off),
-           rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_REG_CFG_DONE),
-           rk3576_vop_getreg(priv,
-                             sys_base + RK3576_VOP_SYS_WIN_REG_CFG_DONE));
+    {
+      uint32_t iface =
+        rk3576_vop_getreg(priv, sys_base + iface_off);
+
+      syslog(LOG_INFO,
+             "vop-dump: POST%u_DSP_CTRL=%08x MIPI0_INFACE_CTRL=%08x "
+             "REG_CFG_DONE=%08x WIN_CFG_DONE=%08x\n",
+             (unsigned int)priv->cfg.port,
+             rk3576_vop_getreg(priv, post_base + RK3576_VOP_POST_DSP_CTRL),
+             iface,
+             rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_REG_CFG_DONE),
+             rk3576_vop_getreg(priv,
+                               sys_base + RK3576_VOP_SYS_WIN_REG_CFG_DONE));
+
+      syslog(LOG_INFO,
+             "vop-dump: INFACE out_en=%u clk_out_en=%u port_sel=%u "
+             "hsync_pol=%u vsync_pol=%u cmd_mode=%u dclk_sel=%u "
+             "pix_clk_sel=%u\n",
+             (unsigned)(iface & RK3576_VOP_IFACE_OUT_EN) != 0,
+             (unsigned)((iface >> 1) & 1),
+             (unsigned)((iface >> RK3576_VOP_IFACE_PORT_SEL_SHIFT) & 0x3),
+             (unsigned)((iface >> 4) & 1),
+             (unsigned)((iface >> 5) & 1),
+             (unsigned)((iface >> 11) & 1),
+             (unsigned)((iface >> 21) & 1),
+             (unsigned)((iface >> 20) & 1));
+    }
 
     syslog(LOG_INFO,
            "vop-dump: POST%u HTOTAL=%08x HACT=%08x VTOTAL=%08x VACT=%08x "
@@ -1014,15 +1120,26 @@ int rk3576_vop_initialize(FAR const struct rk3576_vop_config *config)
       vcnt_after = rk3576_vop_getreg(priv,
                                      sys_base + RK3576_VOP_SYS_STATUS0);
 
-      syslog(LOG_INFO,
-             "vop-dump: SYS_STATUS0=%08x (dsp_vcnt0=%u) then %08x "
-             "(dsp_vcnt0=%u) VSYNC_CTRL=%08x\n",
-             vcnt0,
-             (unsigned)((vcnt0 >> RK3576_VOP_DSP_VCNT0_SHIFT) & 0x1fff),
-             vcnt_after,
-             (unsigned)((vcnt_after >> RK3576_VOP_DSP_VCNT0_SHIFT) & 0x1fff),
-             rk3576_vop_getreg(priv,
-                               sys_base + RK3576_VOP_SYS_VSYNC_CTRL));
+      {
+        uint32_t v0 = (vcnt0 >> RK3576_VOP_DSP_VCNT0_SHIFT) & 0x1fff;
+        uint32_t v1 = (vcnt_after >> RK3576_VOP_DSP_VCNT0_SHIFT) & 0x1fff;
+        uint32_t vtotal = priv->cfg.yres + priv->cfg.vsync_len +
+                          priv->cfg.vfront_porch + priv->cfg.vback_porch;
+
+        /* 2 ms sample -> lines/sec = (delta * 500).  For a dual-pixel VP0
+         * the vertical counter should advance ~ vtotal lines per frame at
+         * 60 Hz (about 77700 lines/sec for 1280x1295).  A ~2x rate (=
+         * 152500) means the scan timing / pixel clock is mismatched. */
+
+        syslog(LOG_INFO,
+               "vop-dump: SYS_STATUS0=%08x (dsp_vcnt0=%u) then %08x "
+               "(dsp_vcnt0=%u) delta=%u lines/2ms=%u lines/s "
+               "(expect ~%u @60Hz) VSYNC_CTRL=%08x\n",
+               vcnt0, v0, vcnt_after, v1, (v1 - v0), (v1 - v0) * 500,
+               vtotal * 60,
+               rk3576_vop_getreg(priv,
+                                 sys_base + RK3576_VOP_SYS_VSYNC_CTRL));
+      }
     }
   }
 

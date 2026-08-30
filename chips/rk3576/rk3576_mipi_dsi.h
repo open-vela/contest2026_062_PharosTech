@@ -54,6 +54,8 @@
 
 #include <nuttx/config.h>
 
+#include <stdbool.h>
+
 #include <nuttx/video/mipi_dsi.h>
 
 #ifdef CONFIG_RK3576_MIPI_DSI
@@ -72,6 +74,11 @@ struct rk3576_dsi_config
   uint8_t lanes;      /* D-PHY data lanes in use (1..4). */
   uint8_t format;     /* MIPI_DSI_FMT_* pixel format (RGB888/666/565). */
   uint8_t video_mode; /* DSI2_VID_MODE_* video-mode packet type. */
+  bool continuous_clk; /* true = clock lane stays in HS (continuous) for
+                         * panels that keep HSCM across the whole frame.
+                         * ILI9881D is NON-continuous: its clock lane
+                         * returns to LP-11 after every HS burst (Table 46
+                         * THS-EXIT), so it must be false for that panel. */
   uint32_t hs_rate;   /* Requested lane high-speed data rate in Hz
                        * (80 Mbps .. 2.5 Gbps). */
 };
@@ -157,6 +164,24 @@ int rk3576_mipi_dsi_enable_video(
  ****************************************************************************/
 
 int rk3576_mipi_dsi_disable_video(FAR struct mipi_dsi_host *host);
+
+/****************************************************************************
+ * Name: rk3576_mipi_dsi_dump_video_status
+ *
+ * Description:
+ *   Bring-up diagnostic (read-only): sample the DSI IPI receive path while
+ *   the VOP is scanning, to answer whether pixels physically reach the DSI
+ *   IPI.  Must be called AFTER rk3576_vop_initialize() has started the
+ *   pixel stream (the enable_video() dump runs before the VOP is up, so its
+ *   empty ipi_data FIFO / INIT ipi_vid_fsm are expected, not diagnostic).
+ *
+ *   A positive ipi_data FIFO count or ipi_busy=1 proves the pixel stream
+ *   reached the IPI (break is downstream in the PHY send path); all-zero
+ *   again proves the break is upstream (VOP -> DSI physical link).
+ *
+ ****************************************************************************/
+
+void rk3576_mipi_dsi_dump_video_status(void);
 
 #endif /* CONFIG_RK3576_MIPI_DSI */
 #endif /* __VENDOR_ROCKCHIP_RK3576_RK3576_MIPI_DSI_H */

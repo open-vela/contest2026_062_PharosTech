@@ -211,6 +211,58 @@
 #define DSI2_CORE_STATUS_CORE_BUSY            (1u << 0)
 
 /* -----------------------------------------------------------------------
+ * DSI2_OBS_FSM_STATUS_SEL (0x0028) / DSI2_OBS_FSM_STATUS (0x002C)
+ * -----------------------------------------------------------------------
+ *
+ * The DSI-2 controller exposes six internal state machines for debug.
+ * Write fsm_selector[3:0] to 0x0028, then read 0x002C to observe that
+ * machine's current_state / previous_state / stuck / current_state_cnt.
+ * This is the IPI-video analog of the CRI diagnosis: when the pixel stream
+ * is silent (INT_ST_IPI == 0, IPI_BUSY == 0), the ipi_vid_fsm stuck in INIT
+ * vs. advancing tells whether the VOP ever delivered a video line.
+ */
+
+#define DSI2_OBS_FSM_SEL_IPI_VID       0x0 /* ipi_vid_fsm */
+#define DSI2_OBS_FSM_SEL_IPI_AUTO_CALC 0x1 /* ipi_auto_calc_fsm */
+#define DSI2_OBS_FSM_SEL_SYS_MAIN      0x2 /* sys_main_fsm */
+#define DSI2_OBS_FSM_SEL_SYS_CMD       0x3 /* sys_cmd_fsm */
+#define DSI2_OBS_FSM_SEL_SYS_PKT_BUILD 0x4 /* sys_pkt_build_fsm */
+#define DSI2_OBS_FSM_SEL_PHY_TX_READY  0x5 /* phy_tx_ready_fsm */
+
+/* -----------------------------------------------------------------------
+ * DSI2_OBS_FIFO_STATUS_SEL (0x0038) selectors / DSI2_OBS_FIFO_STATUS (0x003C)
+ * -----------------------------------------------------------------------
+ */
+
+#define DSI2_OBS_FIFO_SEL_CMD_RD_PLD 0x0 /* cmd_rd_pld_fifo */
+#define DSI2_OBS_FIFO_SEL_CMD_WR_HDR 0x1 /* cmd_wr_hdr_fifo */
+#define DSI2_OBS_FIFO_SEL_CMD_WR_PLD 0x2 /* cmd_wr_pld_fifo */
+#define DSI2_OBS_FIFO_SEL_IPI_DATA   0x3 /* ipi_data_fifo */
+#define DSI2_OBS_FIFO_SEL_IPI_EVENT  0x4 /* ipi_event_fifo */
+#define DSI2_OBS_FIFO_SEL_PHY_TXHS   0x5 /* phy_txhs_fifo */
+
+/* DSI2_OBS_FIFO_STATUS (0x003C) field bits.  The TRM layout is fragmented
+ * ("current_word_count" then 15:5 reserved then the status flags); the DSI
+ * FIFO observation word convention is the 16-bit count in [31:16] and the
+ * status flags in bits [4:0], read-only. */
+
+#define DSI2_OBS_FIFO_EMPTY        (1u << 0)  /* FIFO is empty */
+#define DSI2_OBS_FIFO_ALMOST_EMPTY (1u << 1)  /* FIFO is almost empty */
+#define DSI2_OBS_FIFO_HALF_FULL    (1u << 2)  /* FIFO is at least half full */
+#define DSI2_OBS_FIFO_ALMOST_FULL  (1u << 3)  /* FIFO is almost full */
+#define DSI2_OBS_FIFO_FULL         (1u << 4)  /* FIFO is full */
+#define DSI2_OBS_FIFO_WORD_CNT_SHIFT (16)
+#define DSI2_OBS_FIFO_WORD_CNT_MASK  (0xffffu << DSI2_OBS_FIFO_WORD_CNT_SHIFT)
+
+/* DSI2_OBS_FSM_STATUS (0x002C) field breakdown.  The TRM layout is
+ * fragmented; read-only. */
+
+#define DSI2_OBS_FSM_CUR_STATE_SHIFT   (8)
+#define DSI2_OBS_FSM_CUR_STATE_MASK    (0x1f << DSI2_OBS_FSM_CUR_STATE_SHIFT)
+#define DSI2_OBS_FSM_STUCK_SHIFT       (9)
+#define DSI2_OBS_FSM_STUCK             (1u << DSI2_OBS_FSM_STUCK_SHIFT)
+
+/* -----------------------------------------------------------------------
  * DSI2_MANUAL_MODE_CFG (0x0024)
  * -----------------------------------------------------------------------
  */
@@ -246,6 +298,23 @@
 #define DSI2_PHY_CLK_LPTX_DIV_MASK      (0x1f << 8)
 #define DSI2_PHY_CLK_LPTX_DIV(n)        (((n) / 2) << 8) /* div = 2n */
 #define DSI2_PHY_CLK_TYPE_NONCONTINUOUS (1u << 0)
+#define DSI2_PHY_CLK_TYPE_CONTINUOUS    (0u << 0)
+
+/* -----------------------------------------------------------------------
+ * DSI2_PHY_STATUS (0x0108) — PHY lane state readback (TRM 18.4.3).
+ * The decisive signal for phy_tx_ready is phy_clk_stopstate: the controller
+ * may only start an HS burst once the PHY reports the lanes in LP-11
+ * (stopstate).  If these bits stay 0 the PHY never left its power-on /
+ * reset state and the controller's phy_tx_ready FSM stays at INIT.
+ * -----------------------------------------------------------------------
+ */
+
+#define DSI2_PHY_STATUS_PHY_DIRECTION    (1u << 0)  /* 0=TX, 1=RX */
+#define DSI2_PHY_STATUS_PHY_CLK_STOPSTATE  (1u << 8)
+#define DSI2_PHY_STATUS_PHY_L0_STOPSTATE   (1u << 9)
+#define DSI2_PHY_STATUS_PHY_L1_STOPSTATE   (1u << 10)
+#define DSI2_PHY_STATUS_PHY_L2_STOPSTATE   (1u << 11)
+#define DSI2_PHY_STATUS_PHY_L3_STOPSTATE   (1u << 12)
 
 /* -----------------------------------------------------------------------
  * DSI2_DSI_GENERAL_CFG (0x0200)
@@ -383,6 +452,27 @@
 #define RK3576_VO0_GRF_IPI_DEPTH_8     (0x5u << 8)
 #define RK3576_VO0_GRF_IPI_DEPTH_6     (0x3u << 8)
 #define RK3576_VO0_GRF_IPI_DEPTH_565   (0x2u << 8)
+
+/* VO0_GRF_SOC_CON9 (0x0024) — data-source routing between VOP / EBC / the
+ * display IPs.  The MIPI IPI source select is the decisive bit for "VOP is
+ * scanning but the DSI IPI FIFO stays empty": if it is routed to the EBC
+ * (embedded-bridge controller) ipi instead of the VOP MIPI ipi, the pixel
+ * stream never reaches DSI2. */
+
+#define RK3576_VO0_GRF_SOC_CON9_OFF    0x0024
+#define RK3576_VO0_GRF_MIPI_CH_SEL     (1u << 8) /* 0=VOP MIPI ipi, 1=EBC ipi */
+#define RK3576_VO0_GRF_HDMI_CH_SEL     (1u << 9) /* 0=EDP, 1=VOP (HDMI) */
+#define RK3576_VO0_GRF_EDP_CH_SEL      (1u << 10) /* 0=VOP, 1=EBC (EDP) */
+
+/* VO0_GRF_SOC_CON13 (0x0034) — EBC-to-DSIHOST/dclk gating and MIPI mode.
+ * These gates can disconnect the dclk/pixel path into the DSI host. */
+
+#define RK3576_VO0_GRF_SOC_CON13_OFF               0x0034
+#define RK3576_VO0_GRF_EBC_DCLK2DSIHOST_DISABLE    (1u << 9)
+#define RK3576_VO0_GRF_SW_MIPI_MODE               (1u << 3)
+#define RK3576_VO0_GRF_SW_MIPI_HSYNC_POL          (1u << 2)
+#define RK3576_VO0_GRF_SW_MIPI_VSYNC_POL          (1u << 1)
+#define RK3576_VO0_GRF_SW_MIPI_1TO4_EN            (1u << 0)
 
 /* Hiword write-enable mask for GRF (bit 16+N enables low bit N). */
 

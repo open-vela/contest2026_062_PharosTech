@@ -704,8 +704,10 @@ static int rk3576_dsi_phy_power_up(FAR struct rk3576_dsi_s *priv)
  *     20 MHz (D-PHY spec is 20 MHz max), so divide sys_clk down to at most
  *     20 MHz: phy_lptx_clk = sys_clk / (2 * div).
  *
- *   - DSI2_PHY_CLK_CFG.clk_type: non-continuous clock lane (matches the
- *     panel, and lets the controller drop the clock lane in LP).
+ *   - DSI2_PHY_CLK_CFG.clk_type: non-continuous clock lane by default
+ *     (matches ILI9881D, whose clock lane returns to LP-11 after each HS
+ *     burst per Table 46).  Set continuous_clk only for a panel that keeps
+ *     HSCM for the whole frame.
  *
  *   - DSI2_DSI_GENERAL_CFG.BTA_EN / EOTP_TX_EN: Bus Turnaround (needed for
  *     DCS reads) and End-of-Transmission packet (long packets).
@@ -738,24 +740,54 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
       esc_div = 31;
     }
 
-  /* clk_type = NON-CONTINUOUS during bring-up.  The reference driver
-   * (dw-mipi-dsi2-rockchip.c) forces the clock lane non-continuous BEFORE
-   * the initial deskew calibration, commenting: "clk_type should be
-   * NON_CONTINUOUS_CLK before initial deskew calibration be sent".  A
-   * continuous clock lane leaves the lane in HS (never dropping to LP-11),
-   * which stalls the Host↔PHY TXPPI handshake (the word sticks in phy_txhs,
-   * phy_tx_ready FSM stays at INIT, cri_busy never clears) on this IP.
-   * The lane is switched back to continuous later if the panel requires it.
+  /* Probe: lock down the actual sys_clk (clk_dsihost0) rate.  initialize()
+   * reparents clk_dsihost0_sel onto clk_gpll (1188 MHz), but the escape
+   * divider observed in the wild (lptx_div=10, i.e. esc_div=10) back-solves
+   * to a ~400 MHz sys_clk, NOT 1188 MHz (which would give esc_div=30).
+   * A wrong sys_clk corrupts phy_lptx_clk (LP timing base) AND
+   * DSI2_PHY_SYS_RATIO, which stalls the clock lane's return to LP-11
+   * (clk_stopstate stays 0 -> phy_tx_ready FSM stuck at INIT -> black
+   * screen). */
+
+  syslog(LOG_INFO,
+         "dsi-probe: sclk_rate=%u esc_div=%u (reparent to gpll "
+         "expect 1188000000 -> esc_div=30; 10 -> ~400 MHz)\n",
+         (unsigned)sclk_rate, (unsigned)esc_div);
+
+  /* clk_type for the panel.  ILI9881D (ILI9881D_spec.txt) is a
+   * NON-continuous clock lane: Table 46 defines THS-EXIT as "time to drive
+   * LP-11 after HS burst", i.e. the clock lane returns to LP-11 (LPM)
+   * after every HS burst (Figure 5: HSCM => HS-0 => LP-11).  The reference
+   * driver (dw-mipi-dsi2-rockchip.c) also forces non-continuous before the
+   * initial deskew calibration.  A continuous clock lane leaves the lane in
+   * HS (never dropping to LP-11), which on this IP stalls the Host↔PHY
+   * TXPPI handshake AND -- per the panel -- breaks the per-line SoT/HSDT
+   * handshake (all data-lane stopstate bits collapse to 0, observed when
+   * continuous was force-tested).  continuous_clk is only honored for a
+   * panel that truly keeps HSCM across the whole frame; ILI9881D does not.
    */
 
   clk_cfg = (uint32_t)esc_div << DSI2_PHY_CLK_LPTX_DIV_SHIFT;
-  clk_cfg |= DSI2_PHY_CLK_TYPE_NONCONTINUOUS;
+  if (priv->cfg.continuous_clk)
+    {
+      /* Clock lane stays in HS for the whole frame (continuous).  Only for
+       * panels that keep HSCM; ILI9881D is not one of them (see above). */
+      clk_cfg |= DSI2_PHY_CLK_TYPE_CONTINUOUS;
+    }
+  else
+    {
+      clk_cfg |= DSI2_PHY_CLK_TYPE_NONCONTINUOUS;
+    }
+
   rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_CLK_CFG, clk_cfg);
 
-  /* BTA (Bus Turnaround) only; EoTp TX disabled.  Non-continuous clock
-   * lane + EoTp is known to stall the DSI-2 PHY HS send FSM on some
-   * Rockchip revisions: the lane leaves stopstate but the payload in
-   * phy_txhs is never consumed.  BTA must stay enabled for DCS reads.
+  /* BTA (Bus Turnaround) only; EoTp TX disabled.
+   *
+   * EoTp was experimentally ENABLED (BTA_EN | EOTP_TX_EN) and that made the
+   * data lanes drop OUT of LP-11 (PHY_STATUS went 001f1e00 -> 001f0000),
+   * confirming the original note: non-continuous clock lane + EoTp stalls
+   * the DSI-2 PHY HS send FSM on the RK3576 — the lane leaves stopstate and
+   * never returns.  Keep EoTp disabled; BTA stays enabled for DCS reads.
    */
 
   rk3576_dsi_putreg(priv->base, RK3576_DSI2_DSI_GENERAL_CFG,
@@ -855,6 +887,45 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
                       lp2hs_time & DSI2_PHY_LP2HS_TIME_MASK);
     rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_HS2LP_MAN_CFG,
                       hs2lp_time & DSI2_PHY_HS2LP_TIME_MASK);
+
+    /* The remaining LP/Escape timing registers (MAX_RD_T / ESC_CMD_T /
+     * ESC_BYTE_T) are left at their reset value 0 by the DCPHY power-up
+     * sequence, but the clock lane's low-power (LP-11 / Escape) state
+     * machine depends on them: with zero timing the clock lane cannot
+     * complete the HS->LP-11 transition, so phy_clk_stopstate stays 0 and
+     * phy_tx_ready FSM never leaves INIT (all-black video).
+     *
+     * Program them from the D-PHY standard temps, expressed as a 13.16
+     * fixed-point count of phy_hstx_clk (= hs_rate/16) periods, matching
+     * the LP2HS/HS2LP units above.  MAX_RD_T is a plain integer count
+     * (no fractional bits).
+     *
+     *   esc_cmd:  one Escape-mode command  -> 20 ns + 4*TLPX(~50ns)
+     *             conservatively ~ 200 ns.
+     *   esc_byte: one LP data byte at the 10 Mbps-ish LP rate -> ~800 ns.
+     *   max_rd:   time to receive a maximum-size response packet (+ EoTp) ->
+     *             a few us; use a generous 32 phy_hstx_clk cycles.
+     */
+
+    {
+      uint64_t esc_cmd_ps = 200000ULL;  /* ~200 ns per Escape command */
+      uint64_t esc_byte_ps = 800000ULL; /* ~800 ns per LP byte */
+      uint32_t esc_cmd_t;
+      uint32_t esc_byte_t;
+
+      esc_cmd_t = (uint32_t)((esc_cmd_ps << 16) / period_ps);
+      esc_byte_t = (uint32_t)((esc_byte_ps << 16) / period_ps);
+
+      rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_ESC_CMD_T_MAN_CFG,
+                        esc_cmd_t & DSI2_PHY_LP2HS_TIME_MASK);
+      rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_ESC_BYTE_T_MAN_CFG,
+                        esc_byte_t & DSI2_PHY_LP2HS_TIME_MASK);
+
+      /* MAX_RD_T: integer count of phy_hstx_clk cycles (26:0, no fraction).
+       * Use a generous value to cover the largest DCS read + EoTp. */
+
+      rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_MAX_RD_T_MAN_CFG, 32u);
+    }
   }
 }
 
@@ -1185,34 +1256,64 @@ static uint32_t rk3576_dsi_color_depth(uint8_t format)
  *   cycles, as a fixed-point value with 13 integral and 16 fractional bits
  *   (the format expected by the DSI2 IPI horizontal-timing registers).
  *
- *   One pixel occupies (bpp / lanes) bit-clocks on the serial interface:
- *   the panel provides hactive/hfp/hbp/hsync in pixels and bpp bits per
- *   pixel, spread across `lanes` data lanes.
+ *   The DSI-2 controller measures every IPI horizontal-timing parameter
+ *   (HSA/HBP/HACT/HLINE) in cycles of *phy_hstx_clk*, where phy_hstx_clk is
+ *   exactly 1/16 the lane high-speed data rate in DPHY mode (see the
+ *   reference driver dw_mipi_dsi2_ipi_set / dw_mipi_dsi2_phy_ratio_cfg).
+ *
+ *   A horizontal interval of `pixels` pixels spans the time
+ *   `pixels / pixel_clock` seconds, during which phy_hstx_clk ticks
+ *   `pixels * phy_hstx_clk / pixel_clock` cycles:
+ *
+ *     time = pixels * (hs_rate / 16) / pixel_clock    (<< 16 fixed-point)
+ *
+ *   This is the reference driver's exact formula:
+ *     hsa_time = DIV_ROUND_CLOSEST_ULL(hsa * phy_hs_clk << 16, pixel_clk)
+ *
+ *   The previous implementation computed `pixels * bpp / lanes` (serial bit
+ *   clocks) instead, which is off by the (bpp / 16) factor — a 16x error at
+ *   bpp=24 — corrupting every horizontal blanking boundary so the video
+ *   state machine can never lock onto a line.
  *
  *   Returns UINT32_MAX if the integral part would overflow the 13-bit field
  *   (>= 8192 cycles) — callers must treat that as a timing-programming
  *   error.
  ****************************************************************************/
 
-static uint32_t rk3576_dsi_hstx_cycles(uint32_t pixels, uint32_t lanes,
-                                       uint32_t bpp)
+static uint32_t rk3576_dsi_hstx_cycles(uint32_t pixels, uint32_t hs_rate,
+                                       uint32_t pixel_clock)
 {
+  uint64_t phy_hstx_clk;
   uint64_t cycles;
 
-  cycles = (uint64_t)pixels * bpp / lanes;
-
-  /* 13 integral bits: reject values >= 2^13 that would corrupt the
-   * reserved bits [31:30] (or wrap the 32-bit register).
-   */
-
-  if (cycles >= (1u << 13))
+  if (pixel_clock == 0)
     {
-      gerr("ERROR: DSI horizontal time overflow (%llu cycles)\n",
-           (unsigned long long)cycles);
       return UINT32_MAX;
     }
 
-  return (uint32_t)(cycles << 16);
+  phy_hstx_clk = (uint64_t)hs_rate / 16u;
+
+  /* cycles = pixels * phy_hstx_clk / pixel_clock, as a 13.16 fixed-point
+   * value.  Compute with the << 16 applied before the divide so the (often
+   * fractional) ratio is not truncated to zero.  pixels <= ~8192, hs_rate
+   * <= a few GHz, so the product stays well within uint64.
+   */
+
+  cycles = ((uint64_t)pixels * phy_hstx_clk * 65536u) / pixel_clock;
+
+  /* The result carries the << 16 fixed-point shift already.  The register
+   * has 13 integral bits ([29:16]); reject any value whose integral part
+   * would overflow them (>= 2^13 -> fixed-point >= 2^29).
+   */
+
+  if ((cycles >> 16) >= (1u << 13))
+    {
+      gerr("ERROR: DSI horizontal time overflow (%llu cycles)\n",
+           (unsigned long long)(cycles >> 16));
+      return UINT32_MAX;
+    }
+
+  return (uint32_t)cycles;
 }
 
 /****************************************************************************
@@ -1324,7 +1425,8 @@ int rk3576_mipi_dsi_enable_video(
    * Each conversion is checked for 13-bit integral overflow.
    */
 
-  regval = rk3576_dsi_hstx_cycles(timing->hsync_len, lanes, bpp);
+  regval = rk3576_dsi_hstx_cycles(timing->hsync_len,
+                                  priv->cfg.hs_rate, timing->pixel_clock);
   if (regval == UINT32_MAX)
     {
       ret = -EINVAL;
@@ -1333,7 +1435,8 @@ int rk3576_mipi_dsi_enable_video(
 
   rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_HSA_MAN_CFG, regval);
 
-  regval = rk3576_dsi_hstx_cycles(timing->hback_porch, lanes, bpp);
+  regval = rk3576_dsi_hstx_cycles(timing->hback_porch,
+                                  priv->cfg.hs_rate, timing->pixel_clock);
   if (regval == UINT32_MAX)
     {
       ret = -EINVAL;
@@ -1342,7 +1445,8 @@ int rk3576_mipi_dsi_enable_video(
 
   rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_HBP_MAN_CFG, regval);
 
-  regval = rk3576_dsi_hstx_cycles(timing->hactive, lanes, bpp);
+  regval = rk3576_dsi_hstx_cycles(timing->hactive,
+                                  priv->cfg.hs_rate, timing->pixel_clock);
   if (regval == UINT32_MAX)
     {
       ret = -EINVAL;
@@ -1351,7 +1455,8 @@ int rk3576_mipi_dsi_enable_video(
 
   rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_HACT_MAN_CFG, regval);
 
-  regval = rk3576_dsi_hstx_cycles(htotal, lanes, bpp);
+  regval = rk3576_dsi_hstx_cycles(htotal,
+                                  priv->cfg.hs_rate, timing->pixel_clock);
   if (regval == UINT32_MAX)
     {
       ret = -EINVAL;
@@ -1503,6 +1608,157 @@ int rk3576_mipi_dsi_enable_video(
     syslog(LOG_INFO, "dsi-dump: VO0_GRF_SOC_CON10=%08x\n",
            getreg32(RK3576_VO0_GRF_ADDR + RK3576_VO0_GRF_SOC_CON10_OFF));
 
+    /* --- Probe D: VOP->DSI routing / dclk gating.  Decisive for "VOP is
+     * scanning but ipi_data FIFO stays empty": if grf_mipi_ch_sel (SOC_CON9
+     * bit8) is 1, the MIPI IPI is fed from the EBC instead of the VOP;
+     * if grf_ebc_dclk2dsihost_disable (SOC_CON13 bit9) is 1, the dclk into
+     * the DSI host is gated off.  Also decode the mipi mode/polarity/enable
+     * (SOC_CON13 bits 3:0). --- */
+
+    syslog(LOG_INFO,
+           "dsi-probe-D: VO0_GRF_SOC_CON9=%08x (mipi_ch_sel[8]=%u "
+           "hdmi_ch_sel[9]=%u edp_ch_sel[10]=%u; 1=EBC/wrong-src)\n",
+           getreg32(RK3576_VO0_GRF_ADDR + RK3576_VO0_GRF_SOC_CON9_OFF),
+           (unsigned)((getreg32(RK3576_VO0_GRF_ADDR +
+                                RK3576_VO0_GRF_SOC_CON9_OFF) >> 8) & 1),
+           (unsigned)((getreg32(RK3576_VO0_GRF_ADDR +
+                                RK3576_VO0_GRF_SOC_CON9_OFF) >> 9) & 1),
+           (unsigned)((getreg32(RK3576_VO0_GRF_ADDR +
+                                RK3576_VO0_GRF_SOC_CON9_OFF) >> 10) & 1));
+
+    syslog(LOG_INFO,
+           "dsi-probe-D: VO0_GRF_SOC_CON13=%08x "
+           "(ebc_dclk2dsihost_disable[9]=%u mipi_mode[3]=%u "
+           "hsync_pol[2]=%u vsync_pol[1]=%u 1to4_en[0]=%u)\n",
+           getreg32(RK3576_VO0_GRF_ADDR + RK3576_VO0_GRF_SOC_CON13_OFF),
+           (unsigned)((getreg32(RK3576_VO0_GRF_ADDR +
+                                RK3576_VO0_GRF_SOC_CON13_OFF) >> 9) & 1),
+           (unsigned)((getreg32(RK3576_VO0_GRF_ADDR +
+                                RK3576_VO0_GRF_SOC_CON13_OFF) >> 3) & 1),
+           (unsigned)((getreg32(RK3576_VO0_GRF_ADDR +
+                                RK3576_VO0_GRF_SOC_CON13_OFF) >> 2) & 1),
+           (unsigned)((getreg32(RK3576_VO0_GRF_ADDR +
+                                RK3576_VO0_GRF_SOC_CON13_OFF) >> 1) & 1),
+           (unsigned)((getreg32(RK3576_VO0_GRF_ADDR +
+                                RK3576_VO0_GRF_SOC_CON13_OFF) >> 0) & 1));
+
+    /* FSM observation probe: drive DSI2_OBS_FSM_STATUS_SEL to each of the
+     * six state machines and read back DSI2_OBS_FSM_STATUS so we can tell
+     * where the video pixel stream stalls.  The decisive pair is
+     * ipi_vid_fsm (0x0) — stuck at INIT (cur=0) means the VOP never
+     * delivered a video line into the IPI; a non-zero advancing state means
+     * the pixel stream entered the IPI but stalls later (sys_main /
+     * phy_tx_ready).  All read-only diagnostics; the selector is restored
+     * to ipi_vid afterwards. */
+
+    {
+      static const char *const fsm_names[] = {
+        "ipi_vid", "ipi_auto_calc", "sys_main",
+        "sys_cmd", "sys_pkt_build", "phy_tx_ready",
+      };
+      uint32_t fsm_raw[6];
+      int fsm_i;
+
+      for (fsm_i = 0; fsm_i < 6; fsm_i++)
+        {
+          rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FSM_STATUS_SEL,
+                            (uint32_t)fsm_i & 0xf);
+          fsm_raw[fsm_i] =
+            rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FSM_STATUS);
+        }
+
+      syslog(LOG_INFO,
+             "dsi-dump: FSM ipi_vid=%08x ipi_auto_calc=%08x sys_main=%08x "
+             "sys_cmd=%08x sys_pkt=%08x phy_tx_ready=%08x\n",
+             fsm_raw[0], fsm_raw[1], fsm_raw[2], fsm_raw[3], fsm_raw[4],
+             fsm_raw[5]);
+
+      /* Decode ipi_vid_fsm and phy_tx_ready_fsm specially: cur = the raw
+       * register's current_state nibble (bits [8:12] per TRM naming is
+       * approximate; dump the whole word above is authoritative).  Emit a
+       * compact human-readable line for quick scan. */
+
+      syslog(LOG_INFO,
+             "dsi-dump: FSM decode ipi_vid(cur=%u stuck=%u) "
+             "sys_main(cur=%u) phy_tx_ready(cur=%u stuck=%u)\n",
+             (unsigned)((fsm_raw[0] >> DSI2_OBS_FSM_CUR_STATE_SHIFT) & 0x1f),
+             (unsigned)((fsm_raw[0] & DSI2_OBS_FSM_STUCK) != 0),
+             (unsigned)((fsm_raw[2] >> DSI2_OBS_FSM_CUR_STATE_SHIFT) & 0x1f),
+             (unsigned)((fsm_raw[5] >> DSI2_OBS_FSM_CUR_STATE_SHIFT) & 0x1f),
+             (unsigned)((fsm_raw[5] & DSI2_OBS_FSM_STUCK) != 0));
+
+      (void)fsm_names; /* Names kept for a future per-FSM labeled dump. */
+
+      /* Restore the selector to ipi_vid (its reset default). */
+
+      rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FSM_STATUS_SEL,
+                        DSI2_OBS_FSM_SEL_IPI_VID);
+    }
+
+    /* IPI data-FIFO water-level probe.  Unlike INT_ST_IPI (which only
+     * reports *errors*) or the FSM observation port (whose current_state_cnt
+     * reads back 0 even for a live command path), the OBS_FIFO observation
+     * port reports the actual word count + empty/almost_empty/half_full/
+     * almost_full/full flags of the selected FIFO in real time.  Selecting
+     * ipi_data_fifo (0x3) and sampling it twice a short interval apart
+     * definitively splits the two failure classes:
+     *
+     *   - word_cnt stays 0 + empty=1 across both samples: no pixel ever
+     *     entered the IPI -> the break is upstream (VOP -> DSI physical
+     *     pixel-clock/data link).
+     *   - word_cnt > 0 (or half_full=1) on either sample: pixels ARE
+     *     entering the IPI -> the break is in the DSI -> PHY send path.
+     *
+     * The other FIFOs (cmd_wr_hdr/pld, phy_txhs) are sampled too so the
+     * command-path FIFOs act as a positive control proving the observation
+     * port itself is live.  All read-only diagnostics. */
+
+    {
+      static const char *const fifo_names[] = {
+        "cmd_rd_pld", "cmd_wr_hdr", "cmd_wr_pld",
+        "ipi_data", "ipi_event", "phy_txhs",
+      };
+      uint32_t fifo_a[6];
+      uint32_t fifo_b[6];
+      int fifo_i;
+
+      for (fifo_i = 0; fifo_i < 6; fifo_i++)
+        {
+          rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
+                            (uint32_t)fifo_i & 0xf);
+          fifo_a[fifo_i] =
+            rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
+        }
+
+      up_udelay(100); /* ~2 video lines @16M pixel clock */
+
+      for (fifo_i = 0; fifo_i < 6; fifo_i++)
+        {
+          rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
+                            (uint32_t)fifo_i & 0xf);
+          fifo_b[fifo_i] =
+            rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
+        }
+
+      for (fifo_i = 0; fifo_i < 6; fifo_i++)
+        {
+          uint32_t wa = (fifo_a[fifo_i] & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
+                        DSI2_OBS_FIFO_WORD_CNT_SHIFT;
+          uint32_t wb = (fifo_b[fifo_i] & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
+                        DSI2_OBS_FIFO_WORD_CNT_SHIFT;
+
+          syslog(LOG_INFO,
+                 "dsi-dump: FIFO[%s] cnt=%u->%u "
+                 "empty=%u ae=%u hf=%u af=%u full=%u\n",
+                 fifo_names[fifo_i], wa, wb,
+                 (unsigned)(fifo_b[fifo_i] & DSI2_OBS_FIFO_EMPTY) != 0,
+                 (unsigned)(fifo_b[fifo_i] & DSI2_OBS_FIFO_ALMOST_EMPTY) != 0,
+                 (unsigned)(fifo_b[fifo_i] & DSI2_OBS_FIFO_HALF_FULL) != 0,
+                 (unsigned)(fifo_b[fifo_i] & DSI2_OBS_FIFO_ALMOST_FULL) != 0,
+                 (unsigned)(fifo_b[fifo_i] & DSI2_OBS_FIFO_FULL) != 0);
+        }
+    }
+
     if (poll == RK3576_DSI_POLL_LOOPS)
       {
         gerr("ERROR: DSI failed to enter Video mode (MODE_STATUS=0x%x)\n",
@@ -1516,6 +1772,212 @@ int rk3576_mipi_dsi_enable_video(
 errout_unlock:
   nxmutex_unlock(&priv->lock);
   return ret;
+}
+
+/****************************************************************************
+ * Name: rk3576_mipi_dsi_dump_video_status
+ *
+ * Description:
+ *   Probe E: sample the DSI IPI receive path *while the VOP is scanning*
+ *   (i.e. after rk3576_vop_initialize has started the pixel stream).  The
+ *   enable_video() dump above runs BEFORE the VOP is up, so its empty
+ *   ipi_data FIFO / INIT ipi_vid_fsm are expected, not diagnostic.  This
+ *   function must be called again after the VOP begins scanning to answer
+ *   the real question: do pixels physically reach the DSI IPI?
+ *
+ *   Read-only: CORE_STATUS (ipi_busy bit8 / ipi_fifos_not_empty bit9),
+ *   the ipi_data FIFO word count sampled twice, and the ipi_vid / phy_tx
+ *   FSMs.  A positive ipi_data count or ipi_busy=1 proves the pixel stream
+ *   reached the IPI (break is downstream in the PHY send path); all-zero
+ *   again proves the break is upstream (VOP -> DSI physical link).
+ ****************************************************************************/
+
+void rk3576_mipi_dsi_dump_video_status(void)
+{
+  struct rk3576_dsi_s *priv = &g_dsi;
+  uintptr_t base = priv->base;
+  uint32_t core_status;
+  uint32_t ipi_data_a;
+  uint32_t ipi_data_b;
+  uint32_t ipi_event_a;
+  uint32_t ipi_event_b;
+  uint32_t fsm_vid;
+  uint32_t fsm_ready;
+  uint32_t int_st_ipi;
+  uint32_t mode_status;
+
+  if (!priv->initialized || priv->mode != RK3576_DSI_MODE_VIDEO)
+    {
+      return;
+    }
+
+  core_status = rk3576_dsi_getreg(base, RK3576_DSI2_CORE_STATUS);
+  mode_status = rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS);
+  int_st_ipi = rk3576_dsi_getreg(base, RK3576_DSI2_INT_ST_IPI);
+
+  /* ipi_data FIFO word count sampled twice (see the enable_video probe).
+   * Also sample ipi_event FIFO at the same time: the decisive split for a
+   * black screen where the data lane toggles identically for 0xff and 0x00
+   * framebuffers is whether the VOP delivered ONLY sync/blanking events
+   * (ipi_event non-empty, ipi_data empty) or nothing at all (both empty).
+   * ipi_busy=1 alone cannot distinguish these: it reflects event packets
+   * too, which is why an all-black and all-white fb look identical on the
+   * scope. */
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
+                    DSI2_OBS_FIFO_SEL_IPI_DATA);
+  ipi_data_a = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
+  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
+                    DSI2_OBS_FIFO_SEL_IPI_EVENT);
+  ipi_event_a = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
+  up_udelay(200);
+  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
+                    DSI2_OBS_FIFO_SEL_IPI_DATA);
+  ipi_data_b = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
+  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
+                    DSI2_OBS_FIFO_SEL_IPI_EVENT);
+  ipi_event_b = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
+
+  /* ipi_vid_fsm + phy_tx_ready_fsm current state. */
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FSM_STATUS_SEL,
+                    DSI2_OBS_FSM_SEL_IPI_VID);
+  fsm_vid = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FSM_STATUS);
+  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FSM_STATUS_SEL,
+                    DSI2_OBS_FSM_SEL_PHY_TX_READY);
+  fsm_ready = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FSM_STATUS);
+
+  syslog(LOG_INFO,
+         "vop-scanning: DSI CORE_STATUS=%08x (ipi_busy[8]=%u "
+         "ipi_fifos_not_empty[9]=%u) MODE_STATUS=%08x INT_ST_IPI=%08x\n",
+         core_status,
+         (unsigned)((core_status >> 8) & 1),
+         (unsigned)((core_status >> 9) & 1),
+         mode_status, int_st_ipi);
+
+  syslog(LOG_INFO,
+         "vop-scanning: DSI ipi_data fifo cnt=%u->%u empty=%u "
+         "ipi_event fifo cnt=%u->%u empty=%u "
+         "ipi_vid_fsm=%08x phy_tx_ready_fsm=%08x\n",
+         (unsigned)((ipi_data_a & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
+                    DSI2_OBS_FIFO_WORD_CNT_SHIFT),
+         (unsigned)((ipi_data_b & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
+                    DSI2_OBS_FIFO_WORD_CNT_SHIFT),
+         (unsigned)((ipi_data_b & DSI2_OBS_FIFO_EMPTY) != 0),
+         (unsigned)((ipi_event_a & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
+                    DSI2_OBS_FIFO_WORD_CNT_SHIFT),
+         (unsigned)((ipi_event_b & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
+                    DSI2_OBS_FIFO_WORD_CNT_SHIFT),
+         (unsigned)((ipi_event_b & DSI2_OBS_FIFO_EMPTY) != 0),
+         fsm_vid, fsm_ready);
+
+  /* --- Probe H: IPI timing register readback.  The enable_video() path
+   * programs HSA/HBP/HACT/HLINE (phy_hstx_clk cycles) + VSA/VBP/VACT/VFP
+   * (lines).  If any of these read back 0 the IPI video FSM has nothing to
+   * compare the incoming pixel stream against, so it can never decide where
+   * a line's active pixels start/end and thus never emits a video packet --
+   * the pixel stream advances (ipi_busy toggles) but nothing is sent.  This
+   * is the last unverified link for "fb=0xff AND fb=0x00 both black". --- */
+
+  {
+    syslog(LOG_INFO,
+           "vop-scanning: IPI_TIMING HSA=%08x HBP=%08x HACT=%08x "
+           "HLINE=%08x\n",
+           rk3576_dsi_getreg(base, RK3576_DSI2_IPI_VID_HSA_MAN_CFG),
+           rk3576_dsi_getreg(base, RK3576_DSI2_IPI_VID_HBP_MAN_CFG),
+           rk3576_dsi_getreg(base, RK3576_DSI2_IPI_VID_HACT_MAN_CFG),
+           rk3576_dsi_getreg(base, RK3576_DSI2_IPI_VID_HLINE_MAN_CFG));
+    syslog(LOG_INFO,
+           "vop-scanning: IPI_TIMING VSA=%08x VBP=%08x VACT=%08x "
+           "VFP=%08x\n",
+           rk3576_dsi_getreg(base, RK3576_DSI2_IPI_VID_VSA_MAN_CFG),
+           rk3576_dsi_getreg(base, RK3576_DSI2_IPI_VID_VBP_MAN_CFG),
+           rk3576_dsi_getreg(base, RK3576_DSI2_IPI_VID_VACT_MAN_CFG),
+           rk3576_dsi_getreg(base, RK3576_DSI2_IPI_VID_VFP_MAN_CFG));
+  }
+
+  /* --- Probe F: PHY lane state.  phy_tx_ready_fsm stuck at INIT means the
+   * controller never saw the PHY report LP-11 (stopstate), which is the
+   * precondition for starting any HS burst.  DSI2_PHY_STATUS reports the
+   * per-lane stopstate + direction directly; DSI2_PHY_CLK_CFG shows whether
+   * the clock lane is continuous (which can prevent it dropping to LP-11)
+   * and the echo clock divider; DSI2_PHY_MODE_CFG confirms PPI width /
+   * lane count / PHY type.  All read-only diagnostics. --- */
+
+  {
+    uint32_t phy_status = rk3576_dsi_getreg(base, RK3576_DSI2_PHY_STATUS);
+    uint32_t phy_clk_cfg = rk3576_dsi_getreg(base, RK3576_DSI2_PHY_CLK_CFG);
+    uint32_t phy_mode = rk3576_dsi_getreg(base, RK3576_DSI2_PHY_MODE_CFG);
+
+    syslog(LOG_INFO,
+           "vop-scanning: DSI PHY_STATUS=%08x (clk_stopstate[8]=%u "
+           "l0[9]=%u l1[10]=%u l2[11]=%u l3[12]=%u dir[0]=%u)\n",
+           phy_status,
+           (unsigned)((phy_status >> 8) & 1),
+           (unsigned)((phy_status >> 9) & 1),
+           (unsigned)((phy_status >> 10) & 1),
+           (unsigned)((phy_status >> 11) & 1),
+           (unsigned)((phy_status >> 12) & 1),
+           (unsigned)(phy_status & 1));
+
+    syslog(LOG_INFO,
+           "vop-scanning: DSI PHY_CLK_CFG=%08x "
+           "(clk_type[0]=%u, 0=continuous 1=non-cont, lptx_div[12:8]=%u) "
+           "PHY_MODE_CFG=%08x (ppi_width[9:8]=%u lanes[5:4]=%u "
+           "type[0]=%u)\n",
+           phy_clk_cfg,
+           (unsigned)(phy_clk_cfg & 1),
+           (unsigned)((phy_clk_cfg >> 8) & 0x1f),
+           phy_mode,
+           (unsigned)((phy_mode >> 8) & 3),
+           (unsigned)((phy_mode >> 4) & 3),
+           (unsigned)(phy_mode & 1));
+  }
+
+  /* Restore the FSM selector to ipi_vid (its reset default). */
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FSM_STATUS_SEL,
+                    DSI2_OBS_FSM_SEL_IPI_VID);
+
+  /* --- Probe G: is the clock lane REALLY stuck in HS, or just sampled
+   * during HACT?  Sample phy_clk_stopstate (and data-lane stopstate)
+   * repeatedly across ~1 frame (16.6 ms @ 60 Hz) so we cross several
+   * HACT(window in HS, stopstate=0) and blanking(window in LP-11,
+   * stopstate=1) phases.  If the bits toggle 0<->1 periodically the clock
+   * lane is fine and the black screen is NOT a PHY LP-11 problem; if they
+   * stay 0 forever the clock lane is genuinely stuck in HS. --- */
+
+  {
+    uint32_t last = rk3576_dsi_getreg(base, RK3576_DSI2_PHY_STATUS);
+    uint32_t toggles = 0;
+    uint32_t clk_high = 0;
+    uint32_t samples = 0;
+    int n;
+
+    for (n = 0; n < 40; n++)
+      {
+        uint32_t cur = rk3576_dsi_getreg(base, RK3576_DSI2_PHY_STATUS);
+
+        samples++;
+        if (cur & DSI2_PHY_STATUS_PHY_CLK_STOPSTATE)
+          {
+            clk_high++;
+          }
+
+        if ((cur ^ last) & DSI2_PHY_STATUS_PHY_CLK_STOPSTATE)
+          {
+            toggles++;
+          }
+
+        last = cur;
+        up_udelay(400); /* ~40 samples * 0.4ms = 16ms = ~1 frame */
+      }
+
+    syslog(LOG_INFO,
+           "dsi-probe-G: clk_stopstate sampled=%u high=%u toggles=%u "
+           "(toggle>0 = clock lane cycles LP-11 normally; all-0 = stuck HS)\n",
+           samples, clk_high, toggles);
+  }
 }
 
 /****************************************************************************

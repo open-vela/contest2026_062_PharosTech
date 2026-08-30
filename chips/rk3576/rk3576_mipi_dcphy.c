@@ -377,18 +377,29 @@ rk3576_dcphy_dphy_timing_lookup(uint32_t lane_mbps)
 {
   static const struct rk3576_dcphy_dphy_timing_s table[] = {
     /* {max_mbps, clk_prep, clk_zero, clk_post, clk_trail,
-     *  hs_prep, hs_zero, hs_trail, lpx, hs_exit} */
-    { 100, 3, 0, 0, 29, 5, 0, 22, 2, 6 },
-    { 200, 7, 1, 0, 33, 9, 0, 26, 5, 11 },
-    { 300, 11, 3, 0, 36, 13, 0, 29, 8, 16 },
-    { 400, 15, 5, 0, 39, 17, 0, 33, 11, 21 },
-    { 500, 19, 6, 1, 43, 22, 1, 36, 15, 26 },
-    { 750, 29, 11, 2, 51, 30, 3, 45, 22, 38 },
-    { 1000, 39, 16, 3, 60, 40, 6, 53, 29, 50 },
-    { 1250, 49, 20, 5, 68, 49, 8, 62, 37, 62 },
+     *  hs_prep, hs_zero, hs_trail, lpx, hs_exit}
+     *
+     * Values are taken verbatim from the Rockchip reference driver
+     * phy-rockchip-samsung-dcphy.c (samsung_mipi_dphy_timing_table).  That
+     * table has an 11th per-entry field "hs_settle" which the D-PHY TX path
+     * does NOT program (it is RX-settle-only); it must NOT be confused with
+     * hs_exit here.  The previous hand-authored values had hs_exit (T_HS_EXIT,
+     * the clock lane HS->LP-11 exit time, panel Table 46 THS-EXIT ~100ns)
+     * wrong by an order of magnitude (e.g. 21 instead of 1 at 400 Mbps),
+     * which kept the clock lane from ever returning to LP-11: clk_stopstate
+     * stayed 0, phy_tx_ready FSM stuck at INIT, all-black video.
+     */
+    { 100, 3, 0, 0, 29, 5, 0, 22, 2, 0 },
+    { 200, 7, 1, 0, 33, 9, 0, 26, 5, 0 },
+    { 300, 11, 3, 0, 36, 13, 0, 29, 8, 1 },
+    { 400, 15, 5, 0, 39, 17, 0, 33, 11, 1 },
+    { 500, 19, 6, 1, 43, 22, 1, 36, 15, 2 },
+    { 750, 29, 11, 2, 51, 30, 3, 45, 22, 4 },
+    { 1000, 39, 16, 3, 60, 40, 6, 53, 29, 5 },
+    { 1250, 49, 20, 5, 68, 49, 8, 62, 37, 7 },
     { 1500, 7, 24, 6, 7, 7, 10, 6, 5, 7 },
-    { 1750, 8, 29, 7, 8, 8, 13, 7, 6, 9 },
-    { 2000, 9, 34, 8, 9, 9, 15, 8, 7, 10 },
+    { 1750, 8, 29, 7, 8, 8, 13, 7, 6, 8 },
+    { 2000, 9, 34, 8, 9, 9, 15, 8, 7, 9 },
     { 2250, 10, 39, 10, 10, 18, 9, 8, 15, 11 },
     { 2500, 12, 43, 11, 11, 11, 20, 10, 9, 13 },
   };

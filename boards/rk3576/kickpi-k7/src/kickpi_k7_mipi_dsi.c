@@ -29,16 +29,16 @@
  *   - LCD_RST    : GPIO0_A2             (panel reset, active-low)
  *   - LCD_PWREN  : GPIO0_C6             (panel power enable)
  *
- * Panel: WKS50HF072-WCT (5.0", 720 x 1280, DSI video mode).
+ * Panel: WKS50HD072-WCT (5.0", 720 x 1280, DSI video mode).
  *
  * NOTE: The DSI panel is NOT a fixed on-board accessory; users may swap in a
  * different panel module.  However, this board code currently supports only
- * ONE model -- the WKS50HF072-WCT -- whose DCS init sequence and video-mode
+ * ONE model -- the WKS50HD072-WCT -- whose DCS init sequence and video-mode
  * timing are hard-coded below.  If a different panel is attached, its data
  * sheet must be consulted and the timing / init sequence re-tuned; this code
  * is NOT a drop-in match for arbitrary DSI panels.
  *
- * WKS50HF072-WCT:
+ * WKS50HD072-WCT:
  *   - 720 x 1280 portrait, RGB888, 4 data lanes, ~64 MHz pixel clock
  *   - Timing: HFP=52 HSYNC=25 HBP=26 (htotal=823),
  *             VFP=5 VSYNC=2 VBP=9    (vtotal=1296)  -> ~60 Hz
@@ -605,6 +605,10 @@ int kickpi_k7_mipi_dsi_initialize(void)
   dsi_cfg.video_mode = KICKPI_K7_DSI_VID_MODE_NON_BURST_SYNC_EVENTS;
   dsi_cfg.hs_rate = KICKPI_K7_MIPI_DSI_HS_RATE;
 
+  /* ILI9881D's clock lane does a HS-burst per line (THS-EXIT drives the
+   * clock lane to LP-11 after each HS burst, per Table 46), i.e. a
+   * NON-continuous clock lane.  Keep continuous_clk = false (default). */
+
   host = rk3576_mipi_dsi_initialize(&dsi_cfg);
   if (host == NULL)
     {
@@ -691,6 +695,14 @@ int kickpi_k7_mipi_dsi_initialize(void)
       syslog(LOG_ERR, "ERROR: rk3576_vop_initialize failed: %d\n", ret);
       return ret;
     }
+
+  /* 6. VOP is now scanning: sample the DSI IPI receive path in real time to
+   * answer whether pixels reach the DSI (ipi_busy / ipi_data FIFO).  This
+   * is the decisive probe -- the enable_video() dump above ran before the
+   * VOP was up, so its empty FIFO was expected, not diagnostic. */
+
+  up_udelay(20000); /* 20 ms ~ 1+ frames @60 Hz */
+  rk3576_mipi_dsi_dump_video_status();
 
   /* 7. Backlight on last, after the panel is displaying. */
 
