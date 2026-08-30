@@ -90,7 +90,7 @@ static int kickpi_k7_rtc_int_handler(FAR struct gpio_dev_s *dev, uint8_t pin)
  ****************************************************************************/
 
 #if defined(CONFIG_BOARD_LATE_INITIALIZE) && defined(CONFIG_RK3576_EMMC)
-static void kickpi_k7_emmc_pinmux(void);
+static int kickpi_k7_emmc_pinmux(void);
 #endif
 
 /****************************************************************************
@@ -173,11 +173,13 @@ void rk3576_board_initialize(void)
  *   DTS settings before the host controller starts card enumeration.
  ****************************************************************************/
 
-static void kickpi_k7_emmc_pinmux(void)
+static int kickpi_k7_emmc_pinmux(void)
 {
   gpio_pinset_t common =
       GPIO_PORT1 | GPIO_ALT | GPIO_AF1 | GPIO_PULLUP | GPIO_DRV_STRENGTH_66OHM;
+  FAR struct gpio_dev_s *handle;
   unsigned int pin;
+  int ret;
 
   /* Vendor DTS: GPIO1_A0..A7 = DAT0..7, GPIO1_B0 = CMD and GPIO1_B1 = CLK.
    * All use mux function 1 with pull-up and drive level 2.
@@ -185,8 +187,26 @@ static void kickpi_k7_emmc_pinmux(void)
 
   for (pin = 0; pin <= 9; pin++)
     {
-      rk3576_config_gpio(common | (pin << GPIO_PIN_SHIFT));
+      ret = rk3576_gpio_get(common | (pin << GPIO_PIN_SHIFT), &handle);
+      if (ret < 0)
+        {
+          return ret;
+        }
+
+      rk3576_gpio_set_pull(handle, RK3576_GPIO_PULLUP);
+      ret = rk3576_gpio_set_drive(handle, RK3576_GPIO_DRIVE_66OHM);
+      if (ret < 0)
+        {
+          rk3576_gpio_put(handle);
+          return ret;
+        }
+
+      rk3576_gpio_set_schmitt(handle, false);
+      rk3576_gpio_set_af(handle, 1);
+      rk3576_gpio_put(handle);
     }
+
+  return OK;
 }
 #endif
 
@@ -323,13 +343,21 @@ void board_late_initialize(void)
   /* Initialize the on-board eMMC (dwcmshc / SDHCI) as /dev/mmcsd1. */
 
   {
-    kickpi_k7_emmc_pinmux();
-    emmc = rk3576_emmc_initialize(0);
-    if (emmc == NULL)
+    int ret = kickpi_k7_emmc_pinmux();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: K7 eMMC pinmux failed: %d\n", ret);
+      }
+    else
+      {
+        emmc = rk3576_emmc_initialize(0);
+      }
+
+    if (ret >= 0 && emmc == NULL)
       {
         syslog(LOG_ERR, "ERROR: rk3576_emmc_initialize failed\n");
       }
-    else if (mmcsd_slotinitialize(1, emmc) < 0)
+    else if (emmc != NULL && mmcsd_slotinitialize(1, emmc) < 0)
       {
         syslog(LOG_ERR, "ERROR: eMMC mmcsd_slotinitialize failed\n");
       }
