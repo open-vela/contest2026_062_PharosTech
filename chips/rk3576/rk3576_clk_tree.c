@@ -418,7 +418,8 @@ static int rk3576_fracpll_set_rate(FAR struct clk_s *clk, uint32_t rate,
 
   saved_con0 = getreg32(pll->con_base) & RK3576_LPLL_CON0_M_MASK;
   saved_con1 = getreg32(pll->con_base + 4) &
-               (RK3576_LPLL_CON1_PWRDOWN | RK3576_LPLL_CON1_S_MASK |
+               (RK3576_LPLL_CON1_PWRDOWN |
+                (RK3576_LPLL_CON1_S_MASK << RK3576_LPLL_CON1_S_SHIFT) |
                 RK3576_LPLL_CON1_P_MASK);
   saved_con2 = getreg32(pll->con_base + 8) & 0xffff;
 
