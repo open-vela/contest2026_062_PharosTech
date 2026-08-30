@@ -846,6 +846,8 @@ static int rk3576_emmc_interrupt(int irq, void *context, void *arg)
   struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)arg;
   uint16_t nint;
   uint16_t eint;
+  uint16_t clear_nint;
+  uint16_t clear_eint;
 
   UNUSED(irq);
   UNUSED(context);
@@ -853,10 +855,22 @@ static int rk3576_emmc_interrupt(int irq, void *context, void *arg)
   nint = rk3576_emmc_getreg16(priv, RK3576_EMMC_NINTSTS);
   eint = rk3576_emmc_getreg16(priv, RK3576_EMMC_EINTSTS);
 
-  /* Clear the latched status (write 1 to clear). */
+  /* Clear only status consumed by this interrupt (write 1 to clear).  The
+   * command response normally belongs to waitresponse(), but a fast PIO data
+   * IRQ may observe CMDDONE at the same time.  Preserve command completion
+   * and response errors unless an interrupt-driven command waiter owns them.
+   */
 
-  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSTS, nint);
-  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSTS, eint);
+  clear_nint = nint;
+  clear_eint = eint;
+  if ((priv->waitevents & (SDIOWAIT_CMDDONE | SDIOWAIT_RESPONSEDONE)) == 0)
+    {
+      clear_nint &= ~EMMC_NINT_CMDDONE;
+      clear_eint &= ~EMMC_EPART(EMMC_RESPERR_INTS);
+    }
+
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_NINTSTS, clear_nint);
+  rk3576_emmc_putreg16(priv, RK3576_EMMC_EINTSTS, clear_eint);
 
   /* --- PIO data movement --- */
 
