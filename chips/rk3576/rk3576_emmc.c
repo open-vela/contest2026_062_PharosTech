@@ -118,9 +118,15 @@
 
 #define RK3576_EMMC_WIDEBITS EMMC_HOSTCTRL1_DWIDTH8
 
-/* Busy-wait loop limit for register self-clear / present-state polling. */
+/* Bounded register polling.  SDHCI allows 100 ms for reset completion and
+ * 150 ms for the internal clock to become stable.  Poll every 10 us so a
+ * stuck bit cannot turn repeated clock changes into multi-second boot stalls.
+ */
 
 #define RK3576_EMMC_SPIN           1000000
+#define RK3576_EMMC_POLL_DELAY_US  10
+#define RK3576_EMMC_RESET_POLLS    10000
+#define RK3576_EMMC_CLOCK_POLLS    15000
 #define RK3576_EMMC_TUNING_RETRIES 128
 #define RK3576_EMMC_TUNING_SIZE    128
 
@@ -547,13 +553,23 @@ static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
   clk = EMMC_CLKCTRL_INTLEN;
   rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, clk);
 
-  for (i = 0; i < RK3576_EMMC_SPIN; i++)
+  for (i = 0; i < RK3576_EMMC_CLOCK_POLLS; i++)
     {
       if ((rk3576_emmc_getreg16(priv, RK3576_EMMC_CLKCTRL) &
            EMMC_CLKCTRL_INTSTABLE) != 0)
         {
           break;
         }
+
+      up_udelay(RK3576_EMMC_POLL_DELAY_US);
+    }
+
+  if (i >= RK3576_EMMC_CLOCK_POLLS)
+    {
+      syslog(LOG_WARNING,
+             "WARNING: eMMC internal clock did not stabilize"
+             " requested=%" PRIu32 " clkctrl=%04x\n",
+             freq, rk3576_emmc_getreg16(priv, RK3576_EMMC_CLKCTRL));
     }
 
   /* 4) Enable the SD clock to the card. */
@@ -636,12 +652,14 @@ static void rk3576_emmc_resetlines(struct rk3576_emmc_dev_s *priv,
   int i;
 
   rk3576_emmc_putreg8(priv, RK3576_EMMC_SWRESET, lines);
-  for (i = 0; i < RK3576_EMMC_SPIN; i++)
+  for (i = 0; i < RK3576_EMMC_RESET_POLLS; i++)
     {
       if ((rk3576_emmc_getreg8(priv, RK3576_EMMC_SWRESET) & lines) == 0)
         {
           return;
         }
+
+      up_udelay(RK3576_EMMC_POLL_DELAY_US);
     }
 
   syslog(LOG_ERR, "ERROR: eMMC line reset timed out mask=%02x\n", lines);
@@ -996,25 +1014,42 @@ static void rk3576_emmc_reset(struct sdio_dev_s *dev)
   /* Software-reset the whole host and wait for the bit to self-clear. */
 
   rk3576_emmc_putreg8(priv, RK3576_EMMC_SWRESET, EMMC_SWRESET_ALL);
-  for (i = 0; i < RK3576_EMMC_SPIN; i++)
+  for (i = 0; i < RK3576_EMMC_RESET_POLLS; i++)
     {
       if ((rk3576_emmc_getreg8(priv, RK3576_EMMC_SWRESET) &
            EMMC_SWRESET_ALL) == 0)
         {
           break;
         }
+
+      up_udelay(RK3576_EMMC_POLL_DELAY_US);
+    }
+
+  if (i >= RK3576_EMMC_RESET_POLLS)
+    {
+      syslog(LOG_ERR, "ERROR: eMMC controller reset timed out swreset=%02x\n",
+             rk3576_emmc_getreg8(priv, RK3576_EMMC_SWRESET));
     }
 
   /* Internal clock on, wait until stable. */
 
   rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, EMMC_CLKCTRL_INTLEN);
-  for (i = 0; i < RK3576_EMMC_SPIN; i++)
+  for (i = 0; i < RK3576_EMMC_CLOCK_POLLS; i++)
     {
       if ((rk3576_emmc_getreg16(priv, RK3576_EMMC_CLKCTRL) &
            EMMC_CLKCTRL_INTSTABLE) != 0)
         {
           break;
         }
+
+      up_udelay(RK3576_EMMC_POLL_DELAY_US);
+    }
+
+  if (i >= RK3576_EMMC_CLOCK_POLLS)
+    {
+      syslog(LOG_WARNING,
+             "WARNING: eMMC reset clock did not stabilize clkctrl=%04x\n",
+             rk3576_emmc_getreg16(priv, RK3576_EMMC_CLKCTRL));
     }
 
   /* Bus power on at 1.8 V (eMMC VCCQ). */
