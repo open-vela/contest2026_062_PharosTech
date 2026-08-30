@@ -770,12 +770,20 @@ static void rk3576_emmc_recvfifo(struct rk3576_emmc_dev_s *priv)
 
 static void rk3576_emmc_sendfifo(struct rk3576_emmc_dev_s *priv)
 {
-  while (priv->remaining >= sizeof(uint32_t) &&
-         (rk3576_emmc_getreg32(priv, RK3576_EMMC_PRESENT) &
-          EMMC_PRESENT_BUFWREN) != 0)
+  size_t chunk = priv->blocksize ? priv->blocksize : priv->remaining;
+
+  /* Buffer Write Ready announces room for one complete block.  The present
+   * state bit is not a per-word flow-control signal on dwcmshc and may
+   * deassert while the block is being pushed.  Once the interrupt fires,
+   * fill the announced block unconditionally, matching the SDHCI PIO model
+   * and the receive path above.
+   */
+
+  while (chunk >= sizeof(uint32_t) && priv->remaining >= sizeof(uint32_t))
     {
       rk3576_emmc_putreg32(priv, RK3576_EMMC_BUFFER, *priv->buffer++);
       priv->remaining -= sizeof(uint32_t);
+      chunk -= sizeof(uint32_t);
     }
 }
 
