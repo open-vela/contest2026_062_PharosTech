@@ -262,6 +262,75 @@ static unsigned int pcf8563_bcd2bin(uint8_t value)
 }
 
 /****************************************************************************
+ * Name: pcf8563_validate_time
+ *
+ * Description:
+ *   Validate a broken-out time's fields against the ranges this chip can
+ *   represent, and (unlike a bare 1..31 day check) reject impossible dates
+ *   such as Feb 30 or Apr 31 by comparing the day against the actual length
+ *   of the target month, accounting for leap-year February.
+ *
+ *   The PCF8563 stores time/date as BCD with a two-digit year plus a century
+ *   bit, so the representable year window is 1900..2099, mirrored here via
+ *   tm_year (0..199, years since 1900).
+ *
+ * Input Parameters:
+ *   tm         - Broken-out time to validate (struct tm / struct rtc_time
+ *                are cast-compatible for this purpose).
+ *   check_wday - Also validate tm_wday (0..6).  The alarm path does not set
+ *                or consume weekday, so it passes false.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; -EINVAL if any field is out of range or the day
+ *   exceeds the length of its month.
+ *
+ ****************************************************************************/
+
+static int pcf8563_validate_time(FAR const struct tm *tm, bool check_wday)
+{
+  static const uint8_t month_days[12] = { 31, 28, 31, 30, 31, 30,
+                                          31, 31, 30, 31, 30, 31 };
+
+  uint8_t max_day;
+
+  if (tm->tm_sec < 0 || tm->tm_sec > 59 || tm->tm_min < 0 || tm->tm_min > 59 ||
+      tm->tm_hour < 0 || tm->tm_hour > 23 || tm->tm_mday < 1 ||
+      tm->tm_mday > 31 || tm->tm_mon < 0 || tm->tm_mon > 11 ||
+      tm->tm_year < 0 || tm->tm_year > 199)
+    {
+      return -EINVAL;
+    }
+
+  if (check_wday && (tm->tm_wday < 0 || tm->tm_wday > 6))
+    {
+      return -EINVAL;
+    }
+
+  /* Reject impossible dates (e.g. Feb 30, Apr 31) that the bare 1..31
+   * check above still accepts: compare the day against the length of the
+   * target month, extending February to 29 on leap years.
+   */
+
+  max_day = month_days[tm->tm_mon];
+  if (tm->tm_mon == 1)
+    {
+      int year = tm->tm_year + 1900;
+
+      if ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)
+        {
+          max_day = 29;
+        }
+    }
+
+  if (tm->tm_mday > max_day)
+    {
+      return -EINVAL;
+    }
+
+  return OK;
+}
+
+/****************************************************************************
  * Name: pcf8563_read_reg
  *
  * Description:
@@ -406,13 +475,9 @@ static int pcf8563_set_datetime(FAR const struct rtc_time *rtctime)
   unsigned int year;
   int ret;
 
-  /* Validate ranges before packing. */
+  /* Validate ranges (including month length) before packing. */
 
-  if (rtctime->tm_sec < 0 || rtctime->tm_sec > 59 || rtctime->tm_min < 0 ||
-      rtctime->tm_min > 59 || rtctime->tm_hour < 0 || rtctime->tm_hour > 23 ||
-      rtctime->tm_mday < 1 || rtctime->tm_mday > 31 || rtctime->tm_mon < 0 ||
-      rtctime->tm_mon > 11 || rtctime->tm_wday < 0 || rtctime->tm_wday > 6 ||
-      rtctime->tm_year < 0 || rtctime->tm_year > 199)
+  if (pcf8563_validate_time((FAR const struct tm *)rtctime, true) < 0)
     {
       return -EINVAL;
     }
@@ -623,18 +688,14 @@ pcf8563_setalarm_internal(FAR struct rtc_lowerhalf_s *lower,
   target_tm = *(FAR struct tm *)&alarminfo->time;
 
   /* The RTC upper half does not validate the alarm fields, so reject any
-   * out-of-range component before timegm() silently normalizes it (e.g. a
-   * tm_sec of 60 would be carried into the next minute and then round up
-   * once more, programming two minutes past the intent).  Validate the full
-   * target, including the 1900-2099 year window.
+   * out-of-range component (and impossible dates such as Feb 30) before
+   * timegm() silently normalizes it (e.g. a tm_sec of 60 would be carried
+   * into the next minute and then round up once more, programming two
+   * minutes past the intent).  Validate the full target, including the
+   * 1900-2099 year window.
    */
 
-  if (target_tm.tm_sec < 0 || target_tm.tm_sec > 59 || target_tm.tm_min < 0 ||
-      target_tm.tm_min > 59 || target_tm.tm_hour < 0 ||
-      target_tm.tm_hour > 23 || target_tm.tm_mday < 1 ||
-      target_tm.tm_mday > 31 || target_tm.tm_mon < 0 ||
-      target_tm.tm_mon > 11 || target_tm.tm_year < 0 ||
-      target_tm.tm_year > 199)
+  if (pcf8563_validate_time(&target_tm, false) < 0)
     {
       return -EINVAL;
     }
