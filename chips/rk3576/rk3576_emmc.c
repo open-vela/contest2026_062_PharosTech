@@ -1507,10 +1507,14 @@ static int rk3576_emmc_sendsetup(struct sdio_dev_s *dev, const uint8_t *buffer,
   rk3576_emmc_putreg16(priv, RK3576_EMMC_BLOCKSIZE, (uint16_t)blksz);
   rk3576_emmc_putreg16(priv, RK3576_EMMC_BLOCKCOUNT, (uint16_t)nblocks);
 
-  mode = EMMC_XFERMODE_BCEN;
+  /* As with single-block reads, do not enable block-count mode for CMD24.
+   * This dwcmshc can withhold single-block completion when BCEN is set.
+   */
+
+  mode = 0;
   if (nblocks > 1)
     {
-      mode |= EMMC_XFERMODE_MSBSEL;
+      mode |= EMMC_XFERMODE_BCEN | EMMC_XFERMODE_MSBSEL;
     }
 
   priv->xfermode = mode;
