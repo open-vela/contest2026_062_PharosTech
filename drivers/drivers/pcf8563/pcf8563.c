@@ -36,11 +36,11 @@
  *
  *   A relative-alarm request (RTC_SET_RELATIVE, e.g. "alarm N") can only be
  *   honored to minute accuracy: a target with a nonzero second component is
- *   rounded UP to the next minute (see pcf8563_setrelative()), so the alarm
- *   fires at a minute boundary 0..59 seconds AFTER the wall-clock second
- *   anticipated by a sub-minute request -- it never fires early.  Use a
- *   system timer (sleep/hrtimer/watchdog) if second-accurate wakeups are
- *   required.
+ *   rounded UP to the next minute (see pcf8563_setalarm_internal(), which
+ *   clamps both absolute and relative alarms), so the alarm fires at a
+ *   minute boundary 0..59 seconds AFTER the wall-clock second anticipated
+ *   by a sub-minute request -- it never fires early.  Use a system timer
+ *   (sleep/hrtimer/watchdog) if second-accurate wakeups are required.
  *
  ****************************************************************************/
 
@@ -411,7 +411,8 @@ static int pcf8563_set_datetime(FAR const struct rtc_time *rtctime)
   if (rtctime->tm_sec < 0 || rtctime->tm_sec > 59 || rtctime->tm_min < 0 ||
       rtctime->tm_min > 59 || rtctime->tm_hour < 0 || rtctime->tm_hour > 23 ||
       rtctime->tm_mday < 1 || rtctime->tm_mday > 31 || rtctime->tm_mon < 0 ||
-      rtctime->tm_mon > 11 || rtctime->tm_wday < 0 || rtctime->tm_wday > 6)
+      rtctime->tm_mon > 11 || rtctime->tm_wday < 0 || rtctime->tm_wday > 6 ||
+      rtctime->tm_year < 0 || rtctime->tm_year > 199)
     {
       return -EINVAL;
     }
@@ -582,6 +583,8 @@ pcf8563_setalarm_internal(FAR struct rtc_lowerhalf_s *lower,
 {
   uint8_t regs[4 + 1];
   struct rtc_time now_local;
+  struct tm now_tm;
+  struct tm target_tm;
   time_t now_t;
   time_t target_t;
   time_t delta;
@@ -611,8 +614,36 @@ pcf8563_setalarm_internal(FAR struct rtc_lowerhalf_s *lower,
    * so it is rejected too.
    */
 
-  now_t = timegm((FAR struct tm *)now);
-  target_t = timegm((FAR struct tm *)&alarminfo->time);
+  /* timegm() normalizes its argument in place, so convert local copies to
+   * avoid corrupting the caller's 'now' snapshot and the const
+   * alarminfo->time (which would otherwise be written through a cast).
+   */
+
+  now_tm = *(FAR struct tm *)now;
+  target_tm = *(FAR struct tm *)&alarminfo->time;
+
+  /* The PCF8563 alarm compares only minute/hour/day; seconds never
+   * participate (AF is asserted at the increment to the programmed minute,
+   * i.e. at second 0).  A target with a nonzero second component is rounded
+   * UP to the next minute so the alarm never fires early: it fires at the
+   * next minute boundary, up to 59 s after the sub-minute target.  This is
+   * done here in the one shared path, so both the absolute (setalarm) and
+   * relative (setrelative) entries are clamped identically.
+   */
+
+  if (target_tm.tm_sec != 0)
+    {
+      target_t = timegm(&target_tm);
+      target_t = target_t - target_tm.tm_sec + 60;
+
+      if (gmtime_r(&target_t, &target_tm) == NULL)
+        {
+          return -EINVAL;
+        }
+    }
+
+  now_t = timegm(&now_tm);
+  target_t = timegm(&target_tm);
 
   delta = target_t - now_t;
   if (delta <= 0 || delta > PCF8563_ALARM_MAX_SECONDS)
@@ -630,9 +661,9 @@ pcf8563_setalarm_internal(FAR struct rtc_lowerhalf_s *lower,
    */
 
   regs[0] = PCF8563_REG_MINUTE_ALARM;
-  regs[1] = pcf8563_bin2bcd((unsigned int)alarminfo->time.tm_min);
-  regs[2] = pcf8563_bin2bcd((unsigned int)alarminfo->time.tm_hour);
-  regs[3] = pcf8563_bin2bcd((unsigned int)alarminfo->time.tm_mday);
+  regs[1] = pcf8563_bin2bcd((unsigned int)target_tm.tm_min);
+  regs[2] = pcf8563_bin2bcd((unsigned int)target_tm.tm_hour);
+  regs[3] = pcf8563_bin2bcd((unsigned int)target_tm.tm_mday);
   regs[4] = PCF8563_AE_W; /* Weekday alarm disabled */
 
   ret = pcf8563_write_reg(PCF8563_REG_MINUTE_ALARM, regs, sizeof(regs));
@@ -767,25 +798,10 @@ static int pcf8563_setrelative(FAR struct rtc_lowerhalf_s *lower,
       return -EINVAL;
     }
 
-  /* The PCF8563 alarm compares only minute/hour/day/weekday; seconds never
-   * participate (AF is asserted at the increment to the programmed minute,
-   * i.e. at second 0).  A target with a nonzero second component is rounded
-   * UP to the next minute so the alarm never fires early: it fires at the
-   * next minute boundary, up to 59 s after the sub-minute target.  Without
-   * this, a target that lands inside the current minute (e.g. "alarm 5")
-   * would program an already-passed minute and never fire.
+  /* Any nonzero second component of the computed target is rounded up to the
+   * next minute inside pcf8563_setalarm_internal(), the single shared
+   * clamping point for both absolute and relative alarms.
    */
-
-  if (setalarm.tm_sec != 0)
-    {
-      time += 60 - setalarm.tm_sec;
-
-      if (gmtime_r(&time, &setalarm) == NULL)
-        {
-          nxmutex_unlock(&g_pcf8563.dev.lock);
-          return -EINVAL;
-        }
-    }
 
   /* Reuse the already-read current time (rtctime) as the delta annotation
    * for pcf8563_setalarm_internal(), avoiding a second I2C read.
