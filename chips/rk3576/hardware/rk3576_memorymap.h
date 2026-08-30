@@ -126,6 +126,7 @@
 #define RK3576_DSIHOST_ADDR   0x27D80000 /* DSI host controller (DSI2.0) */
 #define RK3576_DCPHY_ADDR     0x2B020000 /* MIPI D/C-PHY combo APB */
 #define RK3576_DCPHY_GRF_ADDR 0x26034000 /* MIPI DCPHY GRF */
+#define RK3576_VO0_GRF_ADDR   0x2601A000 /* VO0 GRF (SOC_CON10 = DSI IPI cfg) */
 
 /* Rockchip FSPI (Flexible Serial Peripheral Interface) */
 
@@ -140,6 +141,10 @@
 #define RK3576_WDT_S_ADDR   0x2A4C0000 /* WDT_S    - secure WDT     */
 #define RK3576_WDT_NS_ADDR  0x2ACE0000 /* WDT_NS   - non-secure WDT */
 #define RK3576_BUS_WDT_ADDR 0x2AEB0000 /* BUS_WDT  - reset BUS_MCU  */
+
+/* Power Management Unit (PMU) */
+
+#define RK3576_PMU_ADDR 0x27360000 /* PMU (power-domain & PMC control) */
 
 /* Clock & Reset Unit */
 

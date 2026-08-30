@@ -778,9 +778,7 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
    */
 
   {
-    uint64_t phy_hstx_clk = priv->cfg.hs_rate < 1500000000u
-                                ? (uint64_t)priv->cfg.hs_rate / 2u
-                                : (uint64_t)priv->cfg.hs_rate / 16u;
+    uint64_t phy_hstx_clk = (uint64_t)priv->cfg.hs_rate / 16u;
     uint32_t sys_ratio;
 
     if (sclk_rate != 0)
@@ -806,16 +804,11 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
    * timings and express them as a 13.16 fixed-point count of phy_hstx_clk
    * periods, as required by TRM 18.4.x.
    *
-   * phy_hstx_clk is the DCPHY HS-TX state-machine clock, which is derived
-   * from the serial (bit) clock by the DCPHY HSTX_CLK_SEL divider (TRM
-   * 21.6.x):
-   *   - data rate < 1500 Mbps: divide-by-2  (HSTX_CLK_SEL = 1'b1)
-   *   - data rate >= 1500 Mbps: divide-by-16 (HSTX_CLK_SEL = 1'b0)
-   *
-   * The DSI driver does not reprogram HSTX_CLK_SEL; the DCPHY driver sets
-   * it in rk3576_dcphy_configure_tx_clock_lane().  These two must agree,
-   * otherwise the LP2HS/HS2LP times are off by a factor of 8 and the CRI
-   * command stalls in the PHY send stage (payload stuck in phy_txhs).
+   * phy_hstx_clk here is the DSI-2 host's internal high-speed TX clock,
+   * which is exactly 1/16 the lane HS data rate in DPHY mode (per the
+   * reference driver dw_mipi_dsi2_lp2hs_or_hs2lp_cfg).  It is NOT the
+   * DCPHY physical HSTX_CLK_SEL domain (/2 below 1500 Mbps, /16 above);
+   * that is a separate, PHY-internal clock used for its own timing counters.
    */
 
   {
@@ -831,11 +824,9 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
     uint32_t lp2hs_time;
     uint32_t hs2lp_time;
 
-    /* Match the DCPHY HSTX_CLK_SEL decision: /2 below 1500 Mbps, /16 above. */
+    /* phy_hstx_clk = lane HS data rate / 16 (DPHY mode). */
 
-    hstx_clk = priv->cfg.hs_rate < 1500000000u
-                   ? (uint64_t)priv->cfg.hs_rate / 2u
-                   : (uint64_t)priv->cfg.hs_rate / 16u;
+    hstx_clk = (uint64_t)priv->cfg.hs_rate / 16u;
     period_ps = 1000000000000ULL / hstx_clk;                /* ps per cycle */
     ui_ps = 1000000000000ULL / (uint64_t)priv->cfg.hs_rate; /* 1 UI, ps */
 
@@ -1297,6 +1288,38 @@ int rk3576_mipi_dsi_enable_video(
   color = rk3576_dsi_color_depth(priv->cfg.format) | DSI2_IPI_COLOR_FORMAT_RGB;
   rk3576_dsi_putreg(base, RK3576_DSI2_IPI_COLOR_MAN_CFG, color);
 
+  /* Program the matching IPI color depth in the VO0 GRF.  The DSI-2 IPI
+   * pixel interface is gated/configured through VO0_GRF_SOC_CON10
+   * (IPI_COLOR_DEPTH bits [11:8]): without it the VOP's pixel stream is
+   * sampled at the wrong width and the video path stalls even though the
+   * controller-side IPI_COLOR_MAN_CFG above is correct and the DCS command
+   * link (CRI) is fully up.  This mirrors the reference driver's
+   * dw_mipi_dsi2_ipi_color_coding_cfg().
+   */
+
+  {
+    uint32_t grf_depth = 0;
+
+    switch (rk3576_dsi_color_depth(priv->cfg.format))
+      {
+        case DSI2_IPI_COLOR_DEPTH_565:
+          grf_depth = RK3576_VO0_GRF_IPI_DEPTH_565;
+          break;
+
+        case DSI2_IPI_COLOR_DEPTH_6:
+          grf_depth = RK3576_VO0_GRF_IPI_DEPTH_6;
+          break;
+
+        case DSI2_IPI_COLOR_DEPTH_8:
+        default:
+          grf_depth = RK3576_VO0_GRF_IPI_DEPTH_8;
+          break;
+      }
+
+    putreg32(RK3576_GRF_HWM(RK3576_VO0_GRF_IPI_DEPTH_MASK) | grf_depth,
+             RK3576_VO0_GRF_ADDR + RK3576_VO0_GRF_SOC_CON10_OFF);
+  }
+
   /* Program the horizontal timing (fixed-point phy_hstx_clk cycles).
    * Each conversion is checked for 13-bit integral overflow.
    */
@@ -1360,31 +1383,58 @@ int rk3576_mipi_dsi_enable_video(
 
   /* Program the HSTX/IPI and HSTX/SYS clock ratios (fixed-point 6.16),
    * which let the controller synchronize its three clock domains (sys_clk,
-   * ipi_clk = pixel clock, phy_hstx_clk = bit clock).
+   * ipi_clk = pixel clock, phy_hstx_clk = the DSI-2 host's internal
+   * high-speed TX clock).  Per the reference driver (dw-mipi-dsi2-rockchip.c,
+   * dw_mipi_dsi2_phy_ratio_cfg), in DPHY mode the controller's phy_hstx_clk
+   * is exactly 1/16 the lane high-speed data rate (NOT the DCPHY physical
+   * HSTX_CLK_SEL /2 domain -- that is an independent PHY-internal clock).
    *
-   *   phy_ipi_ratio = hs_rate / pixel_clock
-   *   phy_sys_ratio = hs_rate / sclk
+   *   phy_ipi_ratio = (hs_rate / 16) / ipi_clk
+   *   phy_sys_ratio = (hs_rate / 16) / sclk
+   *
+   * CRITICAL (RK3576 VOP 4:1 pixel-shift): ipi_clk is NOT the panel pixel
+   * clock.  The RK3576 VOP feeds the MIPI DSI IPI at dclk_core = (video
+   * timing pixel rate) / 4, per the reference driver
+   * dw_mipi_dsi2_get_mipi_pixel_clk():
+   *
+   *   (Video Timing Pixel Rate) / 4 = MIPI Pixel Clock = dclk_out = dclk_core
+   *   dsi2->mipi_pixel_rate = (mode->crtc_clock * MSEC_PER_SEC) / (4 * k)
+   *
+   * Using the raw pixel_clock here (a 4x error) leaves the CDC handshake
+   * between the IPI (pixel, dclk_core) and PHY-HSTX domains permanently
+   * misaligned: the video stream stalls at the clock-domain crossing
+   * (IPI_BUSY never sets, INT_ST_IPI stays 0) while the CRI command path --
+   * which does not depend on this ratio -- keeps working.  That is the
+   * "command link up but all-black video (and eventual NSH hang)" failure.
+   *
+   * Correct value for kickpi-k7 (hs_rate=384M, pixel=64M):
+   *   phy_ipi_ratio = (384M/16) / (64M/4) = 24M / 16M = 1.5 = 0x18000
+   *   (an error of 0x6000 = 0.375 = 24M/64M is the old broken value).
    */
 
-  if (timing->pixel_clock != 0)
-    {
-      uint64_t ipi_ratio =
-          ((uint64_t)priv->cfg.hs_rate << 16) / timing->pixel_clock;
-      rk3576_dsi_putreg(base, RK3576_DSI2_PHY_IPI_RATIO_MAN_CFG,
-                        (uint32_t)ipi_ratio & DSI2_PHY_IPI_RATIO_MASK);
-    }
+  {
+    uint64_t phy_hstx_clk = (uint64_t)priv->cfg.hs_rate / 16u;
+    uint64_t ipi_clk = (uint64_t)timing->pixel_clock / 4u;
 
-  if (priv->sclk != NULL)
-    {
-      uint32_t sclk_rate = clk_get_rate(priv->sclk);
+    if (ipi_clk != 0)
+      {
+        uint64_t ipi_ratio = (phy_hstx_clk << 16) / ipi_clk;
+        rk3576_dsi_putreg(base, RK3576_DSI2_PHY_IPI_RATIO_MAN_CFG,
+                          (uint32_t)ipi_ratio & DSI2_PHY_IPI_RATIO_MASK);
+      }
 
-      if (sclk_rate != 0)
-        {
-          uint64_t sys_ratio = ((uint64_t)priv->cfg.hs_rate << 16) / sclk_rate;
-          rk3576_dsi_putreg(base, RK3576_DSI2_PHY_SYS_RATIO_MAN_CFG,
-                            (uint32_t)sys_ratio & DSI2_PHY_SYS_RATIO_MASK);
-        }
-    }
+    if (priv->sclk != NULL)
+      {
+        uint32_t sclk_rate = clk_get_rate(priv->sclk);
+
+        if (sclk_rate != 0)
+          {
+            uint64_t sys_ratio = (phy_hstx_clk << 16) / sclk_rate;
+            rk3576_dsi_putreg(base, RK3576_DSI2_PHY_SYS_RATIO_MAN_CFG,
+                              (uint32_t)sys_ratio & DSI2_PHY_SYS_RATIO_MASK);
+          }
+      }
+  }
 
   /* Use manual timing (the MAN_CFG timing registers programmed above). */
 
@@ -1397,6 +1447,68 @@ int rk3576_mipi_dsi_enable_video(
 
   rk3576_dsi_putreg(base, RK3576_DSI2_MODE_CTRL, DSI2_MODE_VIDEO);
   priv->mode = RK3576_DSI_MODE_VIDEO;
+
+  /* Poll MODE_STATUS until the state machine actually settles into Video
+   * mode.  Unlike Command-mode entry (which only emits an error), a failure
+   * here means the pixel stream will never be consumed: the VOP keeps
+   * scanning but the DSI-2 IPI state machine stays in a prior mode, so the
+   * panel stays black while the DCS command link remains functional.
+   */
+
+  {
+    uint32_t mode;
+    int poll;
+
+    for (poll = 0; poll < RK3576_DSI_POLL_LOOPS; poll++)
+      {
+        mode = rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS) & 0x7;
+        if (mode == DSI2_MODE_VIDEO)
+          {
+            break;
+          }
+
+        up_udelay(1);
+      }
+
+    syslog(LOG_INFO,
+           "dsi: MODE_STATUS=%u (expect VIDEO=%u) after %d polls\n",
+           (unsigned)(rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS) & 0x7),
+           (unsigned)DSI2_MODE_VIDEO, poll);
+
+    /* Dump the DSI-side video-path state so the black-screen diagnosis can
+     * tell "never entered video mode" (MODE_STATUS != 3) apart from
+     * "entered video but the pixel stream is not flowing" (IPI_BUSY /
+     * IPI FIFO empty / PHY interrupt).  All read-only; no behaviour change.
+     */
+
+    syslog(LOG_INFO,
+           "dsi-dump: MODE_STATUS=%08x CORE_STATUS=%08x MANUAL_MODE=%08x\n",
+           rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS),
+           rk3576_dsi_getreg(base, RK3576_DSI2_CORE_STATUS),
+           rk3576_dsi_getreg(base, RK3576_DSI2_MANUAL_MODE_CFG));
+    syslog(LOG_INFO,
+           "dsi-dump: INT_ST_PHY=%08x INT_ST_TO=%08x INT_ST_IPI=%08x "
+           "INT_ST_FIFO=%08x\n",
+           rk3576_dsi_getreg(base, RK3576_DSI2_INT_ST_PHY),
+           rk3576_dsi_getreg(base, RK3576_DSI2_INT_ST_TO),
+           rk3576_dsi_getreg(base, RK3576_DSI2_INT_ST_IPI),
+           rk3576_dsi_getreg(base, RK3576_DSI2_INT_ST_FIFO));
+    syslog(LOG_INFO,
+           "dsi-dump: VID_TX_CFG=%08x IPI_COLOR_MAN=%08x IPI_PIX_PKT=%08x "
+           "PHY_IPI_RATIO=%08x\n",
+           rk3576_dsi_getreg(base, RK3576_DSI2_DSI_VID_TX_CFG),
+           rk3576_dsi_getreg(base, RK3576_DSI2_IPI_COLOR_MAN_CFG),
+           rk3576_dsi_getreg(base, RK3576_DSI2_IPI_PIX_PKT_CFG),
+           rk3576_dsi_getreg(base, RK3576_DSI2_PHY_IPI_RATIO_MAN_CFG));
+    syslog(LOG_INFO, "dsi-dump: VO0_GRF_SOC_CON10=%08x\n",
+           getreg32(RK3576_VO0_GRF_ADDR + RK3576_VO0_GRF_SOC_CON10_OFF));
+
+    if (poll == RK3576_DSI_POLL_LOOPS)
+      {
+        gerr("ERROR: DSI failed to enter Video mode (MODE_STATUS=0x%x)\n",
+             (unsigned)mode);
+      }
+  }
 
   nxmutex_unlock(&priv->lock);
   return OK;

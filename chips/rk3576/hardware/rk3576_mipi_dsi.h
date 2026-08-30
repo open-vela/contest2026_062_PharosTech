@@ -351,4 +351,41 @@
 #define DSI2_PHY_SYS_RATIO_SHIFT (0)
 #define DSI2_PHY_SYS_RATIO_MASK  (0x3fffffu)
 
+/* -----------------------------------------------------------------------
+ * VO0_GRF_SOC_CON10 (VO0_GRF base 0x2601A000 + offset 0x0028)
+ * — DSI host gating + IPI pixel-interface fields.  The IPI color depth /
+ * format fields must be programmed to match the VOP pixel output, otherwise
+ * the DSI-2 IPI interface samples the wrong width and the video stream is
+ * dropped (black screen) even though the DCS command link works.
+ *
+ * GRF registers use the hiword write-mask scheme: bits [31:16] select which
+ * low bits [15:0] are actually written (bit 16+N enables bit N).
+ * -----------------------------------------------------------------------
+ */
+
+#define RK3576_VO0_GRF_SOC_CON10_OFF   0x0028
+
+#define RK3576_VO0_GRF_IPI_GATING_EN   (1u << 0)  /* IPI memory clk gating */
+#define RK3576_VO0_GRF_TXREQCLKHS_MASK (1u << 1)  /* deskew request mask */
+#define RK3576_VO0_GRF_IPI_COLORM      (1u << 2)  /* IPI color mode */
+#define RK3576_VO0_GRF_IPI_SHUTDN      (1u << 3)  /* IPI shutdown */
+#define RK3576_VO0_GRF_IPI_FORMAT_MASK (0xfu << 4) /* IPI pixel format */
+#define RK3576_VO0_GRF_IPI_FORMAT_DSC  (0x1u << 4) /* DSC-compressed */
+#define RK3576_VO0_GRF_IPI_DEPTH_MASK  (0xfu << 8) /* IPI color depth */
+
+/* IPI color depth values (bits [11:8]), matching DSI2_IPI_COLOR_DEPTH_*:
+
+ *   RGB888 -> 8-bit -> 0x5
+ *   RGB666 -> 6-bit -> 0x3
+ *   RGB565 -> 5-6-5 -> 0x2
+ */
+
+#define RK3576_VO0_GRF_IPI_DEPTH_8     (0x5u << 8)
+#define RK3576_VO0_GRF_IPI_DEPTH_6     (0x3u << 8)
+#define RK3576_VO0_GRF_IPI_DEPTH_565   (0x2u << 8)
+
+/* Hiword write-enable mask for GRF (bit 16+N enables low bit N). */
+
+#define RK3576_GRF_HWM(bits) ((bits) << 16)
+
 #endif /* __ARCH_ARM64_SRC_RK3576_HARDWARE_RK3576_MIPI_DSI_H */
