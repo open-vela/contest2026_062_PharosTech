@@ -212,7 +212,13 @@ struct rk3576_emmc_dev_s
   bool dma_read;            /* ADMA direction: true = card to memory */
   uintptr_t dma_buffer;     /* DMA buffer start */
   size_t dma_length;        /* DMA buffer length */
+  /* mmcsd serializes transfers through dev.mutex.  Keep bounce state per
+   * host so independently serialized controllers never alias storage. */
+
   uint8_t *dma_bounce_dest; /* Unaligned read destination */
+#ifdef CONFIG_RK3576_DMA_ALLOC
+  uint8_t *dma_bounce; /* DMA-safe bounce buffer owned by this host */
+#endif
 #endif
 };
 
@@ -398,9 +404,6 @@ static uint8_t g_emmc_tuning[RK3576_EMMC_TUNING_SIZE] aligned_data(64);
 #ifdef CONFIG_SDIO_DMA
 static struct rk3576_emmc_adma2_desc_s
     g_emmc_adma_descs[RK3576_EMMC_ADMA_NDESC] aligned_data(64);
-#ifdef CONFIG_RK3576_DMA_ALLOC
-static uint8_t *g_emmc_dma_bounce;
-#endif
 #endif
 
 /****************************************************************************
@@ -2097,11 +2100,11 @@ static int rk3576_emmc_dmarecvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
   if (!rk3576_emmc_dma_ok(buffer, buflen))
     {
 #ifdef CONFIG_RK3576_DMA_ALLOC
-      if (g_emmc_dma_bounce != NULL &&
-          rk3576_emmc_dma_ok(g_emmc_dma_bounce, buflen))
+      if (priv->dma_bounce != NULL &&
+          rk3576_emmc_dma_ok(priv->dma_bounce, buflen))
         {
           priv->dma_bounce_dest = buffer;
-          return rk3576_emmc_dma_setup(priv, g_emmc_dma_bounce, buflen, false);
+          return rk3576_emmc_dma_setup(priv, priv->dma_bounce, buflen, false);
         }
 #endif
 
@@ -2177,10 +2180,10 @@ struct sdio_dev_s *rk3576_emmc_initialize(int slotno)
   priv->irq = g_emmc_cfg[slotno].irq;
 
 #if defined(CONFIG_SDIO_DMA) && defined(CONFIG_RK3576_DMA_ALLOC)
-  if (g_emmc_dma_bounce == NULL)
+  if (priv->dma_bounce == NULL)
     {
-      g_emmc_dma_bounce = rk3576_dma_alloc(RK3576_EMMC_ADMA_MAXXFR);
-      if (g_emmc_dma_bounce == NULL)
+      priv->dma_bounce = rk3576_dma_alloc(RK3576_EMMC_ADMA_MAXXFR);
+      if (priv->dma_bounce == NULL)
         {
           mcwarn("WARNING: eMMC DMA bounce allocation failed\n");
         }
