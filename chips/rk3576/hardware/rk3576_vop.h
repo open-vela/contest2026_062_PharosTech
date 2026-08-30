@@ -235,6 +235,10 @@
 
 #define RK3576_VOP_OVERLAY_CTRL        0x0000 /* Overlay ctrl config */
 #define RK3576_VOP_OVERLAY_LAYER_SEL   0x0004 /* Overlay layer select */
+#define RK3576_VOP_OVERLAY_MIX0_SRC_COLOR_CTRL 0x0020 /* Mixer0 src color ctrl */
+#define RK3576_VOP_OVERLAY_MIX0_DST_COLOR_CTRL 0x0024 /* Mixer0 dst color ctrl */
+#define RK3576_VOP_OVERLAY_MIX0_SRC_ALPHA_CTRL 0x0028 /* Mixer0 src alpha ctrl */
+#define RK3576_VOP_OVERLAY_MIX0_DST_ALPHA_CTRL 0x002C /* Mixer0 dst alpha ctrl */
 #define RK3576_VOP_OVERLAY_BG_MIX_CTRL 0x0070 /* Background mix ctrl */
 
 /* OVERLAY_PORTx_LAYER_SEL field definitions.
@@ -242,6 +246,65 @@
  * feeds that mixer input.  Reset value = 0xffff (all layers Disable), so a
  * layer MUST be explicitly routed before any window data reaches the POST.
  */
+
+/* OVERLAY_PORTx_MIX0_* blend register field definitions (TRM 11.5.3.4).
+ *
+ * Each mix stage blends one logical layer onto the accumulation buffer
+ * using the standard Porter-Duff formula:
+ *
+ *   Cd = factor_src(Cs) OP factor_dst(Cd)
+ *
+ * where the alpha/factor modes are:
+ *   factor_mode  3'b000=0, 3'b001=256, 3'b010=Ad0, 3'b011=256-Ad0,
+ *                3'b100=As0, 3'b101=Ags
+ *
+ * CRITICAL: the hardware reset value of every *_FACTOR_MODE field is 0
+ * (factor = 0) and GLB_ALPHA is 0x00, so an un-configured mixer multiplies
+ * both source and destination by zero -> the layer is silently dropped and
+ * only POST's background colour (also black at reset) reaches the output.
+ * A passthrough layer MUST program the SOURCE factor to Ags(=Ags with
+ * glb_alpha=0xff = fully opaque) and the DESTINATION factor to the inverse,
+ * exactly matching Linux vop2_setup_alpha() / vop2_parse_alpha() for an
+ * alpha-less (RGB888) bottom layer.
+ */
+
+/* src/dst COLOR_CTRL field bits (0x20 / 0x24). */
+
+#define RK3576_VOP_MIX_CTRL_GLB_ALPHA_SHIFT 16 /* src: [31:24], dst: [23:16] */
+#define RK3576_VOP_MIX_CTRL_ALPHA_EN       (1 << 8)  /* alpha blending enable */
+#define RK3576_VOP_MIX_CTRL_FACTOR_SHIFT   5
+#define RK3576_VOP_MIX_CTRL_FACTOR_MASK    (0x7 << RK3576_VOP_MIX_CTRL_FACTOR_SHIFT)
+#define RK3576_VOP_MIX_CTRL_ALPHA_CAL_MODE (1 << 4)  /* 1=no saturation */
+#define RK3576_VOP_MIX_CTRL_BLEND_SHIFT    2
+#define RK3576_VOP_MIX_CTRL_BLEND_MASK     (0x3 << RK3576_VOP_MIX_CTRL_BLEND_SHIFT)
+#define RK3576_VOP_MIX_CTRL_ALPHA_MODE     (1 << 1)  /* 1=255-As (inverse) */
+#define RK3576_VOP_MIX_CTRL_COLOR_MODE     (1 << 0)  /* 1=Cs*As0 (pre-mul) */
+
+/* src/dst ALPHA_CTRL field bits (0x28 / 0x2C). */
+
+#define RK3576_VOP_MIX_ALPHA_FACTOR_SHIFT  5
+#define RK3576_VOP_MIX_ALPHA_FACTOR_MASK \
+  (0x7 << RK3576_VOP_MIX_ALPHA_FACTOR_SHIFT)
+#define RK3576_VOP_MIX_ALPHA_CAL_MODE      (1 << 4)
+#define RK3576_VOP_MIX_ALPHA_BLEND_SHIFT   2
+#define RK3576_VOP_MIX_ALPHA_BLEND_MASK \
+  (0x3 << RK3576_VOP_MIX_ALPHA_BLEND_SHIFT)
+#define RK3576_VOP_MIX_ALPHA_MODE          (1 << 1)
+
+/* factor_mode encodings (3-bit, matching TRM *_FACTOR_MODE). */
+
+#define RK3576_VOP_FACTOR_ZERO         0      /* 3'b000 = 0 */
+#define RK3576_VOP_FACTOR_ONE          1      /* 3'b001 = 256 */
+#define RK3576_VOP_FACTOR_DST          2      /* 3'b010 = Ad0 */
+#define RK3576_VOP_FACTOR_DST_INVERSE  3      /* 3'b011 = 256-Ad0 */
+#define RK3576_VOP_FACTOR_SRC          4      /* 3'b100 = As0 */
+#define RK3576_VOP_FACTOR_SRC_GLOBAL   5      /* 3'b101 = Ags */
+
+/* blend_mode encodings (2-bit). */
+
+#define RK3576_VOP_BLEND_GLOBAL         0     /* use global alpha only */
+#define RK3576_VOP_BLEND_PER_PIX        1     /* use per-pixel alpha only */
+#define RK3576_VOP_BLEND_PER_PIX_GLOBAL 2     /* per-pixel * global */
 
 #define RK3576_VOP_LAYER_SEL_SHIFT0     0
 #define RK3576_VOP_LAYER_SEL_SHIFT1     4

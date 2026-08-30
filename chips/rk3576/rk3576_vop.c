@@ -84,9 +84,12 @@
 #define RK3576_VOP_HCLK_NAME "hclk_vop"
 #define RK3576_VOP_PCLK_NAME "pclk_vop_root"
 
-/* VOP core resets (active-low, hiword-mask write scheme).
- * SOFTRST_CON61: aresetn_vop[9], hresetn_vop[8], presetn_vop_biu[7],
- *                hresetn_vop_biu[6], aresetn_vop_biu[4].
+/* VOP core resets (active-high "when high, reset", hiword-mask write
+ * scheme).  TRM Part1 CRU_SOFTRST_CON61 (0x0AF4): write 1 = assert reset,
+ * write 0 = release.  All reset bits reset to 0 (= released).
+ *
+ * SOFTRST_CON61: dresetn_vp0[13], aresetn_vop[9], hresetn_vop[8],
+ *                presetn_vop_biu[7], hresetn_vop_biu[6], aresetn_vop_biu[4].
  */
 
 #define RK3576_VOP_RST_CON         61
@@ -481,6 +484,47 @@ static void rk3576_vop_configure_layer(FAR struct rk3576_vop_s *priv)
                             RK3576_VOP_LAYER_SEL_DISABLE) |
                         RK3576_VOP_LAYER_SEL_L3(
                             RK3576_VOP_LAYER_SEL_DISABLE));
+
+  /* OVERLAY MIX0 blend: passthrough the layer0 (ESMART0) framebuffer.
+   *
+   * The mixer's *_FACTOR_MODE and GLB_ALPHA fields reset to 0, which makes
+   * the blend formula Cd = 0*Cs + 0*Cd = black regardless of the source.
+   * This is the precise counterpart of Linux vop2_setup_alpha() for an
+   * alpha-less (RGB888, no global-alpha) bottom layer:
+   *   src: factor=Ags(3'b101), glb_alpha=0xff, color_mode=no-pre-mul,
+   *        alpha_en=1, blend=global
+   *   dst: factor=256-Ad0(3'b011), glb_alpha=0xff, blend=global
+   * which yields the opaque copy Cd = Cs.
+   */
+
+  /* MIX0 source color: alpha_en + factor=Ags + glb_alpha=0xff,
+   * color_mode=Cs (no pre-multiply), blend=global, straight alpha. */
+
+  rk3576_vop_putreg(priv, ovl_base + RK3576_VOP_OVERLAY_MIX0_SRC_COLOR_CTRL,
+                    (0xffu << RK3576_VOP_MIX_CTRL_GLB_ALPHA_SHIFT) |
+                        RK3576_VOP_MIX_CTRL_ALPHA_EN |
+                        (RK3576_VOP_FACTOR_SRC_GLOBAL
+                         << RK3576_VOP_MIX_CTRL_FACTOR_SHIFT));
+
+  /* MIX0 dest color: factor=256-Ad0 + glb_alpha=0xff (color_mode=Cd). */
+
+  rk3576_vop_putreg(priv, ovl_base + RK3576_VOP_OVERLAY_MIX0_DST_COLOR_CTRL,
+                    (0xffu << RK3576_VOP_MIX_CTRL_GLB_ALPHA_SHIFT) |
+                        (RK3576_VOP_FACTOR_DST_INVERSE
+                         << RK3576_VOP_MIX_CTRL_FACTOR_SHIFT));
+
+  /* MIX0 source alpha: factor=256, blend=global. */
+
+  rk3576_vop_putreg(priv, ovl_base + RK3576_VOP_OVERLAY_MIX0_SRC_ALPHA_CTRL,
+                    (RK3576_VOP_FACTOR_ONE
+                     << RK3576_VOP_MIX_ALPHA_FACTOR_SHIFT));
+
+  /* MIX0 dest alpha: factor=256-Ad0, no-saturation. */
+
+  rk3576_vop_putreg(priv, ovl_base + RK3576_VOP_OVERLAY_MIX0_DST_ALPHA_CTRL,
+                    (RK3576_VOP_FACTOR_DST_INVERSE
+                     << RK3576_VOP_MIX_ALPHA_FACTOR_SHIFT) |
+                        RK3576_VOP_MIX_ALPHA_CAL_MODE);
 }
 
 /****************************************************************************
@@ -509,6 +553,16 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
 
   rk3576_vop_putreg(priv, post_base + RK3576_VOP_POST_DSP_CTRL,
                     RK3576_VOP_POST_OUT_RGB888);
+
+  /* Disable the POST background colour (bg_display_en reset = 1, colours
+   * reset = 0 = black).  With the OVERLAY mixers reset to factor 0, POST
+   * otherwise substitutes its own black background in place of the layer
+   * data, so even a correctly-routed framebuffer shows as black.  The
+   * layer0 mixer (configured above) is now the sole source.
+   */
+
+  rk3576_vop_modifyreg(priv, post_base + RK3576_VOP_POST_DSP_BG,
+                       RK3576_VOP_POST_BG_DISPLAY_EN, 0);
 
   /* Interface ctrl: select video port + enable output (and clock), while
    * preserving the reset-default sync polarities (Positive) and
@@ -610,6 +664,61 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
   rk3576_vop_putreg(priv, sys_base + RK3576_VOP_SYS_AXI0_CTRL_IMD,
                     RK3576_VOP_SYS_AXI_OUTSTANDING_EN |
                         RK3576_VOP_SYS_AXI_OUTSTANDING(16));
+
+  /* --- dclk reset pulse: align VOP pixel clock to the DSI link ---
+   *
+   * Linux dw_mipi_dsi2_encoder_atomic_enable() runs, after the DSI has
+   * fully entered Video mode:
+   *   crtc_standby(1) -> dsi pre_enable+enable -> crtc_standby(0)
+   *   -> output_post_enable() { vop2_clk_reset(vp->dclk_rst); }
+   * where vop2_clk_reset() pulses the dclk reset (assert 10us + deassert).
+   * This re-locks the VOP pixel clock (dclk_core = 16M) to the already
+   * ready DSI link so the controller's phy_tx_ready FSM can leave INIT.
+   * Without it the pixel data piles up in the IPI data FIFO (cnt=768) while
+   * phy_tx_ready stays INIT and all lanes stay LP-11 (no HS burst at all).
+   *
+   * SAFETY: pulse ONLY dresetn_vp0 (SOFTRST_CON61 bit13, the VP0 pixel
+   * clock reset).  NEVER pulse aresetn_vop/hresetn_* (bit4-9): those are
+   * the BIU/AXI resets; asserting them against a live clocked AXI master
+   * tears down in-flight transactions and hangs the NoC/DDR (observed
+   * SoC-wide hang -- see rk3576_vop_reset()).
+   */
+
+  {
+    uint32_t cru = RK3576_CRU_ADDR + RK3576_CRU_SOFTRST_CON(RK3576_VOP_RST_CON);
+    uint32_t vcnt_before;
+    uint32_t vcnt_after;
+
+    vcnt_before = rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_STATUS0);
+
+    /* assert: bit13 data=1 with hiword mask (reset held). */
+
+    putreg32(RK3576_VOP_HWM(RK3576_VOP_RST_DRESETN_VP0) |
+                 RK3576_VOP_RST_DRESETN_VP0,
+             cru);
+    up_udelay(10);
+
+    /* deassert: bit13 data=0 (release). */
+
+    putreg32(RK3576_VOP_HWM(RK3576_VOP_RST_DRESETN_VP0), cru);
+    up_udelay(20);
+
+    /* Probe: dsp_vcnt0 before/after the dclk reset.  A live pixel clock
+     * (VOP scanning) means dsp_vcnt0 keeps advancing; a wedge where the
+     * counter freezes after the pulse would mean the reset stalled the
+     * scan.  A healthy delta (a few lines over the ~30us window) proves the
+     * scan resumed with the re-locked clock. */
+
+    vcnt_after = rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_STATUS0);
+
+    syslog(LOG_INFO,
+           "vop-dclk-rst: dresetn_vp0 pulsed, dsp_vcnt0 %u -> %u "
+           "(delta=%u; >0 = scan resumed)\n",
+           (unsigned)((vcnt_before >> RK3576_VOP_DSP_VCNT0_SHIFT) & 0x1fff),
+           (unsigned)((vcnt_after >> RK3576_VOP_DSP_VCNT0_SHIFT) & 0x1fff),
+           (unsigned)((((vcnt_after - vcnt_before) >>
+                       RK3576_VOP_DSP_VCNT0_SHIFT)) & 0x1fff));
+  }
 }
 
 /****************************************************************************
@@ -955,6 +1064,8 @@ int rk3576_vop_initialize(FAR const struct rk3576_vop_config *config)
             fb[p + 2] = v; /* B */
           }
       }
+
+    up_clean_dcache((uintptr_t)fb, (uintptr_t)fb + priv->fblen);
   }
 
   /* Bring up clocks and release resets. */
