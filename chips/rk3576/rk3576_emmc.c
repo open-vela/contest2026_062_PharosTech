@@ -1762,6 +1762,7 @@ static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd)
   struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
   sdio_eventset_t event;
   uint32_t response;
+  uint32_t saved_blocksize;
   uint16_t hc2;
   int ret = -EIO;
   int i;
@@ -1784,6 +1785,7 @@ static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd)
   hc2 &= ~EMMC_HOSTCTRL2_TUNED_CLK;
   rk3576_emmc_putreg16(priv, RK3576_EMMC_HOSTCTRL2, hc2);
   priv->tuning_active = true;
+  saved_blocksize = priv->blocksize;
 
   for (i = 0; i < RK3576_EMMC_TUNING_RETRIES; i++)
     {
@@ -1830,10 +1832,12 @@ static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd)
                      getreg32(RK3576_CRU_ADDR +
                               RK3576_CRU_CLKSEL_CON(RK3576_EMMC_CRU_CLKSEL)));
               rk3576_emmc_resetlines(priv, EMMC_SWRESET_DAT);
-              return OK;
+              ret = OK;
+              goto out;
             }
 
-          return -EIO;
+          ret = -EIO;
+          goto out;
         }
 
       if (ret < 0)
@@ -1848,7 +1852,11 @@ static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd)
   priv->tuning_active = false;
   syslog(LOG_ERR, "ERROR: eMMC HS200 tuning exhausted ret=%d hostctrl2=%04x\n",
          ret, hc2);
-  return ret < 0 ? ret : -EIO;
+  ret = ret < 0 ? ret : -EIO;
+
+out:
+  priv->blocksize = saved_blocksize;
+  return ret;
 }
 
 /****************************************************************************
