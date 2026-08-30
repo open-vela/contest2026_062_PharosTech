@@ -1804,7 +1804,6 @@ static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd)
 {
   struct rk3576_emmc_dev_s *priv = (struct rk3576_emmc_dev_s *)dev;
   sdio_eventset_t event;
-  uint32_t response;
   uint32_t saved_blocksize;
   uint16_t hc2;
   int ret = -EIO;
@@ -1844,20 +1843,21 @@ static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd)
       ret = rk3576_emmc_sendcmd(dev, cmd, 0);
       if (ret == OK)
         {
-          ret = rk3576_emmc_waitresponse(dev, cmd);
-        }
+          /* dwcmshc tuning advances on Buffer Read Ready and does not expose
+           * CMD21 completion through the normal polled CMDDONE path.  The
+           * data wait already covers response/data errors and timeout, so
+           * waiting for a separate R1 only adds one full spin timeout per
+           * tuning iteration.
+           */
 
-      if (ret == OK)
-        {
-          ret = rk3576_emmc_recvshort(dev, cmd, &response);
-        }
-
-      if (ret == OK)
-        {
           event = rk3576_emmc_eventwait(dev);
           if ((event & SDIOWAIT_TRANSFERDONE) == 0)
             {
               ret = -EIO;
+            }
+          else
+            {
+              ret = OK;
             }
         }
 
