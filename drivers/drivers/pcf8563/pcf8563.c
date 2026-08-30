@@ -622,6 +622,23 @@ pcf8563_setalarm_internal(FAR struct rtc_lowerhalf_s *lower,
   now_tm = *(FAR struct tm *)now;
   target_tm = *(FAR struct tm *)&alarminfo->time;
 
+  /* The RTC upper half does not validate the alarm fields, so reject any
+   * out-of-range component before timegm() silently normalizes it (e.g. a
+   * tm_sec of 60 would be carried into the next minute and then round up
+   * once more, programming two minutes past the intent).  Validate the full
+   * target, including the 1900-2099 year window.
+   */
+
+  if (target_tm.tm_sec < 0 || target_tm.tm_sec > 59 || target_tm.tm_min < 0 ||
+      target_tm.tm_min > 59 || target_tm.tm_hour < 0 ||
+      target_tm.tm_hour > 23 || target_tm.tm_mday < 1 ||
+      target_tm.tm_mday > 31 || target_tm.tm_mon < 0 ||
+      target_tm.tm_mon > 11 || target_tm.tm_year < 0 ||
+      target_tm.tm_year > 199)
+    {
+      return -EINVAL;
+    }
+
   /* The PCF8563 alarm compares only minute/hour/day; seconds never
    * participate (AF is asserted at the increment to the programmed minute,
    * i.e. at second 0).  A target with a nonzero second component is rounded
