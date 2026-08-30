@@ -309,28 +309,25 @@ static uint32_t rk3576_fracpll_round_rate(FAR struct clk_s *clk, uint32_t rate,
  *   this function (see rk3576_clk_set_litcore_cpufreq).
  ****************************************************************************/
 
-static int rk3576_fracpll_set_rate(FAR struct clk_s *clk, uint32_t rate,
-                                   uint32_t parent_rate)
+/* Program LPLL m/p/s/k parameters using the hiword-mask idiom, leaving the
+ * PLL powered down while the new values are written, then power it up and
+ * poll the lock bit.  Returns OK once locked, or -ETIMEDOUT on lock timeout.
+ *
+ * The caller (rk3576_clk_set_litcore_cpufreq) must keep the CPU on a safe
+ * clock source (GPLL) while this runs; on failure the previous parameters
+ * are programmed back so callers can safely resume the old frequency.
+ */
+
+static int rk3576_fracpll_program(FAR struct clk_s *clk,
+                                  const struct rk3576_pll_rate *entry)
 {
   struct rk3576_fracpll_s *pll = clk->private_data;
-  const struct rk3576_pll_rate *entry;
   uint32_t con0, con1, con2;
   uint32_t regval;
   int timeout;
 
   DEBUGASSERT(pll);
-  DEBUGASSERT(parent_rate == CONFIG_RK3576_OSC_FREQ);
-
-  /* Find the closest supported rate */
-  entry = rk3576_fracpll_find_rate(rate);
-  if (!entry)
-    {
-      _err("CLK: unsupported LPLL rate %u Hz\n", rate);
-      return -EINVAL;
-    }
-
-  _info("CLK: reprogramming LPLL from %u Hz to %u Hz (m=%u p=%u s=%u k=%d)\n",
-        clk->rate, entry->rate, entry->m, entry->p, entry->s, entry->k);
+  DEBUGASSERT(entry);
 
   /* Step 1: Power down PLL (CON1[13] PWRDOWN = 1). */
 
@@ -389,6 +386,72 @@ static int rk3576_fracpll_set_rate(FAR struct clk_s *clk, uint32_t rate,
     }
 
   _info("CLK: LPLL locked at %u Hz\n", entry->rate);
+  return OK;
+}
+
+static int rk3576_fracpll_set_rate(FAR struct clk_s *clk, uint32_t rate,
+                                   uint32_t parent_rate)
+{
+  struct rk3576_fracpll_s *pll = clk->private_data;
+  const struct rk3576_pll_rate *entry;
+  uint32_t saved_con0, saved_con1, saved_con2;
+  int ret;
+
+  DEBUGASSERT(pll);
+  DEBUGASSERT(parent_rate == CONFIG_RK3576_OSC_FREQ);
+
+  /* Find the closest supported rate */
+  entry = rk3576_fracpll_find_rate(rate);
+  if (!entry)
+    {
+      _err("CLK: unsupported LPLL rate %u Hz\n", rate);
+      return -EINVAL;
+    }
+
+  _info("CLK: reprogramming LPLL from %u Hz to %u Hz (m=%u p=%u s=%u k=%d)\n",
+        clk->rate, entry->rate, entry->m, entry->p, entry->s, entry->k);
+
+  /* Snapshot the current CON0/1/2 so they can be restored on lock failure.
+   * Mask off the hiword-mask (write-enable) bits so the raw parameter
+   * values remain; PWRDOWN is re-applied during restore programming.
+   */
+
+  saved_con0 = getreg32(pll->con_base) & RK3576_LPLL_CON0_M_MASK;
+  saved_con1 = getreg32(pll->con_base + 4) &
+               (RK3576_LPLL_CON1_PWRDOWN | RK3576_LPLL_CON1_S_MASK |
+                RK3576_LPLL_CON1_P_MASK);
+  saved_con2 = getreg32(pll->con_base + 8) & 0xffff;
+
+  ret = rk3576_fracpll_program(clk, entry);
+  if (ret < 0)
+    {
+      /* Lock failed — the PLL is now programmed with parameters that did
+       * not lock.  Rewrite the previous parameters so the PLL returns to
+       * its old (known-good) frequency, and report the failure so the
+       * caller keeps the CPU on the safe source instead of switching back
+       * to a possibly-unlocked PLL.
+       */
+
+      struct rk3576_pll_rate old = {
+        .rate = clk->rate,
+        .m = saved_con0,
+        .p = saved_con1 & RK3576_LPLL_CON1_P_MASK,
+        .s =
+            (saved_con1 >> RK3576_LPLL_CON1_S_SHIFT) & RK3576_LPLL_CON1_S_MASK,
+        .k = (int16_t)saved_con2,
+      };
+
+      _err("CLK: LPLL lock failed, restoring previous parameters\n");
+
+      /* Best-effort restore: ignore its return value; the primary error is
+       * still the original lock timeout.  Even if the restore also fails to
+       * lock, the caller will still see a failure and keep the CPU on GPLL.
+       */
+
+      rk3576_fracpll_program(clk, &old);
+      return ret;
+    }
+
   return OK;
 }
 
@@ -2234,9 +2297,14 @@ int rk3576_clk_set_litcore_cpufreq(uint32_t mhz)
       _err("CLK: failed to set LPLL to %" PRIu32 " Hz: %d\n", target_rate,
            ret);
 
-      /* Best-effort trim-to-lock: switch back to LPLL and bail out. */
+      /* clk_set_rate() may fail while the PLL is mid-reprogram and briefly
+       * unlocked (e.g. LPLL lock timeout).  Switching the CPU back to LPLL
+       * here would hang it.  Keep the CPU on the safe GPLL source and bail
+       * out — rk3576_fracpll_set_rate() has already restored the previous
+       * PLL parameters, so LPLL is back to a known-good frequency, but we
+       * do NOT blindly re-parent to it without first confirming a lock.
+       */
 
-      clk_set_parent(litcore_src_sel, lpll);
       return ret;
     }
 
