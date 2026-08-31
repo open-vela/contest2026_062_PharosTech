@@ -45,7 +45,7 @@
 
 #include <nuttx/arch.h>
 
-#include "arm64_internal.h"
+#include <sys/param.h>
 
 #include "kickpi_k7.h"
 #include "kickpi_k7_sv6621_transport.h"
@@ -224,45 +224,32 @@ static bool kickpi_k7_wifi_has_placeholders(void)
 
 static void kickpi_k7_wifi_warn_placeholders(void)
 {
-  syslog(LOG_WARNING, "======================================================="
-                      "=================\n");
-  syslog(LOG_WARNING, "WARNING: SV6621 firmware load was skipped.\n");
-  syslog(LOG_WARNING, "\n");
-  syslog(LOG_WARNING,
-         "A zero-filled firmware placeholder was detected. These placeholder "
-         "files\n");
-  syslog(LOG_WARNING,
-         "are generated only to verify firmware-free public builds and "
-         "cannot boot\n");
-  syslog(LOG_WARNING, "the SeekWave co-processor.\n");
-  syslog(LOG_WARNING, "\n");
-  syslog(LOG_WARNING,
-         "Wi-Fi will remain unavailable for this boot. System startup will "
-         "continue;\n");
-  syslog(LOG_WARNING,
-         "the serial console, ADB, storage, audio, USB, and other unrelated "
-         "features\n");
-  syslog(LOG_WARNING, "are not affected.\n");
-  syslog(LOG_WARNING, "\n");
-  syslog(LOG_WARNING, "TIP:\n");
-  syslog(LOG_WARNING,
-         "Obtain the authorized SV6621/SWT6621-S firmware from SeekWave or "
-         "your board\n");
-  syslog(LOG_WARNING, "vendor, then place all four files in:\n");
-  syslog(LOG_WARNING, "\n");
-  syslog(LOG_WARNING, "  drivers/drivers/sv6621/firmware/\n");
-  syslog(LOG_WARNING, "\n");
-  syslog(LOG_WARNING, "Required files:\n");
-  syslog(LOG_WARNING, "  SWT6621S_IRAM_SDIO.bin\n");
-  syslog(LOG_WARNING, "  SWT6621S_DRAM_SDIO.bin\n");
-  syslog(LOG_WARNING, "  SWT6621S_NV_SDIO_ALONE.bin\n");
-  syslog(LOG_WARNING, "  SWT6621S_SEEKWAVE_R00001.bin\n");
-  syslog(LOG_WARNING, "\n");
-  syslog(LOG_WARNING,
-         "Replace every placeholder file and rebuild the image to enable "
-         "Wi-Fi.\n");
-  syslog(LOG_WARNING, "======================================================="
-                      "=================\n");
+  /* clang-format off */
+  const char * msg =
+  "========================================================================\n"
+  "WARNING: SV6621 firmware load was skipped.\n"
+  "\n"
+  "A zero-filled firmware placeholder was detected. These placeholder files\n"
+  "are generated only to verify firmware-free public builds and cannot boot\n"
+  "the SeekWave co-processor.\n"
+  "\n"
+  "Wi-Fi will remain unavailable for this boot. System startup will continue.\n"
+  "Obtain the authorized SV6621/SWT6621-S firmware from SeekWave or your board\n"
+  "vendor, then place all four files in:\n"
+  "\n"
+  "  drivers/drivers/sv6621/firmware/\n"
+  "\n"
+  "Required files:\n"
+  "  SWT6621S_IRAM_SDIO.bin\n"
+  "  SWT6621S_DRAM_SDIO.bin\n"
+  "  SWT6621S_NV_SDIO_ALONE.bin\n"
+  "  SWT6621S_SEEKWAVE_R00001.bin\n"
+  "\n"
+  "Replace every placeholder file and rebuild the image to enable Wi-Fi.\n"
+  "========================================================================\n";
+  /* clang-format on */
+
+  syslog(LOG_WARNING, "%s", msg);
 }
 
 static int kickpi_k7_wifi_config_alt(gpio_pinset_t pinset, unsigned int af,
