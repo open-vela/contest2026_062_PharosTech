@@ -45,6 +45,12 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
+/* SARADC controller reset control (TRM §5, CRU_SOFTRST_CON13). */
+
+#define RK3576_CRU_SARADC_RESET_CON   13
+#define RK3576_CRU_SARADC_PRESETN_BIT 6 /* presetn_saradc */
+#define RK3576_CRU_SARADC_RESETN_BIT  7 /* resetn_saradc */
+
 /* Register offsets (TRM §18.4.2). */
 
 #define RK3576_SARADC_CONV_CON   0x0000 /* Conversion control        */

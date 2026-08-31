@@ -53,7 +53,6 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 
 #include <nuttx/analog/adc.h>
 #include <nuttx/analog/ioctl.h>
@@ -61,8 +60,8 @@
 #include <nuttx/clk/clk.h>
 #include <nuttx/irq.h>
 
-#include "arm64_internal.h"
-#include "chip.h"
+#include "arm64_arch.h"
+#include "hardware/rk3576_cru.h"
 #include "hardware/rk3576_memorymap.h"
 #include "hardware/rk3576_saradc.h"
 #include "rk3576_saradc.h"
@@ -218,35 +217,100 @@ static int rk3576_saradc_bind(FAR struct adc_dev_s *dev,
 
 /****************************************************************************
  * Name: rk3576_saradc_reset
+ *
+ * Description:
+ *   Pulse the SARADC CRU soft-reset lines (presetn/resetn_saradc) directly.
+ *   The reset-controller framework has no CRU provider, so this follows the
+ *   same scheme as rk3576_sai.c: assert both per-instance resets via
+ *   CRU_SOFTRST_CON13, wait, then deassert.  This returns the controller to
+ *   its reset defaults.  No SARADC register is touched here (the APB block
+ *   may not be clocked yet at registration time); any controller state
+ *   cleanup that depends on pclk happens in ao_setup().
+ *
  ****************************************************************************/
 
-static void rk3576_saradc_reset(FAR struct adc_dev_s *dev) { UNUSED(dev); }
+static void rk3576_saradc_reset(FAR struct adc_dev_s *dev)
+{
+  uintptr_t cru_sofrst =
+      RK3576_CRU_ADDR + RK3576_CRU_SOFTRST_CON(RK3576_CRU_SARADC_RESET_CON);
+  uint32_t rst_mask = (1u << RK3576_CRU_SARADC_PRESETN_BIT) |
+                      (1u << RK3576_CRU_SARADC_RESETN_BIT);
+
+  UNUSED(dev);
+
+  /* Assert both reset lines (hiword-mask: wren + data = 1). */
+
+  putreg32((rst_mask << 16) | rst_mask, cru_sofrst);
+  up_udelay(20);
+
+  /* Deassert (hiword-mask: wren = 1, data = 0). */
+
+  putreg32(rst_mask << 16, cru_sofrst);
+  up_udelay(20);
+}
 
 /****************************************************************************
  * Name: rk3576_saradc_setup
  *
  * Description:
- *   Called on first open.  Clocks already enabled via the CLK framework
- *   in rk3576_saradc_initialize(); here we do a light controller sanity
- *   init (leave timing/ST_CON at reset values, which are safe for 20 MHz
- *   operation).
+ *   Called on first open.  Enable the SARADC clocks (pclk + conversion
+ *   clock) and restore the controller to single-conversion defaults, since
+ *   the CRU soft-reset in ao_reset() runs at registration time before the
+ *   SARADC block is clocked.  Timing/ST_CON are left at their reset values,
+ *   which are safe for ~20 MHz operation.
  *
  ****************************************************************************/
 
 static int rk3576_saradc_setup(FAR struct adc_dev_s *dev)
 {
-  UNUSED(dev);
+  FAR struct rk3576_saradc_s *priv =
+      (FAR struct rk3576_saradc_s *)dev->ad_priv;
+  int ret;
+
+  ret = clk_enable(priv->pclk);
+  if (ret < 0)
+    {
+      aerr("ERROR: failed to enable clock pclk_saradc: %d\n", ret);
+      return ret;
+    }
+
+  ret = clk_enable(priv->clk);
+  if (ret < 0)
+    {
+      aerr("ERROR: failed to enable clock clk_saradc: %d\n", ret);
+      clk_disable(priv->pclk);
+      return ret;
+    }
+
+  /* Explicitly restore controller state to single-conversion defaults.
+   * CONV_CON bits [0..7] are hiword-masked: write-enable them all while
+   * clearing auto_channel_mode (bit6) and end_conv (bit7), along with
+   * channel_sel/start/single_pd, so no stale mode or pending conversion
+   * survives.  Disable the end-of-conversion interrupt (END_INT_EN bit0).
+   */
+
+  putreg32((0xffu << 16), priv->base + RK3576_SARADC_CONV_CON);
+  putreg32((1u << 16), priv->base + RK3576_SARADC_END_INT_EN);
+
   return OK;
 }
 
 /****************************************************************************
  * Name: rk3576_saradc_shutdown
+ *
+ * Description:
+ *   Called on the last close.  Reverse ao_setup(): gate off the conversion
+ *   clock and pclk so the peripheral does not draw power while unopened.
+ *
  ****************************************************************************/
 
 static void rk3576_saradc_shutdown(FAR struct adc_dev_s *dev)
 {
-  /* Nothing to reverse; conversions are triggered on demand. */
-  UNUSED(dev);
+  FAR struct rk3576_saradc_s *priv =
+      (FAR struct rk3576_saradc_s *)dev->ad_priv;
+
+  clk_disable(priv->clk);
+  clk_disable(priv->pclk);
 }
 
 /****************************************************************************
@@ -346,15 +410,15 @@ FAR struct adc_dev_s *rk3576_saradc_initialize(void)
 {
   FAR struct rk3576_saradc_s *priv = &g_saradc_priv;
   FAR struct adc_dev_s *adcdev = &g_saradc_dev;
-  int ret;
 
   priv->base = RK3576_SARADC_ADDR;
   priv->cb = NULL;
   priv->chs_enabled = 0xff; /* All 8 channels enabled by default */
 
-  /* Bring up the clocks through the CLK framework.  pclk makes the
-   * register block accessible; clk is the conversion clock.  Mux/div
-   * stay at their reset values (GPLL / 60, ~20 MHz).
+  /* Resolve the SARADC clock handles through the CLK framework.  The
+   * clocks themselves are gated on in ao_setup() and off in ao_shutdown()
+   * so the peripheral draws no power while unopened.  Mux/div stay at
+   * their reset values (GPLL / 60, ~20 MHz).
    */
 
   priv->pclk = clk_get("pclk_saradc");
@@ -364,35 +428,17 @@ FAR struct adc_dev_s *rk3576_saradc_initialize(void)
       return NULL;
     }
 
-  ret = clk_enable(priv->pclk);
-  if (ret < 0)
-    {
-      aerr("ERROR: failed to enable clock pclk_saradc: %d\n", ret);
-      return NULL;
-    }
-
   priv->clk = clk_get("clk_saradc");
   if (priv->clk == NULL)
     {
       aerr("ERROR: failed to get clock clk_saradc\n");
-      goto err_pclk;
-    }
-
-  ret = clk_enable(priv->clk);
-  if (ret < 0)
-    {
-      aerr("ERROR: failed to enable clock clk_saradc: %d\n", ret);
-      goto err_pclk;
+      return NULL;
     }
 
   adcdev->ad_ops = &g_saradc_ops;
   adcdev->ad_priv = priv;
 
   return adcdev;
-
-err_pclk:
-  clk_disable(priv->pclk);
-  return NULL;
 }
 
 #endif /* CONFIG_RK3576_SARADC */
