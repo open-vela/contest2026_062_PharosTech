@@ -44,14 +44,13 @@
 #include <syslog.h>
 
 #include <nuttx/arch.h>
-#include <nuttx/i2c/i2c_master.h>
 
 #include "arm64_internal.h"
 
 #include "kickpi_k7.h"
 #include "kickpi_k7_sv6621_transport.h"
+#include "pcf8563.h"
 #include "rk3576_gpio.h"
-#include "rk3576_i2c.h"
 #include "sv6621.h"
 
 #ifdef CONFIG_KICKPI_K7_WIFI
@@ -140,14 +139,12 @@ static const gpio_pinset_t g_wifi_companion_pins[] = {
 static FAR struct gpio_dev_s *g_wifi_sdio_handles[nitems(g_wifi_sdio_pins)];
 static FAR struct gpio_dev_s
     *g_wifi_companion_handles[nitems(g_wifi_companion_pins)];
-static FAR struct gpio_dev_s *g_wifi_i2c_handles[2];
 static FAR struct gpio_dev_s *g_wifi_wl_reg_on;
 
 /****************************************************************************
  * Private Function Prototypes
  ****************************************************************************/
 
-static int kickpi_k7_wifi_enable_32k(void);
 static bool kickpi_k7_wifi_blob_is_zero(FAR const uint8_t *data,
                                         size_t length);
 static bool kickpi_k7_wifi_has_placeholders(void);
@@ -314,80 +311,6 @@ static int kickpi_k7_wifi_config_output(gpio_pinset_t pinset, bool value,
   rk3576_gpio_write_bit(*handle, value);
   rk3576_gpio_set_mode(*handle, RK3576_GPIO_OUTPUT);
   return OK;
-}
-
-/****************************************************************************
- * Name: kickpi_k7_wifi_enable_32k
- *
- * Description:
- *   Enable the hym8563 RTC 32.768 kHz CLKOUT (register 0x0D = 0xC4), the
- *   combo's low-power sleep clock.  The RTC is on I2C2 at 7-bit 0x51; the
- *   reg-pointer write and read are issued as separate transfers so the
- *   driver's merged-transaction path (needed by other devices) does not
- *   corrupt the hym8563 read.
- ****************************************************************************/
-
-static int kickpi_k7_wifi_enable_32k(void)
-{
-  struct i2c_master_s *i2c;
-  uint8_t wbuf[2] = { 0x0d, 0xc4 };
-  uint8_t reg = 0x0d;
-  uint8_t rback = 0;
-  int attempt;
-
-  struct i2c_msg_s wmsg = {
-    .frequency = 400000, .addr = 0x51, .flags = 0, .buffer = wbuf, .length = 2
-  };
-  struct i2c_msg_s pmsg = {
-    .frequency = 400000, .addr = 0x51, .flags = 0, .buffer = &reg, .length = 1
-  };
-  struct i2c_msg_s dmsg = { .frequency = 400000,
-                            .addr = 0x51,
-                            .flags = I2C_M_READ,
-                            .buffer = &rback,
-                            .length = 1 };
-
-  if (kickpi_k7_wifi_config_alt(GPIO_PORT0 | GPIO_PIN_B7, 9,
-                                RK3576_GPIO_PULLUP,
-                                &g_wifi_i2c_handles[0]) < 0 ||
-      kickpi_k7_wifi_config_alt(GPIO_PORT0 | GPIO_PIN_C0, 9,
-                                RK3576_GPIO_PULLUP,
-                                &g_wifi_i2c_handles[1]) < 0)
-    {
-      return -EBUSY;
-    }
-
-  /* rk3576_i2c_initialize ungates the controller clock via the CRU
-   * driver, so no explicit gate call is needed here.
-   */
-
-  i2c = rk3576_i2c_initialize(2);
-  if (i2c == NULL)
-    {
-      wlwarn("WARNING: i2c2 init failed, 32k not enabled\n");
-      return -ENODEV;
-    }
-
-  for (attempt = 0; attempt < 6; attempt++)
-    {
-      int wr = I2C_TRANSFER(i2c, &wmsg, 1);
-      int pr;
-      int rd;
-
-      up_mdelay(3);
-      pr = I2C_TRANSFER(i2c, &pmsg, 1);
-      rd = I2C_TRANSFER(i2c, &dmsg, 1);
-      if (wr >= 0 && pr >= 0 && rd >= 0 && (rback & 0x83) == 0x80)
-        {
-          up_mdelay(150);
-          return OK;
-        }
-
-      up_mdelay(5);
-    }
-
-  wlwarn("WARNING: hym8563 CLKOUT setup failed, readback=0x%02x\n", rback);
-  return -EIO;
 }
 
 /****************************************************************************
@@ -649,7 +572,12 @@ int kickpi_k7_wifi_initialize(void)
       return ret;
     }
 
-  ret = kickpi_k7_wifi_enable_32k();
+  /* Enable the 32.768 kHz sleep clock via the PCF8563 driver (CLKOUT),
+   * rather than driving the I2C2 bus manually, so the I2C bus / GPIO pin
+   * claims remain owned solely by the RTC driver.
+   */
+
+  ret = pcf8563_clkout_set(PCF8563_CLKOUT_32768HZ);
   if (ret < 0)
     {
       wlwarn("WARNING: WiFi sleep clock setup failed: %d; continuing\n", ret);

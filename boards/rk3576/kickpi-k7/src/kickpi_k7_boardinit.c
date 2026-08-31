@@ -300,16 +300,6 @@ void board_late_initialize(void)
   }
 #endif
 
-#ifdef CONFIG_KICKPI_K7_WIFI
-  {
-    int ret = kickpi_k7_wifi_initialize();
-    if (ret < 0)
-      {
-        syslog(LOG_ERR, "ERROR: kickpi_k7_wifi_initialize failed: %d\n", ret);
-      }
-  }
-#endif
-
 #ifdef CONFIG_KICKPI_K7_AUDIO
   /* Register the on-board ES8388 PCM device before the initial application
    * starts.  The initializer is idempotent, so board utilities may call it
@@ -429,5 +419,15 @@ void board_late_initialize(void)
     syslog(LOG_INFO, "INFO: RTC ready: /dev/rtc0 (PCF8563 on I2C2)\n");
   }
 #endif /* CONFIG_KICKPI_K7_RTC */
+
+#ifdef CONFIG_KICKPI_K7_WIFI
+  {
+    int ret = kickpi_k7_wifi_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: kickpi_k7_wifi_initialize failed: %d\n", ret);
+      }
+  }
+#endif
 }
 #endif /* CONFIG_BOARD_LATE_INITIALIZE */
