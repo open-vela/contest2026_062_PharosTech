@@ -67,13 +67,6 @@
 
 #define WIFI_HOST_WAKE_ACTIVITY 1
 
-/* IOC drive-strength registers for the SDIO bus pins (max drive). */
-
-#define WIFI_IOC_DRV0 0x26046210
-#define WIFI_IOC_DRV1 0x26046214
-#define WIFI_IOC_DRV2 0x26046218
-#define WIFI_IOC_DRV3 0x2604621c
-
 /****************************************************************************
  * Private Data
  ****************************************************************************/
@@ -533,7 +526,7 @@ int kickpi_k7_wifi_initialize(void)
       return OK;
     }
 
-  /* SDIO bus mux (GPIO1, func 2, pull-up) + max drive strength. */
+  /* SDIO bus mux (GPIO1, func 2, pull-up). */
 
   for (i = 0;
        i < (int)(sizeof(g_wifi_sdio_pins) / sizeof(g_wifi_sdio_pins[0])); i++)
@@ -545,11 +538,6 @@ int kickpi_k7_wifi_initialize(void)
           return ret;
         }
     }
-
-  putreg32((0xffu << 16) | 0xffu, WIFI_IOC_DRV0);
-  putreg32((0xffu << 16) | 0xffu, WIFI_IOC_DRV1);
-  putreg32((0xffu << 16) | 0xffu, WIFI_IOC_DRV2);
-  putreg32((0xffu << 16) | 0xffu, WIFI_IOC_DRV3);
 
   /* Companion pin environment the SV6160lite boot ROM samples.  Keep the
    * Bluetooth side in reset while Wi-Fi boots, matching the last known-good
