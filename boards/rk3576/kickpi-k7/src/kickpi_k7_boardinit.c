@@ -434,7 +434,16 @@ void board_late_initialize(void)
 
 #ifdef CONFIG_RK3576_SARADC
   {
-    FAR struct adc_dev_s *saradc = rk3576_saradc_initialize();
+#define KICKPI_K7_ADC_CH   RK3576_SARADC_CH_ALL
+#define KICKPI_K7_ADC_FREQ 20000000 /* 20 MHz */
+
+    /* Enable only the channels wired up on this board.  Combine the enabled
+     * channels below with bitwise-OR; unused channels are not converted, so
+     * they cost no CPU time on each ANIOC_TRIGGER.
+     */
+
+    FAR struct adc_dev_s *saradc =
+        rk3576_saradc_initialize(KICKPI_K7_ADC_CH, KICKPI_K7_ADC_FREQ);
     if (saradc == NULL)
       {
         syslog(LOG_ERR, "ERROR: rk3576_saradc_initialize failed\n");

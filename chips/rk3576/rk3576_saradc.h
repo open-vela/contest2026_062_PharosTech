@@ -30,7 +30,33 @@
 #include <nuttx/analog/adc.h>
 #include <nuttx/config.h>
 
+#include <stdint.h>
+
 #ifdef CONFIG_RK3576_SARADC
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* Per-channel enable bits for rk3576_saradc_initialize()'s channel_mask
+ * parameter.  Combine channels with bitwise-OR, e.g.:
+ *   SARADC_CH0 | SARADC_CH2 | SARADC_CH5
+ * to convert exactly those channels on each trigger.  SARADC_CH_ALL enables
+ * every channel.
+ */
+
+#define RK3576_SARADC_CH(n)  (1u << (n))
+
+#define RK3576_SARADC_CH0    RK3576_SARADC_CH(0)
+#define RK3576_SARADC_CH1    RK3576_SARADC_CH(1)
+#define RK3576_SARADC_CH2    RK3576_SARADC_CH(2)
+#define RK3576_SARADC_CH3    RK3576_SARADC_CH(3)
+#define RK3576_SARADC_CH4    RK3576_SARADC_CH(4)
+#define RK3576_SARADC_CH5    RK3576_SARADC_CH(5)
+#define RK3576_SARADC_CH6    RK3576_SARADC_CH(6)
+#define RK3576_SARADC_CH7    RK3576_SARADC_CH(7)
+
+#define RK3576_SARADC_CH_ALL 0xffu
 
 /****************************************************************************
  * Public Function Prototypes
@@ -48,19 +74,27 @@ extern "C" {
  *   the NuttX CLK framework (clk_saradc / pclk_saradc), and return a
  *   bound lower-half adc_dev_s for registration with adc_register().
  *
+ *   The set of channels to convert on each ANIOC_TRIGGER and the conversion
+ *   clock rate are fixed at initialization time; only the enabled channels
+ *   are converted, so unused channels cost no CPU time.
+ *
  *   The board logic is responsible for muxing any analog input pins before
  *   conversion (the SARADC pads are dedicated analog inputs; no pinctrl is
  *   required, but external pin configuration may be board-specific).
  *
  * Input Parameters:
- *   None (RK3576 has a single SARADC controller).
+ *   channel_mask - 8-bit mask of channels to enable (bit 0 = channel 0,
+ *                  ... bit 7 = channel 7).
+ *   clk_rate     - Desired conversion clock rate in Hz; clamped to the
+ *                  TRM Chapter 18 limit of [1, 20000000] Hz.
  *
  * Returned Value:
  *   A pointer to the adc_dev_s on success; NULL on failure.
  *
  ****************************************************************************/
 
-FAR struct adc_dev_s *rk3576_saradc_initialize(void);
+FAR struct adc_dev_s *rk3576_saradc_initialize(uint8_t channel_mask,
+                                               uint32_t clk_rate);
 
 #ifdef __cplusplus
 }

@@ -34,11 +34,13 @@
  * enabled while a conversion is outstanding.
  *
  * Clocks are obtained through the NuttX CLK framework (rk3576_clk_tree.c
- * registers clk_saradc_sel/div, clk_saradc and pclk_saradc); the mux and
- * divider are left at their reset values which yield a ~20 MHz conversion
- * clock from GPLL.  The CRU soft-reset lines are pulsed directly because
- * the reset-controller framework has no CRU provider (same scheme as
- * rk3576_sai.c).
+ * registers clk_saradc_sel/div, clk_saradc and pclk_saradc).  The mux and
+ * divider reset to GPLL / 60 (~20 MHz); the desired conversion clock rate
+ * and the set of enabled channels are passed in by the caller to
+ * rk3576_saradc_initialize().  Only the enabled channels are converted on
+ * each ANIOC_TRIGGER, so channels the application does not use cost nothing.
+ * The CRU soft-reset lines are pulsed directly because the reset-controller
+ * framework has no CRU provider (same scheme as rk3576_sai.c).
  *
  * Pin muxing is the board's responsibility.
  ****************************************************************************/
@@ -76,6 +78,10 @@
 
 #define SARADC_POLL_LIMIT 1000000
 
+/* TRM Chapter 18 conversion-clock ceiling (Hz). */
+
+#define SARADC_MAX_CLK 20000000
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -86,7 +92,8 @@ struct rk3576_saradc_s
   FAR const struct adc_callback_s *cb; /* Upper-half callbacks       */
   FAR struct clk_s *pclk;              /* APB bus clock (pclk_saradc)*/
   FAR struct clk_s *clk;               /* Conv clock (clk_saradc)    */
-  uint32_t chs_enabled;                /* Bitmask of enabled chns    */
+  uint8_t chs_enabled;                 /* Bitmask of enabled chns    */
+  uint32_t clk_rate;                   /* Desired conv clock (Hz)    */
 };
 
 /****************************************************************************
@@ -254,10 +261,11 @@ static void rk3576_saradc_reset(FAR struct adc_dev_s *dev)
  *
  * Description:
  *   Called on first open.  Enable the SARADC clocks (pclk + conversion
- *   clock) and restore the controller to single-conversion defaults, since
- *   the CRU soft-reset in ao_reset() runs at registration time before the
+ *   clock), clamp the conversion clock to CONFIG_RK3576_SARADC_CLK_RATE,
+ *   and restore the controller to single-conversion defaults, since the
+ *   CRU soft-reset in ao_reset() runs at registration time before the
  *   SARADC block is clocked.  Timing/ST_CON are left at their reset values,
- *   which are safe for ~20 MHz operation.
+ *   which are safe for <= 20 MHz operation.
  *
  ****************************************************************************/
 
@@ -278,6 +286,21 @@ static int rk3576_saradc_setup(FAR struct adc_dev_s *dev)
   if (ret < 0)
     {
       aerr("ERROR: failed to enable clock clk_saradc: %d\n", ret);
+      clk_disable(priv->pclk);
+      return ret;
+    }
+
+  /* Clamp the conversion clock to the requested rate (<= 20 MHz per
+   * TRM Chapter 18).  GPLL is read-only upstream, so clk_set_rate() only
+   * tunes clk_saradc_div and has no side effects on shared PLL sources.
+   */
+
+  ret = clk_set_rate(priv->clk, priv->clk_rate);
+  if (ret < 0)
+    {
+      aerr("ERROR: failed to set clk_saradc to %u Hz: %d\n", priv->clk_rate,
+           ret);
+      clk_disable(priv->clk);
       clk_disable(priv->pclk);
       return ret;
     }
@@ -406,19 +429,33 @@ static int rk3576_saradc_ioctl(FAR struct adc_dev_s *dev, int cmd,
  * Name: rk3576_saradc_initialize
  ****************************************************************************/
 
-FAR struct adc_dev_s *rk3576_saradc_initialize(void)
+FAR struct adc_dev_s *rk3576_saradc_initialize(uint8_t channel_mask,
+                                               uint32_t clk_rate)
 {
   FAR struct rk3576_saradc_s *priv = &g_saradc_priv;
   FAR struct adc_dev_s *adcdev = &g_saradc_dev;
 
+  /* Validate the conversion clock rate up front so a misconfigured caller
+   * fails cleanly instead of mid-conversion.  channel_mask is a uint8_t, so
+   * it can only ever address the 8 physical channels.
+   */
+
+  if (clk_rate < 1 || clk_rate > SARADC_MAX_CLK)
+    {
+      aerr("ERROR: SARADC clk_rate %u out of range [1, %d] Hz\n", clk_rate,
+           SARADC_MAX_CLK);
+      return NULL;
+    }
+
   priv->base = RK3576_SARADC_ADDR;
   priv->cb = NULL;
-  priv->chs_enabled = 0xff; /* All 8 channels enabled by default */
+  priv->chs_enabled = channel_mask;
+  priv->clk_rate = clk_rate;
 
   /* Resolve the SARADC clock handles through the CLK framework.  The
    * clocks themselves are gated on in ao_setup() and off in ao_shutdown()
-   * so the peripheral draws no power while unopened.  Mux/div stay at
-   * their reset values (GPLL / 60, ~20 MHz).
+   * so the peripheral draws no power while unopened.  The conversion clock
+   * rate is applied in ao_setup() to priv->clk_rate.
    */
 
   priv->pclk = clk_get("pclk_saradc");

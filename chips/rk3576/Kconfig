@@ -223,7 +223,8 @@ config RK3576_SARADC
 		/dev/adcN device.  Conversion is triggered on demand via
 		ANIOC_TRIGGER; the CRU clocks are obtained through the NuttX
 		CLK framework (clk_saradc / pclk_saradc registered by
-		rk3576_clk_tree.c).
+		rk3576_clk_tree.c).  The enabled channels and conversion clock
+		rate are supplied by the board via rk3576_saradc_initialize().
 
 endmenu # Rockchip RK3576 Peripheral Selection
 
