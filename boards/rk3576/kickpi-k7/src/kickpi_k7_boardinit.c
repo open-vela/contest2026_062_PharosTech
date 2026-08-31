@@ -63,6 +63,7 @@ static int kickpi_k7_emmc_pinmux(void);
 #ifdef CONFIG_RK3576_SARADC
 #include "rk3576_saradc.h"
 #include <nuttx/analog/adc.h>
+#include <stdio.h>
 #endif
 
 /****************************************************************************
@@ -408,6 +409,44 @@ void board_late_initialize(void)
   }
 #endif
 
+#ifdef CONFIG_RK3576_SARADC
+  {
+    /* The channels wired up on this board.  Each channel is registered as
+     * an independent /dev/adcN device so multiple consumers can read
+     * different channels without contention.  All channels share the single
+     * SARADC controller core; the conversion clock rate is fixed at build
+     * time via CONFIG_RK3576_SARADC_CLK_RATE.
+     */
+
+    static const enum rk3576_saradc_ch_e channels[] = {
+      RK3576_SARADC_CH0, RK3576_SARADC_CH1, RK3576_SARADC_CH2,
+      RK3576_SARADC_CH3, RK3576_SARADC_CH4, RK3576_SARADC_CH5,
+      RK3576_SARADC_CH6, RK3576_SARADC_CH7
+    };
+
+    char devpath[16];
+
+    for (unsigned int i = 0; i < sizeof(channels) / sizeof(channels[0]); i++)
+      {
+        FAR struct adc_dev_s *saradc = rk3576_saradc_initialize(channels[i]);
+        if (saradc == NULL)
+          {
+            syslog(LOG_ERR, "ERROR: rk3576_saradc_initialize ch%d failed\n",
+                   channels[i]);
+            continue;
+          }
+
+        snprintf(devpath, sizeof(devpath), "/dev/adc%u", i);
+        int ret = adc_register(devpath, saradc);
+        if (ret < 0)
+          {
+            syslog(LOG_ERR, "ERROR: adc_register %s failed: %d\n", devpath,
+                   ret);
+          }
+      }
+  }
+#endif /* CONFIG_RK3576_SARADC */
+
 #ifdef CONFIG_KICKPI_K7_RTC
   /* Register the on-board PCF8563/HYM8563TS RTC as /dev/rtc0 (I2C2).  A
    * failure only logs; it must not abort the rest of board startup.
@@ -431,36 +470,5 @@ void board_late_initialize(void)
       }
   }
 #endif
-
-#ifdef CONFIG_RK3576_SARADC
-  {
-#define KICKPI_K7_ADC_CH   RK3576_SARADC_CH_ALL
-#define KICKPI_K7_ADC_FREQ 20000000 /* 20 MHz */
-
-    /* Enable only the channels wired up on this board.  Combine the enabled
-     * channels below with bitwise-OR; unused channels are not converted, so
-     * they cost no CPU time on each ANIOC_TRIGGER.
-     */
-
-    FAR struct adc_dev_s *saradc =
-        rk3576_saradc_initialize(KICKPI_K7_ADC_CH, KICKPI_K7_ADC_FREQ);
-    if (saradc == NULL)
-      {
-        syslog(LOG_ERR, "ERROR: rk3576_saradc_initialize failed\n");
-      }
-    else
-      {
-        int ret = adc_register("/dev/adc0", saradc);
-        if (ret < 0)
-          {
-            syslog(LOG_ERR, "ERROR: adc_register failed: %d\n", ret);
-          }
-        else
-          {
-            syslog(LOG_INFO, "SARADC registered as /dev/adc0\n");
-          }
-      }
-  }
-#endif /* CONFIG_RK3576_SARADC */
 }
 #endif /* CONFIG_BOARD_LATE_INITIALIZE */

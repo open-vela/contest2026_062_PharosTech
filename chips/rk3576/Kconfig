@@ -223,10 +223,29 @@ config RK3576_SARADC
 		/dev/adcN device.  Conversion is triggered on demand via
 		ANIOC_TRIGGER; the CRU clocks are obtained through the NuttX
 		CLK framework (clk_saradc / pclk_saradc registered by
-		rk3576_clk_tree.c).  The enabled channels and conversion clock
-		rate are supplied by the board via rk3576_saradc_initialize().
+		rk3576_clk_tree.c).  The board registers one independent
+		adc_dev_s per channel; each shares the single SARADC controller
+		core.  The conversion clock rate is fixed at build time by
+		CONFIG_RK3576_SARADC_CLK_RATE.
 
 endmenu # Rockchip RK3576 Peripheral Selection
+
+if RK3576_SARADC
+
+config RK3576_SARADC_CLK_RATE
+	int "SARADC conversion clock rate (Hz)"
+	default 20000000
+	range 1 20000000
+	---help---
+		The SARADC conversion clock rate, fixed at build time.  Because
+		the 8 channels share a single SARADC controller (and thus a
+		single clk_saradc), the rate is a global value applied exactly
+		once when the core is first initialised; it cannot be changed
+		per channel at runtime.  Per the TRM Chapter 18 the ceiling is
+		20 MHz (for up to 1 MSps); the clock mux/divider default
+		(GPLL / 60) yields ~20 MHz.
+
+endif # RK3576_SARADC
 
 config RK3576_OSC_FREQ
 	int "RK3576 OSC Crystal Frequency (Hz)"

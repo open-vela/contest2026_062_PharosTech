@@ -27,20 +27,29 @@
  *
  * The SARADC is an 8-channel single-ended 12-bit SAR A/D converter (TRM
  * Chapter 18).  This driver uses the controller's single conversion mode:
- * on ANIOC_TRIGGER it selects each enabled channel in turn, asserts
- * start_doc, waits for the conversion to complete (polling the STATUS
- * busy bit), reads SARADC_DATAn, and pushes the result up through the
- * upper-half callback.  End-of-conversion interrupts are optional and only
- * enabled while a conversion is outstanding.
+ * on ANIOC_TRIGGER it selects the device's channel, asserts start_doc,
+ * waits for the conversion to complete (polling the STATUS busy bit), reads
+ * SARADC_DATAn, and pushes the result up through the upper-half callback.
+ * End-of-conversion interrupts are optional and only enabled while a
+ * conversion is outstanding.
+ *
+ * Each of the 8 channels is exposed as an *independent* adc_dev_s with its
+ * own receive FIFO, so multiple consumer processes can read different
+ * channels without stepping on each other's data.  Underneath, however,
+ * they all share a single SARADC controller core (one set of registers and
+ * one clk_saradc / pclk_saradc): the hardware converts channels one at a
+ * time, so the conversion path is serialised with a core mutex.
  *
  * Clocks are obtained through the NuttX CLK framework (rk3576_clk_tree.c
- * registers clk_saradc_sel/div, clk_saradc and pclk_saradc).  The mux and
- * divider reset to GPLL / 60 (~20 MHz); the desired conversion clock rate
- * and the set of enabled channels are passed in by the caller to
- * rk3576_saradc_initialize().  Only the enabled channels are converted on
- * each ANIOC_TRIGGER, so channels the application does not use cost nothing.
- * The CRU soft-reset lines are pulsed directly because the reset-controller
- * framework has no CRU provider (same scheme as rk3576_sai.c).
+ * registers clk_saradc_sel/div, clk_saradc and pclk_saradc).  The desired
+ * conversion clock rate is fixed at build time via
+ * CONFIG_RK3576_SARADC_CLK_RATE.  The driver keeps its own reference count
+ * (core->users) rather than relying on the CLK framework's: on the 0 -> 1
+ * transition the clocks are enabled, the rate is applied, and the CRU
+ * soft-reset is pulsed; on 1 -> 0 the clocks are gated off.  The soft-reset
+ * is pulsed directly because the reset-controller framework has no CRU
+ * provider (same scheme as rk3576_sai.c).  After a clock gate-off the FSM is
+ * in an undefined state, so the re-enable path always re-asserts the reset.
  *
  * Pin muxing is the board's responsibility.
  ****************************************************************************/
@@ -68,6 +77,8 @@
 #include "hardware/rk3576_saradc.h"
 #include "rk3576_saradc.h"
 
+#include <nuttx/mutex.h>
+
 #ifdef CONFIG_RK3576_SARADC
 
 /****************************************************************************
@@ -78,31 +89,48 @@
 
 #define SARADC_POLL_LIMIT 1000000
 
-/* TRM Chapter 18 conversion-clock ceiling (Hz). */
-
-#define SARADC_MAX_CLK 20000000
-
 /****************************************************************************
  * Private Types
  ****************************************************************************/
 
+/* Shared SARADC controller core.  All 8 channels share a single controller
+ * (and thus a single clk_saradc / pclk_saradc): the clock handles, the
+ * conversion clock rate, and the CRU soft-reset are owned here.  The core
+ * tracks its own reference count (users) so the clocks are enabled and the
+ * soft-reset is asserted exactly on the 0 -> 1 transition, and the clocks
+ * are disabled again on the 1 -> 0 transition, independent of the CLK
+ * framework's internal counting.  Conversion of the actual channels is
+ * serialised with core->lock because the hardware converts one channel at a
+ * time.
+ */
+
+struct rk3576_saradc_core_s
+{
+  mutex_t lock;           /* Serialises the SARADC registers   */
+  uintptr_t base;         /* SARADC register base              */
+  FAR struct clk_s *pclk; /* APB bus clock (pclk_saradc)       */
+  FAR struct clk_s *clk;  /* Conv clock (clk_saradc)           */
+  uint32_t clk_rate;      /* Conv clock rate (build-time fixed)*/
+  uint8_t users;          /* Open-channel reference count      */
+};
+
+/* Per-channel adc_dev_s private state. */
+
 struct rk3576_saradc_s
 {
-  uintptr_t base;                      /* SARADC register base       */
-  FAR const struct adc_callback_s *cb; /* Upper-half callbacks       */
-  FAR struct clk_s *pclk;              /* APB bus clock (pclk_saradc)*/
-  FAR struct clk_s *clk;               /* Conv clock (clk_saradc)    */
-  uint8_t chs_enabled;                 /* Bitmask of enabled chns    */
-  uint32_t clk_rate;                   /* Desired conv clock (Hz)    */
+  FAR struct rk3576_saradc_core_s *core; /* Shared controller core          */
+  FAR const struct adc_callback_s *cb;   /* Upper-half callbacks            */
+  uint8_t ch;                            /* This device's channel (0..7)    */
 };
 
 /****************************************************************************
  * Private Function Prototypes
  ****************************************************************************/
 
-static uint32_t saradc_getreg(struct rk3576_saradc_s *priv, unsigned int off);
-static void saradc_putreg(struct rk3576_saradc_s *priv, unsigned int off,
-                          uint32_t val);
+static uint32_t saradc_getreg(FAR struct rk3576_saradc_core_s *core,
+                              unsigned int off);
+static void saradc_putreg(FAR struct rk3576_saradc_core_s *core,
+                          unsigned int off, uint32_t val);
 
 static int rk3576_saradc_bind(FAR struct adc_dev_s *dev,
                               FAR const struct adc_callback_s *callback);
@@ -126,25 +154,32 @@ static const struct adc_ops_s g_saradc_ops = {
   .ao_ioctl = rk3576_saradc_ioctl,
 };
 
-/* Static allocation: RK3576 has only one SARADC peripheral. */
+/* Static allocation: RK3576 has only one SARADC controller, but each of the
+ * 8 channels is exposed as an independent adc_dev_s with its own FIFO.  All
+ * channels share the single g_saradc_core.
+ */
 
-static struct rk3576_saradc_s g_saradc_priv;
-static struct adc_dev_s g_saradc_dev;
+static struct rk3576_saradc_core_s g_saradc_core = { .lock =
+                                                         NXMUTEX_INITIALIZER };
+
+static struct rk3576_saradc_s g_saradc_chan[RK3576_SARADC_NCHANNELS];
+static struct adc_dev_s g_saradc_dev[RK3576_SARADC_NCHANNELS];
+static bool g_saradc_claimed[RK3576_SARADC_NCHANNELS];
 
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
 
-static inline uint32_t saradc_getreg(struct rk3576_saradc_s *priv,
+static inline uint32_t saradc_getreg(FAR struct rk3576_saradc_core_s *core,
                                      unsigned int off)
 {
-  return getreg32(priv->base + off);
+  return getreg32(core->base + off);
 }
 
-static inline void saradc_putreg(struct rk3576_saradc_s *priv,
+static inline void saradc_putreg(FAR struct rk3576_saradc_core_s *core,
                                  unsigned int off, uint32_t val)
 {
-  putreg32(val, priv->base + off);
+  putreg32(val, core->base + off);
 }
 
 /****************************************************************************
@@ -157,17 +192,12 @@ static inline void saradc_putreg(struct rk3576_saradc_s *priv,
  *
  ****************************************************************************/
 
-static int rk3576_saradc_trigger(struct rk3576_saradc_s *priv, uint8_t ch,
-                                 FAR uint16_t *result)
+static int rk3576_saradc_trigger(FAR struct rk3576_saradc_core_s *core,
+                                 uint8_t ch, FAR uint16_t *result)
 {
   uint32_t reg;
   uint32_t data_off;
   int t;
-
-  if (ch >= RK3576_SARADC_NCHANNELS)
-    {
-      return -EINVAL;
-    }
 
   /* Select channel and enable single-PD mode, then start.  All fields used
    * here sit in the lower 16 bits with their write-enable bits set in the
@@ -180,13 +210,37 @@ static int rk3576_saradc_trigger(struct rk3576_saradc_s *priv, uint8_t ch,
         (SARADC_CONV_SINGLE_PD << SARADC_CONV_EN_SHIFT) |  /* wren bit5 */
         (uint32_t)ch |                                     /* channel_sel */
         SARADC_CONV_START | SARADC_CONV_SINGLE_PD;
-  saradc_putreg(priv, RK3576_SARADC_CONV_CON, reg);
+  saradc_putreg(core, RK3576_SARADC_CONV_CON, reg);
 
-  /* Wait for the FSM to finish (conv_st -> 0). */
+  /* single_pd_mode asserts PD after each conversion, so every trigger here
+   * is a power-up sequence: PD is deasserted, the SAR CDAC/reference must
+   * settle (~1 us per TRM 18.5.1), then SOC is asserted and the FSM runs.
+   * A single "wait until conv_st == 0" poll is racy because immediately
+   * after writing CONV_CON the FSM may not yet have asserted conv_st, so the
+   * loop would see idle and return before the conversion even started --
+   * reading the stale (zero) DATA register.  Therefore do a two-phase wait:
+   * first wait for conv_st to go high (conversion has actually begun), then
+   * wait for it to go low (conversion complete).
+   */
 
   for (t = 0; t < SARADC_POLL_LIMIT; t++)
     {
-      if ((saradc_getreg(priv, RK3576_SARADC_STATUS) & SARADC_STATUS_BUSY) ==
+      if ((saradc_getreg(core, RK3576_SARADC_STATUS) & SARADC_STATUS_BUSY) !=
+          0)
+        {
+          break;
+        }
+    }
+
+  if (t >= SARADC_POLL_LIMIT)
+    {
+      aerr("SARADC: conversion never started on channel %u\n", ch);
+      return -ETIMEDOUT;
+    }
+
+  for (t = 0; t < SARADC_POLL_LIMIT; t++)
+    {
+      if ((saradc_getreg(core, RK3576_SARADC_STATUS) & SARADC_STATUS_BUSY) ==
           0)
         {
           break;
@@ -202,7 +256,7 @@ static int rk3576_saradc_trigger(struct rk3576_saradc_s *priv, uint8_t ch,
   /* Read the channel data register (12-bit, right-aligned). */
 
   data_off = RK3576_SARADC_DATA0 + (unsigned int)ch * 4;
-  *result = (uint16_t)(saradc_getreg(priv, data_off) & SARADC_DATA_MASK);
+  *result = (uint16_t)(saradc_getreg(core, data_off) & SARADC_DATA_MASK);
 
   return OK;
 }
@@ -223,27 +277,24 @@ static int rk3576_saradc_bind(FAR struct adc_dev_s *dev,
 }
 
 /****************************************************************************
- * Name: rk3576_saradc_reset
+ * Name: rk3576_saradc_core_reset
  *
  * Description:
  *   Pulse the SARADC CRU soft-reset lines (presetn/resetn_saradc) directly.
  *   The reset-controller framework has no CRU provider, so this follows the
  *   same scheme as rk3576_sai.c: assert both per-instance resets via
  *   CRU_SOFTRST_CON13, wait, then deassert.  This returns the controller to
- *   its reset defaults.  No SARADC register is touched here (the APB block
- *   may not be clocked yet at registration time); any controller state
- *   cleanup that depends on pclk happens in ao_setup().
+ *   its reset defaults.  The caller must hold core->lock and must have the
+ *   SARADC pclk enabled first (the APB block is not otherwise clocked).
  *
  ****************************************************************************/
 
-static void rk3576_saradc_reset(FAR struct adc_dev_s *dev)
+static void rk3576_saradc_core_reset(FAR struct rk3576_saradc_core_s *core)
 {
   uintptr_t cru_sofrst =
       RK3576_CRU_ADDR + RK3576_CRU_SOFTRST_CON(RK3576_CRU_SARADC_RESET_CON);
   uint32_t rst_mask = (1u << RK3576_CRU_SARADC_PRESETN_BIT) |
                       (1u << RK3576_CRU_SARADC_RESETN_BIT);
-
-  UNUSED(dev);
 
   /* Assert both reset lines (hiword-mask: wren + data = 1). */
 
@@ -257,15 +308,31 @@ static void rk3576_saradc_reset(FAR struct adc_dev_s *dev)
 }
 
 /****************************************************************************
+ * Name: rk3576_saradc_reset
+ *
+ * Description:
+ *   ao_reset callback.  The SARADC controller is shared by all channels, so
+ *   the CRU soft-reset must run exactly once per core power-up, on the
+ *   core->users 0 -> 1 transition.  The actual soft-reset also requires
+ *   pclk, which is only enabled later in ao_setup(); therefore the pulse is
+ *   deferred to ao_setup() and this callback is a no-op (kept for the
+ *   upper-half contract).
+ *
+ ****************************************************************************/
+
+static void rk3576_saradc_reset(FAR struct adc_dev_s *dev) { UNUSED(dev); }
+
+/****************************************************************************
  * Name: rk3576_saradc_setup
  *
  * Description:
- *   Called on first open.  Enable the SARADC clocks (pclk + conversion
- *   clock), clamp the conversion clock to CONFIG_RK3576_SARADC_CLK_RATE,
- *   and restore the controller to single-conversion defaults, since the
- *   CRU soft-reset in ao_reset() runs at registration time before the
- *   SARADC block is clocked.  Timing/ST_CON are left at their reset values,
- *   which are safe for <= 20 MHz operation.
+ *   Called on open of a channel.  Bump the core's own reference count; on
+ *   the 0 -> 1 transition enable the SARADC clocks (pclk + conversion
+ *   clock), set the build-time conversion rate, pulse the CRU soft-reset,
+ *   and restore the controller to single-conversion defaults.  Later opens
+ *   (users > 1) only bump the count: the clocks were never gated off, so no
+ *   re-reset is needed.  All reference-count transitions happen under
+ *   core->lock.
  *
  ****************************************************************************/
 
@@ -273,57 +340,82 @@ static int rk3576_saradc_setup(FAR struct adc_dev_s *dev)
 {
   FAR struct rk3576_saradc_s *priv =
       (FAR struct rk3576_saradc_s *)dev->ad_priv;
+  FAR struct rk3576_saradc_core_s *core = priv->core;
   int ret;
 
-  ret = clk_enable(priv->pclk);
+  ret = nxmutex_lock(&core->lock);
   if (ret < 0)
     {
-      aerr("ERROR: failed to enable clock pclk_saradc: %d\n", ret);
       return ret;
     }
 
-  ret = clk_enable(priv->clk);
-  if (ret < 0)
+  if (core->users == 0)
     {
-      aerr("ERROR: failed to enable clock clk_saradc: %d\n", ret);
-      clk_disable(priv->pclk);
-      return ret;
+      /* Core is being powered up: enable the clocks, then set the rate and
+       * pulse the soft-reset once the APB clock is running, because the FSM
+       * is guaranteed to be in an undefined state after a clock gate-off.
+       */
+
+      ret = clk_enable(core->pclk);
+      if (ret < 0)
+        {
+          aerr("ERROR: failed to enable clock pclk_saradc: %d\n", ret);
+          goto out;
+        }
+
+      ret = clk_enable(core->clk);
+      if (ret < 0)
+        {
+          aerr("ERROR: failed to enable clock clk_saradc: %d\n", ret);
+          clk_disable(core->pclk);
+          goto out;
+        }
+
+      /* Clamp the conversion clock to the build-time rate (<= 20 MHz per
+       * TRM Chapter 18).  GPLL is read-only upstream, so clk_set_rate()
+       * only tunes clk_saradc_div and has no side effects on shared PLL
+       * sources.  The core lock also serialises this against the conversion
+       * path, so set_rate/reset never race a conversion.
+       */
+
+      ret = clk_set_rate(core->clk, core->clk_rate);
+      if (ret < 0)
+        {
+          aerr("ERROR: failed to set clk_saradc to %u Hz: %d\n",
+               core->clk_rate, ret);
+          clk_disable(core->clk);
+          clk_disable(core->pclk);
+          goto out;
+        }
+
+      /* Pulse the soft-reset and restore the controller to single-conversion
+       * defaults.  CONV_CON bits [0..7] are hiword-masked: write-enable them
+       * all while clearing auto_channel_mode (bit6) and end_conv (bit7),
+       * along with channel_sel/start/single_pd, so no stale mode or pending
+       * conversion survives.  Disable the end-of-conversion interrupt.
+       */
+
+      rk3576_saradc_core_reset(core);
+
+      putreg32((0xffu << 16), core->base + RK3576_SARADC_CONV_CON);
+      putreg32((1u << 16), core->base + RK3576_SARADC_END_INT_EN);
     }
 
-  /* Clamp the conversion clock to the requested rate (<= 20 MHz per
-   * TRM Chapter 18).  GPLL is read-only upstream, so clk_set_rate() only
-   * tunes clk_saradc_div and has no side effects on shared PLL sources.
-   */
+  core->users++;
 
-  ret = clk_set_rate(priv->clk, priv->clk_rate);
-  if (ret < 0)
-    {
-      aerr("ERROR: failed to set clk_saradc to %u Hz: %d\n", priv->clk_rate,
-           ret);
-      clk_disable(priv->clk);
-      clk_disable(priv->pclk);
-      return ret;
-    }
+out:
+  nxmutex_unlock(&core->lock);
 
-  /* Explicitly restore controller state to single-conversion defaults.
-   * CONV_CON bits [0..7] are hiword-masked: write-enable them all while
-   * clearing auto_channel_mode (bit6) and end_conv (bit7), along with
-   * channel_sel/start/single_pd, so no stale mode or pending conversion
-   * survives.  Disable the end-of-conversion interrupt (END_INT_EN bit0).
-   */
-
-  putreg32((0xffu << 16), priv->base + RK3576_SARADC_CONV_CON);
-  putreg32((1u << 16), priv->base + RK3576_SARADC_END_INT_EN);
-
-  return OK;
+  return ret;
 }
 
 /****************************************************************************
  * Name: rk3576_saradc_shutdown
  *
  * Description:
- *   Called on the last close.  Reverse ao_setup(): gate off the conversion
- *   clock and pclk so the peripheral does not draw power while unopened.
+ *   Called on close of a channel.  Drop the core's own reference count; on
+ *   the 1 -> 0 transition gate off the conversion clock and pclk.  Sibling
+ *   channels still open (users > 0) leave the clocks running.
  *
  ****************************************************************************/
 
@@ -331,9 +423,25 @@ static void rk3576_saradc_shutdown(FAR struct adc_dev_s *dev)
 {
   FAR struct rk3576_saradc_s *priv =
       (FAR struct rk3576_saradc_s *)dev->ad_priv;
+  FAR struct rk3576_saradc_core_s *core = priv->core;
 
-  clk_disable(priv->clk);
-  clk_disable(priv->pclk);
+  nxmutex_lock(&core->lock);
+
+  DEBUGASSERT(core->users > 0);
+
+  core->users--;
+
+  if (core->users == 0)
+    {
+      /* Last channel closed: gate off the conversion clock and pclk.  The
+       * next open will re-enable them and re-assert the soft-reset.
+       */
+
+      clk_disable(core->clk);
+      clk_disable(core->pclk);
+    }
+
+  nxmutex_unlock(&core->lock);
 }
 
 /****************************************************************************
@@ -352,44 +460,43 @@ static void rk3576_saradc_rxint(FAR struct adc_dev_s *dev, bool enable)
 }
 
 /****************************************************************************
- * Name: rk3576_saradc_read_channels
+ * Name: rk3576_saradc_read_channel
  *
  * Description:
- *   Trigger a single conversion on each enabled channel and deliver the
- *   result through the upper-half receive callback.
+ *   Trigger a single conversion on this device's channel and deliver the
+ *   result through the upper-half receive callback.  The whole trigger is
+ *   serialised under core->lock because the controller converts channels
+ *   one at a time.
  *
  ****************************************************************************/
 
-static int rk3576_saradc_read_channels(FAR struct adc_dev_s *dev,
-                                       FAR struct rk3576_saradc_s *priv)
+static int rk3576_saradc_read_channel(FAR struct adc_dev_s *dev,
+                                      FAR struct rk3576_saradc_s *priv)
 {
   uint16_t result;
   int ret;
 
-  for (uint8_t i = 0; i < RK3576_SARADC_NCHANNELS; i++)
+  ret = nxmutex_lock(&priv->core->lock);
+  if (ret < 0)
     {
-      if ((priv->chs_enabled & (1u << i)) == 0)
-        {
-          continue;
-        }
-
-      ret = rk3576_saradc_trigger(priv, i, &result);
-      if (ret < 0)
-        {
-          return ret;
-        }
-
-      if (priv->cb != NULL && priv->cb->au_receive != NULL)
-        {
-          ret = priv->cb->au_receive(dev, i, (int32_t)result);
-          if (ret < 0)
-            {
-              return ret;
-            }
-        }
+      return ret;
     }
 
-  return OK;
+  ret = rk3576_saradc_trigger(priv->core, priv->ch, &result);
+
+  nxmutex_unlock(&priv->core->lock);
+
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (priv->cb != NULL && priv->cb->au_receive != NULL)
+    {
+      ret = priv->cb->au_receive(dev, priv->ch, (int32_t)result);
+    }
+
+  return ret;
 }
 
 /****************************************************************************
@@ -406,10 +513,10 @@ static int rk3576_saradc_ioctl(FAR struct adc_dev_s *dev, int cmd,
   switch (cmd)
     {
       case ANIOC_TRIGGER:
-        return rk3576_saradc_read_channels(dev, priv);
+        return rk3576_saradc_read_channel(dev, priv);
 
       case ANIOC_GET_NCHANNELS:
-        ret = RK3576_SARADC_NCHANNELS;
+        ret = 1;
         break;
 
       default:
@@ -429,51 +536,77 @@ static int rk3576_saradc_ioctl(FAR struct adc_dev_s *dev, int cmd,
  * Name: rk3576_saradc_initialize
  ****************************************************************************/
 
-FAR struct adc_dev_s *rk3576_saradc_initialize(uint8_t channel_mask,
-                                               uint32_t clk_rate)
+FAR struct adc_dev_s *rk3576_saradc_initialize(enum rk3576_saradc_ch_e channel)
 {
-  FAR struct rk3576_saradc_s *priv = &g_saradc_priv;
-  FAR struct adc_dev_s *adcdev = &g_saradc_dev;
+  FAR struct rk3576_saradc_core_s *core = &g_saradc_core;
+  FAR struct rk3576_saradc_s *priv;
+  FAR struct adc_dev_s *adcdev;
 
-  /* Validate the conversion clock rate up front so a misconfigured caller
-   * fails cleanly instead of mid-conversion.  channel_mask is a uint8_t, so
-   * it can only ever address the 8 physical channels.
-   */
+  /* Validate the channel up front so a misconfigured caller fails cleanly. */
 
-  if (clk_rate < 1 || clk_rate > SARADC_MAX_CLK)
+  if (channel < RK3576_SARADC_CH0 || channel > RK3576_SARADC_CH7)
     {
-      aerr("ERROR: SARADC clk_rate %u out of range [1, %d] Hz\n", clk_rate,
-           SARADC_MAX_CLK);
+      aerr("ERROR: SARADC invalid channel %d\n", (int)channel);
       return NULL;
     }
 
-  priv->base = RK3576_SARADC_ADDR;
+  /* Mutual exclusion: each channel may be initialised at most once.  This
+   * both prevents a duplicate adc_dev_s racing on the same channel's data
+   * register, and serialises the one-time core setup against concurrent
+   * initialisation of sibling channels during bring-up.
+   */
+
+  nxmutex_lock(&core->lock);
+
+  if (g_saradc_claimed[channel])
+    {
+      nxmutex_unlock(&core->lock);
+      aerr("ERROR: SARADC channel %d already initialised\n", (int)channel);
+      return NULL;
+    }
+
+  /* One-time core setup: resolve the clock handles and stash the build-time
+   * conversion rate.  This runs only on the first channel registration
+   * (core->base is the sentinel).  The clocks themselves are enabled/disabled
+   * in ao_setup()/ao_shutdown() on the core->users 0 <-> non-0 transitions,
+   * at which point the rate is applied and the soft-reset is pulsed.
+   */
+
+  if (core->base == 0)
+    {
+      core->base = RK3576_SARADC_ADDR;
+      core->clk_rate = CONFIG_RK3576_SARADC_CLK_RATE;
+
+      core->pclk = clk_get("pclk_saradc");
+      if (core->pclk == NULL)
+        {
+          nxmutex_unlock(&core->lock);
+          aerr("ERROR: failed to get clock pclk_saradc\n");
+          return NULL;
+        }
+
+      core->clk = clk_get("clk_saradc");
+      if (core->clk == NULL)
+        {
+          nxmutex_unlock(&core->lock);
+          aerr("ERROR: failed to get clock clk_saradc\n");
+          return NULL;
+        }
+    }
+
+  priv = &g_saradc_chan[channel];
+  adcdev = &g_saradc_dev[channel];
+
+  priv->core = core;
   priv->cb = NULL;
-  priv->chs_enabled = channel_mask;
-  priv->clk_rate = clk_rate;
-
-  /* Resolve the SARADC clock handles through the CLK framework.  The
-   * clocks themselves are gated on in ao_setup() and off in ao_shutdown()
-   * so the peripheral draws no power while unopened.  The conversion clock
-   * rate is applied in ao_setup() to priv->clk_rate.
-   */
-
-  priv->pclk = clk_get("pclk_saradc");
-  if (priv->pclk == NULL)
-    {
-      aerr("ERROR: failed to get clock pclk_saradc\n");
-      return NULL;
-    }
-
-  priv->clk = clk_get("clk_saradc");
-  if (priv->clk == NULL)
-    {
-      aerr("ERROR: failed to get clock clk_saradc\n");
-      return NULL;
-    }
+  priv->ch = (uint8_t)channel;
 
   adcdev->ad_ops = &g_saradc_ops;
   adcdev->ad_priv = priv;
+
+  g_saradc_claimed[channel] = true;
+
+  nxmutex_unlock(&core->lock);
 
   return adcdev;
 }

@@ -38,25 +38,23 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Per-channel enable bits for rk3576_saradc_initialize()'s channel_mask
- * parameter.  Combine channels with bitwise-OR, e.g.:
- *   SARADC_CH0 | SARADC_CH2 | SARADC_CH5
- * to convert exactly those channels on each trigger.  SARADC_CH_ALL enables
- * every channel.
+/* Channel selector for rk3576_saradc_initialize().  Each call initialises
+ * exactly one channel as an independent adc_dev_s.  A channel may only be
+ * initialised once; the driver performs a mutual-exclusion check and fails
+ * a second initialisation of the same channel.
  */
 
-#define RK3576_SARADC_CH(n)  (1u << (n))
-
-#define RK3576_SARADC_CH0    RK3576_SARADC_CH(0)
-#define RK3576_SARADC_CH1    RK3576_SARADC_CH(1)
-#define RK3576_SARADC_CH2    RK3576_SARADC_CH(2)
-#define RK3576_SARADC_CH3    RK3576_SARADC_CH(3)
-#define RK3576_SARADC_CH4    RK3576_SARADC_CH(4)
-#define RK3576_SARADC_CH5    RK3576_SARADC_CH(5)
-#define RK3576_SARADC_CH6    RK3576_SARADC_CH(6)
-#define RK3576_SARADC_CH7    RK3576_SARADC_CH(7)
-
-#define RK3576_SARADC_CH_ALL 0xffu
+enum rk3576_saradc_ch_e
+{
+  RK3576_SARADC_CH0 = 0,
+  RK3576_SARADC_CH1,
+  RK3576_SARADC_CH2,
+  RK3576_SARADC_CH3,
+  RK3576_SARADC_CH4,
+  RK3576_SARADC_CH5,
+  RK3576_SARADC_CH6,
+  RK3576_SARADC_CH7
+};
 
 /****************************************************************************
  * Public Function Prototypes
@@ -70,31 +68,32 @@ extern "C" {
  * Name: rk3576_saradc_initialize
  *
  * Description:
- *   Initialize the RK3576 SAR-ADC controller, enable its clocks through
- *   the NuttX CLK framework (clk_saradc / pclk_saradc), and return a
- *   bound lower-half adc_dev_s for registration with adc_register().
+ *   Initialize exactly one SARADC channel as an independent adc_dev_s and
+ *   return it for registration with adc_register().  All channels share a
+ *   single SARADC controller core: the clock handles, the conversion clock
+ *   rate (CONFIG_RK3576_SARADC_CLK_RATE, fixed at build time), and the CRU
+ *   soft-reset are applied once when the first channel is initialised.  The
+ *   controller registers are serialised with a mutex because the hardware
+ *   converts channels one at a time.
  *
- *   The set of channels to convert on each ANIOC_TRIGGER and the conversion
- *   clock rate are fixed at initialization time; only the enabled channels
- *   are converted, so unused channels cost no CPU time.
+ *   A given channel may only be initialised once; a second call for the
+ *   same channel returns NULL to avoid two adc_dev_s instances racing on
+ *   the same channel's data register.
  *
  *   The board logic is responsible for muxing any analog input pins before
  *   conversion (the SARADC pads are dedicated analog inputs; no pinctrl is
  *   required, but external pin configuration may be board-specific).
  *
  * Input Parameters:
- *   channel_mask - 8-bit mask of channels to enable (bit 0 = channel 0,
- *                  ... bit 7 = channel 7).
- *   clk_rate     - Desired conversion clock rate in Hz; clamped to the
- *                  TRM Chapter 18 limit of [1, 20000000] Hz.
+ *   channel - The channel to initialise (RK3576_SARADC_CH0 .. CH7).
  *
  * Returned Value:
  *   A pointer to the adc_dev_s on success; NULL on failure.
  *
  ****************************************************************************/
 
-FAR struct adc_dev_s *rk3576_saradc_initialize(uint8_t channel_mask,
-                                               uint32_t clk_rate);
+FAR struct adc_dev_s *
+rk3576_saradc_initialize(enum rk3576_saradc_ch_e channel);
 
 #ifdef __cplusplus
 }
