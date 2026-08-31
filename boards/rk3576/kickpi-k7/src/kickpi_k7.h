@@ -51,5 +51,9 @@ int kickpi_k7_wifi_abort_sleep(void);
 #endif
 #endif
 
+#ifdef CONFIG_KICKPI_K7_RTC
+int kickpi_k7_rtc_initialize(void);
+#endif
+
 #endif /* __ASSEMBLY__ */
 #endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */

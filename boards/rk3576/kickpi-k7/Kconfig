@@ -49,12 +49,14 @@ config KICKPI_K7_LITCORE_CPU_FREQ_MHZ
 config KICKPI_K7_WIFI
 	bool "On-board SeekWave SV6621 WiFi/BT combo"
 	default n
-	depends on RK3576_SDIO && RK3576_I2C
+	depends on RK3576_SDIO && KICKPI_K7_RTC
 	select SV6621
 	select DEV_GPIO if SV6621_PM
 	---help---
-		Configure the KICKPI-K7 pin environment, 32.768 kHz sleep clock,
-		power sequence and firmware images for the on-board SV6621.
+		Configure the KICKPI-K7 pin environment, power sequence and firmware
+		images for the on-board SV6621.  The combo's 32.768 kHz sleep clock
+		is sourced from the on-board PCF8563/HYM8563TS RTC CLKOUT (see
+		KICKPI_K7_RTC), so this option requires the RTC driver.
 
 config KICKPI_K7_WIFI_IRAM
 	string "SV6621 IRAM firmware image"
