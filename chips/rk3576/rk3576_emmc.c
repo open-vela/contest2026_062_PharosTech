@@ -223,7 +223,9 @@ struct rk3576_emmc_dev_s
 
   uint8_t *dma_bounce_dest; /* Unaligned read destination */
 #ifdef CONFIG_RK3576_DMA_ALLOC
-  uint8_t *dma_bounce; /* DMA-safe bounce buffer owned by this host */
+  uint8_t *dma_bounce;    /* DMA-safe bounce buffer owned by this host */
+  bool dma_bounce_failed; /* Allocation failed; unaligned I/O uses PIO */
+  bool dma_bounce_warned; /* Runtime PIO fallback already reported */
 #endif
 #endif
 };
@@ -281,6 +283,10 @@ static void rk3576_emmc_callback(struct rk3576_emmc_dev_s *priv);
 #ifdef CONFIG_SDIO_DMA
 static void rk3576_emmc_dma_disable(struct rk3576_emmc_dev_s *priv);
 static bool rk3576_emmc_dma_ok(const uint8_t *buffer, size_t buflen);
+#ifdef CONFIG_RK3576_DMA_ALLOC
+static void rk3576_emmc_warn_bounce_fallback(struct rk3576_emmc_dev_s *priv,
+                                             FAR const char *direction);
+#endif
 static int rk3576_emmc_dma_setup(struct rk3576_emmc_dev_s *priv,
                                  const uint8_t *buffer, size_t buflen,
                                  bool write);
@@ -2031,6 +2037,29 @@ static bool rk3576_emmc_dma_ok(const uint8_t *buffer, size_t buflen)
   return true;
 }
 
+#ifdef CONFIG_RK3576_DMA_ALLOC
+/****************************************************************************
+ * Name: rk3576_emmc_warn_bounce_fallback
+ *
+ * Description:
+ *   Report the first runtime transfer that must use PIO because allocation
+ *   of this host's DMA bounce buffer failed.  The allocation failure is also
+ *   reported during initialization; this one-shot message ties the missing
+ *   buffer to its data-path impact without flooding normal I/O.
+ ****************************************************************************/
+
+static void rk3576_emmc_warn_bounce_fallback(struct rk3576_emmc_dev_s *priv,
+                                             FAR const char *direction)
+{
+  if (priv->dma_bounce_failed && !priv->dma_bounce_warned)
+    {
+      mcwarn("WARNING: eMMC %s uses PIO because DMA bounce is unavailable\n",
+             direction);
+      priv->dma_bounce_warned = true;
+    }
+}
+#endif
+
 /****************************************************************************
  * Name: rk3576_emmc_dma_setup
  ****************************************************************************/
@@ -2175,6 +2204,8 @@ static int rk3576_emmc_dmarecvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
           priv->dma_bounce_dest = buffer;
           return rk3576_emmc_dma_setup(priv, priv->dma_bounce, buflen, false);
         }
+
+      rk3576_emmc_warn_bounce_fallback(priv, "read");
 #endif
 
       return rk3576_emmc_recvsetup(dev, buffer, buflen);
@@ -2199,6 +2230,8 @@ static int rk3576_emmc_dmasendsetup(struct sdio_dev_s *dev,
           priv->dma_bounce_dest = NULL;
           return rk3576_emmc_dma_setup(priv, priv->dma_bounce, buflen, true);
         }
+
+      rk3576_emmc_warn_bounce_fallback(priv, "write");
 #endif
 
       return rk3576_emmc_sendsetup(dev, buffer, buflen);
@@ -2265,7 +2298,13 @@ struct sdio_dev_s *rk3576_emmc_initialize(int slotno)
       priv->dma_bounce = rk3576_dma_alloc(RK3576_EMMC_ADMA_MAXXFR);
       if (priv->dma_bounce == NULL)
         {
+          priv->dma_bounce_failed = true;
           mcwarn("WARNING: eMMC DMA bounce allocation failed\n");
+        }
+      else
+        {
+          priv->dma_bounce_failed = false;
+          priv->dma_bounce_warned = false;
         }
     }
 #endif
