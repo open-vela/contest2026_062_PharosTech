@@ -8,10 +8,10 @@
   -->
   <include name="openvela.xml"/>
 
-  <!-- Track the reviewed eMMC branch, rebased on the ES8388 integration. -->
+  <!-- Track the fork development branch containing reviewed eMMC support. -->
   <remote name="beaconcat" fetch="https://github.com/BeaconCat/"/>
   <extend-project name="nuttx" remote="beaconcat"
-                  revision="refs/heads/beaconcat/emmc-high-speed-v2"/>
+                  revision="refs/heads/dev-ai-contest-2026"/>
 
   <project path="contest2026_062_PharosTech" name="contest2026_062_PharosTech">
     <linkfile src="boards" dest="vendor/rockchip/boards"/>
