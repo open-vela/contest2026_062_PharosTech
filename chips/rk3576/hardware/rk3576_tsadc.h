@@ -135,8 +135,12 @@
 
 /* TSADC_AUTO_STATUS (0x0008) ********************************************/
 
-#define TSADC_AUTO_STATUS_IN_PROGRESS (1 << 1) /* 1 = auto running */
-#define TSADC_AUTO_STATUS_HT_WARM     (1 << 3) /* 1 = > shut temp */
+#define TSADC_AUTO_STATUS_IN_PROGRESS    (1 << 2) /* 1 = auto running */
+#define TSADC_AUTO_STATUS_LAST_TSHUT_CRU (1 << 1) /* W1C: last tshut->CRU */
+#define TSADC_AUTO_STATUS_LAST_TSHUT_GPIO                           \
+  (1 << 0)                                 /* W1C: last tshut->GPIO \
+                                            */
+#define TSADC_AUTO_STATUS_HT_WARM (1 << 3) /* 1 = > shut temp */
 
 /* HIWORD write-mask helper: enable the lower 16 bits to be written. */
 
