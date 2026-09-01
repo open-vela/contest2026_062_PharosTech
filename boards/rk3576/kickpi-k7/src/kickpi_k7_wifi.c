@@ -142,11 +142,12 @@ static bool kickpi_k7_wifi_blob_is_zero(FAR const uint8_t *data,
                                         size_t length);
 static bool kickpi_k7_wifi_has_placeholders(void);
 static void kickpi_k7_wifi_warn_placeholders(void);
-static int kickpi_k7_wifi_config_alt(gpio_pinset_t pinset, unsigned int af,
-                                     enum rk3576_gpio_pull_e pull,
-                                     FAR struct gpio_dev_s **handle);
-static int kickpi_k7_wifi_config_output(gpio_pinset_t pinset, bool value,
-                                        FAR struct gpio_dev_s **handle);
+static int kickpi_k7_wifi_config_sdio_pin(gpio_pinset_t pinset,
+                                          unsigned int af,
+                                          enum rk3576_gpio_pull_e pull,
+                                          FAR struct gpio_dev_s **handle);
+static int kickpi_k7_wifi_config_output_pin(gpio_pinset_t pinset, bool value,
+                                            FAR struct gpio_dev_s **handle);
 static int kickpi_k7_wifi_power_on(FAR void *arg);
 static void kickpi_k7_wifi_power_off(FAR void *arg);
 static int kickpi_k7_wifi_load_address(FAR void *arg,
@@ -252,9 +253,10 @@ static void kickpi_k7_wifi_warn_placeholders(void)
   syslog(LOG_WARNING, "%s", msg);
 }
 
-static int kickpi_k7_wifi_config_alt(gpio_pinset_t pinset, unsigned int af,
-                                     enum rk3576_gpio_pull_e pull,
-                                     FAR struct gpio_dev_s **handle)
+static int kickpi_k7_wifi_config_sdio_pin(gpio_pinset_t pinset,
+                                          unsigned int af,
+                                          enum rk3576_gpio_pull_e pull,
+                                          FAR struct gpio_dev_s **handle)
 {
   int ret;
 
@@ -268,13 +270,13 @@ static int kickpi_k7_wifi_config_alt(gpio_pinset_t pinset, unsigned int af,
     }
 
   rk3576_gpio_set_pull(*handle, pull);
-  rk3576_gpio_set_schmitt(*handle, true);
+  rk3576_gpio_set_drive(*handle, RK3576_GPIO_DRIVE_50OHM);
   rk3576_gpio_set_af(*handle, af);
   return OK;
 }
 
-static int kickpi_k7_wifi_config_output(gpio_pinset_t pinset, bool value,
-                                        FAR struct gpio_dev_s **handle)
+static int kickpi_k7_wifi_config_output_pin(gpio_pinset_t pinset, bool value,
+                                            FAR struct gpio_dev_s **handle)
 {
   int ret;
 
@@ -518,7 +520,7 @@ int kickpi_k7_wifi_initialize(void)
   for (i = 0;
        i < (int)(sizeof(g_wifi_sdio_pins) / sizeof(g_wifi_sdio_pins[0])); i++)
     {
-      ret = kickpi_k7_wifi_config_alt(
+      ret = kickpi_k7_wifi_config_sdio_pin(
           g_wifi_sdio_pins[i], 2, RK3576_GPIO_PULLUP, &g_wifi_sdio_handles[i]);
       if (ret < 0)
         {
@@ -533,15 +535,16 @@ int kickpi_k7_wifi_initialize(void)
 
   for (i = 0; i < (int)nitems(g_wifi_companion_pins); i++)
     {
-      ret = kickpi_k7_wifi_config_output(g_wifi_companion_pins[i], i != 0,
-                                         &g_wifi_companion_handles[i]);
+      ret = kickpi_k7_wifi_config_output_pin(g_wifi_companion_pins[i], i != 0,
+                                             &g_wifi_companion_handles[i]);
       if (ret < 0)
         {
           return ret;
         }
     }
 
-  ret = kickpi_k7_wifi_config_output(WIFI_WL_REG_ON, false, &g_wifi_wl_reg_on);
+  ret = kickpi_k7_wifi_config_output_pin(WIFI_WL_REG_ON, false,
+                                         &g_wifi_wl_reg_on);
   if (ret < 0)
     {
       return ret;
