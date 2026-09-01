@@ -112,6 +112,15 @@
 #define RK3576_FSPI0_ADDR 0x2A340000
 #define RK3576_FSPI1_ADDR 0x2A300000
 
+/* Watchdog Timer (WDT), TRM Part1 Ch15.  Six independent WDT instances. */
+
+#define RK3576_PMU_WDT_ADDR 0x27340000 /* PMU_WDT  - reset PMU_MCU  */
+#define RK3576_NPU_WDT_ADDR 0x27780000 /* NPU_WDT  - reset NPU_MCU  */
+#define RK3576_DDR_WDT_ADDR 0x2A040000 /* DDR_WDT  - reset DDR_MCU  */
+#define RK3576_WDT_S_ADDR   0x2A4C0000 /* WDT_S    - secure WDT     */
+#define RK3576_WDT_NS_ADDR  0x2ACE0000 /* WDT_NS   - non-secure WDT */
+#define RK3576_BUS_WDT_ADDR 0x2AEB0000 /* BUS_WDT  - reset BUS_MCU  */
+
 /* Clock & Reset Unit */
 
 #define RK3576_CRU_ADDR         0x27200000

@@ -265,6 +265,24 @@ config RK3576_SPI
 		via the clock framework; SS_N/SCK/MOSI/MISO pin muxing is the
 		board's responsibility.
 
+config RK3576_WDT
+	bool "Watchdog Timer (WDT)"
+	default n
+	select WATCHDOG
+	---help---
+		Enable the RK3576 Watchdog Timer lower-half driver (TRM Part1
+		Ch15).  A 32-bit down-counter that resets the SoC when it reaches
+		zero; the counter is kicked by writing 0x76 to WDT_CRR.
+
+		The SoC exposes six instances (PMU/NPU/DDR/S/NS/BUS), but only
+		two are usable from NuttX and both are returned by
+		rk3576_wdt_initialize(): WDT_NS (non-secure world, 24 MHz) and
+		WDT_PMU (PMU domain, 32 kHz deep-sleep clock, keeps running while
+		the system sleeps).  The secure WDT_S is not accessible from the
+		non-secure context, and the NPU/DDR/BUS instances reset their
+		subordinate MCUs rather than the main CPU, so they are rejected.
+		The board registers the wanted instance as /dev/watchdogN.
+
 endmenu # Rockchip RK3576 Peripheral Selection
 
 if RK3576_SARADC

@@ -75,6 +75,10 @@ ifeq ($(CONFIG_RK3576_TSADC),y)
 CHIP_CSRCS += rk3576_tsadc.c
 endif
 
+ifeq ($(CONFIG_RK3576_WDT),y)
+CHIP_CSRCS += rk3576_wdt.c
+endif
+
 ifeq ($(CONFIG_RTC_ARCH),y)
 CHIP_CSRCS += rk3576_rtc.c
 endif
