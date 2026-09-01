@@ -38,6 +38,11 @@
 #include <nuttx/sensors/sensor.h>
 #endif
 
+#ifdef CONFIG_KICKPI_K7_WDT
+#include "rk3576_wdt.h"
+#include <nuttx/timers/watchdog.h>
+#endif
+
 #ifdef CONFIG_DEV_GPIO
 #include <nuttx/ioexpander/gpio.h>
 #endif
@@ -195,6 +200,41 @@ void board_late_initialize(void)
 #ifdef CONFIG_RK3576_EMMC
   FAR struct sdio_dev_s *emmc = NULL;
 #endif
+
+#ifdef CONFIG_KICKPI_K7_WDT
+  /* Register the on-chip watchdog as /dev/watchdog0 BEFORE the clock tree
+   * is brought up.  The RK3576 WDT driver is fully self-contained: it only
+   * pokes the WDT registers directly (getreg32/putreg32) and never calls
+   * into the CLK framework (no clk_get/clk_enable), so it is safe to run
+   * here even though rk3576_clk_tree_initialize() has not run yet.
+   *
+   * The only implicit dependency is that the bootloader has left the WDT
+   * pclk gate open — same assumption as the other on-chip peripherals.
+   * The upper-half starts disabled, so registering early is side-effect
+   * free; the kernel auto-monitor or user space enables it later.
+   */
+
+  {
+    FAR struct watchdog_lowerhalf_s *wdt;
+
+#if defined(CONFIG_KICKPI_K7_WDT_NS)
+    wdt = rk3576_wdt_initialize(RK3576_WDT_NS);
+#elif defined(CONFIG_KICKPI_K7_WDT_PMU)
+    wdt = rk3576_wdt_initialize(RK3576_WDT_PMU);
+#else
+    wdt = NULL;
+#endif
+
+    if (wdt == NULL)
+      {
+        syslog(LOG_ERR, "ERROR: rk3576_wdt_initialize failed\n");
+      }
+    else if (watchdog_register("/dev/watchdog0", wdt) == NULL)
+      {
+        syslog(LOG_ERR, "ERROR: watchdog_register failed\n");
+      }
+  }
+#endif /* CONFIG_KICKPI_K7_WDT */
 
   /* Register the RK3576 clock tree with the NuttX CLK framework.
    * Must be done before any peripheral driver calls clk_get().
