@@ -51,6 +51,8 @@
  * Private Functions
  ****************************************************************************/
 
+#ifdef CONFIG_RTC_ALARM
+
 /****************************************************************************
  * Name: kickpi_k7_rtc_int_handler
  *
@@ -71,6 +73,8 @@ static int kickpi_k7_rtc_int_handler(FAR struct gpio_dev_s *dev, uint8_t pin)
   pcf8563_alarm_service(NULL);
   return OK;
 }
+
+#endif
 
 /****************************************************************************
  * Public Functions
@@ -95,7 +99,6 @@ static int kickpi_k7_rtc_int_handler(FAR struct gpio_dev_s *dev, uint8_t pin)
 int kickpi_k7_rtc_initialize(void)
 {
   struct i2c_master_s *i2c;
-  struct gpio_dev_s *int_gpio;
   int ret;
 
   /* Mux the I2C2 control bus (SCL GPIO0_B7 / SDA GPIO0_C0, AF9) using the
@@ -143,6 +146,8 @@ int kickpi_k7_rtc_initialize(void)
    * Claim it as an input with pull-up, trigger on the falling edge, attach
    * the bridge callback, then unmask the interrupt.
    */
+
+  struct gpio_dev_s *int_gpio = NULL;
 
   ret = rk3576_gpio_get(KICKPI_K7_RTC_INT_PIN, &int_gpio);
   if (ret < 0)
