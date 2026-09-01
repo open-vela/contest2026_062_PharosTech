@@ -2219,17 +2219,17 @@ static void rk3576_clk_register_sdio(void)
 #ifdef CONFIG_RK3576_EMMC
 static void rk3576_clk_register_emmc(void)
 {
-  static const char *g_pll_parents[] = {
+  static const char *pll_parents[] = {
     "clk_gpll", /* 0b0 */
     "clk_cpll", /* 0b1 */
   };
-  static const char *g_nvm_bus_parents[] = {
+  static const char *nvm_bus_parents[] = {
     "clk_gpll_div6",  /* 0b00 */
     "clk_cpll_div10", /* 0b01 */
     "clk_cpll_div20", /* 0b10 */
     "xin_osc0",       /* 0b11 */
   };
-  static const char *g_emmc_card_parents[] = {
+  static const char *emmc_card_parents[] = {
     "clk_gpll", /* 0b00 */
     "clk_cpll", /* 0b01 */
     "xin_osc0", /* 0b10; 0b11 is undefined */
@@ -2242,7 +2242,7 @@ static void rk3576_clk_register_emmc(void)
   /* HCLK_NVM_ROOT: CLKSEL_CON88 parent [1:0], GATE_CON33 bit 0. */
 
   clk_register_mux(
-      "hclk_nvm_root_sel", g_nvm_bus_parents, nitems(g_nvm_bus_parents),
+      "hclk_nvm_root_sel", nvm_bus_parents, nitems(nvm_bus_parents),
       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
       nvm_sel, 0, 2, CLK_MUX_HIWORD_MASK);
   clk_register_gate("hclk_nvm_root", "hclk_nvm_root_sel",
@@ -2253,7 +2253,7 @@ static void rk3576_clk_register_emmc(void)
 
   /* ACLK_NVM_ROOT: CLKSEL_CON88 parent bit 7, divider [6:2], gate bit 1. */
 
-  clk_register_mux("aclk_nvm_root_sel", g_pll_parents, nitems(g_pll_parents),
+  clk_register_mux("aclk_nvm_root_sel", pll_parents, nitems(pll_parents),
                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
                        CLK_PARENT_NAME_IS_STATIC,
                    nvm_sel, 7, 1, CLK_MUX_HIWORD_MASK);
@@ -2270,7 +2270,7 @@ static void rk3576_clk_register_emmc(void)
   /* CCLK_SRC_EMMC: CLKSEL_CON89 parent [15:14], divider [13:8], gate bit 8. */
 
   mux = clk_register_mux(
-      "cclk_src_emmc_sel", g_emmc_card_parents, nitems(g_emmc_card_parents),
+      "cclk_src_emmc_sel", emmc_card_parents, nitems(emmc_card_parents),
       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
       card_sel, 14, 2, CLK_MUX_HIWORD_MASK);
   if (mux == NULL)
@@ -2298,10 +2298,10 @@ static void rk3576_clk_register_emmc(void)
                     cru + RK3576_CRU_GATE_CON(33), 10,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 
-  clk_register_mux(
-      "bclk_emmc_sel", g_nvm_bus_parents, nitems(g_nvm_bus_parents),
-      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-      cru + RK3576_CRU_CLKSEL_CON(90), 0, 2, CLK_MUX_HIWORD_MASK);
+  clk_register_mux("bclk_emmc_sel", nvm_bus_parents, nitems(nvm_bus_parents),
+                   CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                       CLK_PARENT_NAME_IS_STATIC,
+                   cru + RK3576_CRU_CLKSEL_CON(90), 0, 2, CLK_MUX_HIWORD_MASK);
   clk_register_gate("bclk_emmc", "bclk_emmc_sel", CLK_NAME_IS_STATIC,
                     cru + RK3576_CRU_GATE_CON(33), 11,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
