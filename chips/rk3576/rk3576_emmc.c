@@ -279,7 +279,8 @@ static void rk3576_emmc_dma_disable(struct rk3576_emmc_dev_s *priv);
 static bool rk3576_emmc_dma_ok(const uint8_t *buffer, size_t buflen);
 #ifdef CONFIG_RK3576_DMA_ALLOC
 static void rk3576_emmc_warn_bounce_fallback(struct rk3576_emmc_dev_s *priv,
-                                             FAR const char *direction);
+                                             FAR const char *direction,
+                                             size_t buflen);
 #endif
 static int rk3576_emmc_dma_setup(struct rk3576_emmc_dev_s *priv,
                                  const uint8_t *buffer, size_t buflen,
@@ -2077,19 +2078,21 @@ static bool rk3576_emmc_dma_ok(const uint8_t *buffer, size_t buflen)
  * Name: rk3576_emmc_warn_bounce_fallback
  *
  * Description:
- *   Report the first runtime transfer that must use PIO because allocation
- *   of this host's DMA bounce buffer failed.  The allocation failure is also
- *   reported during initialization; this one-shot message ties the missing
- *   buffer to its data-path impact without flooding normal I/O.
+ *   Report the first runtime transfer that must use PIO because this host's
+ *   DMA bounce buffer is absent, too small or otherwise ineligible.  Keep the
+ *   message one-shot so normal fallback does not flood the log.
  ****************************************************************************/
 
 static void rk3576_emmc_warn_bounce_fallback(struct rk3576_emmc_dev_s *priv,
-                                             FAR const char *direction)
+                                             FAR const char *direction,
+                                             size_t buflen)
 {
-  if (priv->dma_bounce_failed && !priv->dma_bounce_warned)
+  if (!priv->dma_bounce_warned)
     {
-      mcwarn("WARNING: eMMC %s uses PIO because DMA bounce is unavailable\n",
-             direction);
+      mcwarn("WARNING: eMMC %s uses PIO: DMA bounce unavailable for %zu "
+             "bytes%s\n",
+             direction, buflen,
+             priv->dma_bounce_failed ? " (allocation failed)" : "");
       priv->dma_bounce_warned = true;
     }
 }
@@ -2240,7 +2243,7 @@ static int rk3576_emmc_dmarecvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
           return rk3576_emmc_dma_setup(priv, priv->dma_bounce, buflen, false);
         }
 
-      rk3576_emmc_warn_bounce_fallback(priv, "read");
+      rk3576_emmc_warn_bounce_fallback(priv, "read", buflen);
 #endif
 
       return rk3576_emmc_recvsetup(dev, buffer, buflen);
@@ -2266,7 +2269,7 @@ static int rk3576_emmc_dmasendsetup(struct sdio_dev_s *dev,
           return rk3576_emmc_dma_setup(priv, priv->dma_bounce, buflen, true);
         }
 
-      rk3576_emmc_warn_bounce_fallback(priv, "write");
+      rk3576_emmc_warn_bounce_fallback(priv, "write", buflen);
 #endif
 
       return rk3576_emmc_sendsetup(dev, buffer, buflen);
