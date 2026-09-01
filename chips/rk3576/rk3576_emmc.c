@@ -2157,8 +2157,8 @@ static int rk3576_emmc_dmapreflight(struct sdio_dev_s *dev,
  *
  * Description:
  *   Select ADMA2 for cache-line-aligned low-4G buffers within descriptor
- *   capacity.  Unaligned reads use a DMA-safe bounce buffer when available;
- *   other requests transparently use the proven PIO path.
+ *   capacity.  Unaligned reads and writes use a DMA-safe bounce buffer when
+ *   available; other requests transparently use the proven PIO path.
  ****************************************************************************/
 
 static int rk3576_emmc_dmarecvsetup(struct sdio_dev_s *dev, uint8_t *buffer,
@@ -2191,9 +2191,20 @@ static int rk3576_emmc_dmasendsetup(struct sdio_dev_s *dev,
 
   if (!rk3576_emmc_dma_ok(buffer, buflen))
     {
+#ifdef CONFIG_RK3576_DMA_ALLOC
+      if (priv->dma_bounce != NULL &&
+          rk3576_emmc_dma_ok(priv->dma_bounce, buflen))
+        {
+          memcpy(priv->dma_bounce, buffer, buflen);
+          priv->dma_bounce_dest = NULL;
+          return rk3576_emmc_dma_setup(priv, priv->dma_bounce, buflen, true);
+        }
+#endif
+
       return rk3576_emmc_sendsetup(dev, buffer, buflen);
     }
 
+  priv->dma_bounce_dest = NULL;
   return rk3576_emmc_dma_setup(priv, buffer, buflen, true);
 }
 
