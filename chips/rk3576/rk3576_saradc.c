@@ -199,6 +199,13 @@ static int rk3576_saradc_trigger(FAR struct rk3576_saradc_core_s *core,
   uint32_t data_off;
   int t;
 
+  /* Clear the sticky end-of-conversion status bit (W1C) *before* starting,
+   * so the completion test below cannot be fooled by a conversion that
+   * finished while we were still setting up.
+   */
+
+  saradc_putreg(core, RK3576_SARADC_END_INT_ST, 1u << SARADC_END_INT_ST_BIT);
+
   /* Select channel and enable single-PD mode, then start.  All fields used
    * here sit in the lower 16 bits with their write-enable bits set in the
    * upper 16 (hiword-mask scheme): bits [3:0] channel_sel, bit4 start_adc,
@@ -215,28 +222,16 @@ static int rk3576_saradc_trigger(FAR struct rk3576_saradc_core_s *core,
   /* single_pd_mode asserts PD after each conversion, so every trigger here
    * is a power-up sequence: PD is deasserted, the SAR CDAC/reference must
    * settle (~1 us per TRM 18.5.1), then SOC is asserted and the FSM runs.
-   * A single "wait until conv_st == 0" poll is racy because immediately
-   * after writing CONV_CON the FSM may not yet have asserted conv_st, so the
-   * loop would see idle and return before the conversion even started --
-   * reading the stale (zero) DATA register.  Therefore do a two-phase wait:
-   * first wait for conv_st to go high (conversion has actually begun), then
-   * wait for it to go low (conversion complete).
+   *
+   * Do NOT use a two-phase "wait for conv_st == 1 then conv_st == 0" poll:
+   * at the 20 MHz conversion clock a 12-bit conversion can complete before
+   * the first STATUS read, so conv_st may already have returned to 0 and the
+   * loop would falsely report "conversion never started".  Instead, wait a
+   * fixed lower-bound delay (>= the PD deassert + CDAC settle time) so the
+   * FSM has definitely started, then do a single-phase busy-until-idle poll.
    */
 
-  for (t = 0; t < SARADC_POLL_LIMIT; t++)
-    {
-      if ((saradc_getreg(core, RK3576_SARADC_STATUS) & SARADC_STATUS_BUSY) !=
-          0)
-        {
-          break;
-        }
-    }
-
-  if (t >= SARADC_POLL_LIMIT)
-    {
-      aerr("SARADC: conversion never started on channel %u\n", ch);
-      return -ETIMEDOUT;
-    }
+  up_udelay(2);
 
   for (t = 0; t < SARADC_POLL_LIMIT; t++)
     {
@@ -574,24 +569,37 @@ FAR struct adc_dev_s *rk3576_saradc_initialize(enum rk3576_saradc_ch_e channel)
 
   if (core->base == 0)
     {
-      core->base = RK3576_SARADC_ADDR;
-      core->clk_rate = CONFIG_RK3576_SARADC_CLK_RATE;
+      FAR struct clk_s *pclk;
+      FAR struct clk_s *clk;
 
-      core->pclk = clk_get("pclk_saradc");
-      if (core->pclk == NULL)
+      /* Resolve *all* resources into locals first; only commit the core
+       * state once every resource has been obtained successfully.  Writing
+       * core->base (the "initialised" sentinel) or any clock handle before
+       * the others would leave a partially-initialised core visible to
+       * sibling channels if a later clk_get() failed, so never touch core
+       * state on a failure path here.
+       */
+
+      pclk = clk_get("pclk_saradc");
+      if (pclk == NULL)
         {
           nxmutex_unlock(&core->lock);
           aerr("ERROR: failed to get clock pclk_saradc\n");
           return NULL;
         }
 
-      core->clk = clk_get("clk_saradc");
-      if (core->clk == NULL)
+      clk = clk_get("clk_saradc");
+      if (clk == NULL)
         {
           nxmutex_unlock(&core->lock);
           aerr("ERROR: failed to get clock clk_saradc\n");
           return NULL;
         }
+
+      core->base = RK3576_SARADC_ADDR;
+      core->clk_rate = CONFIG_RK3576_SARADC_CLK_RATE;
+      core->pclk = pclk;
+      core->clk = clk;
     }
 
   priv = &g_saradc_chan[channel];
