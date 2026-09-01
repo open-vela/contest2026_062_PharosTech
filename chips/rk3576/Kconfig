@@ -105,6 +105,7 @@ config RK3576_PWM
 config RK3576_EMMC
 	bool "eMMC (dwcmshc / SDHCI)"
 	default n
+	select CLK
 	select ARCH_HAVE_SDIO
 	select MMCSD
 	select MMCSD_SDIO
@@ -113,10 +114,10 @@ config RK3576_EMMC
 	---help---
 		Enable the RK3576 eMMC host controller driver (mmc@2a330000, a
 		Synopsys dwcmshc / SDHCI 3.0 host -- a different IP from the
-		SDMMC/SDIO dw-mshc hosts).  PIO data path, default/high-speed,
-		1/4/8-bit bus.  HS400/CQE/DLL are not supported.  The bootloader
-		leaves the eMMC CRU clock ungated, so no CRU/pinctrl setup is
-		needed (non-removable, loader-configured).
+		SDMMC/SDIO dw-mshc hosts).  Supports PIO and ADMA2 data paths,
+		1/4/8-bit bus operation, HS200 tuning, and HS400 enhanced strobe.
+		The driver manages the complete eMMC clock domain through the NuttX
+		clock framework; board code owns pin configuration.
 
 config RK3576_GPIO
 	bool "GPIO"

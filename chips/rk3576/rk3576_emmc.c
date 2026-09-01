@@ -28,10 +28,8 @@
  * fallback for buffers that cannot be addressed safely by 32-bit ADMA2.
  * HS400/CQE/DLL support uses the Rockchip vendor area and is separate.
  *
- * The eMMC is a non-removable, loader-configured boot device: the bootloader
- * has already ungated the CRU clock domain and configured the pin IOMUX, so
- * this driver adds no CRU or pinctrl code (HOSTVER/CAP read back valid with
- * the loader configuration only).
+ * The eMMC is a non-removable boot device.  Its CRU clock domain is managed
+ * through the common NuttX clock framework; board code owns the pin IOMUX.
  ****************************************************************************/
 
 /****************************************************************************
@@ -51,6 +49,7 @@
 #include <syslog.h>
 
 #include <nuttx/arch.h>
+#include <nuttx/clk/clk.h>
 #include <nuttx/clock.h>
 #include <nuttx/irq.h>
 #include <nuttx/mmcsd.h>
@@ -64,7 +63,6 @@
 #include "arm64_arch.h"
 #include "arm64_internal.h"
 #include "chip.h"
-#include "hardware/rk3576_cru.h"
 #include "hardware/rk3576_emmc.h"
 #include "hardware/rk3576_memorymap.h"
 #include "rk3576_dma_alloc.h"
@@ -79,18 +77,6 @@
 /* Single eMMC host on the RK3576. */
 
 #define RK3576_EMMC_NHOSTS 1
-
-/* Card clock parents provided by RK3576 CRU. */
-#define RK3576_EMMC_GPLL_FREQ     1188000000
-#define RK3576_EMMC_OSC_FREQ      24000000
-
-#define RK3576_EMMC_CRU_CLKSEL    89
-#define RK3576_EMMC_CRU_DIV_SHIFT 8
-#define RK3576_EMMC_CRU_DIV_MASK  (0x3f << 8)
-#define RK3576_EMMC_CRU_SEL_SHIFT 14
-#define RK3576_EMMC_CRU_SEL_MASK  (3 << 14)
-#define RK3576_EMMC_CRU_SEL_GPLL  0
-#define RK3576_EMMC_CRU_SEL_OSC   2
 
 /* Target card clock for each stage. */
 
@@ -183,6 +169,14 @@ struct rk3576_emmc_dev_s
   uintptr_t base; /* Controller register base address */
   int irq;        /* Controller interrupt number */
 
+  /* Managed CRU clocks */
+
+  FAR struct clk_s *cclk;
+  FAR struct clk_s *hclk;
+  FAR struct clk_s *aclk;
+  FAR struct clk_s *bclk;
+  FAR struct clk_s *tclk;
+
   /* Event wait support */
 
   sem_t waitsem;                       /* Wait-for-event semaphore */
@@ -261,7 +255,7 @@ static inline void rk3576_emmc_putreg32(struct rk3576_emmc_dev_s *priv,
 /* Low-level helpers */
 
 static void rk3576_emmc_setsigen(struct rk3576_emmc_dev_s *priv);
-static uint32_t rk3576_emmc_setcruclock(uint32_t freq);
+static int rk3576_emmc_enable_clocks(struct rk3576_emmc_dev_s *priv);
 static void rk3576_emmc_resetlines(struct rk3576_emmc_dev_s *priv,
                                    uint8_t lines);
 static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv,
@@ -487,44 +481,78 @@ static void rk3576_emmc_setsigen(struct rk3576_emmc_dev_s *priv)
 }
 
 /****************************************************************************
- * Name: rk3576_emmc_setcruclock
+ * Name: rk3576_emmc_enable_clocks
+ *
+ * Description:
+ *   Acquire and enable the complete eMMC clock domain.  Parent selection,
+ *   division and gates are owned by rk3576_clk_tree.c; this host driver only
+ *   requests the card rate it needs.
  ****************************************************************************/
 
-static uint32_t rk3576_emmc_setcruclock(uint32_t freq)
+static int rk3576_emmc_enable_clocks(struct rk3576_emmc_dev_s *priv)
 {
-  uintptr_t regaddr =
-      RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(RK3576_EMMC_CRU_CLKSEL);
-  uint32_t parent;
-  uint32_t select;
-  uint32_t divisor;
-  uint32_t value;
+  int ret;
 
-  if (freq <= RK3576_EMMC_ID_FREQ)
+  priv->cclk = clk_get("cclk_src_emmc");
+  priv->hclk = clk_get("hclk_emmc");
+  priv->aclk = clk_get("aclk_emmc");
+  priv->bclk = clk_get("bclk_emmc");
+  priv->tclk = clk_get("tclk_emmc");
+  if (priv->cclk == NULL || priv->hclk == NULL || priv->aclk == NULL ||
+      priv->bclk == NULL || priv->tclk == NULL)
     {
-      parent = RK3576_EMMC_OSC_FREQ;
-      select = RK3576_EMMC_CRU_SEL_OSC;
-    }
-  else
-    {
-      parent = RK3576_EMMC_GPLL_FREQ;
-      select = RK3576_EMMC_CRU_SEL_GPLL;
+      mcerr("ERROR: eMMC clock domain is not registered\n");
+      return -ENODEV;
     }
 
-  divisor = (parent + freq - 1) / freq;
-  if (divisor < 1)
+  ret = clk_set_rate(priv->cclk, RK3576_EMMC_ID_FREQ);
+  if (ret < 0)
     {
-      divisor = 1;
-    }
-  else if (divisor > 64)
-    {
-      divisor = 64;
+      mcerr("ERROR: eMMC identification clock setup failed: %d\n", ret);
+      return ret;
     }
 
-  value = ((RK3576_EMMC_CRU_DIV_MASK | RK3576_EMMC_CRU_SEL_MASK) << 16) |
-          (select << RK3576_EMMC_CRU_SEL_SHIFT) |
-          ((divisor - 1) << RK3576_EMMC_CRU_DIV_SHIFT);
-  putreg32(value, regaddr);
-  return parent / divisor;
+  ret = clk_enable(priv->hclk);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = clk_enable(priv->aclk);
+  if (ret < 0)
+    {
+      goto disable_hclk;
+    }
+
+  ret = clk_enable(priv->bclk);
+  if (ret < 0)
+    {
+      goto disable_aclk;
+    }
+
+  ret = clk_enable(priv->tclk);
+  if (ret < 0)
+    {
+      goto disable_bclk;
+    }
+
+  ret = clk_enable(priv->cclk);
+  if (ret < 0)
+    {
+      goto disable_tclk;
+    }
+
+  return OK;
+
+disable_tclk:
+  clk_disable(priv->tclk);
+disable_bclk:
+  clk_disable(priv->bclk);
+disable_aclk:
+  clk_disable(priv->aclk);
+disable_hclk:
+  clk_disable(priv->hclk);
+  return ret;
 }
 
 /****************************************************************************
@@ -540,6 +568,7 @@ static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
   uint32_t divided;
   uint16_t clk;
   int i;
+  int ret;
 
   /* 1) Disable the SD clock, keep the internal clock running. */
 
@@ -552,7 +581,15 @@ static void rk3576_emmc_setclock(struct rk3576_emmc_dev_s *priv, uint32_t freq)
 
   /* 2) Program the external card clock and use SDHCI divider zero. */
 
-  divided = rk3576_emmc_setcruclock(freq);
+  ret = clk_set_rate(priv->cclk, freq);
+  if (ret < 0)
+    {
+      mcwarn("WARNING: eMMC clock request failed requested=%" PRIu32
+             " error=%d\n",
+             freq, ret);
+    }
+
+  divided = clk_get_rate(priv->cclk);
 
   /* 3) Program the divider and wait for the internal clock to stabilise. */
 
@@ -623,8 +660,8 @@ static int rk3576_emmc_configdll(struct rk3576_emmc_dev_s *priv, bool hs400)
     {
       syslog(LOG_ERR,
              "ERROR: eMMC DLL lock timed out status=%08" PRIx32
-             " clksel89=%08" PRIx32 "\n",
-             value, getreg32(RK3576_CRU_ADDR + RK3576_CRU_CLKSEL_CON(89)));
+             " cclk=%" PRIu32 "\n",
+             value, clk_get_rate(priv->cclk));
       rk3576_emmc_putreg16(priv, RK3576_EMMC_CLKCTRL, savedclock);
       return -ETIMEDOUT;
     }
@@ -1892,12 +1929,10 @@ static int rk3576_emmc_execute_tuning(struct sdio_dev_s *dev, uint32_t cmd)
           if ((hc2 & EMMC_HOSTCTRL2_TUNED_CLK) != 0)
             {
               mcinfo("eMMC HS200 tuning complete iterations=%d"
-                     " hostctrl2=%04x dll=%08" PRIx32 " clksel89=%08" PRIx32
-                     "\n",
+                     " hostctrl2=%04x dll=%08" PRIx32 " cclk=%" PRIu32 "\n",
                      i + 1, hc2,
                      rk3576_emmc_getreg32(priv, RK3576_EMMC_VENDOR_DLLSTATUS0),
-                     getreg32(RK3576_CRU_ADDR +
-                              RK3576_CRU_CLKSEL_CON(RK3576_EMMC_CRU_CLKSEL)));
+                     clk_get_rate(priv->cclk));
               rk3576_emmc_resetlines(priv, EMMC_SWRESET_DAT);
               ret = OK;
               goto out;
@@ -2284,6 +2319,7 @@ static void rk3576_emmc_blocksetup(struct sdio_dev_s *dev,
 struct sdio_dev_s *rk3576_emmc_initialize(int slotno)
 {
   struct rk3576_emmc_dev_s *priv;
+  int ret;
 
   DEBUGASSERT(slotno >= 0 && slotno < RK3576_EMMC_NHOSTS);
 
@@ -2291,6 +2327,12 @@ struct sdio_dev_s *rk3576_emmc_initialize(int slotno)
   priv->dev = g_rk3576_emmc_ops; /* copy the shared ops template */
   priv->base = g_emmc_cfg[slotno].base;
   priv->irq = g_emmc_cfg[slotno].irq;
+
+  ret = rk3576_emmc_enable_clocks(priv);
+  if (ret < 0)
+    {
+      return NULL;
+    }
 
 #if defined(CONFIG_SDIO_DMA) && defined(CONFIG_RK3576_DMA_ALLOC)
   if (priv->dma_bounce == NULL)
