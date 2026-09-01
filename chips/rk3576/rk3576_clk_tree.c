@@ -2709,7 +2709,7 @@ static void rk3576_clk_register_saradc(void)
                     cru + RK3576_CRU_GATE_CON(13), 7,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 
-  clk_register_gate("pclk_saradc", NULL, CLK_NAME_IS_STATIC,
+  clk_register_gate("pclk_saradc", "pclk_bus_root", CLK_NAME_IS_STATIC,
                     cru + RK3576_CRU_GATE_CON(13), 6,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 }
