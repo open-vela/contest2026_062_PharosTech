@@ -219,28 +219,28 @@ static int rk3576_saradc_trigger(FAR struct rk3576_saradc_core_s *core,
         SARADC_CONV_START | SARADC_CONV_SINGLE_PD;
   saradc_putreg(core, RK3576_SARADC_CONV_CON, reg);
 
-  /* single_pd_mode asserts PD after each conversion, so every trigger here
-   * is a power-up sequence: PD is deasserted, the SAR CDAC/reference must
-   * settle (~1 us per TRM 18.5.1), then SOC is asserted and the FSM runs.
-   *
-   * Do NOT use a two-phase "wait for conv_st == 1 then conv_st == 0" poll:
-   * at the 20 MHz conversion clock a 12-bit conversion can complete before
-   * the first STATUS read, so conv_st may already have returned to 0 and the
-   * loop would falsely report "conversion never started".  Instead, wait a
-   * fixed lower-bound delay (>= the PD deassert + CDAC settle time) so the
-   * FSM has definitely started, then do a single-phase busy-until-idle poll.
+  /* Poll the sticky end-of-conversion status bit instead of the STATUS busy
+   * bit.  END_INT_ST is a W1C sticky bit that is set exactly once, when this
+   * conversion finishes, and only after we cleared it above, so it is neither
+   * fooled by an FSM that has not yet started (low clk_rate: T_PD_SOC=0x13
+   * cycles + 12-bit conversion can far exceed any fixed delay at, e.g., a few
+   * kHz) nor by a conversion that already finished before our first STATUS
+   * read (high clk_rate).  END_INT_ST does not require END_INT_EN to be
+   * asserted, since it is a status bit, not the interrupt request itself.
    */
-
-  up_udelay(2);
 
   for (t = 0; t < SARADC_POLL_LIMIT; t++)
     {
-      if ((saradc_getreg(core, RK3576_SARADC_STATUS) & SARADC_STATUS_BUSY) ==
-          0)
+      if ((saradc_getreg(core, RK3576_SARADC_END_INT_ST) &
+           (1u << SARADC_END_INT_ST_BIT)) != 0)
         {
           break;
         }
     }
+
+  /* Consume the sticky EOC bit (W1C) so the next trigger starts clean. */
+
+  saradc_putreg(core, RK3576_SARADC_END_INT_ST, 1u << SARADC_END_INT_ST_BIT);
 
   if (t >= SARADC_POLL_LIMIT)
     {
