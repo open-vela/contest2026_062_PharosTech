@@ -146,4 +146,38 @@ config KICKPI_K7_LCD
 		The display backlight (GPIO2_D7 -> PWM2 CH7) is registered as
 		/dev/pwm0 for user-layer control (active-low: HIGH = off).
 
+config KICKPI_K7_WDT
+	bool "On-chip Watchdog Timer (WDT)"
+	default n
+	depends on RK3576_WDT
+	---help---
+		Register one RK3576 on-chip watchdog timer as /dev/watchdog0 in
+		board_late_initialize().  NuttX upper-half (CONFIG_WATCHDOG)
+		then allows the kernel auto-monitor and/or user space to control
+		it.
+
+if KICKPI_K7_WDT
+
+choice
+	prompt "WDT instance"
+	default KICKPI_K7_WDT_NS
+	---help---
+		Select which RK3576 WDT instance to register.  The SoC exposes
+		six instances but only the non-secure WDT (WDT_NS, 24 MHz) and
+		the PMU-domain WDT (WDT_PMU, 32 kHz, keeps running during sleep)
+		are usable from NuttX.  The secure WDT_S is not accessible from
+		the non-secure world, and the NPU/DDR/BUS instances reset their
+		subordinate MCUs, so they are not offered here.  WDT_NS is the
+		natural default for the NuttX kernel/user space.
+
+config KICKPI_K7_WDT_NS
+	bool "WDT_NS (non-secure, 0x2ACE0000, 24 MHz)"
+
+config KICKPI_K7_WDT_PMU
+	bool "WDT_PMU (PMU domain, 0x27340000, 32 kHz, works in sleep)"
+
+endchoice
+
+endif # KICKPI_K7_WDT
+
 endif # ARCH_BOARD_KICKPI_K7
