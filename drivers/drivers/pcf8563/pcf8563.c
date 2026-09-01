@@ -1362,6 +1362,12 @@ int pcf8563_clkout_set(enum pcf8563_clkout_freq_e freq)
   uint8_t regs[2];
   int ret;
 
+  if (g_pcf8563.dev.i2c == NULL)
+    {
+      rtcerr("ERROR: device not initialized\n");
+      return -ENODEV;
+    }
+
   /* CLKOUT_control: [address, data].  Disable does not program a frequency;
    * clear FE and leave FD[1:0] at 0 (32.768 kHz default when re-enabled).
    */
