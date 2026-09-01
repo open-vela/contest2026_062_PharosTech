@@ -26,6 +26,7 @@ Ymodem 再失败(1.5Mbaud CH340 边际不可靠)板子就卡在 rb 接收态, �
 """
 import argparse
 import os
+import struct
 import subprocess
 import sys
 import time
@@ -39,6 +40,25 @@ CAN = 0x18
 CRC = 0x43
 
 BOARD_IMG = "/tmp/fw.img"
+FIT_MAGIC = 0xD00DFEED
+FIT_HEADER_MAX = 64 * 1024
+
+
+def validate_fit(path):
+    """拒绝会覆盖 RK3576 SPL 工作区的大型 embedded-data FIT。"""
+    with open(path, "rb") as image:
+        header = image.read(8)
+
+    if len(header) != 8:
+        sys.exit("固件太短，不是有效 FIT: %s" % path)
+
+    magic, header_size = struct.unpack(">II", header)
+    if magic != FIT_MAGIC:
+        sys.exit("固件不是有效 FIT: magic=0x%08x" % magic)
+    if header_size > FIT_HEADER_MAX:
+        sys.exit("拒绝危险的 embedded-data FIT: FDT 头 %d 字节，最大 %d。"
+                 "请只使用 build_sd.sh 生成的 mkimage -E 镜像。" %
+                 (header_size, FIT_HEADER_MAX))
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +320,8 @@ def main():
 
     if not os.path.isfile(a.img):
         sys.exit("固件不存在: %s" % a.img)
+
+    validate_fit(a.img)
 
     if a.ymodem:
         if not a.port:

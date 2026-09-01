@@ -76,6 +76,20 @@ config KICKPI_K7_WIFI_CALIB
 	default "SWT6621S_SEEKWAVE_R00001.bin"
 	depends on KICKPI_K7_WIFI
 
+config KICKPI_K7_BLUETOOTH
+	bool "On-board SeekWave SV6621 Bluetooth"
+	default n
+	depends on KICKPI_K7_WIFI
+	select SV6621_BLUETOOTH
+	---help---
+		Start the Bluetooth service in the on-board combo, download its NVDS
+		calibration records and register /dev/ttyHCI0 for Fluoride.
+
+config KICKPI_K7_BLUETOOTH_NV
+	string "SV6621 Bluetooth NVDS image"
+	default "sv6160lite.nvbin"
+	depends on KICKPI_K7_BLUETOOTH
+
 config KICKPI_K7_AUDIO
 	bool "On-board ES8388 audio (SAI1 + I2C3)"
 	default n

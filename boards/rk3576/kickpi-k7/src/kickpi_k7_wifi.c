@@ -119,6 +119,20 @@ extern const uint8_t g_sv6621_nv_end[];
 extern const uint8_t g_sv6621_calib_start[];
 extern const uint8_t g_sv6621_calib_end[];
 
+#ifdef CONFIG_KICKPI_K7_BLUETOOTH
+__asm__("  .section .rodata, \"a\"\n"
+        "  .align 4\n"
+        "  .global g_sv6621_bt_nv_start\n"
+        "g_sv6621_bt_nv_start:\n"
+        "  .incbin \"" CONFIG_KICKPI_K7_BLUETOOTH_NV "\"\n"
+        "  .global g_sv6621_bt_nv_end\n"
+        "g_sv6621_bt_nv_end:\n"
+        "  .previous\n");
+
+extern const uint8_t g_sv6621_bt_nv_start[];
+extern const uint8_t g_sv6621_bt_nv_end[];
+#endif
+
 static const gpio_pinset_t g_wifi_sdio_pins[] = {
   WIFI_SDIO_PIN(GPIO_PIN_B4), /* D0 */
   WIFI_SDIO_PIN(GPIO_PIN_B5), /* D1 */
@@ -667,6 +681,11 @@ int kickpi_k7_wifi_initialize(void)
   config.nvram.length = g_sv6621_nv_end - g_sv6621_nv_start;
   config.calibration.data = g_sv6621_calib_start;
   config.calibration.length = g_sv6621_calib_end - g_sv6621_calib_start;
+#ifdef CONFIG_KICKPI_K7_BLUETOOTH
+  config.bluetooth_nv.data = g_sv6621_bt_nv_start;
+  config.bluetooth_nv.length = g_sv6621_bt_nv_end - g_sv6621_bt_nv_start;
+  config.bluetooth_device_id = 0;
+#endif
   config.regulatory = &g_kickpi_k7_wifi_regulatory_domains[0];
   config.regulatory_domains = g_kickpi_k7_wifi_regulatory_domains;
   config.regulatory_domain_count =
@@ -689,6 +708,16 @@ int kickpi_k7_wifi_initialize(void)
       g_kickpi_k7_wifi_dev = NULL;
       return ret;
     }
+
+#ifdef CONFIG_KICKPI_K7_BLUETOOTH
+  ret = sv6621_start_bluetooth(g_kickpi_k7_wifi_dev);
+  if (ret < 0)
+    {
+      sv6621_destroy(g_kickpi_k7_wifi_dev);
+      g_kickpi_k7_wifi_dev = NULL;
+      return ret;
+    }
+#endif
 
 #ifdef CONFIG_SV6621_PM
   ret = rk3576_gpio_get(WIFI_HOST_WAKE, &g_kickpi_k7_wifi_host_wake);

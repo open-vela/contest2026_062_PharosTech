@@ -101,6 +101,42 @@ jobs:
           git fetch ci ${{ env.MANIFEST_COMMIT }}
           git checkout FETCH_HEAD
 
+      # The initial repo sync uses the base revision of this manifest repo.
+      # Re-read dependency revisions from the checked-out target commit so a
+      # pull request can be tested with its reviewed cross-repository branches.
+      - name: Resync target manifest dependencies
+        run: |
+          cd ${{ env.OPENVELA_DIR }}
+          mkdir -p .repo/local_manifests
+          python3 - <<'PY'
+          import copy
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          source = pathlib.Path("${{ env.REPO_NAME }}") / "openvela.xml"
+          target = pathlib.Path(".repo/local_manifests/pr-dependencies.xml")
+          wanted = {"nuttx", "external", "external/zblue/zblue"}
+          root = ET.parse(source).getroot()
+          projects = [node for node in root.findall("project")
+                      if node.get("path") in wanted]
+          remote_names = {node.get("remote") for node in projects
+                          if node.get("remote")}
+
+          overlay = ET.Element("manifest")
+          for remote in root.findall("remote"):
+              if remote.get("name") in remote_names:
+                  overlay.append(copy.deepcopy(remote))
+          for project in projects:
+              ET.SubElement(overlay, "remove-project",
+                            {"name": project.get("name")})
+              overlay.append(copy.deepcopy(project))
+
+          ET.indent(overlay, space="  ")
+          ET.ElementTree(overlay).write(target, encoding="unicode",
+                                        xml_declaration=True)
+          PY
+          repo sync -c -j4 nuttx external external/zblue/zblue
+
       # Public CI does not contain redistributable SeekWave firmware.  Create
       # exact-size, zero-filled inputs so both build systems still exercise
       # the complete SV6621 integration.  Runtime code recognizes the full
@@ -120,6 +156,7 @@ jobs:
           make_placeholder "$FIRMWARE_DIR/SWT6621S_DRAM_SDIO.bin" 193224
           make_placeholder "$FIRMWARE_DIR/SWT6621S_NV_SDIO_ALONE.bin" 220
           make_placeholder "$FIRMWARE_DIR/SWT6621S_SEEKWAVE_R00001.bin" 2372
+          make_placeholder "$FIRMWARE_DIR/sv6160lite.nvbin" 37
 
       # CMake 构建
       - name: Build (CMake)

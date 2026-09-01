@@ -2,6 +2,7 @@
 <manifest>
   <remote fetch="../open-vela/" name="openvela"/>
   <remote fetch="../" name="git"/>
+  <remote fetch="https://github.com/BeaconCat/" name="beaconcat"/>
   <default remote="openvela" revision="dev-ai-contest-2026"/>
 
   <project path="apps" name="nuttx-apps"/>
@@ -49,7 +50,10 @@
   <project path=".claude" name=".claude"/>
   <project path="build" name="build"/>
   <project path="docs" name="docs"/>
-  <project path="external" name="external"/>
+  <!-- Bluetooth dependency PRs are reviewed in the team forks:
+       external#1, external_zblue#1 and nuttx#8. -->
+  <project path="external" name="external" remote="beaconcat"
+           revision="beaconcat/zblue-h4-production"/>
   <project path="external/aac/aac" name="external_aac"/>
   <project path="external/abseil-cpp/abseil-cpp" name="external_abseil-cpp"/>
   <project path="external/android/frameworks/native" name="external_android_frameworks_native"/>
@@ -145,7 +149,9 @@
   <project path="external/vector-sil/sil-kit-adapters-qemu" name="external_vector-sil_sil-kit-adapters-qemu"/>
   <project path="external/vector-sil/sil-kit-adapters-vcan" name="external_vector-sil_sil-kit-adapters-vcan"/>
   <project path="external/yoga/yoga" name="external_yoga"/>
-  <project path="external/zblue/zblue" name="external_zblue"/>
+  <project path="external/zblue/zblue" name="external_zblue"
+           remote="beaconcat"
+           revision="beaconcat/sv6621-zblue-production"/>
   <project path="external/zint/zint" name="external_zint"/>
   <project path="frameworks" name="frameworks"/>
   <project path="frameworks/connectivity" name="frameworks_connectivity"/>
@@ -183,7 +189,8 @@
   <project path="frameworks/system/utils" name="frameworks_system_utils"/>
   <project path="frameworks/system/utils/uv" name="frameworks_system_utils_uv"/>
   <project path="frameworks/system/vibrator" name="frameworks_system_vibrator"/>
-  <project path="nuttx" name="nuttx">
+  <project path="nuttx" name="nuttx" remote="beaconcat"
+           revision="beaconcat/sv6621-sco-transport">
     <linkfile src="tools/build.sh" dest="build.sh"/>
   </project>
   <project path="nuttx/drivers/mtd/dhara" name="nuttx_drivers_mtd_dhara"/>

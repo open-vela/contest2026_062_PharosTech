@@ -111,6 +111,25 @@ ITS
 # 只读小 header,不把大 data 塞进 SRAM,避免越界(vendor/手术法就是 -E 才能带大镜像)。
 # -p 0x1000: 各段 data 4KB 对齐,布局稳定(避免 M2 当年 -E 无对齐导致 atf-3 落点漂移)。
 "$MKIMAGE" -E -p 0x1000 -f fit.its uboot_nuttx.img >/dev/null
+python3 - uboot_nuttx.img <<'PY'
+import struct
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as image:
+    header = image.read(8)
+
+if len(header) != 8:
+    raise SystemExit("ERROR: generated FIT is truncated")
+
+magic, header_size = struct.unpack(">II", header)
+if magic != 0xd00dfeed:
+    raise SystemExit("ERROR: generated image is not a FIT")
+if header_size > 64 * 1024:
+    raise SystemExit(
+        "ERROR: generated FIT embeds payloads; mkimage -E was not applied"
+    )
+PY
 echo "FIT: uboot_nuttx.img $(stat -c%s uboot_nuttx.img) bytes"
 
 # --- 4. idbloader + trust from rkbin -----------------------------------------

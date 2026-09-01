@@ -39,6 +39,9 @@
 
 #include "sv6621.h"
 #include "sv6621_ap.h"
+#ifdef CONFIG_SV6621_BLUETOOTH
+#include "sv6621_bluetooth.h"
+#endif
 #include "sv6621_command.h"
 #include "sv6621_data.h"
 #include "sv6621_network.h"

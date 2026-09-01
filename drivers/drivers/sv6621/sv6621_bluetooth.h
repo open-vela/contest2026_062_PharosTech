@@ -1,5 +1,5 @@
 /****************************************************************************
- * boards/rk3576/kickpi-k7/include/board.h
+ * drivers/drivers/sv6621/sv6621_bluetooth.h
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -20,8 +20,8 @@
  *
  ****************************************************************************/
 
-#ifndef __BOARDS_ARM64_RK3576_KICKPI_K7_INCLUDE_BOARD_H
-#define __BOARDS_ARM64_RK3576_KICKPI_K7_INCLUDE_BOARD_H
+#ifndef __DRIVERS_WIRELESS_SEEKWAVE_SV6621_SV6621_BLUETOOTH_H
+#define __DRIVERS_WIRELESS_SEEKWAVE_SV6621_SV6621_BLUETOOTH_H
 
 /****************************************************************************
  * Included Files
@@ -29,44 +29,24 @@
 
 #include <nuttx/config.h>
 
-#ifndef __ASSEMBLY__
+#ifdef CONFIG_SV6621_BLUETOOTH
+
+#include "sv6621.h"
 
 /****************************************************************************
-
- * * Public Function Prototypes
-
- * ****************************************************************************/
-
-#ifdef CONFIG_KICKPI_K7_AUDIO
-/****************************************************************************
-
- * * Name: kickpi_k7_audio_initialize
- *
- * Description:
- *   Initialize the
- * on-board ES8388 codec and SAI1 interface, then register
- * /dev/audio/pcm0.
- * Repeated calls are safe.
- *
- * Returned Value:
- *   Zero on success; a
- * negated errno value on failure.
- *
-
- * ****************************************************************************/
-
-int kickpi_k7_audio_initialize(void);
-#endif
-
-#ifdef CONFIG_KICKPI_K7_WIFI
-int kickpi_k7_wifi_prepare_sleep(void);
-int kickpi_k7_wifi_abort_sleep(void);
-#endif
-
-#endif /* __ASSEMBLY__ */
-
-/****************************************************************************
- * Pre-processor Definitions
+ * Public Types
  ****************************************************************************/
 
-#endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_INCLUDE_BOARD_H */
+struct sv6621_dev_s;
+
+int sv6621_bluetooth_attach(FAR struct sv6621_dev_s *dev);
+void sv6621_bluetooth_detach(FAR struct sv6621_dev_s *dev);
+int sv6621_bluetooth_start(FAR struct sv6621_dev_s *dev,
+                           FAR const struct sv6621_firmware_s *nvram,
+                           int device_id);
+int sv6621_bluetooth_stop(FAR struct sv6621_dev_s *dev);
+bool sv6621_bluetooth_is_started(FAR struct sv6621_dev_s *dev);
+void sv6621_bluetooth_offline(FAR struct sv6621_dev_s *dev, int error);
+
+#endif /* CONFIG_SV6621_BLUETOOTH */
+#endif /* __DRIVERS_WIRELESS_SEEKWAVE_SV6621_SV6621_BLUETOOTH_H */

@@ -49,9 +49,10 @@
 #define K7_TRUST_SECTOR                 \
   24576 /* trust slot start (write must \
          * not cross this) */
-#define K7_SECTOR_SIZE 512
-#define K7_FIT_MAGIC   0xd00dfeedu /* Rockchip/U-Boot FIT(FDT) magic */
-#define K7_MAX_BYTES   ((K7_TRUST_SECTOR - K7_UBOOT_SECTOR) * K7_SECTOR_SIZE)
+#define K7_SECTOR_SIZE    512
+#define K7_FIT_MAGIC      0xd00dfeedu /* Rockchip/U-Boot FIT(FDT) magic */
+#define K7_FIT_HEADER_MAX (64 * 1024)
+#define K7_MAX_BYTES      ((K7_TRUST_SECTOR - K7_UBOOT_SECTOR) * K7_SECTOR_SIZE)
 
 /****************************************************************************
  * Private Functions
@@ -150,7 +151,15 @@ int main(int argc, char *argv[])
   close(fd);
   fd = -1;
 
-  /* 2) Verify it is a valid FIT (magic) */
+  /* 2) Verify it is a valid, SPL-safe FIT.  Large embedded FIT blobs are
+   *
+   * loaded immediately below CONFIG_SYS_TEXT_BASE by the Rockchip SPL and
+   *
+   * can overwrite its working memory.  build_sd uses mkimage -E so the FDT
+
+   * * header stays small and each payload is read directly to its load
+   * address.
+   */
 
   if (k7_be32(buf) != K7_FIT_MAGIC)
     {
@@ -158,6 +167,15 @@ int main(int argc, char *argv[])
               "error: not a valid FIT (magic=%08x, expected %08x), "
               "refusing to write\n",
               k7_be32(buf), K7_FIT_MAGIC);
+      goto errout;
+    }
+
+  if (k7_be32(buf + 4) > K7_FIT_HEADER_MAX)
+    {
+      fprintf(stderr,
+              "error: unsafe embedded FIT header size %u (maximum %u); "
+              "rebuild with mkimage -E, refusing to write\n",
+              k7_be32(buf + 4), K7_FIT_HEADER_MAX);
       goto errout;
     }
 
