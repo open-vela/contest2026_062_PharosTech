@@ -1280,6 +1280,50 @@ static void rk3576_clk_register_fspi(void)
 
 #undef RK3576_CLK_REGISTER_FSPI_ONE
 
+/****************************************************************************
+ * Name: rk3576_clk_register_tsadc
+ *
+ * Description:
+ *   Register the TSADC (temperature-sensor ADC) clock tree.  Per RK3576 TRM
+ *   19.5.2 the TSADC conversion clock (clk_tsadc) must be 2 MHz, sourced
+ *   from the 24 MHz oscillator through clk_tsadc_div (CLKSEL_CON59[7:0],
+ *   reset value 0x0b = divide by 12 -> 2 MHz).
+ *
+ *   Registrations:
+ *     clk_tsadc_div : divider (xin_osc0 -> /(div+1)), CLKSEL_CON59[7:0]
+ *     clk_tsadc     : gate on clk_tsadc_div, GATE_CON13 bit 9 (SET_TO_DISABLE)
+ *     pclk_tsadc    : gate on pclk_bus_root, GATE_CON13 bit 8 (SET_TO_DISABLE)
+ ****************************************************************************/
+
+#ifdef CONFIG_RK3576_TSADC
+static void rk3576_clk_register_tsadc(void)
+{
+  uintptr_t cru = RK3576_CRU_ADDR;
+  struct clk_s *div;
+
+  /* clk_tsadc_div: 24 MHz OSC / (div_con + 1); reset div_con = 0x0b gives
+   * the required 2 MHz conversion clock. */
+
+  div = clk_register_divider("clk_tsadc_div", "xin_osc0", CLK_NAME_IS_STATIC,
+                             cru + RK3576_CRU_CLKSEL_CON(59), 0, 8,
+                             CLK_DIVIDER_HIWORD_MASK);
+  if (!div)
+    {
+      _err("CLK: failed to register clk_tsadc_div\n");
+      return;
+    }
+
+  clk_register_gate("clk_tsadc", "clk_tsadc_div",
+                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(13), 9,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+
+  clk_register_gate("pclk_tsadc", "pclk_bus_root", CLK_NAME_IS_STATIC,
+                    cru + RK3576_CRU_GATE_CON(13), 8,
+                    CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+}
+#endif /* CONFIG_RK3576_TSADC */
+
 /**
  * Macro: RK3576_CLK_REGISTER_PWM_ONE
  *
@@ -2820,5 +2864,9 @@ void rk3576_clk_tree_initialize(void)
 
 #ifdef CONFIG_RK3576_TIMER
   rk3576_clk_register_timer();
+#endif
+
+#ifdef CONFIG_RK3576_TSADC
+  rk3576_clk_register_tsadc();
 #endif
 }

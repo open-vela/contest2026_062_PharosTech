@@ -197,6 +197,20 @@ config RK3576_TIMER
 		(6 channels each).  user-defined count-down mode with interrupt
 		on expiry.
 
+config RK3576_TSADC
+	bool "TSADC (Temperature-Sensor ADC)"
+	default n
+	select SENSORS
+	select CLK
+	---help---
+		Enable the RK3576 TSADC (temperature-sensor ADC) driver.  Runs
+		the on-die sensor in auto mode and exposes each of the six probe
+		channels as an independent ambient-temperature sensor node
+		(/dev/uorb/sensor_ambient_temp0..5) through the NuttX sensor
+		framework.  The channels map to the chip-center, big core, little
+		core, GPU, NPU and DDR probes.  Read a node with e.g.
+		'sensortest ambient_temp0'.
+
 endmenu # Rockchip RK3576 Peripheral Selection
 
 config RK3576_OSC_FREQ

@@ -33,6 +33,11 @@
 #include <nuttx/config.h>
 #include <syslog.h>
 
+#ifdef CONFIG_RK3576_TSADC
+#include "rk3576_tsadc.h"
+#include <nuttx/sensors/sensor.h>
+#endif
+
 #ifdef CONFIG_DEV_GPIO
 #include <nuttx/ioexpander/gpio.h>
 #endif
@@ -250,6 +255,41 @@ void board_late_initialize(void)
 #endif /* CONFIG_RK3576_UART */
 
   /* Perform board initialization */
+
+#ifdef CONFIG_RK3576_TSADC
+  {
+    FAR struct rk3576_tsadc_sensor_s *sensors;
+    int num;
+    int ret;
+    int i;
+
+    ret = rk3576_tsadc_initialize(&sensors, &num);
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: TSADC initialization failed: %d\n", ret);
+      }
+    else
+      {
+        /* Publish one on-die temperature sensor node per TSADC channel. */
+
+        for (i = 0; i < num; i++)
+          {
+            ret = sensor_custom_register(sensors[i].lower, sensors[i].name,
+                                         sizeof(struct sensor_temp));
+            if (ret < 0)
+              {
+                syslog(LOG_ERR, "ERROR: TSADC register %s failed: %d\n",
+                       sensors[i].name, ret);
+              }
+            else
+              {
+                syslog(LOG_INFO, "INFO: TSADC registered %s\n",
+                       sensors[i].name);
+              }
+          }
+      }
+  }
+#endif /* CONFIG_RK3576_TSADC */
 
 #ifdef CONFIG_DEV_GPIO
   /* Claim the LED GPIO pin and register it as /dev/gpio0.  The handle is

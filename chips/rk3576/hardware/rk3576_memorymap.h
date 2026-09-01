@@ -127,6 +127,10 @@
 /* High precision timer */
 #define RK3576_HPTIMER_ADDR 0x27400000
 
+/* Temperature-Sensor ADC (TS-ADC), TRM Chapter 19 */
+
+#define RK3576_TSADC_ADDR 0x2AE70000
+
 /* IOMUX */
 #define RK3576_IOC_ADDR 0x26040000
 
