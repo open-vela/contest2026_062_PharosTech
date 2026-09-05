@@ -35,32 +35,27 @@
 
 /* WDT instance enumeration (used as rk3576_wdt_initialize() param).
  *
- * The RK3576 TRM exposes SIX hardware instances, but only two are usable
- * from NuttX:
+ * Only these two values are meaningful to a caller:
  *
- *   RK3576_WDT_NS  - non-secure world WDT (24 MHz).  The natural watchdog
- *                    for the NuttX kernel/user space.
- *   RK3576_WDT_PMU - PMU-domain WDT (32 kHz deep-sleep clock).  The only
- *                    WDT that keeps counting while the system is asleep.
+ *   RK3576_WDT_NS  - non-secure world WDT (fixed 24 MHz counting clock;
+ *                    pclk/tclk gates opened by the bootloader).  The
+ *                    natural watchdog for the NuttX kernel/user space and
+ *                    the only instance this driver implements.
  *
- * The remaining instances are NOT usable from NuttX:
- *   RK3576_WDT_S   - secure-world only; not accessible from the
- *                    non-secure NuttX context.
- *   RK3576_WDT_NPU - resets NPU_MCU (subordinate MCU), not the main CPU.
- *   RK3576_WDT_DDR - resets DDR_MCU (subordinate MCU), not the main CPU.
- *   RK3576_WDT_BUS - resets BUS_MCU (subordinate MCU), not the main CPU.
+ *   RK3576_WDT_PMU - kept purely as a future-proof API input; it is NOT
+ *                    supported (initializing it returns NULL - add PMU
+ *                    support in the driver if it is ever needed, e.g. to
+ *                    keep the watchdog counting while the SoC is asleep).
  *
- * Consequently rk3576_wdt_initialize() only accepts RK3576_WDT_NS and
- * RK3576_WDT_PMU; any other instance is rejected.
+ * The remaining hardware instances (WDT_S, NPU/DDR/BUS) can never be used
+ * by this non-secure NuttX build, so they are intentionally not part of
+ * this API: WDT_S is secure-world-only (not accessible from the non-secure
+ * NuttX context), and NPU/DDR/BUS reset their subordinate MCUs rather than
+ * the main CPU.
  */
 
-#define RK3576_WDT_PMU  0
-#define RK3576_WDT_NPU  1
-#define RK3576_WDT_DDR  2
-#define RK3576_WDT_S    3
-#define RK3576_WDT_NS   4
-#define RK3576_WDT_BUS  5
-#define RK3576_WDT_NWDT 6 /* Total number of hardware WDT instances */
+#define RK3576_WDT_NS  0
+#define RK3576_WDT_PMU 1
 
 /****************************************************************************
  * Public Function Prototypes
@@ -70,17 +65,21 @@
  * Name: rk3576_wdt_initialize
  *
  * Description:
- *   Return the lower-half handle for one watchdog timer instance for the
+ *   Return the lower-half handle for the watchdog timer instance for the
  *   board to register with watchdog_register().  The initial state is
  *   disabled.
  *
+ *   Only RK3576_WDT_NS is implemented.  RK3576_WDT_PMU is accepted as an
+ *   input for API future-proofing but is not yet supported and returns
+ *   NULL.  Any other value is invalid.
+ *
  * Input Parameters:
- *   instance - WDT instance index.  Only RK3576_WDT_NS and RK3576_WDT_PMU
- *              are valid from NuttX; all other instances (secure-world S,
- *              or NPU/DDR/BUS which reset subordinate MCUs) are rejected.
+ *   instance - WDT instance index (RK3576_WDT_NS to use; RK3576_WDT_PMU
+ *              reserved for future use).
  *
  * Returned Values:
- *   A watchdog_lowerhalf_s handle on success; NULL on invalid instance.
+ *   A watchdog_lowerhalf_s handle on success; NULL on an un-implemented or
+ *   invalid instance.
  *
  ****************************************************************************/
 

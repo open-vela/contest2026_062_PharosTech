@@ -31,6 +31,7 @@
 #include <arch/board/board.h>
 #include <nuttx/board.h>
 #include <nuttx/config.h>
+#include <stdbool.h>
 #include <syslog.h>
 
 #ifdef CONFIG_RK3576_TSADC
@@ -217,13 +218,11 @@ void board_late_initialize(void)
   {
     FAR struct watchdog_lowerhalf_s *wdt;
 
-#if defined(CONFIG_KICKPI_K7_WDT_NS)
+    /* The driver currently implements only the non-secure WDT instance,
+     * which is the natural watchdog for NuttX.
+     */
+
     wdt = rk3576_wdt_initialize(RK3576_WDT_NS);
-#elif defined(CONFIG_KICKPI_K7_WDT_PMU)
-    wdt = rk3576_wdt_initialize(RK3576_WDT_PMU);
-#else
-    wdt = NULL;
-#endif
 
     if (wdt == NULL)
       {
