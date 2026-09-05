@@ -191,6 +191,36 @@ static void rk3576_spi_setctr0(struct rk3576_spi_priv_s *priv)
 }
 
 /****************************************************************************
+ * Name: rk3576_spi_setmode
+ *
+ * Description:
+ *   Apply the SPI mode (CPOL/CPHA) immediately.  The DW SSI CTRLR0 register
+ *   is read-only while the controller is enabled (SSIENR=1), so the
+ *   controller is disabled around the write.  Applying in-place (rather than
+ *   deferring to exchange) keeps the CPOL transition from happening while
+ *   the chip-select is already asserted under software CS control, which
+ *   would corrupt the bus.
+ ****************************************************************************/
+
+static void rk3576_spi_setmode(struct spi_dev_s *dev, enum spi_mode_e mode)
+{
+  struct rk3576_spi_priv_s *priv = (struct rk3576_spi_priv_s *)dev;
+
+  if (priv->mode == mode)
+    {
+      return;
+    }
+
+  priv->mode = mode;
+
+  /* Disable, write CTRLR0, re-enable. */
+
+  spi_putreg(priv, RK3576_SPI_ENR_OFFSET, 0);
+  rk3576_spi_setctr0(priv);
+  spi_putreg(priv, RK3576_SPI_ENR_OFFSET, RK3576_SPI_ENR_EN);
+}
+
+/****************************************************************************
  * Name: rk3576_spi_setbaudr
  *
  * Description:
@@ -390,8 +420,22 @@ static void rk3576_spi_exchange(struct spi_dev_s *dev, const void *txbuffer,
   uint8_t *rx = (uint8_t *)rxbuffer;
   size_t txoff = 0;
   size_t rxoff = 0;
+  bool auto_cs = false;
 
   spiinfo("priv=%p tx=%p rx=%p nwords=%zu\n", priv, tx, rx, nwords);
+
+  /* Without any SS_N enabled the DW SSI controller generates no SCLK, so the
+   * RX FIFO never fills and the loop below would spin forever.  If the caller
+   * did not select a chip-select (SER == 0), enable CS0 for the duration of
+   * this transfer, and clear it again at the end.  Otherwise the caller owns
+   * the CS state and we leave it untouched.
+   */
+
+  if (spi_getreg(priv, RK3576_SPI_SER_OFFSET) == 0)
+    {
+      spi_putreg(priv, RK3576_SPI_SER_OFFSET, RK3576_SPI_SER_SER(0));
+      auto_cs = true;
+    }
 
   while (txoff < nwords || rxoff < nwords)
     {
@@ -427,6 +471,13 @@ static void rk3576_spi_exchange(struct spi_dev_s *dev, const void *txbuffer,
   if (rx == NULL)
     {
       rk3576_spi_tx_idle(priv);
+    }
+
+  /* Clear the chip-select if we selected it automatically. */
+
+  if (auto_cs)
+    {
+      spi_putreg(priv, RK3576_SPI_SER_OFFSET, 0);
     }
 }
 
@@ -533,18 +584,6 @@ static uint32_t rk3576_spi_setfrequency(struct spi_dev_s *dev,
   rk3576_spi_setbaudr(priv);
 
   return priv->frequency;
-}
-
-/****************************************************************************
- * Name: rk3576_spi_setmode
- ****************************************************************************/
-
-static void rk3576_spi_setmode(struct spi_dev_s *dev, enum spi_mode_e mode)
-{
-  struct rk3576_spi_priv_s *priv = (struct rk3576_spi_priv_s *)dev;
-
-  priv->mode = mode;
-  rk3576_spi_setctr0(priv);
 }
 
 /****************************************************************************
