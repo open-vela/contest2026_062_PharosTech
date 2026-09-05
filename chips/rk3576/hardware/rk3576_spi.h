@@ -30,7 +30,7 @@
  *
  * The SPI IP is a Synopsys DesignWare SSI (dw_ssi) compatible controller.
  * RK3576 has five controllers: SPI0..SPI4.  Each controller supports two
- * slave-select lines (SS_N0 / SS_N1) and a 32-entry TX / 32-entry RX FIFO.
+ * slave-select lines (SS_N0 / SS_N1) and a 64-entry TX / 64-entry RX FIFO.
  *
  * Master mode only is implemented by this driver; the Motorola SPI frame
  * format (frf=00) with 8-bit data frames is used.
@@ -147,7 +147,14 @@
 
 /* --- SPI_BAUDR --- */
 
+/* Full 16-bit field mask.  The hardware only accepts even divisors
+ * (TRM: BAUDR is any even value between 2 and 65534; the LSB is ignored
+ * on write), so MASK itself (0xffff) is NOT a valid max value.  Use
+ * RK3576_SPI_BAUDR_MAX (the largest even value) as an upper bound.
+ */
+
 #define RK3576_SPI_BAUDR_MASK 0xffff
+#define RK3576_SPI_BAUDR_MAX  0xfffe /* largest even BAUDR (65534) */
 
 /* --- SPI_SR bit fields (TRM §30.4.3) --- */
 

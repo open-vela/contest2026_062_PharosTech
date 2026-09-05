@@ -41,6 +41,7 @@
  * Included Files
  ****************************************************************************/
 
+#include <assert.h>
 #include <nuttx/config.h>
 
 #include <debug.h>
@@ -53,11 +54,12 @@
 
 #include <nuttx/arch.h>
 #include <nuttx/clk/clk.h>
+#include <nuttx/clk/clk_provider.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/mutex.h>
 #include <nuttx/spi/spi.h>
 
-#include "arm64_internal.h"
+#include "arm64_arch.h"
 #include "hardware/rk3576_memorymap.h"
 #include "hardware/rk3576_spi.h"
 #include "rk3576_spi.h"
@@ -68,8 +70,9 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define RK3576_SPI_FIFO_DEPTH 32      /* TX/RX FIFO depth (entries) */
+#define RK3576_SPI_FIFO_DEPTH 64      /* TX/RX FIFO depth (entries) */
 #define RK3576_SPI_POLL_LIMIT 1000000 /* busy-wait iterations */
+#define RK3576_SPI_NUM_CLKSRC 4       /* clock source mux parent count */
 
 /* SPI controller base addresses (TRM §30.4.1). */
 
@@ -93,7 +96,7 @@ struct rk3576_spi_priv_s
   uintptr_t base;       /* Controller base address */
   struct clk_s *pclk;   /* PCLK — APB bus clock */
   struct clk_s *sclk;   /* SCLK — serial (functional) clock */
-  mutex_t lock;         /* Serialize bus access */
+  mutex_t lock;         /* Shield bus; guards transfers AND one-time init */
   uint32_t frequency;   /* Configured SCLK frequency */
   enum spi_mode_e mode; /* SPI mode (CPOL/CPHA) */
   int nbits;            /* Bits per word (currently 8) */
@@ -103,7 +106,23 @@ struct rk3576_spi_priv_s
  * Private Data
  ****************************************************************************/
 
-static struct rk3576_spi_priv_s g_rk3576_spi[RK3576_SPI_NUM_CONTROLLERS];
+/* g_rk3576_spi[].lock is statically initialized (NXMUTEX_INITIALIZER): it
+ * must already be legal from before the scheduler starts so that the very
+ * same per-bus mutex can both
+ *   - serialize concurrent bring-up of the same bus in
+ *     rk3576_spi_initialize() (check/init/publish is atomic under it), and
+ *   - guard every steady-state transfer via rk3576_spi_lock().
+ * A single instance never holds the lock across the lock/unlock boundary
+ * (initialize() always unlocks before handing the handle back), so this
+ * non-recursive mutex is never re-entered on the same thread.
+ */
+
+static struct rk3576_spi_priv_s g_rk3576_spi[RK3576_SPI_NUM_CONTROLLERS] = {
+  [0] = { .lock = NXMUTEX_INITIALIZER }, [1] = { .lock = NXMUTEX_INITIALIZER },
+  [2] = { .lock = NXMUTEX_INITIALIZER }, [3] = { .lock = NXMUTEX_INITIALIZER },
+  [4] = { .lock = NXMUTEX_INITIALIZER },
+};
+
 static bool g_rk3576_spi_inited[RK3576_SPI_NUM_CONTROLLERS];
 
 /****************************************************************************
@@ -175,36 +194,153 @@ static void rk3576_spi_setctr0(struct rk3576_spi_priv_s *priv)
  * Name: rk3576_spi_setbaudr
  *
  * Description:
- *   Program BAUDR from the configured frequency.  Fsclk_out = Fspi_clk /
- *BAUDR, where BAUDR is an even value between 2 and 65534.
+ *   Pick the source clock that best reproduces the requested frequency and
+ *   program the DW SSI BAUDR divider.
+ *
+ *   The RK3576 SPI functional clock (clk_spiN) is a mux-only clock: the CRU
+ *   only selects one of several fixed pll/osc sources (~200/100/50/24 MHz)
+ *   and has no divider of its own (unlike FSPI).  The actual SCK is produced
+ *   by the controller's 16-bit BAUDR divider, which the CLK framework does
+ *   not model:
+ *
+ *     Fsclk_out = Fspi_clk / BAUDR,  BAUDR even, 2 <= BAUDR <= 65534.
+ *
+ *   Because BAUDR lives outside the CLK framework, a single clk_set_rate()
+ *   cannot hit an arbitrary SCK -- it can only switch the coarse CRU source.
+ *   The requested rate is therefore reached in two stages here:
+ *     1. Walk the source mux parents (clk_get_parent_by_index, no string
+ *        lookup) and, for each, find the smallest even BAUDR >= Fspi_clk/f,
+ *        which yields the largest SCK that stays <= the requested rate
+ *        (never exceed the request).
+ *     2. Select the source that gives the closest (largest, non-overshoot)
+ *        SCK and program its BAUDR.
  ****************************************************************************/
 
 static void rk3576_spi_setbaudr(struct rk3576_spi_priv_s *priv)
 {
-  uint32_t rate;
-  uint32_t baudr;
+  struct clk_s *mux;
+  uint32_t freq = priv->frequency;
+  uint32_t sr;
+  uint32_t k;
+  uint32_t actual;
+  uint32_t best_baudr = 0;
+  uint32_t best_actual = 0;
+  int best_idx = -1;
+  int i;
 
-  rate = clk_get_rate(priv->sclk);
-  if (rate == 0 || priv->frequency == 0)
+  /* Sizes track the SPI source mux (RK3576 has 4 pll/osc parents). */
+
+  struct clk_s *srcs[RK3576_SPI_NUM_CLKSRC] = { NULL, NULL, NULL, NULL };
+  uint32_t rates[RK3576_SPI_NUM_CLKSRC];
+  int nsr; /* number of usable entries in srcs[]/rates[] */
+
+  DEBUGASSERT(freq);
+  DEBUGASSERT(priv->sclk);
+
+  if (freq == 0 || priv->sclk == NULL)
     {
       return;
     }
 
-  /* Round to the nearest allowed BAUDR (must be even, >= 2). */
+  /* clk_spiN (priv->sclk) is a gate whose parent is the source mux
+   * clk_spiN_sel.  Fetch it once; it is not cached in priv because this
+   * path only runs on setfrequency() (low frequency).
+   */
 
-  baudr = rate / priv->frequency;
-  if (baudr < 2)
+  mux = clk_get_parent(priv->sclk);
+  if (mux == NULL)
     {
-      baudr = 2;
+      return;
     }
 
-  baudr &= ~1u; /* Force even */
+  DEBUGASSERT(mux->num_parents <= RK3576_SPI_NUM_CLKSRC);
 
-  spi_putreg(priv, RK3576_SPI_BAUDR_OFFSET, baudr & RK3576_SPI_BAUDR_MASK);
+  /* Collect each source handle and its live rate once. */
+
+  nsr = 0;
+  for (i = 0; i < mux->num_parents; i++)
+    {
+      srcs[nsr] = clk_get_parent_by_index(mux, i);
+      rates[nsr] = srcs[nsr] != NULL ? clk_get_rate(srcs[nsr]) : 0;
+      if (srcs[nsr] != NULL && rates[nsr] != 0)
+        {
+          nsr++;
+        }
+    }
+
+  if (nsr == 0)
+    {
+      /* No usable source clock at all -- nothing to configure. */
+      spiwarn("SPI: No parent clock source available");
+      return;
+    }
+
+  /* Smallest even BAUDR >= sr/freq -> actual SCK <= freq, never over.
+   * k is the ceiling, bumped to even when it lands on an odd value.
+   */
+
+  for (i = 0; i < nsr; i++)
+    {
+      sr = rates[i];
+
+      k = (sr + freq - 1) / freq; /* ceil(sr/freq) */
+      if (k < 2)
+        {
+          k = 2;
+        }
+      else if (k & 1u)
+        {
+          k++; /* force even: BAUDR <= 65534 still holds unless k is huge */
+        }
+
+      if (k > RK3576_SPI_BAUDR_MAX)
+        {
+          /* Even at the greatest (largest even) divider this source runs
+           * too fast to stay at or below the request -- skip it as an
+           * overshoot candidate.
+           */
+          continue;
+        }
+
+      actual = sr / k;
+      if (actual > best_actual)
+        {
+          best_actual = actual;
+          best_baudr = k;
+          best_idx = i;
+        }
+    }
+
+  /* No source can reach the request without overshoot (the request is below
+   * the slowest source / 65534).  Fall back to a fully-open divider on the
+   * slowest source, which overshoots the least.
+   */
+
+  if (best_idx < 0)
+    {
+      best_idx = 0;
+      for (i = 1; i < nsr; i++)
+        {
+          if (rates[i] < rates[best_idx])
+            {
+              best_idx = i;
+            }
+        }
+
+      spiwarn("SPI: cannot reach %lu Hz without overshoot; using slowest\n",
+              (unsigned long)freq);
+      best_baudr = RK3576_SPI_BAUDR_MAX;
+    }
+
+  /* Switch to the chosen source */
+
+  clk_set_parent(mux, srcs[best_idx]);
+
+  spi_putreg(priv, RK3576_SPI_BAUDR_OFFSET, best_baudr);
 }
 
 /****************************************************************************
- * Name: rk3576_spi_tx_ready / rk3576_spi_rx_ready / rk3576_spi_busy
+ * Name: rk3576_spi_tx_ready / rk3576_spi_rx_ready / rk3576_spi_tx_idle
  ****************************************************************************/
 
 static inline bool rk3576_spi_tx_ready(struct rk3576_spi_priv_s *priv)
@@ -217,50 +353,33 @@ static inline bool rk3576_spi_rx_ready(struct rk3576_spi_priv_s *priv)
   return (spi_getreg(priv, RK3576_SPI_SR_OFFSET) & RK3576_SPI_SR_RFE) == 0;
 }
 
-static inline bool rk3576_spi_busy(struct rk3576_spi_priv_s *priv)
-{
-  return (spi_getreg(priv, RK3576_SPI_SR_OFFSET) & RK3576_SPI_SR_BSF) != 0;
-}
+/* Wait until every byte pushed into the TX FIFO has been shifted out onto
+ * the serial bus (TFE = TX FIFO empty).  Used as the tail of a transmit-only
+ * transfer where there is no RX stream to synchronise on.
+ */
 
-/****************************************************************************
- * Name: rk3576_spi_exchange_one
- *
- * Description:
- *   Exchange one byte (8-bit frame): push a TX byte (or 0 if no txbuffer),
- *   wait for RX data, optionally capture the received byte.
- ****************************************************************************/
-
-static void rk3576_spi_exchange_one(struct rk3576_spi_priv_s *priv, uint8_t tx,
-                                    uint8_t *rx)
+static void rk3576_spi_tx_idle(struct rk3576_spi_priv_s *priv)
 {
   uint32_t t;
 
-  /* Wait until TX FIFO has room */
-
-  for (t = 0; t < RK3576_SPI_POLL_LIMIT && !rk3576_spi_tx_ready(priv); t++)
+  for (t = 0; t < RK3576_SPI_POLL_LIMIT; t++)
     {
-    }
-
-  spi_putreg(priv, RK3576_SPI_TXDR_OFFSET, tx);
-
-  /* Wait until a RX data entry is available */
-
-  for (t = 0; t < RK3576_SPI_POLL_LIMIT && !rk3576_spi_rx_ready(priv); t++)
-    {
-    }
-
-  if (rx != NULL)
-    {
-      *rx = (uint8_t)(spi_getreg(priv, RK3576_SPI_RXDR_OFFSET) & 0xff);
-    }
-  else
-    {
-      spi_getreg(priv, RK3576_SPI_RXDR_OFFSET);
+      if (spi_getreg(priv, RK3576_SPI_SR_OFFSET) & RK3576_SPI_SR_TFE)
+        {
+          return;
+        }
     }
 }
 
 /****************************************************************************
  * Name: rk3576_spi_exchange
+ *
+ * Description:
+ *   Exchange nwords 8-bit frames over the wire.  The transfer is driven as a
+ *   streaming pipeline: while there is free space in the TX FIFO keep feeding
+ *   it, and while the RX FIFO holds data keep draining it, until every word
+ *   has been pushed and every expected byte read back.  This keeps the, at
+ *   most, 64-deep FIFOs busy without per-byte handshaking.
  ****************************************************************************/
 
 static void rk3576_spi_exchange(struct spi_dev_s *dev, const void *txbuffer,
@@ -269,21 +388,45 @@ static void rk3576_spi_exchange(struct spi_dev_s *dev, const void *txbuffer,
   struct rk3576_spi_priv_s *priv = (struct rk3576_spi_priv_s *)dev;
   const uint8_t *tx = (const uint8_t *)txbuffer;
   uint8_t *rx = (uint8_t *)rxbuffer;
-  size_t i;
+  size_t txoff = 0;
+  size_t rxoff = 0;
 
   spiinfo("priv=%p tx=%p rx=%p nwords=%zu\n", priv, tx, rx, nwords);
 
-  for (i = 0; i < nwords; i++)
+  while (txoff < nwords || rxoff < nwords)
     {
-      uint8_t txb = (tx != NULL) ? tx[i] : 0xff;
-      uint8_t rxb;
+      /* Feed the TX FIFO as long as there is room. */
 
-      rk3576_spi_exchange_one(priv, txb, &rxb);
-
-      if (rx != NULL)
+      while (txoff < nwords && rk3576_spi_tx_ready(priv))
         {
-          rx[i] = rxb;
+          uint8_t txb = (tx != NULL) ? tx[txoff] : 0xff;
+          spi_putreg(priv, RK3576_SPI_TXDR_OFFSET, txb);
+          txoff++;
         }
+
+      /* Drain the RX FIFO as long as it holds data. */
+
+      while (rxoff < nwords && rk3576_spi_rx_ready(priv))
+        {
+          uint8_t rxb =
+              (uint8_t)(spi_getreg(priv, RK3576_SPI_RXDR_OFFSET) & 0xff);
+          if (rx != NULL)
+            {
+              rx[rxoff] = rxb;
+            }
+
+          rxoff++;
+        }
+    }
+
+  /* A transmit-only transfer has no RX stream to synchronise on, so make
+   * sure the last bytes have actually left the shift register before the
+   * upper-half deasserts the chip-select.
+   */
+
+  if (rx == NULL)
+    {
+      rk3576_spi_tx_idle(priv);
     }
 }
 
@@ -317,9 +460,10 @@ static void rk3576_spi_recvblock(struct spi_dev_s *dev, void *buffer,
 
 static uint32_t rk3576_spi_send(struct spi_dev_s *dev, uint32_t wd)
 {
-  uint8_t rx;
+  uint8_t txb = (uint8_t)wd;
+  uint8_t rx = 0;
 
-  rk3576_spi_exchange_one((struct rk3576_spi_priv_s *)dev, (uint8_t)wd, &rx);
+  rk3576_spi_exchange(dev, &txb, &rx, 1);
   return rx;
 }
 
@@ -355,6 +499,9 @@ static void rk3576_spi_select(struct spi_dev_s *dev, uint32_t devid,
   uint32_t ser;
 
   uint32_t cs = SPIDEVID_INDEX(devid);
+
+  DEBUGASSERT(cs < RK3576_SPI_NUM_CHIPSELECTS);
+
   if (cs >= RK3576_SPI_NUM_CHIPSELECTS)
     {
       cs = 0;
@@ -404,9 +551,7 @@ static void rk3576_spi_setmode(struct spi_dev_s *dev, enum spi_mode_e mode)
  * Name: rk3576_spi_setbits
  *
  * Description:
- *   Only 8-bit data frames are currently supported; silently clamp others
- *   to 8 and still reconfigure (the hardware supports 4/16-bit but this is
- *   not wired up).
+ *   Only 8-bit data frames are currently supported; clamp others to 8.
  ****************************************************************************/
 
 static void rk3576_spi_setbits(struct spi_dev_s *dev, int nbits)
@@ -419,16 +564,6 @@ static void rk3576_spi_setbits(struct spi_dev_s *dev, int nbits)
     }
 
   priv->nbits = 8;
-  rk3576_spi_setctr0(priv);
-}
-
-/****************************************************************************
- * Name: rk3576_spi_status
- ****************************************************************************/
-
-static uint8_t rk3576_spi_status(struct spi_dev_s *dev, uint32_t devid)
-{
-  return SPI_STATUS_PRESENT;
 }
 
 /****************************************************************************
@@ -453,7 +588,7 @@ static const struct spi_ops_s g_rk3576_spi_ops = {
   .setfrequency = rk3576_spi_setfrequency,
   .setmode = rk3576_spi_setmode,
   .setbits = rk3576_spi_setbits,
-  .status = rk3576_spi_status,
+  .status = NULL, /* not implemented */
 #ifdef CONFIG_SPI_CMDDATA
   .cmddata = NULL, /* not implemented */
 #endif
@@ -489,76 +624,106 @@ FAR struct spi_dev_s *rk3576_spi_initialize(int bus)
 
   priv = &g_rk3576_spi[bus];
 
-  if (!g_rk3576_spi_inited[bus])
+  /* Take the per-bus mutex and re-check the flag (double-checked bring-up).
+   * Holding priv->lock across the whole check/init/publish section makes it
+   * atomic against a concurrent rk3576_spi_initialize() of the same bus from
+   * another thread or, on SMP, another CPU -- only one caller ever runs the
+   * one-time register/clock setup, the rest observe the flag set and return
+   * the already-published handle.
+   *
+   * This is the same lock later used to serialize steady-state transfers
+   * (rk3576_spi_lock).  It is statically initialized (head of this file) so
+   * it is legal from before the scheduler starts.  All error paths fall
+   * through to errout so the lock is always released before returning.
+   */
+
+  nxmutex_lock(&priv->lock);
+
+  if (g_rk3576_spi_inited[bus])
     {
-      /* Bring up PCLK (APB bus clock gate) */
-
-      snprintf(name, sizeof(name), "pclk_spi%d", bus);
-      priv->pclk = clk_get(name);
-      if (!priv->pclk)
-        {
-          spierr("ERROR: SPI%d: failed to get clock %s\n", bus, name);
-          return NULL;
-        }
-
-      ret = clk_enable(priv->pclk);
-      if (ret < 0)
-        {
-          spierr("ERROR: SPI%d: failed to enable clock %s\n", bus, name);
-          return NULL;
-        }
-
-      /* Bring up SCLK (serial functional clock) */
-
-      snprintf(name, sizeof(name), "clk_spi%d", bus);
-      priv->sclk = clk_get(name);
-      if (!priv->sclk)
-        {
-          spierr("ERROR: SPI%d: failed to get clock %s\n", bus, name);
-          clk_disable(priv->pclk);
-          return NULL;
-        }
-
-      ret = clk_enable(priv->sclk);
-      if (ret < 0)
-        {
-          spierr("ERROR: SPI%d: failed to enable clock %s\n", bus, name);
-          clk_disable(priv->pclk);
-          return NULL;
-        }
-
-      priv->dev.ops = &g_rk3576_spi_ops;
-      priv->base = g_rk3576_spi_base[bus];
-      priv->frequency = 1000000; /* 1 MHz default */
-      priv->mode = SPIDEV_MODE0;
-      priv->nbits = 8;
-
-      nxmutex_init(&priv->lock);
-
-      /* Disable the controller, then apply the safe default config. */
-
-      spi_putreg(priv, RK3576_SPI_ENR_OFFSET, 0);
-
-      /* Mask all interrupts (polled driver). */
-
-      spi_putreg(priv, RK3576_SPI_IMR_OFFSET, 0);
-
-      /* Set TX/RX FIFO thresholds for polled operation. */
-
-      spi_putreg(priv, RK3576_SPI_TXFTLR_OFFSET, 0);
-      spi_putreg(priv, RK3576_SPI_RXFTLR_OFFSET, 0);
-
-      rk3576_spi_setctr0(priv);
-      rk3576_spi_setbaudr(priv);
-
-      /* Enable the controller. */
-
-      spi_putreg(priv, RK3576_SPI_ENR_OFFSET, RK3576_SPI_ENR_EN);
-
-      g_rk3576_spi_inited[bus] = true;
+      nxmutex_unlock(&priv->lock);
+      return &priv->dev;
     }
 
+  /* Bring up PCLK (APB bus clock gate) */
+
+  snprintf(name, sizeof(name), "pclk_spi%d", bus);
+  priv->pclk = clk_get(name);
+  if (!priv->pclk)
+    {
+      spierr("ERROR: SPI%d: failed to get clock %s\n", bus, name);
+      goto err_lock;
+    }
+
+  ret = clk_enable(priv->pclk);
+  if (ret < 0)
+    {
+      spierr("ERROR: SPI%d: failed to enable clock %s\n", bus, name);
+      goto err_lock;
+    }
+
+  /* Bring up SCLK (serial functional clock) */
+
+  snprintf(name, sizeof(name), "clk_spi%d", bus);
+  priv->sclk = clk_get(name);
+  if (!priv->sclk)
+    {
+      spierr("ERROR: SPI%d: failed to get clock %s\n", bus, name);
+      goto err_pclk;
+    }
+
+  ret = clk_enable(priv->sclk);
+  if (ret < 0)
+    {
+      spierr("ERROR: SPI%d: failed to enable clock %s\n", bus, name);
+      goto err_pclk;
+    }
+
+  priv->dev.ops = &g_rk3576_spi_ops;
+  priv->base = g_rk3576_spi_base[bus];
+  priv->frequency = 1000000; /* 1 MHz default */
+  priv->mode = SPIDEV_MODE0;
+  priv->nbits = 8;
+
+  /* priv->lock is already statically initialized; do NOT nxmutex_init() it
+   * again here -- it is used by this function itself to serialize bring-up. */
+
+  /* Disable the controller, then apply the safe default config. */
+
+  spi_putreg(priv, RK3576_SPI_ENR_OFFSET, 0);
+
+  /* Mask all interrupts (polled driver). */
+
+  spi_putreg(priv, RK3576_SPI_IMR_OFFSET, 0);
+
+  /* Set TX/RX FIFO thresholds for polled operation. */
+
+  spi_putreg(priv, RK3576_SPI_TXFTLR_OFFSET, 0);
+  spi_putreg(priv, RK3576_SPI_RXFTLR_OFFSET, 0);
+
+  rk3576_spi_setctr0(priv);
+  rk3576_spi_setbaudr(priv);
+
+  /* Enable the controller. */
+
+  spi_putreg(priv, RK3576_SPI_ENR_OFFSET, RK3576_SPI_ENR_EN);
+
+  /* Publish: any later/locked-out caller now observes the bus brought up and
+   * simply returns the handle below without repeating the setup. */
+
+  g_rk3576_spi_inited[bus] = true;
+
+  nxmutex_unlock(&priv->lock);
   return &priv->dev;
+
+err_pclk:
+  clk_disable(priv->pclk);
+err_lock:
+  /* Any partial bring-up failure. Also release the bus guard so a later
+   * rk3576_spi_initialize() of this (or another) controller is not stuck. */
+
+  nxmutex_unlock(&priv->lock);
+  return NULL;
 }
 
 #endif /* CONFIG_RK3576_SPI */
