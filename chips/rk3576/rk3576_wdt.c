@@ -25,14 +25,14 @@
  * struct watchdog_lowerhalf_s so the upper-half (drivers/timers/watchdog.c)
  * can register a /dev/watchdogN device.
  *
- * The WDT is a 32-bit down-counter driven by a fixed per-domain counting
- * clock (24 MHz oscillator, or 32 kHz deep-sleep clock for the PMU
- * instance).  The driver holds each instance's rate in a constant table
- * (g_rk3576_wdt_clk_hz[]) rather than querying the CLK framework, because
- * the WDT is initialized before the clock tree and the rate is fixed, not
- * configurable.  A timeout period is selected through a coarse 16-entry
- * table (WDT_TORR); the selected code only becomes effective on the next
- * kick.  The watchdog is kicked by writing the key 0x76 to WDT_CRR.
+ * The WDT is a 32-bit down-counter.  This driver implements the non-secure
+ * instance (RK3576_WDT_NS), whose counting clock is the fixed 24 MHz
+ * oscillator; because that rate is fixed and the WDT is initialized before
+ * the clock tree, it is held as a compile-time constant rather than queried
+ * through the CLK framework.  A timeout period is selected through a coarse
+ * 16-entry table (WDT_TORR); the selected code only becomes effective on
+ * the next kick.  The watchdog is kicked by writing the key 0x76 to
+ * WDT_CRR.
  *
  * Response mode is fixed to "system reset" (WDT_CR.resp_mode = 0): on
  * timeout the SoC is reset.  Because the WDT enable bit can only be cleared
@@ -106,32 +106,27 @@
  * merely a request; it must be routed to the CRU global soft reset by
  * setting two enable bits (both default to 0 = disabled):
  *
- *   1. CRU_GLBRST_ST_NCLR[glbrst_wdtXX_rst]  - this instance is allowed
- *      to drive the CRU global reset.  Per-instance bit, see
- *      g_rk3576_wdt_glbrst_rst[] below.
+ *   1. CRU_GLBRST_ST_NCLR[glbrst_wdtns_rst] - the WDT_NS instance this
+ *      driver uses is allowed to drive the CRU global reset.
  *
- *   2. CRU_GLB_RST_CON[wdt_trig_glbrst_en]   - WDT (any instance) is
+ *   2. CRU_GLB_RST_CON[wdt_trig_glbrst_en]  - WDT (any instance) is
  *      allowed to trigger the CRU global soft reset.
  *
  * These CRU fields are normal RW (no hiword write-mask); we use read-
  * modify-write so we never clobber bits configured by the bootloader for
- * other reest sources.
+ * other reset sources.
  * -------------------------------------------------------------------- */
 
 /* CRU_GLB_RST_CON bit 6: wdt_trig_glbrst_en (WDT triggers global reset). */
 
 #define RK3576_CRU_GLB_RST_CON_WDT_TRIG_GLBRST_EN (1 << 6)
 
-/* Per-instance bit index into CRU_GLBRST_ST_NCLR.  Ordered to match the
- * RK3576_WDT_* instance enumeration.
+/* CRU_GLBRST_ST_NCLR[glbrst_wdtns_rst] - the WDT_NS instance may drive the
+ * CRU global soft reset.  This is the only instance the driver uses (the
+ * other hardware instances are not reachable/usable from NuttX).
  */
 
-#define RK3576_CRU_GLBRST_ST_NCLR_WDT_PMU (1 << 15) /* glbrst_wdtpmu_rst */
-#define RK3576_CRU_GLBRST_ST_NCLR_WDT_NPU (1 << 14) /* glbrst_wdtnpu_rst */
-#define RK3576_CRU_GLBRST_ST_NCLR_WDT_DDR (1 << 10) /* glbrst_wdtddr_rst */
-#define RK3576_CRU_GLBRST_ST_NCLR_WDT_S   (1 << 13) /* glbrst_wdts_rst   */
-#define RK3576_CRU_GLBRST_ST_NCLR_WDT_NS  (1 << 12) /* glbrst_wdtns_rst  */
-#define RK3576_CRU_GLBRST_ST_NCLR_WDT_BUS (1 << 11) /* glbrst_wdtbus_rst */
+#define RK3576_CRU_GLBRST_ST_NCLR_WDT_NS (1 << 12) /* glbrst_wdtns_rst */
 
 /****************************************************************************
  * Private Types
@@ -144,8 +139,7 @@
 struct rk3576_wdt_s
 {
   FAR const struct watchdog_ops_s *ops; /* Lower-half operations   */
-  int instance;                         /* WDT instance index      */
-  uintptr_t base;                       /* Instance register base  */
+  uintptr_t base;                       /* Register base (WDT_NS)  */
   uint32_t clk_hz;                      /* Counting clock (Hz)     */
   uint32_t min_timeout_ms;              /* Smallest representable   */
   uint32_t max_timeout_ms;              /* Largest representable    */
@@ -181,53 +175,18 @@ static bool rk3576_wdt_count_to_curr(FAR struct rk3576_wdt_s *priv,
  * Private Data
  ****************************************************************************/
 
-/* Per-instance base addresses (TRM Part1 15.4.1). */
-
-static const uintptr_t g_rk3576_wdt_base[RK3576_WDT_NWDT] = {
-  [RK3576_WDT_PMU] = RK3576_PMU_WDT_ADDR,
-  [RK3576_WDT_NPU] = RK3576_NPU_WDT_ADDR,
-  [RK3576_WDT_DDR] = RK3576_DDR_WDT_ADDR,
-  [RK3576_WDT_S] = RK3576_WDT_S_ADDR,
-  [RK3576_WDT_NS] = RK3576_WDT_NS_ADDR,
-  [RK3576_WDT_BUS] = RK3576_BUS_WDT_ADDR,
-};
-
-/* Per-instance counting-clock frequency (TRM Part1 Ch15.1: the WDT
- * counter clock is chosen from a 24 MHz oscillator or a 32 kHz
- * deep-sleep clock).
- *
- * The counting clock is a FIXED per-domain source; the WDT driver neither
- * switches it (the mux is owned by the CRU/PMU power/clock management) nor
- * queries it through the NuttX CLK framework at runtime (the WDT is
- * intentionally initialized before rk3576_clk_tree_initialize(), and the
- * rate is a constant, not a configurable clock).  It is therefore
- * expressed as a per-instance constant here:
- *
- *   WDT_NS / WDT_S / NPU / DDR / BUS  - 24 MHz oscillator (xin_osc0)
- *   WDT_PMU                           - PMU1 domain; nominally 32 kHz
- *                                        (clk_deepslow), which keeps the
- *                                        watchdog counting while the SoC
- *                                        sleeps.  The CRU mux defaults to
- *                                        xin_osc0 (24 MHz); the 32 kHz
- *                                        deep-sleep path is only selected
- *                                        by the PM/PMU firmware for the
- *                                        PMU instance used during sleep.
- *
- * Only RK3576_WDT_NS and RK3576_WDT_PMU are usable from NuttX (see
- * rk3576_wdt_initialize()), so only those two entries are ever read.
+/* Counting clock frequency for the WDT_NS instance implemented here (TRM
+ * Part1 Ch15.1: the WDT counter clock can be chosen from a 24 MHz
+ * oscillator or a 32 kHz clock).  WDT_NS's counting clock is hard-wired to
+ * the 24 MHz oscillator (xin_osc0); it is a FIXED source that the driver
+ * neither switches nor queries through the NuttX CLK framework at runtime
+ * (the WDT is intentionally initialized before rk3576_clk_tree_initialize),
+ * so it is a compile-time constant.  No frequency is asserted for the
+ * PMU-domain WDT (not implemented, see rk3576_wdt_initialize), as the TRM
+ * documents no fixed rate for its deep-sleep source.
  */
 
-#define RK3576_WDT_OSC_HZ       24000000u /* 24 MHz oscillator            */
-#define RK3576_WDT_DEEPSLEEP_HZ 32768u    /* 32 kHz deep-sleep clock      */
-
-static const uint32_t g_rk3576_wdt_clk_hz[RK3576_WDT_NWDT] = {
-  [RK3576_WDT_PMU] = RK3576_WDT_DEEPSLEEP_HZ,
-  [RK3576_WDT_NPU] = RK3576_WDT_OSC_HZ,
-  [RK3576_WDT_DDR] = RK3576_WDT_OSC_HZ,
-  [RK3576_WDT_S] = RK3576_WDT_OSC_HZ,
-  [RK3576_WDT_NS] = RK3576_WDT_OSC_HZ,
-  [RK3576_WDT_BUS] = RK3576_WDT_OSC_HZ,
-};
+#define RK3576_WDT_OSC_HZ 24000000u /* 24 MHz oscillator (WDT_NS clock) */
 
 /* Lower-half operations.  capture/ioctl are not implemented in this first
  * revision: the WDT runs in system-reset mode (resp_mode = 0) and all
@@ -244,29 +203,9 @@ static const struct watchdog_ops_s g_rk3576_wdt_ops = {
   .ioctl = NULL,
 };
 
-/* Per-instance CRU_GLBRST_ST_NCLR bit that allows the WDT reset output to
- * drive the CRU global soft reset (TRM Part1, Ch15 / CRU GLBRST).  Default
- * is 0 (disabled) so it must be set before the WDT can reboot the SoC.
- *
- * This table maps all six hardware instances for completeness, but
- * rk3576_wdt_initialize() only accepts RK3576_WDT_NS and RK3576_WDT_PMU,
- * so only those two entries are ever applied.  The NPU/DDR/BUS bits reset
- * their subordinate MCUs (not the main CPU) and WDT_S is secure-world-
- * only, so they must not be programmed.
- */
+/* Driver state for the single implemented instance (WDT_NS). */
 
-static const uint32_t g_rk3576_wdt_glbrst_rst[RK3576_WDT_NWDT] = {
-  [RK3576_WDT_PMU] = RK3576_CRU_GLBRST_ST_NCLR_WDT_PMU,
-  [RK3576_WDT_NPU] = RK3576_CRU_GLBRST_ST_NCLR_WDT_NPU,
-  [RK3576_WDT_DDR] = RK3576_CRU_GLBRST_ST_NCLR_WDT_DDR,
-  [RK3576_WDT_S] = RK3576_CRU_GLBRST_ST_NCLR_WDT_S,
-  [RK3576_WDT_NS] = RK3576_CRU_GLBRST_ST_NCLR_WDT_NS,
-  [RK3576_WDT_BUS] = RK3576_CRU_GLBRST_ST_NCLR_WDT_BUS,
-};
-
-/* One instance per WDT. */
-
-static struct rk3576_wdt_s g_rk3576_wdt[RK3576_WDT_NWDT];
+static struct rk3576_wdt_s g_rk3576_wdt;
 
 /****************************************************************************
  * Private Functions
@@ -398,10 +337,10 @@ static int rk3576_wdt_start(FAR struct watchdog_lowerhalf_s *lower)
   flags = spin_lock_irqsave(&priv->lock);
 
   /* Route the WDT reset output to the CRU global soft reset.  Both the
-   * per-instance CRU_GLBRST_ST_NCLR[glbrst_wdtXX_rst] bit and the
-   * CRU_GLB_RST_CON[wdt_trig_glbrst_en] master switch default to 0, i.e.
-   * without them the WDT timeout would NOT reboot the SoC.  Read-modify-
-   * write so we preserve bootloader config for the other reset sources.
+   * CRU_GLBRST_ST_NCLR[glbrst_wdtns_rst] bit and the CRU_GLB_RST_CON
+   * [wdt_trig_glbrst_en] master switch default to 0, i.e. without them the
+   * WDT timeout would NOT reboot the SoC.  Read-modify-write so we
+   * preserve bootloader config for the other reset sources.
    */
 
   {
@@ -409,7 +348,7 @@ static int rk3576_wdt_start(FAR struct watchdog_lowerhalf_s *lower)
     uint32_t glb_rst;
 
     glbrst = getreg32(RK3576_CRU_ADDR + RK3576_CRU_GLBRST_ST_NCLR);
-    glbrst |= g_rk3576_wdt_glbrst_rst[priv->instance];
+    glbrst |= RK3576_CRU_GLBRST_ST_NCLR_WDT_NS;
     putreg32(glbrst, RK3576_CRU_ADDR + RK3576_CRU_GLBRST_ST_NCLR);
 
     glb_rst = getreg32(RK3576_CRU_ADDR + RK3576_CRU_GLB_RST_CON);
@@ -574,57 +513,64 @@ static int rk3576_wdt_settimeout(FAR struct watchdog_lowerhalf_s *lower,
  * Name: rk3576_wdt_initialize
  *
  * Description:
- *   Initialize one watchdog timer instance and return a lower-half handle
+ *   Initialize the watchdog timer instance and return a lower-half handle
  *   for the board to pass to watchdog_register().  The initial state is
  *   disabled.
  *
- *   Although the RK3576 exposes six hardware WDT instances, only
- *   RK3576_WDT_NS (non-secure world, 24 MHz) and RK3576_WDT_PMU (PMU
- *   domain, 32 kHz deep-sleep clock) are usable from NuttX.  The secure
- *   WDT_S is not accessible from the non-secure context, and the
- *   NPU/DDR/BUS instances reset their respective subordinate MCUs rather
- *   than the main CPU, so they are rejected here.
+ *   This driver implements only RK3576_WDT_NS (the non-secure watchdog,
+ *   24 MHz).  It is the natural watchdog for NuttX kernel/user space: it
+ *   needs no CRU staging by software, its pclk/tclk gates are opened by
+ *   the bootloader, and its counting clock is a fixed 24 MHz.
+ *
+ *   RK3576_WDT_PMU is accepted as an input only so callers keep a
+ *   future-proof API, but it is NOT implemented: initializing it returns
+ *   NULL.  The PMU WDT would need extra support this driver does not
+ *   provide (its counting clock/gates live on the PMU1CRU and would have
+ *   to be staged here before the clock tree runs, and the deep-sleep
+ *   source frequency is not documented) - add that support if the PMU WDT
+ *   is ever needed, e.g. to keep the watchdog counting while the SoC is
+ *   asleep.
+ *
+ *   The remaining hardware instances (WDT_S, NPU/DDR/BUS) can never be
+ *   reached from this non-secure NuttX build (WDT_S is secure-world-only;
+ *   NPU/DDR/BUS reset their subordinate MCUs, not the main CPU), so they
+ *   are not part of this API and are rejected.
  *
  * Input Parameters:
- *   instance - WDT instance index (RK3576_WDT_NS or RK3576_WDT_PMU)
+ *   instance - WDT instance index: RK3576_WDT_NS to use, RK3576_WDT_PMU
+ *              reserved (returns NULL, not implemented).
  *
  * Returned Values:
- *   A watchdog_lowerhalf_s handle on success; NULL on an instance that is
- *   out of range or not usable from NuttX.
+ *   A watchdog_lowerhalf_s handle on success; NULL if the requested
+ *   instance is not implemented or the index is invalid.
  ****************************************************************************/
 
 FAR struct watchdog_lowerhalf_s *rk3576_wdt_initialize(int instance)
 {
-  FAR struct rk3576_wdt_s *priv;
+  FAR struct rk3576_wdt_s *priv = &g_rk3576_wdt;
 
-  if (instance < 0 || instance >= RK3576_WDT_NWDT)
+  /* RK3576_WDT_PMU is a reserved interface; it is not implemented. */
+
+  if (instance == RK3576_WDT_PMU)
     {
-      wderr("WDT: invalid instance %d\n", instance);
+      wderr("WDT: PMU instance not implemented (only NS is supported)\n");
       return NULL;
     }
 
-  /* Only the non-secure and PMU instances are usable from NuttX.  The
-   * secure S instance lives in the secure world, and the NPU/DDR/BUS
-   * instances reset their subordinate MCUs rather than the main CPU.
-   */
+  /* Only RK3576_WDT_NS is actually implemented. */
 
-  if (instance != RK3576_WDT_NS && instance != RK3576_WDT_PMU)
+  if (instance != RK3576_WDT_NS)
     {
-      wderr("WDT: instance %d not usable from NuttX (use NS or PMU)\n",
+      wderr("WDT: invalid instance %d (only RK3576_WDT_NS is supported)\n",
             instance);
       return NULL;
     }
 
-  priv = &g_rk3576_wdt[instance];
-
   priv->ops = &g_rk3576_wdt_ops;
-  priv->instance = instance;
-  priv->base = g_rk3576_wdt_base[instance];
-  priv->clk_hz = g_rk3576_wdt_clk_hz[instance];
+  priv->base = RK3576_WDT_NS_ADDR;
+  priv->clk_hz = RK3576_WDT_OSC_HZ;
 
-  /* Per-instance timeout range, derived from this instance's counting
-   * clock (NS: 24 MHz, PMU: 32 kHz).
-   */
+  /* Timeout range, derived from the NS counting clock (24 MHz). */
 
   priv->min_timeout_ms = (uint32_t)((uint64_t)RK3576_WDT_MIN_COUNT *
                                     RK3576_WDT_MSEC_PER_SEC / priv->clk_hz);
