@@ -97,9 +97,7 @@ struct rk3576_spi_priv_s
   struct clk_s *pclk;   /* PCLK — APB bus clock */
   struct clk_s *sclk;   /* SCLK — serial (functional) clock */
   mutex_t lock;         /* Shield bus; guards transfers AND one-time init */
-  uint32_t frequency;   /* Configured SCLK frequency */
   enum spi_mode_e mode; /* SPI mode (CPOL/CPHA) */
-  int nbits;            /* Bits per word (currently 8) */
 };
 
 /****************************************************************************
@@ -246,10 +244,9 @@ static void rk3576_spi_setmode(struct spi_dev_s *dev, enum spi_mode_e mode)
  *        SCK and program its BAUDR.
  ****************************************************************************/
 
-static void rk3576_spi_setbaudr(struct rk3576_spi_priv_s *priv)
+static void rk3576_spi_setbaudr(struct rk3576_spi_priv_s *priv, uint32_t freq)
 {
   struct clk_s *mux;
-  uint32_t freq = priv->frequency;
   uint32_t sr;
   uint32_t k;
   uint32_t actual;
@@ -572,6 +569,35 @@ static void rk3576_spi_select(struct spi_dev_s *dev, uint32_t devid,
 }
 
 /****************************************************************************
+ * Name: rk3576_spi_getbaudr
+ *
+ * Description:
+ *   Return the SCK frequency the controller is *actually* producing right
+ *   now.  pr->sclk is the SPI gate clock: its CLK-tree rate already
+ *   reflects whichever source the gate's parent mux currently selects (the
+ *   source mux rate propagates down through the gate automatically), so no
+ *   mux/source walking is needed here.  The achieved rate is therefore just
+ *   the live gate rate divided by the programmed (even, read-back) BAUDR
+ *   divider.  This lets callers of setfrequency() see exactly how far the
+ *   real rate is from the value they asked for, even when setbaudr() could
+ *   only land on a near-but-not-exact divider.
+ ****************************************************************************/
+
+static uint32_t rk3576_spi_getbaudr(struct rk3576_spi_priv_s *priv)
+{
+  uint32_t sr = clk_get_rate(priv->sclk);
+  uint32_t baudr =
+      spi_getreg(priv, RK3576_SPI_BAUDR_OFFSET) & RK3576_SPI_BAUDR_MASK;
+
+  if (sr == 0 || baudr < 2)
+    {
+      return 0; /* nothing sane to report */
+    }
+
+  return sr / baudr;
+}
+
+/****************************************************************************
  * Name: rk3576_spi_setfrequency
  ****************************************************************************/
 
@@ -580,10 +606,13 @@ static uint32_t rk3576_spi_setfrequency(struct spi_dev_s *dev,
 {
   struct rk3576_spi_priv_s *priv = (struct rk3576_spi_priv_s *)dev;
 
-  priv->frequency = frequency;
-  rk3576_spi_setbaudr(priv);
+  rk3576_spi_setbaudr(priv, frequency);
 
-  return priv->frequency;
+  /* Return the rate actually reached, not the request: setbaudr() can only
+   * pick the closest even BAUDR on a fixed source mux, so the two differ.
+   */
+
+  return rk3576_spi_getbaudr(priv);
 }
 
 /****************************************************************************
@@ -595,14 +624,12 @@ static uint32_t rk3576_spi_setfrequency(struct spi_dev_s *dev,
 
 static void rk3576_spi_setbits(struct spi_dev_s *dev, int nbits)
 {
-  struct rk3576_spi_priv_s *priv = (struct rk3576_spi_priv_s *)dev;
+  UNUSED(dev);
 
   if (nbits != 8)
     {
       spiwarn("WARNING: nbits=%d unsupported, using 8\n", nbits);
     }
-
-  priv->nbits = 8;
 }
 
 /****************************************************************************
@@ -720,9 +747,7 @@ FAR struct spi_dev_s *rk3576_spi_initialize(int bus)
 
   priv->dev.ops = &g_rk3576_spi_ops;
   priv->base = g_rk3576_spi_base[bus];
-  priv->frequency = 1000000; /* 1 MHz default */
   priv->mode = SPIDEV_MODE0;
-  priv->nbits = 8;
 
   /* priv->lock is already statically initialized; do NOT nxmutex_init() it
    * again here -- it is used by this function itself to serialize bring-up. */
@@ -741,7 +766,7 @@ FAR struct spi_dev_s *rk3576_spi_initialize(int bus)
   spi_putreg(priv, RK3576_SPI_RXFTLR_OFFSET, 0);
 
   rk3576_spi_setctr0(priv);
-  rk3576_spi_setbaudr(priv);
+  rk3576_spi_setbaudr(priv, 1000000); /* 1 MHz default */
 
   /* Enable the controller. */
 
