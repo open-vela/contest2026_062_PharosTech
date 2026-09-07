@@ -31,15 +31,20 @@ PHDRS
 
 SECTIONS
 {
-  /* NuttX runs as BL33 in the Rockchip vendor boot chain
-   * (idbloader/SPL -> BL31/ATF -> NuttX). It is packed into the "uboot"
-   * slot of the vendor FIT image, whose load address is 0x40200000 (verified
-   * on hardware with dumpimage). BL31 exits to this address at EL2, so the
-   * link address must match CONFIG_RAM_START (0x40200000); the previous
-   * 0x02080000 was inherited from the rk3399 port and left NuttX linked at an
-   * address it was never loaded to, hanging silently right after the BL31 handoff.
+  /* NuttX is loaded by u-boot to a fixed RAM address and started exactly
+   * like a Linux kernel image placed at the same spot (it is no longer a
+   * BL33 stage handed off by ATF). U-boot copies the image to 0x40200000
+   * and jumps there, so the link address must match CONFIG_RAM_START
+   * (0x40200000). 
+   *
+   * (Historically this board also ran NuttX as BL33 in the vendor boot
+   * chain idbloader/SPL -> BL31/ATF -> NuttX, packed into the "uboot" slot
+   * of the vendor FIT image at the same 0x40200000 load address. The
+   * address requirement is identical in either scheme, which is why the
+   * link base must equal CONFIG_RAM_START regardless of how the image is
+   * launched.)
    */
-  . = 0x40200000;  /* = CONFIG_RAM_START; BL31 hands off to NuttX (BL33) here */
+  . = 0x40200000;  /* = CONFIG_RAM_START; u-boot loads and jumps to NuttX here */
   _start = .;
   .text : {
         _stext = .;            /* Text section */
@@ -98,12 +103,15 @@ SECTIONS
   } :text
   _edata = .; /* End+1 of .data */
 
-  /* BSS and init stack are NOLOAD: they are zeroed at runtime by
-   * arm64_data_initialize() in arm64_head.S and must NOT be stored in
-   * the image.  Keeping them inside a PT_LOAD segment instead expands a
+  /* BSS is NOLOAD: arm64_data_initialize() in arm64_head.S zeroes only
+   * the _sbss.._ebss range at runtime, so BSS must NOT be stored in the
+   * image.  The init stack is also NOLOAD: it carries no meaningful
+   * initial content (the boot code simply points the SP at
+   * g_idle_topstack), so persisting it would only add dead zeros.
+   * Keeping either section inside a PT_LOAD segment instead expands a
    * huge all-zero region into nuttx.bin, which (a) wastes flash and
-   * (b) enlarges the packed BL33 image past SPL's small SRAM buffer and
-   * corrupts the boot chain (see tools/k7_sdpack/build_sd.sh notes).
+   * (b) enlarges the packed image past the bootloader's small SRAM buffer
+   * and corrupts the boot chain (see tools/k7_sdpack/build_sd.sh notes).
    */
 
   .bss (NOLOAD) : {           /* BSS */
