@@ -74,6 +74,12 @@
 #define RK3576_SPI_POLL_LIMIT 1000000 /* busy-wait iterations */
 #define RK3576_SPI_NUM_CLKSRC 4       /* clock source mux parent count */
 
+/* Consecutive inert (no-progress) outer iterations before a transfer is
+ * declared timed out.  See rk3576_spi_exchange() for the rationale.
+ */
+
+#define RK3576_SPI_XFER_STALL_LIMIT 10000
+
 /* SPI controller base addresses (TRM §30.4.1). */
 
 static const uintptr_t g_rk3576_spi_base[RK3576_SPI_NUM_CONTROLLERS] = {
@@ -417,6 +423,8 @@ static void rk3576_spi_exchange(struct spi_dev_s *dev, const void *txbuffer,
   uint8_t *rx = (uint8_t *)rxbuffer;
   size_t txoff = 0;
   size_t rxoff = 0;
+  size_t before;
+  uint32_t stall = 0;
   bool auto_cs = false;
 
   spiinfo("priv=%p tx=%p rx=%p nwords=%zu\n", priv, tx, rx, nwords);
@@ -436,6 +444,8 @@ static void rk3576_spi_exchange(struct spi_dev_s *dev, const void *txbuffer,
 
   while (txoff < nwords || rxoff < nwords)
     {
+      before = txoff + rxoff;
+
       /* Feed the TX FIFO as long as there is room. */
 
       while (txoff < nwords && rk3576_spi_tx_ready(priv))
@@ -458,6 +468,21 @@ static void rk3576_spi_exchange(struct spi_dev_s *dev, const void *txbuffer,
 
           rxoff++;
         }
+
+      if (txoff + rxoff == before)
+        {
+          if (++stall >= RK3576_SPI_XFER_STALL_LIMIT)
+            {
+              spierr("ERROR: SPI transfer timed out "
+                     "(tx=%zu/%zu rx=%zu/%zu)\n",
+                     txoff, nwords, rxoff, nwords);
+              goto xfer_timeout;
+            }
+        }
+      else
+        {
+          stall = 0;
+        }
     }
 
   /* A transmit-only transfer has no RX stream to synchronise on, so make
@@ -471,6 +496,39 @@ static void rk3576_spi_exchange(struct spi_dev_s *dev, const void *txbuffer,
     }
 
   /* Clear the chip-select if we selected it automatically. */
+
+  if (auto_cs)
+    {
+      spi_putreg(priv, RK3576_SPI_SER_OFFSET, 0);
+    }
+
+  return;
+
+xfer_timeout:
+  /* Try to recover: dropping SSIENR halts the controller and lets us throw
+   * away any half-shifted bytes and stale RX that would otherwise leak into
+   * the next exchange.  Re-enable afterwards so the bus is usable again.
+   */
+
+  spi_putreg(priv, RK3576_SPI_ENR_OFFSET, 0);
+
+  /* Flush whatever may still be sitting in the RX FIFO so the next transfer
+   * begins from a clean, empty RX state.  Bounded so we can never hang here
+   * again even if the controller misbehaves.
+   */
+
+  stall = 0;
+  while (!(spi_getreg(priv, RK3576_SPI_SR_OFFSET) & RK3576_SPI_SR_RFE) &&
+         stall++ < RK3576_SPI_FIFO_DEPTH)
+    {
+      spi_getreg(priv, RK3576_SPI_RXDR_OFFSET);
+    }
+
+  spi_putreg(priv, RK3576_SPI_ENR_OFFSET, RK3576_SPI_ENR_EN);
+
+  /* If we raised CS0 ourselves, drop it; the upper-half still thinks the
+   * transfer ran to completion and will re-assert CS next time.
+   */
 
   if (auto_cs)
     {
