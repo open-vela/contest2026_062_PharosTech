@@ -281,7 +281,6 @@ static int kickpi_k7_storage_mount(FAR struct kickpi_k7_storage_media_s *media)
   if (mount(media->blockdev, mountpoint, "vfat", 0, NULL) < 0)
     {
       ret = -errno;
-      kickpi_k7_storage_remove_partitions(media);
       if (mountpoint_created)
         {
           rmdir(mountpoint);

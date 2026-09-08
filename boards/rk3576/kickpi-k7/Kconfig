@@ -91,7 +91,7 @@ config KICKPI_K7_AUDIO
 
 config KICKPI_K7_STORAGE_AUTOMOUNT
 	bool "Automatic removable and on-board storage mounting"
-	default y
+	default n
 	depends on FS_FAT && FS_TMPFS && GPT_PARTITION
 	depends on SCHED_WORKQUEUE && SCHED_LPWORK
 	depends on RK3576_SDMMC || RK3576_EMMC
