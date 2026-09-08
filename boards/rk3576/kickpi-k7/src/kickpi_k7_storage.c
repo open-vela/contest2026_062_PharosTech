@@ -422,6 +422,8 @@ int kickpi_k7_storage_initialize(FAR struct sdio_dev_s *sdmmc,
   g_emmc_media.sdio = emmc;
 
   g_sd_media.sdio = sdmmc;
+
+#ifdef CONFIG_RK3576_SDMMC
   if (sdmmc != NULL)
     {
       ret = rk3576_sdmmc_register_media_callback(
@@ -433,6 +435,9 @@ int kickpi_k7_storage_initialize(FAR struct sdio_dev_s *sdmmc,
           return ret;
         }
     }
+#else
+  UNUSED(kickpi_k7_storage_sd_event);
+#endif /* CONFIG_RK3576_SDMMC */
 
   ret = work_queue(LPWORK, &g_start_work, kickpi_k7_storage_start_worker, NULL,
                    MSEC2TICK(KICKPI_K7_STORAGE_SETTLE_MS));
