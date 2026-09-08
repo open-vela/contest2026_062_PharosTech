@@ -62,9 +62,5 @@ int board_app_initialize(uintptr_t arg)
 {
   /* Perform board initialization */
 
-#ifdef CONFIG_KICKPI_K7_LCD
-  kickpi_k7_lcd_initialize();
-#endif
-
   return OK;
 }

@@ -56,6 +56,12 @@ int kickpi_k7_rtc_initialize(void);
 #endif
 
 #ifdef CONFIG_KICKPI_K7_LCD
+
+#ifdef CONFIG_RK3576_SDMMC
+#error \
+    "CONFIG_KICKPI_K7_LCD can not be enabled with CONFIG_RK3576_SDMMC=y simultaneously"
+#endif
+
 int kickpi_k7_lcd_initialize(void);
 #endif
 
