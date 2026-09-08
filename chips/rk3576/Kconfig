@@ -274,14 +274,17 @@ config RK3576_WDT
 		Ch15).  A 32-bit down-counter that resets the SoC when it reaches
 		zero; the counter is kicked by writing 0x76 to WDT_CRR.
 
-		The SoC exposes six instances (PMU/NPU/DDR/S/NS/BUS), but only
-		two are usable from NuttX and both are returned by
-		rk3576_wdt_initialize(): WDT_NS (non-secure world, 24 MHz) and
-		WDT_PMU (PMU domain, 32 kHz deep-sleep clock, keeps running while
-		the system sleeps).  The secure WDT_S is not accessible from the
-		non-secure context, and the NPU/DDR/BUS instances reset their
-		subordinate MCUs rather than the main CPU, so they are rejected.
-		The board registers the wanted instance as /dev/watchdogN.
+		The SoC exposes six instances (PMU/NPU/DDR/S/NS/BUS).  Of these,
+		only WDT_NS (non-secure world, fixed 24 MHz) is usable from NuttX
+		and is what rk3576_wdt_initialize() actually implements.  The PMU
+		instance (PMU domain, 32 kHz deep-sleep clock, would keep running
+		while the system sleeps) is exposed to callers only as a reserved
+		API input: it is NOT yet implemented and initializing it returns
+		NULL -- PMU-WDT support would have to be added to the driver
+		first.  The secure WDT_S is not accessible from the non-secure
+		context, and the NPU/DDR/BUS instances reset their subordinate
+		MCUs rather than the main CPU, so they are rejected.  The board
+		registers the WDT_NS instance as /dev/watchdogN.
 
 endmenu # Rockchip RK3576 Peripheral Selection
 
