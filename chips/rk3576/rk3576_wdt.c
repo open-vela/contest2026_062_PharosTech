@@ -167,7 +167,7 @@ static int rk3576_wdt_settimeout(FAR struct watchdog_lowerhalf_s *lower,
 
 /* Timeout (ms) <-> TORR table helpers. */
 
-static uint32_t rk3576_wdt_ms_to_count(uint32_t clk_hz, uint32_t timeout_ms);
+static uint64_t rk3576_wdt_ms_to_count(uint32_t clk_hz, uint32_t timeout_ms);
 static bool rk3576_wdt_count_to_curr(FAR struct rk3576_wdt_s *priv,
                                      uint32_t *torr, uint32_t *timeout_ms);
 
@@ -227,18 +227,26 @@ static void rk3576_wdt_putreg(FAR struct rk3576_wdt_s *priv, unsigned int off,
  * Name: rk3576_wdt_ms_to_count
  *
  * Description:
- *   Convert a timeout in milliseconds into a raw down-counter reload value
- *   for the configured counting clock.
+ *   Convert a timeout in milliseconds into the raw down-counter reload
+ *   value for the configured counting clock.  The exact (non-truncated)
+ *   count is returned as uint64_t so the caller can range-check it against
+ *   the TORR table bounds before any narrowing.  The caller must guarantee
+ *   the returned value fits the 32-bit counter before use: truncating a
+ *   count larger than RK3576_WDT_MAX_COUNT here would silently wrap a
+ *   too-long timeout into a much shorter one (e.g. 180000 ms @ 24 MHz is
+ *   4320000000 counts, which > RK3576_WDT_MAX_COUNT yet would wrap to
+ *   ~1.4 s if narrowed first).  So this helper only converts; it never
+ *   clamps.
  ****************************************************************************/
 
-static uint32_t rk3576_wdt_ms_to_count(uint32_t clk_hz, uint32_t timeout_ms)
+static uint64_t rk3576_wdt_ms_to_count(uint32_t clk_hz, uint32_t timeout_ms)
 {
   uint64_t count;
 
   count = (uint64_t)timeout_ms * clk_hz;
   count /= RK3576_WDT_MSEC_PER_SEC;
 
-  return (uint32_t)count;
+  return count;
 }
 
 /****************************************************************************
@@ -262,12 +270,16 @@ static uint32_t rk3576_wdt_ms_to_count(uint32_t clk_hz, uint32_t timeout_ms)
 static bool rk3576_wdt_count_to_curr(FAR struct rk3576_wdt_s *priv,
                                      uint32_t *torr, uint32_t *timeout_ms)
 {
-  uint32_t want;   /* Desired raw counter value                  */
-  uint32_t period; /* TORR code candidate                        */
+  uint64_t want;   /* Desired raw counter value (exact, unwrapped) */
+  uint32_t period; /* TORR code candidate                          */
 
   want = rk3576_wdt_ms_to_count(priv->clk_hz, *timeout_ms);
 
-  /* Out of range: too short or too long for the TORR table. */
+  /* Out of range: too short or too long for the TORR table.  Both bounds
+   * are checked against the exact non-truncated count, so an oversized
+   * timeout that would wrap in 32 bits is rejected rather than accepted.
+   * The comparison promotes the small unsigned bounds to uint64_t.
+   */
 
   if (want < RK3576_WDT_MIN_COUNT)
     {
@@ -286,7 +298,7 @@ static bool rk3576_wdt_count_to_curr(FAR struct rk3576_wdt_s *priv,
 
   for (period = 0; period <= 15; period++)
     {
-      if (WDT_TORR_CNT_MAX(period) >= want)
+      if ((uint64_t)WDT_TORR_CNT_MAX(period) >= want)
         {
           break;
         }
