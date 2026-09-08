@@ -456,111 +456,6 @@ static int rk3576_fracpll_set_rate(FAR struct clk_s *clk, uint32_t rate,
   return OK;
 }
 
-/* Shared parent name arrays for muxes.
- * Order matches the hardware 2-bit select encoding.
- * I2C:  00=GPLL/6, 01=CPLL/10, 10=CPLL/20, 11=XIN_OSC0
- * PWM:  00=CPLL/10, 01=CPLL/20, 10=XIN_OSC0, 11=invalid
- */
-
-static const char *g_i2c_sel_parents[] = {
-  "clk_gpll_div6",  /* 0b00 */
-  "clk_cpll_div10", /* 0b01 */
-  "clk_cpll_div20", /* 0b10 */
-  "xin_osc0",       /* 0b11 */
-};
-
-static const char *g_pwm_sel_parents[] = {
-  "clk_cpll_div10", /* 0b00 */
-  "clk_cpll_div20", /* 0b01 */
-  "xin_osc0",       /* 0b10 */
-  "xin_osc0",       /* 0b11 — undefined, fallback */
-};
-
-/* UART frac clock source selection */
-
-static const char *g_matrix_uart_frac_sel_parents[] = {
-  "clk_gpll",  /* 0b00: clk_gpll_mux */
-  "clk_cpll",  /* 0b01: clk_cpll_mux */
-  "clk_aupll", /* 0b10: clk_aupll_mux */
-  "xin_osc0",  /* 0b11: xin_osc0_func_mux */
-};
-
-/* UART sclk source selection (7 parents, 3-bit select).
- * Used by UART0, 2–11 sclk_uartN_sel muxes (NOT UART1).
- * Order matches TRM encoding:
- *   0b000: clk_gpll_mux
- *   0b001: clk_cpll_mux
- *   0b010: clk_aupll_mux
- *   0b011: xin_osc0_func_mux
- *   0b100: clk_matrix_uart_frac_0
- *   0b101: clk_matrix_uart_frac_1
- *   0b110: clk_matrix_uart_frac_2
- *
- * UART1 uses a different, two-level mux structure — see
- * rk3576_clk_register_uart() for details.
- */
-
-static const char *g_uart_sclk_sel_parents[] = {
-  "clk_gpll",               /* 0b000 */
-  "clk_cpll",               /* 0b001 */
-  "clk_aupll",              /* 0b010 */
-  "xin_osc0",               /* 0b011 */
-  "clk_matrix_uart_frac_0", /* 0b100 */
-  "clk_matrix_uart_frac_1", /* 0b101 */
-  "clk_matrix_uart_frac_2", /* 0b110 */
-};
-
-/* UART1 sclk parent list — used by sclk_uart1_sel mux.
- * 0 = clk_uart1_src_top (programmable), 1 = xin_osc0 (24 MHz bypass).
- */
-
-static const char *g_uart1_sclk_parents[] = {
-  "clk_uart1_src_top", /* 1'b0 */
-  "xin_osc0",          /* 1'b1 */
-};
-
-/* Audio frac clock source selection */
-
-static const char *g_matrix_audio_frac_sel_parents[] = {
-  "clk_gpll",  /* 0b00: clk_gpll_mux */
-  "clk_cpll",  /* 0b01: clk_cpll_mux */
-  "clk_aupll", /* 0b10: clk_aupll_mux */
-  "xin_osc0",  /* 0b11: xin_osc0_func_mux */
-};
-
-/* SAI mclk source selection (8 parents, 3-bit select).
- * Used by all SAI0~9 mclk_saiX_src_sel muxes.
- * Order matches TRM encoding:
- *   0b000: xin_osc0
- *   0b001: clk_matrix_audio_frac_0
- *   0b010: clk_matrix_audio_frac_1
- *   0b011: clk_matrix_audio_frac_2
- *   0b100: clk_matrix_audio_frac_3
- *   0b101: clk_matrix_audio_int_0
- *   0b110: clk_matrix_audio_int_1
- *   0b111: clk_matrix_audio_int_2
- */
-
-static const char *g_sai_mclk_src_parents[] = {
-  "xin_osc0",                /* 0b000 */
-  "clk_matrix_audio_frac_0", /* 0b001 */
-  "clk_matrix_audio_frac_1", /* 0b010 */
-  "clk_matrix_audio_frac_2", /* 0b011 */
-  "clk_matrix_audio_frac_3", /* 0b100 */
-  "clk_matrix_audio_int_0",  /* 0b101 */
-  "clk_matrix_audio_int_1",  /* 0b110 */
-  "clk_matrix_audio_int_2",  /* 0b111 */
-};
-
-/* FSPI: 00=GPLL, 01=CPLL, 10=XIN_OSC0, 11=invalid. */
-
-static const char *g_fspi_sel_parents[] = {
-  "clk_gpll", /* 0b00 */
-  "clk_cpll", /* 0b01 */
-  "xin_osc0", /* 0b10 */
-  "xin_osc0", /* 0b11 — undefined, fallback */
-};
-
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -579,7 +474,7 @@ static void rk3576_clk_register_pll_factors(void)
 {
   struct clk_s *gpll, *cpll, *aupll;
   static struct rk3576_fracpll_s gpll_priv, cpll_priv, aupll_priv;
-  static const char *g_pll_parents[] = { "xin_osc0" };
+  static const char *pll_parents[] = { "xin_osc0" };
 
   /* Root oscillator — 24 MHz */
 
@@ -595,7 +490,7 @@ static void rk3576_clk_register_pll_factors(void)
   gpll_priv.lock_reg = 0;
   gpll_priv.lock_bit = 0;
 
-  gpll = clk_register("clk_gpll", g_pll_parents, 1,
+  gpll = clk_register("clk_gpll", pll_parents, nitems(pll_parents),
                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
                       &g_rk3576_fracpll_readonly_ops, &gpll_priv,
                       sizeof(gpll_priv));
@@ -622,7 +517,7 @@ static void rk3576_clk_register_pll_factors(void)
   cpll_priv.lock_reg = 0;
   cpll_priv.lock_bit = 0;
 
-  cpll = clk_register("clk_cpll", g_pll_parents, 1,
+  cpll = clk_register("clk_cpll", pll_parents, nitems(pll_parents),
                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
                       &g_rk3576_fracpll_readonly_ops, &cpll_priv,
                       sizeof(cpll_priv));
@@ -645,7 +540,7 @@ static void rk3576_clk_register_pll_factors(void)
   aupll_priv.con_base = RK3576_CRU_ADDR + RK3576_CRU_AUPLL_CON(0);
   aupll_priv.lock_reg = 0;
   aupll_priv.lock_bit = 0;
-  aupll = clk_register("clk_aupll", g_pll_parents, 1,
+  aupll = clk_register("clk_aupll", pll_parents, nitems(pll_parents),
                        CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
                        &g_rk3576_fracpll_readonly_ops, &aupll_priv,
                        sizeof(aupll_priv));
@@ -722,9 +617,9 @@ static void rk3576_clk_register_axi(void)
     static const char *parents[] = {
       "clk_gpll",  /* 3'b000 */
       "clk_cpll",  /* 3'b001 */
-      "clk_cpll",  /* 3'b010 — clk_spll_mux, not yet modelled */
+      "clk_spll",  /* 3'b010 — clk_spll_mux, not yet modelled */
       "clk_aupll", /* 3'b011 */
-      "clk_cpll",  /* 3'b100 — clk_bpll_src, not yet modelled */
+      "clk_bpll",  /* 3'b100 — clk_bpll_src, not yet modelled */
     };
 
     clk_register_mux("aclk_center_root_sel", parents, nitems(parents),
@@ -843,34 +738,6 @@ static void rk3576_clk_register_apb(void)
   }
 }
 
-/* LITCORE (little-core power domain) clock sources.
- *
- * The little-core cluster (aclk_m_litcore / clk_litcore / pclk_litcore /
- * pclk_dbg_litcore) is clocked from the LITCORE_CRU (0x27240000).
- *
- * Parent selection for clk_litcore_src_sel (2-bit, CLKSEL_CON00[13:12]):
- *   2'b00: clk_lpll_mux
- *   2'b01: clk_gpll_mux
- *   2'b10: clk_litcore_pvtpll_src
- *
- * clk_litcore_sel (2-bit, CLKSEL_CON01[7:6]):
- *   2'b00: clk_litcore_src_out
- *   2'b01: clk_litcore_pvtpll_src
- *   2'b10: clk_litcore_clean
- */
-
-static const char *g_litcore_src_sel_parents[] = {
-  "clk_lpll",               /* 2'b00: clk_lpll_mux */
-  "clk_gpll",               /* 2'b01: clk_gpll_mux */
-  "clk_litcore_pvtpll_src", /* 2'b10: clk_litcore_pvtpll_src */
-};
-
-static const char *g_litcore_sel_parents[] = {
-  "clk_litcore_src_out",    /* 2'b00 */
-  "clk_litcore_pvtpll_src", /* 2'b01 */
-  "clk_litcore_clean",      /* 2'b10 */
-};
-
 /****************************************************************************
  * Name: rk3576_clk_register_litcore
  *
@@ -912,6 +779,18 @@ static void rk3576_clk_register_litcore(void)
   struct clk_s *lpll;
   static const char *lpll_parents[] = { "xin_osc0" };
 
+  static const char *litcore_src_sel_parents[] = {
+    "clk_lpll",               /* 2'b00: clk_lpll_mux */
+    "clk_gpll",               /* 2'b01: clk_gpll_mux */
+    "clk_litcore_pvtpll_src", /* 2'b10: clk_litcore_pvtpll_src */
+  };
+
+  static const char *litcore_sel_parents[] = {
+    "clk_litcore_src_out",    /* 2'b00 */
+    "clk_litcore_pvtpll_src", /* 2'b01 */
+    "clk_litcore_clean",      /* 2'b10 */
+  };
+
   /* LPLL (FRACPLL) — lives in the CCI_CRU domain at 0x27248000.
    * Rate is derived from LPLL_CON(0..2) registers at runtime using the
    * FRACPLL formula: FOUT = ((m + k/65536) * FIN) / (p * 2^s).
@@ -923,7 +802,7 @@ static void rk3576_clk_register_litcore(void)
   lpll_priv.lock_reg = RK3576_CCI_CRU_ADDR + RK3576_CCICRU_LPLL_CON(6);
   lpll_priv.lock_bit = 15; /* LPLL_CON6[15] = lpll_lock */
 
-  lpll = clk_register("clk_lpll", lpll_parents, 1,
+  lpll = clk_register("clk_lpll", lpll_parents, nitems(lpll_parents),
                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
                       &g_rk3576_fracpll_configurable_ops, &lpll_priv,
                       sizeof(lpll_priv));
@@ -941,8 +820,8 @@ static void rk3576_clk_register_litcore(void)
 
   /* clk_litcore_src_sel : 2-bit mux (CLKSEL_CON00[13:12]). */
 
-  clk_register_mux("clk_litcore_src_sel", g_litcore_src_sel_parents,
-                   nitems(g_litcore_src_sel_parents),
+  clk_register_mux("clk_litcore_src_sel", litcore_src_sel_parents,
+                   nitems(litcore_src_sel_parents),
                    CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
                    litcore + RK3576_LITCORECRU_CLKSEL_CON(0), 12, 2,
                    CLK_MUX_HIWORD_MASK);
@@ -967,7 +846,7 @@ static void rk3576_clk_register_litcore(void)
   /* clk_litcore_sel : 2-bit mux (CLKSEL_CON01[7:6]). */
 
   clk_register_mux(
-      "clk_litcore_sel", g_litcore_sel_parents, nitems(g_litcore_sel_parents),
+      "clk_litcore_sel", litcore_sel_parents, nitems(litcore_sel_parents),
       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
       litcore + RK3576_LITCORECRU_CLKSEL_CON(1), 6, 2, CLK_MUX_HIWORD_MASK);
 
@@ -1068,8 +947,8 @@ static void rk3576_clk_register_litcore(void)
     {                                                                        \
       struct clk_s *_mux;                                                    \
                                                                              \
-      _mux = clk_register_mux("clk_i2c" #bus "_sel", g_i2c_sel_parents,      \
-                              nitems(g_i2c_sel_parents),                     \
+      _mux = clk_register_mux("clk_i2c" #bus "_sel", i2c_sel_parents,        \
+                              nitems(i2c_sel_parents),                       \
                               CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,      \
                               sel_reg, sel_shift, 2, CLK_MUX_HIWORD_MASK);   \
       if (!_mux)                                                             \
@@ -1110,6 +989,13 @@ static void rk3576_clk_register_i2c(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
   const unsigned long pmu1 = RK3576_PMU1_CRU_ADDR;
+
+  static const char *i2c_sel_parents[] = {
+    "clk_gpll_div6",  /* 0b00 */
+    "clk_cpll_div10", /* 0b01 */
+    "clk_cpll_div20", /* 0b10 */
+    "xin_osc0",       /* 0b11 */
+  };
 
   /* I2C0 — PMU1 domain */
 
@@ -1183,49 +1069,49 @@ static void rk3576_clk_register_i2c(void)
  *   sclk_bit    - SCLK GATE bit
  */
 
-#define RK3576_CLK_REGISTER_FSPI_ONE(id, sel_reg, sel_shift, gate_reg,       \
-                                     hclk_bit, sclk_bit)                     \
-  do                                                                         \
-    {                                                                        \
-      struct clk_s *_mux;                                                    \
-                                                                             \
-      /* SCLK MUX: 2-bit selector, same register as divider */               \
-      _mux = clk_register_mux("sclk_fspi" #id "_x2_sel", g_fspi_sel_parents, \
-                              nitems(g_fspi_sel_parents),                    \
-                              CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |     \
-                                  CLK_PARENT_NAME_IS_STATIC,                 \
-                              sel_reg, sel_shift, 2, CLK_MUX_HIWORD_MASK);   \
-      if (!_mux)                                                             \
-        {                                                                    \
-          _err("CLK: failed to register sclk_fspi" #id "_x2_sel\n");         \
-          break;                                                             \
-        }                                                                    \
-                                                                             \
-      /* SCLK_x2 Divider: bits[5:0], same register as MUX.                   \
-       * Registered as a clk_divider so clk_set_rate() works.                \
-       * The divider is (value + 1), 6 bits wide.                            \
-       * TRM name: sclk_fspiX_x2_div, output is f_sclk_fspi_x2 = PLL/(n+1)   \
-       * which is 2x the actual SCLK rate.                                   \
-       */                                                                    \
-      clk_register_divider("sclk_fspi" #id "_x2_div",                        \
-                           "sclk_fspi" #id "_x2_sel",                        \
-                           CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |        \
-                               CLK_PARENT_NAME_IS_STATIC,                    \
-                           sel_reg, 0, 6, CLK_DIVIDER_HIWORD_MASK);          \
-                                                                             \
-      /* SCLK_x2 functional gate: parent is divider output */                \
-      clk_register_gate("sclk_fspi" #id "_x2", "sclk_fspi" #id "_x2_div",    \
-                        CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC |     \
-                            CLK_SET_RATE_PARENT,                             \
-                        gate_reg, sclk_bit,                                  \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
-                                                                             \
-      /* HCLK gate: AHB bus clock, parent is hclk_bus_root */                \
-      clk_register_gate("hclk_fspi" #id, "hclk_bus_root",                    \
-                        CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,      \
-                        gate_reg, hclk_bit,                                  \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
-    }                                                                        \
+#define RK3576_CLK_REGISTER_FSPI_ONE(id, sel_reg, sel_shift, gate_reg,     \
+                                     hclk_bit, sclk_bit)                   \
+  do                                                                       \
+    {                                                                      \
+      struct clk_s *_mux;                                                  \
+                                                                           \
+      /* SCLK MUX: 2-bit selector, same register as divider */             \
+      _mux = clk_register_mux("sclk_fspi" #id "_x2_sel", fspi_sel_parents, \
+                              nitems(fspi_sel_parents),                    \
+                              CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |   \
+                                  CLK_PARENT_NAME_IS_STATIC,               \
+                              sel_reg, sel_shift, 2, CLK_MUX_HIWORD_MASK); \
+      if (!_mux)                                                           \
+        {                                                                  \
+          _err("CLK: failed to register sclk_fspi" #id "_x2_sel\n");       \
+          break;                                                           \
+        }                                                                  \
+                                                                           \
+      /* SCLK_x2 Divider: bits[5:0], same register as MUX.                 \
+       * Registered as a clk_divider so clk_set_rate() works.              \
+       * The divider is (value + 1), 6 bits wide.                          \
+       * TRM name: sclk_fspiX_x2_div, output is f_sclk_fspi_x2 = PLL/(n+1) \
+       * which is 2x the actual SCLK rate.                                 \
+       */                                                                  \
+      clk_register_divider("sclk_fspi" #id "_x2_div",                      \
+                           "sclk_fspi" #id "_x2_sel",                      \
+                           CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |      \
+                               CLK_PARENT_NAME_IS_STATIC,                  \
+                           sel_reg, 0, 6, CLK_DIVIDER_HIWORD_MASK);        \
+                                                                           \
+      /* SCLK_x2 functional gate: parent is divider output */              \
+      clk_register_gate("sclk_fspi" #id "_x2", "sclk_fspi" #id "_x2_div",  \
+                        CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC |   \
+                            CLK_SET_RATE_PARENT,                           \
+                        gate_reg, sclk_bit,                                \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);   \
+                                                                           \
+      /* HCLK gate: AHB bus clock, parent is hclk_bus_root */              \
+      clk_register_gate("hclk_fspi" #id, "hclk_bus_root",                  \
+                        CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,    \
+                        gate_reg, hclk_bit,                                \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);   \
+    }                                                                      \
   while (0)
 
 /****************************************************************************
@@ -1250,6 +1136,12 @@ static void rk3576_clk_register_i2c(void)
 static void rk3576_clk_register_fspi(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
+
+  static const char *fspi_sel_parents[] = {
+    "clk_gpll", /* 0b00 */
+    "clk_cpll", /* 0b01 */
+    "xin_osc0", /* 0b10 */
+  };
 
   /* FSPI0 */
 
@@ -1331,8 +1223,8 @@ static void rk3576_clk_register_tsadc(void)
     {                                                                       \
       struct clk_s *_mux;                                                   \
                                                                             \
-      _mux = clk_register_mux("clk_pwm" #ctrl "_sel", g_pwm_sel_parents,    \
-                              nitems(g_pwm_sel_parents),                    \
+      _mux = clk_register_mux("clk_pwm" #ctrl "_sel", pwm_sel_parents,      \
+                              nitems(pwm_sel_parents),                      \
                               CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,     \
                               sel_reg, sel_shift, 2, CLK_MUX_HIWORD_MASK);  \
       if (!_mux)                                                            \
@@ -1389,6 +1281,12 @@ static void rk3576_clk_register_pwm(void)
   const unsigned long cru = RK3576_CRU_ADDR;
   const unsigned long pmu1 = RK3576_PMU1_CRU_ADDR;
 
+  static const char *pwm_sel_parents[] = {
+    "clk_cpll_div10", /* 0b00 */
+    "clk_cpll_div20", /* 0b01 */
+    "xin_osc0",       /* 0b10 */
+  };
+
   /* PWM0 — PMU1 domain */
 
   RK3576_CLK_REGISTER_PWM_ONE(0, pmu1 + RK3576_PMU1CRU_CLKSEL_CON(5), 2,
@@ -1439,8 +1337,8 @@ static void rk3576_clk_register_pwm(void)
       struct clk_s *_mux;                                                    \
                                                                              \
       _mux = clk_register_mux("clk_matrix_uart_frac_" #index "_sel",         \
-                              g_matrix_uart_frac_sel_parents,                \
-                              nitems(g_matrix_uart_frac_sel_parents),        \
+                              matrix_uart_frac_sel_parents,                  \
+                              nitems(matrix_uart_frac_sel_parents),          \
                               CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,      \
                               sel_reg, 0, 2, CLK_MUX_HIWORD_MASK);           \
       if (!_mux)                                                             \
@@ -1486,6 +1384,13 @@ static void rk3576_clk_register_matrix_uart(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
 
+  static const char *matrix_uart_frac_sel_parents[] = {
+    "clk_gpll",  /* 0b00: clk_gpll_mux */
+    "clk_cpll",  /* 0b01: clk_cpll_mux */
+    "clk_aupll", /* 0b10: clk_aupll_mux */
+    "xin_osc0",  /* 0b11: xin_osc0_func_mux */
+  };
+
   /* UART frac clocks (mux + frac divider + gate) */
 
   RK3576_CLK_REGISTER_MATRIX_UART_FRAC_ONE(0, cru + RK3576_CRU_CLKSEL_CON(21),
@@ -1517,43 +1422,43 @@ static void rk3576_clk_register_matrix_uart(void)
  *   sclk_bit  - sclk GATE bit
  */
 
-#define RK3576_CLK_REGISTER_UART_ONE(index, sel_reg, src_shift, div_shift,   \
-                                     pclk_reg, pclk_bit, sclk_reg, sclk_bit) \
-  do                                                                         \
-    {                                                                        \
-      struct clk_s *_src_sel;                                                \
-      struct clk_s *_div;                                                    \
-                                                                             \
-      _src_sel = clk_register_mux(                                           \
-          "sclk_uart" #index "_sel", g_uart_sclk_sel_parents,                \
-          nitems(g_uart_sclk_sel_parents),                                   \
-          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, src_shift, 3,   \
-          CLK_MUX_HIWORD_MASK);                                              \
-      if (!_src_sel)                                                         \
-        {                                                                    \
-          _err("CLK: failed to register sclk_uart" #index "_sel\n");         \
-          break;                                                             \
-        }                                                                    \
-                                                                             \
-      _div = clk_register_divider(                                           \
-          "sclk_uart" #index "_div", "sclk_uart" #index "_sel",              \
-          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, div_shift, 8,   \
-          CLK_DIVIDER_HIWORD_MASK);                                          \
-      if (!_div)                                                             \
-        {                                                                    \
-          _err("CLK: failed to register sclk_uart" #index "_div\n");         \
-          break;                                                             \
-        }                                                                    \
-                                                                             \
-      clk_register_gate("pclk_uart" #index, "pclk_bus_root",                 \
-                        CLK_NAME_IS_STATIC, pclk_reg, pclk_bit,              \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
-                                                                             \
-      clk_register_gate("sclk_uart" #index, "sclk_uart" #index "_div",       \
-                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sclk_reg,  \
-                        sclk_bit,                                            \
-                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);     \
-    }                                                                        \
+#define RK3576_CLK_REGISTER_UART_ONE(index, sel_reg, src_shift, div_shift,    \
+                                     pclk_reg, pclk_bit, sclk_reg, sclk_bit)  \
+  do                                                                          \
+    {                                                                         \
+      struct clk_s *_src_sel;                                                 \
+      struct clk_s *_div;                                                     \
+                                                                              \
+      _src_sel =                                                              \
+          clk_register_mux("sclk_uart" #index "_sel", uart_sclk_sel_parents,  \
+                           nitems(uart_sclk_sel_parents),                     \
+                           CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, \
+                           src_shift, 3, CLK_MUX_HIWORD_MASK);                \
+      if (!_src_sel)                                                          \
+        {                                                                     \
+          _err("CLK: failed to register sclk_uart" #index "_sel\n");          \
+          break;                                                              \
+        }                                                                     \
+                                                                              \
+      _div = clk_register_divider(                                            \
+          "sclk_uart" #index "_div", "sclk_uart" #index "_sel",               \
+          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sel_reg, div_shift, 8,    \
+          CLK_DIVIDER_HIWORD_MASK);                                           \
+      if (!_div)                                                              \
+        {                                                                     \
+          _err("CLK: failed to register sclk_uart" #index "_div\n");          \
+          break;                                                              \
+        }                                                                     \
+                                                                              \
+      clk_register_gate("pclk_uart" #index, "pclk_bus_root",                  \
+                        CLK_NAME_IS_STATIC, pclk_reg, pclk_bit,               \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
+                                                                              \
+      clk_register_gate("sclk_uart" #index, "sclk_uart" #index "_div",        \
+                        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC, sclk_reg,   \
+                        sclk_bit,                                             \
+                        CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);      \
+    }                                                                         \
   while (0)
 
 /****************************************************************************
@@ -1607,6 +1512,16 @@ static void rk3576_clk_register_matrix_uart(void)
 static void rk3576_clk_register_uart(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
+
+  static const char *uart_sclk_sel_parents[] = {
+    "clk_gpll",               /* 0b000 */
+    "clk_cpll",               /* 0b001 */
+    "clk_aupll",              /* 0b010 */
+    "xin_osc0",               /* 0b011 */
+    "clk_matrix_uart_frac_0", /* 0b100 */
+    "clk_matrix_uart_frac_1", /* 0b101 */
+    "clk_matrix_uart_frac_2", /* 0b110 */
+  };
 
   /* UART0 — CLKSEL_CON60 (0x03F0), GATE_CON13/14 */
 
@@ -1719,8 +1634,13 @@ static void rk3576_clk_register_uart(void)
     const unsigned long pmu1 = RK3576_PMU1_CRU_ADDR;
     struct clk_s *mux;
 
-    mux = clk_register_mux("clk_uart1_src_top_sel", g_uart_sclk_sel_parents,
-                           nitems(g_uart_sclk_sel_parents),
+    static const char *uart1_sclk_parents[] = {
+      "clk_uart1_src_top", /* 1'b0 */
+      "xin_osc0",          /* 1'b1 */
+    };
+
+    mux = clk_register_mux("clk_uart1_src_top_sel", uart_sclk_sel_parents,
+                           nitems(uart_sclk_sel_parents),
                            CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
                            cru + RK3576_CRU_CLKSEL_CON(27), 13, 3,
                            CLK_MUX_HIWORD_MASK);
@@ -1748,7 +1668,7 @@ static void rk3576_clk_register_uart(void)
      */
 
     mux = clk_register_mux(
-        "sclk_uart1_sel", g_uart1_sclk_parents, nitems(g_uart1_sclk_parents),
+        "sclk_uart1_sel", uart1_sclk_parents, nitems(uart1_sclk_parents),
         CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
         pmu1 + RK3576_PMU1CRU_CLKSEL_CON(8), 0, 1, CLK_MUX_HIWORD_MASK);
     if (!mux)
@@ -1801,8 +1721,8 @@ static void rk3576_clk_register_uart(void)
       struct clk_s *_mux;                                                     \
                                                                               \
       _mux = clk_register_mux("clk_matrix_audio_frac_" #index "_sel",         \
-                              g_matrix_audio_frac_sel_parents,                \
-                              nitems(g_matrix_audio_frac_sel_parents),        \
+                              matrix_audio_frac_sel_parents,                  \
+                              nitems(matrix_audio_frac_sel_parents),          \
                               CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,       \
                               sel_reg, 0, 2, CLK_MUX_HIWORD_MASK);            \
       if (!_mux)                                                              \
@@ -1895,6 +1815,13 @@ static void rk3576_clk_register_matrix_audio(void)
   const unsigned long cru = RK3576_CRU_ADDR;
   const unsigned long int_div_reg = cru + RK3576_CRU_CLKSEL_CON(28);
 
+  static const char *matrix_audio_frac_sel_parents[] = {
+    "clk_gpll",  /* 0b00: clk_gpll_mux */
+    "clk_cpll",  /* 0b01: clk_cpll_mux */
+    "clk_aupll", /* 0b10: clk_aupll_mux */
+    "xin_osc0",  /* 0b11: xin_osc0_func_mux */
+  };
+
   /* Fractional clocks (mux + frac divider + gate) */
 
   RK3576_CLK_REGISTER_MATRIX_AUDIO_FRAC_ONE(
@@ -1971,8 +1898,8 @@ static void rk3576_clk_register_matrix_audio(void)
                                                                               \
       /* mclk_saiX_src_sel : 3-bit source mux (8 parents). */                 \
       _src_sel = clk_register_mux(                                            \
-          "mclk_sai" #index "_src_sel", g_sai_mclk_src_parents,               \
-          nitems(g_sai_mclk_src_parents),                                     \
+          "mclk_sai" #index "_src_sel", sai_mclk_src_parents,                 \
+          nitems(sai_mclk_src_parents),                                       \
           CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |                          \
               CLK_PARENT_NAME_IS_STATIC,                                      \
           sel_reg, src_sel_shift, 3, CLK_MUX_HIWORD_MASK);                    \
@@ -2057,6 +1984,17 @@ static void rk3576_clk_register_matrix_audio(void)
 static void rk3576_clk_register_sai(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
+
+  static const char *sai_mclk_src_parents[] = {
+    "xin_osc0",                /* 0b000 */
+    "clk_matrix_audio_frac_0", /* 0b001 */
+    "clk_matrix_audio_frac_1", /* 0b010 */
+    "clk_matrix_audio_frac_2", /* 0b011 */
+    "clk_matrix_audio_frac_3", /* 0b100 */
+    "clk_matrix_audio_int_0",  /* 0b101 */
+    "clk_matrix_audio_int_1",  /* 0b110 */
+    "clk_matrix_audio_int_2",  /* 0b111 */
+  };
 
   /* SAI0 — CLKSEL_CON44 (0x03B0), GATE_CON07.
    *   mclk_sel [12:11] (2-bit), src_sel [10:8], src_div [7:0]. */
@@ -2183,7 +2121,7 @@ static void rk3576_clk_register_sai(void)
 
 static void rk3576_clk_register_sdio(void)
 {
-  static const char *g_sdio_parents[] = {
+  static const char *sdio_parents[] = {
     "clk_gpll", /* 0b00 */
     "clk_cpll", /* 0b01 */
     "xin_osc0", /* 0b10; 0b11 is undefined */
@@ -2195,7 +2133,7 @@ static void rk3576_clk_register_sdio(void)
   /* CLKSEL_CON104 (0x04a0): parent select [7:6], divider [5:0]. */
 
   mux = clk_register_mux(
-      "cclk_src_sdio_sel", g_sdio_parents, nitems(g_sdio_parents),
+      "cclk_src_sdio_sel", sdio_parents, nitems(sdio_parents),
       CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
       sel, 6, 2, CLK_MUX_HIWORD_MASK);
   if (mux == NULL)
