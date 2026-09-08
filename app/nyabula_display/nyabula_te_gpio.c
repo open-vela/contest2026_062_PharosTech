@@ -103,6 +103,11 @@ struct nyabula_te_s
   const char *dev_path[NYABULA_TE_MAX_SCREENS];
   int signo[NYABULA_TE_MAX_SCREENS];
 
+  /* Signal mask the creating thread had before we blocked the TE signals,
+   * restored on error/deinit so the caller's mask is not polluted. */
+  bool mask_changed;
+  sigset_t oldmask;
+
   struct nyabula_dual_lcd_s *dual;
   nyabula_te_callbacks_t cb;
 };
@@ -225,6 +230,25 @@ nyabula_te_t *nyabula_te_init(struct nyabula_dual_lcd_s *dual,
   t->signo[1] = NYABULA_TE_GPIO1_SIGNO;
   t->fd[0] = -1;
   t->fd[1] = -1;
+  t->mask_changed = false;
+
+  /* Block the TE signals in this thread BEFORE registering for GPIO
+   * notifications.  The panel is already displaying (screen_display_on()
+   * ran first in nyabula_dual_lcd_create()) and its TE pin is actively
+   * pulsing, so a TE edge could be signalled to this process the moment
+   * GPIOC_REGISTER is armed.  An unblocked SIGUSR1/SIGUSR2 would take the
+   * default action (terminate the task) in that window.  Blocking first,
+   * then arming the GPIO, then having the consumer thread consume the
+   * signals via sigwaitinfo() closes the race.  The consumer thread
+   * inherits this mask from pthread_create(), so it needs no mask setup of
+   * its own. */
+  sigemptyset(&set);
+  sigaddset(&set, t->signo[0]);
+  sigaddset(&set, t->signo[1]);
+  if (pthread_sigmask(SIG_BLOCK, &set, &t->oldmask) == 0)
+    {
+      t->mask_changed = true;
+    }
 
   /* Open each TE pin device and register the sigevent notification.  The
    * GPIO driver signals the process (from its GIC ISR) on every edge. */
@@ -256,13 +280,8 @@ nyabula_te_t *nyabula_te_init(struct nyabula_dual_lcd_s *dual,
         }
     }
 
-  /* Block the TE signals in this thread so sigwaitinfo() below can catch
-   * them (an unblocked SIGUSR1/SIGUSR2 would take the default action). */
-  sigemptyset(&set);
-  sigaddset(&set, t->signo[0]);
-  sigaddset(&set, t->signo[1]);
-  pthread_sigmask(SIG_BLOCK, &set, NULL);
-
+  /* The TE signals were already blocked above (before any GPIOC_REGISTER),
+   * so no edge can reach us unblocked.  Start the consumer thread now. */
   t->running = true;
 
   ret = nyabula_te_create_thread_prio(&t->thread, te_thread_func, t,
@@ -283,6 +302,12 @@ err_open:
           ioctl(t->fd[sid], GPIOC_UNREGISTER, 0);
           close(t->fd[sid]);
         }
+    }
+
+  /* Restore the caller's signal mask. */
+  if (t->mask_changed)
+    {
+      pthread_sigmask(SIG_SETMASK, &t->oldmask, NULL);
     }
 
   lv_free(t);
@@ -313,6 +338,13 @@ void nyabula_te_deinit(nyabula_te_t *te)
           ioctl(t->fd[sid], GPIOC_UNREGISTER, 0);
           close(t->fd[sid]);
         }
+    }
+
+  /* Restore the original signal mask of the thread that created this TE
+   * source, so SIGUSR1/SIGUSR2 semantics outside this module are unchanged. */
+  if (t->mask_changed)
+    {
+      pthread_sigmask(SIG_SETMASK, &t->oldmask, NULL);
     }
 
   lv_free(t);
