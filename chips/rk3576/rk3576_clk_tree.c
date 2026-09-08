@@ -462,25 +462,19 @@ static int rk3576_fracpll_set_rate(FAR struct clk_s *clk, uint32_t rate,
  * PWM:  00=CPLL/10, 01=CPLL/20, 10=XIN_OSC0, 11=invalid
  */
 
-#ifdef CONFIG_RK3576_I2C
 static const char *g_i2c_sel_parents[] = {
   "clk_gpll_div6",  /* 0b00 */
   "clk_cpll_div10", /* 0b01 */
   "clk_cpll_div20", /* 0b10 */
   "xin_osc0",       /* 0b11 */
 };
-#endif
 
-#ifdef CONFIG_RK3576_PWM
 static const char *g_pwm_sel_parents[] = {
   "clk_cpll_div10", /* 0b00 */
   "clk_cpll_div20", /* 0b01 */
   "xin_osc0",       /* 0b10 */
   "xin_osc0",       /* 0b11 — undefined, fallback */
 };
-#endif
-
-#ifdef CONFIG_RK3576_UART
 
 /* UART frac clock source selection */
 
@@ -525,8 +519,6 @@ static const char *g_uart1_sclk_parents[] = {
   "xin_osc0",          /* 1'b1 */
 };
 
-#endif /* CONFIG_RK3576_UART */
-
 /* Audio frac clock source selection */
 
 static const char *g_matrix_audio_frac_sel_parents[] = {
@@ -549,7 +541,6 @@ static const char *g_matrix_audio_frac_sel_parents[] = {
  *   0b111: clk_matrix_audio_int_2
  */
 
-#ifdef CONFIG_RK3576_SAI
 static const char *g_sai_mclk_src_parents[] = {
   "xin_osc0",                /* 0b000 */
   "clk_matrix_audio_frac_0", /* 0b001 */
@@ -560,18 +551,15 @@ static const char *g_sai_mclk_src_parents[] = {
   "clk_matrix_audio_int_1",  /* 0b110 */
   "clk_matrix_audio_int_2",  /* 0b111 */
 };
-#endif
 
 /* FSPI: 00=GPLL, 01=CPLL, 10=XIN_OSC0, 11=invalid. */
 
-#ifdef CONFIG_RK3576_FSPI
 static const char *g_fspi_sel_parents[] = {
   "clk_gpll", /* 0b00 */
   "clk_cpll", /* 0b01 */
   "xin_osc0", /* 0b10 */
   "xin_osc0", /* 0b11 — undefined, fallback */
 };
-#endif
 
 /****************************************************************************
  * Private Functions
@@ -1118,7 +1106,6 @@ static void rk3576_clk_register_litcore(void)
  *   - clk_i2cX       : SCL functional clock gate
  ****************************************************************************/
 
-#ifdef CONFIG_RK3576_I2C
 static void rk3576_clk_register_i2c(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
@@ -1172,7 +1159,6 @@ static void rk3576_clk_register_i2c(void)
       9, cru + RK3576_CRU_CLKSEL_CON(58), 0, cru + RK3576_CRU_GATE_CON(12), 8,
       cru + RK3576_CRU_GATE_CON(13), 4, "pclk_bus_root");
 }
-#endif /* CONFIG_RK3576_I2C */
 
 #undef RK3576_CLK_REGISTER_I2C_ONE
 
@@ -1261,7 +1247,6 @@ static void rk3576_clk_register_i2c(void)
  *   FSPI1: CLKSEL_CON(106) mux@[7:6] div@[5:0], GATE_CON(43) hclk@4 sclk@3
  ****************************************************************************/
 
-#ifdef CONFIG_RK3576_FSPI
 static void rk3576_clk_register_fspi(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
@@ -1276,7 +1261,6 @@ static void rk3576_clk_register_fspi(void)
   RK3576_CLK_REGISTER_FSPI_ONE(1, cru + RK3576_CRU_CLKSEL_CON(106), 6,
                                cru + RK3576_CRU_GATE_CON(43), 4, 3);
 }
-#endif /* CONFIG_RK3576_FSPI */
 
 #undef RK3576_CLK_REGISTER_FSPI_ONE
 
@@ -1295,7 +1279,6 @@ static void rk3576_clk_register_fspi(void)
  *     pclk_tsadc    : gate on pclk_bus_root, GATE_CON13 bit 8 (SET_TO_DISABLE)
  ****************************************************************************/
 
-#ifdef CONFIG_RK3576_TSADC
 static void rk3576_clk_register_tsadc(void)
 {
   uintptr_t cru = RK3576_CRU_ADDR;
@@ -1322,7 +1305,6 @@ static void rk3576_clk_register_tsadc(void)
                     cru + RK3576_CRU_GATE_CON(13), 8,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 }
-#endif /* CONFIG_RK3576_TSADC */
 
 /**
  * Macro: RK3576_CLK_REGISTER_PWM_ONE
@@ -1402,7 +1384,6 @@ static void rk3576_clk_register_tsadc(void)
  *   - clk_pwmX_rc    : Internal RC oscillator alternative gate
  ****************************************************************************/
 
-#ifdef CONFIG_RK3576_PWM
 static void rk3576_clk_register_pwm(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
@@ -1427,7 +1408,6 @@ static void rk3576_clk_register_pwm(void)
       2, cru + RK3576_CRU_CLKSEL_CON(74), 6, cru + RK3576_CRU_GATE_CON(20), 4,
       5, 7, cru + RK3576_CRU_GATE_CON(20), 6, "pclk_bus_root");
 }
-#endif /* CONFIG_RK3576_PWM */
 
 #undef RK3576_CLK_REGISTER_PWM_ONE
 
@@ -1502,7 +1482,6 @@ static void rk3576_clk_register_pwm(void)
  *     clk_matrix_uart_frac_2: div=CON25(0x0364), sel=CON26(0x0368)
  */
 
-#ifdef CONFIG_RK3576_UART
 static void rk3576_clk_register_matrix_uart(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
@@ -1518,7 +1497,6 @@ static void rk3576_clk_register_matrix_uart(void)
   RK3576_CLK_REGISTER_MATRIX_UART_FRAC_ONE(2, cru + RK3576_CRU_CLKSEL_CON(25),
                                            cru + RK3576_CRU_CLKSEL_CON(26), 6);
 }
-#endif
 
 #undef RK3576_CLK_REGISTER_MATRIX_UART_FRAC_ONE
 
@@ -1626,7 +1604,6 @@ static void rk3576_clk_register_matrix_uart(void)
  *   All gates use SET_TO_DISABLE (high = clock off).
  ****************************************************************************/
 
-#ifdef CONFIG_RK3576_UART
 static void rk3576_clk_register_uart(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
@@ -1793,7 +1770,6 @@ static void rk3576_clk_register_uart(void)
                       CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
   }
 }
-#endif /* CONFIG_RK3576_UART */
 
 #undef RK3576_CLK_REGISTER_UART_ONE
 
@@ -2078,7 +2054,6 @@ static void rk3576_clk_register_matrix_audio(void)
  *   All gates use SET_TO_DISABLE (high = clock off).
  ****************************************************************************/
 
-#ifdef CONFIG_RK3576_SAI
 static void rk3576_clk_register_sai(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
@@ -2194,7 +2169,6 @@ static void rk3576_clk_register_sai(void)
   clk_register_fixed_rate("sai3_mclkin", NULL, CLK_NAME_IS_STATIC, 0);
   clk_register_fixed_rate("sai4_mclkin", NULL, CLK_NAME_IS_STATIC, 0);
 }
-#endif /* CONFIG_RK3576_SAI */
 
 #undef RK3576_CLK_REGISTER_SAI_ONE
 
@@ -2207,7 +2181,6 @@ static void rk3576_clk_register_sai(void)
  *   controls the downstream card and bus clocks.
  ****************************************************************************/
 
-#ifdef CONFIG_RK3576_SDIO
 static void rk3576_clk_register_sdio(void)
 {
   static const char *g_sdio_parents[] = {
@@ -2248,7 +2221,6 @@ static void rk3576_clk_register_sdio(void)
                     cru + RK3576_CRU_GATE_CON(42), 12,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 }
-#endif /* CONFIG_RK3576_SDIO */
 
 /****************************************************************************
  * Name: rk3576_clk_register_emmc
@@ -2260,7 +2232,6 @@ static void rk3576_clk_register_sdio(void)
  *   kept under the common NuttX clock framework.
  ****************************************************************************/
 
-#ifdef CONFIG_RK3576_EMMC
 static void rk3576_clk_register_emmc(void)
 {
   static const char *pll_parents[] = {
@@ -2353,7 +2324,6 @@ static void rk3576_clk_register_emmc(void)
                     cru + RK3576_CRU_GATE_CON(33), 12,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 }
-#endif /* CONFIG_RK3576_EMMC */
 
 /****************************************************************************
  * Name: rk3576_clk_register_dmac
@@ -2368,7 +2338,6 @@ static void rk3576_clk_register_emmc(void)
  *   1/2/3.  The parent clock is aclk_bus_root (AXI bus domain).
  ****************************************************************************/
 
-#ifdef CONFIG_RK3576_DMA
 static void rk3576_clk_register_dmac(void)
 {
   const unsigned long cru = RK3576_CRU_ADDR;
@@ -2391,7 +2360,6 @@ static void rk3576_clk_register_dmac(void)
                     cru + RK3576_CRU_GATE_CON(19), 3,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 }
-#endif /* CONFIG_RK3576_DMA */
 
 /**
  * Macro: RK3576_CLK_REGISTER_TIMER_ROOT_ONE
@@ -2526,7 +2494,6 @@ static void rk3576_clk_register_dmac(void)
  *   All gates use SET_TO_DISABLE (high = clock off).
  ****************************************************************************/
 
-#ifdef CONFIG_RK3576_TIMER
 static void rk3576_clk_register_timer(void)
 {
 
@@ -2647,7 +2614,6 @@ static void rk3576_clk_register_timer(void)
                     cru + RK3576_CRU_GATE_CON(19), 0,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 }
-#endif /* CONFIG_RK3576_TIMER */
 
 #undef RK3576_CLK_REGISTER_TIMER_ROOT_ONE
 #undef RK3576_CLK_REGISTER_TIMER_COMPOSITE_ONE
@@ -2675,7 +2641,6 @@ static void rk3576_clk_register_timer(void)
  *   scheme as rk3576_sai.c).
  ****************************************************************************/
 
-#ifdef CONFIG_RK3576_SARADC
 static void rk3576_clk_register_saradc(void)
 {
   /* SARADC: 1-bit source select (TRM CLKSEL_CON58[12]).
@@ -2713,7 +2678,6 @@ static void rk3576_clk_register_saradc(void)
                     cru + RK3576_CRU_GATE_CON(13), 6,
                     CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
 }
-#endif /* CONFIG_RK3576_SARADC */
 
 /****************************************************************************
  * Public Functions
@@ -2892,48 +2856,26 @@ void rk3576_clk_tree_initialize(void)
 
   rk3576_clk_register_matrix_audio();
 
-#ifdef CONFIG_RK3576_I2C
   rk3576_clk_register_i2c();
-#endif
 
-#ifdef CONFIG_RK3576_PWM
   rk3576_clk_register_pwm();
-#endif
 
-#ifdef CONFIG_RK3576_UART
   rk3576_clk_register_matrix_uart();
   rk3576_clk_register_uart();
-#endif
 
-#ifdef CONFIG_RK3576_SAI
   rk3576_clk_register_sai();
-#endif
 
-#ifdef CONFIG_RK3576_DMA
   rk3576_clk_register_dmac();
-#endif
 
-#ifdef CONFIG_RK3576_SDIO
   rk3576_clk_register_sdio();
-#endif
 
-#ifdef CONFIG_RK3576_EMMC
   rk3576_clk_register_emmc();
-#endif
 
-#ifdef CONFIG_RK3576_FSPI
   rk3576_clk_register_fspi();
-#endif
 
-#ifdef CONFIG_RK3576_TIMER
   rk3576_clk_register_timer();
-#endif
 
-#ifdef CONFIG_RK3576_TSADC
   rk3576_clk_register_tsadc();
-#endif
 
-#ifdef CONFIG_RK3576_SARADC
   rk3576_clk_register_saradc();
-#endif
 }
