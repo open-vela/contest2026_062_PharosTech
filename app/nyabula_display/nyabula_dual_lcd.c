@@ -925,6 +925,7 @@ static int screen_init(nyabula_screen_t *scr, int sid, const char *dev_path,
                        int width, int height)
 {
   int ret;
+  int xerr;
 
   scr->screen_id = sid;
   scr->width = width;
@@ -942,8 +943,9 @@ static int screen_init(nyabula_screen_t *scr, int sid, const char *dev_path,
   scr->fd = open(dev_path, O_RDWR);
   if (scr->fd < 0)
     {
-      LV_LOG_ERROR("Failed to open %s: %d", dev_path, errno);
-      return -1;
+      xerr = -errno;
+      LV_LOG_ERROR("Failed to open %s: %d", dev_path, -xerr);
+      return xerr;
     }
 
   /* Get alignment info */
@@ -968,7 +970,8 @@ static int screen_init(nyabula_screen_t *scr, int sid, const char *dev_path,
                    "NYABULA_DUAL_LCD_DEF_WIDTH/HEIGHT",
                    sid, width, height, scr->buf_size,
                    (unsigned)NYABULA_DUAL_LCD_FRAME_BYTES);
-      return -EINVAL;
+      xerr = -ENOMEM;
+      goto err_fd;
     }
 
   scr->buf[0].data = g_nyabula_fb[sid][0];
@@ -988,6 +991,7 @@ static int screen_init(nyabula_screen_t *scr, int sid, const char *dev_path,
   if (!scr->disp)
     {
       LV_LOG_ERROR("Failed to create LVGL display");
+      xerr = -ENOMEM;
       goto err_disp;
     }
 
@@ -1048,9 +1052,10 @@ static int screen_init(nyabula_screen_t *scr, int sid, const char *dev_path,
 err_disp:
   sem_destroy(&scr->buf_free);
   sem_destroy(&scr->st_mutex);
+err_fd:
   close(scr->fd);
   scr->fd = -1;
-  return -1;
+  return xerr;
 }
 
 /****************************************************************************
@@ -1170,7 +1175,7 @@ nyabula_dual_lcd_t *nyabula_dual_lcd_create(const char *dev_path0,
   ret = screen_init(&dual->screen[0], 0, dev_path0, width, height);
   if (ret < 0)
     {
-      LV_LOG_ERROR("Failed to initialize screen 0");
+      LV_LOG_ERROR("Failed to initialize screen 0: %d", -ret);
       goto err_screen0;
     }
 
@@ -1178,7 +1183,7 @@ nyabula_dual_lcd_t *nyabula_dual_lcd_create(const char *dev_path0,
   ret = screen_init(&dual->screen[1], 1, dev_path1, width, height);
   if (ret < 0)
     {
-      LV_LOG_ERROR("Failed to initialize screen 1");
+      LV_LOG_ERROR("Failed to initialize screen 1: %d", -ret);
       goto err_screen1;
     }
 
