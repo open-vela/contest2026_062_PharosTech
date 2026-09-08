@@ -446,9 +446,23 @@ static void rk3576_spi_exchange(struct spi_dev_s *dev, const void *txbuffer,
     {
       before = txoff + rxoff;
 
-      /* Feed the TX FIFO as long as there is room. */
+      /* Feed the TX FIFO as long as it has room, but stop once the net
+       * in-flight byte count -- pushed-but-not-yet-read-back, i.e.
+       * (txoff - rxoff) -- would leave no room left in the RX FIFO.
+       *
+       * In a full-duplex master the controller shifts one frame out of TX
+       * for every frame it samples into RX, so every byte pushed into the
+       * TX FIFO is destined for the RX FIFO.  Without this bound a TX feed
+       * alone could run ahead of the drain below: a slow CPU feeding a fast
+       * SPI would keep topping up the TX FIFO while the RX FIFO, filling in
+       * parallel from the shift-out side, silently overflows and drops those
+       * excess bytes.  Capping the feed at one RX-FIFO depth of outstanding
+       * data -- and letting the drain loop below pull rxoff back up before
+       * the feed resumes -- keeps resident RX data within the FIFO forever.
+       */
 
-      while (txoff < nwords && rk3576_spi_tx_ready(priv))
+      while (txoff < nwords && rk3576_spi_tx_ready(priv) &&
+             (txoff - rxoff) < RK3576_SPI_FIFO_DEPTH)
         {
           uint8_t txb = (tx != NULL) ? tx[txoff] : 0xff;
           spi_putreg(priv, RK3576_SPI_TXDR_OFFSET, txb);
