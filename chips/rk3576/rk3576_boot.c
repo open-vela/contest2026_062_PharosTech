@@ -114,6 +114,33 @@ void arm64_el_init(void)
     }
 }
 
+#ifdef CONFIG_ARCH_HAVE_MULTICPU
+
+/****************************************************************************
+ * Name: arm64_get_mpid
+ *
+ * Description:
+ *   Map a logical CPU index to its MPIDR_EL1 value.  RK3576 4x A53 LITTLE
+ *   cluster uses aff0 (bits[7:0]) as the in-cluster core number and aff1=0,
+ *   so the logical CPU index maps 1:1 onto aff0.  CORE_TO_MPID(cpu, 0)
+ *   keeps aff1/aff2/aff3 from the running core (all 0) and sets aff0=cpu.
+ *
+ ****************************************************************************/
+
+uint64_t arm64_get_mpid(int cpu) { return CORE_TO_MPID(cpu, 0); }
+
+/****************************************************************************
+ * Name: arm64_get_cpuid
+ *
+ * Description:
+ *   Map an MPIDR_EL1 value back to a logical CPU index: the aff0 field.
+ *
+ ****************************************************************************/
+
+int arm64_get_cpuid(uint64_t mpid) { return MPID_TO_CORE(mpid); }
+
+#endif /* CONFIG_ARCH_HAVE_MULTICPU */
+
 /****************************************************************************
  * Name: arm64_chip_boot
  *
