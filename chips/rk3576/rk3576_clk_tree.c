@@ -577,6 +577,7 @@ static void rk3576_clk_register_pll_factors(void)
  *     aclk_bus_root     CLKSEL_CON55  sel[9]   div[8:4]
  *     aclk_center_root  sel@CON168[7:5]  div@CON167[13:9]
  *       (mux and divider sit in different CLKSEL registers)
+ *     aclk_nvm_root     CLKSEL_CON88 sel[7] div[6:2] + GATE_CON33[1]
  ****************************************************************************/
 
 static void rk3576_clk_register_axi(void)
@@ -655,6 +656,39 @@ static void rk3576_clk_register_axi(void)
                                CLK_DIVIDER_HIWORD_MASK);
     _assert_registered(clk);
   }
+
+  /* NVM-domain AXI root — dedicated ACLK root of the NVM (eMMC/Flash)
+   * controller domain.  1-bit mux (GPLL/CPLL) @ CLKSEL_CON88[7] + 5-bit
+   * divider @ CLKSEL_CON88[6:2] (value+1) + gate @ GATE_CON33[1].  This is
+   * the parent of aclk_emmc (registered in rk3576_clk_register_emmc()).
+   */
+
+  {
+    static const char *parents[] = {
+      "clk_gpll", /* 1'b0 */
+      "clk_cpll", /* 1'b1 */
+    };
+
+    clk = clk_register_mux(
+        "aclk_nvm_root_sel", parents, nitems(parents),
+        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+        cru + RK3576_CRU_CLKSEL_CON(88), 7, 1, CLK_MUX_HIWORD_MASK);
+    _assert_registered(clk);
+
+    clk = clk_register_divider(
+        "aclk_nvm_root_div", "aclk_nvm_root_sel",
+        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+        cru + RK3576_CRU_CLKSEL_CON(88), 2, 5,
+        CLK_DIVIDER_HIWORD_MASK | CLK_DIVIDER_ROUND_CLOSEST);
+    _assert_registered(clk);
+
+    clk = clk_register_gate("aclk_nvm_root", "aclk_nvm_root_div",
+                            CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                                CLK_PARENT_NAME_IS_STATIC,
+                            cru + RK3576_CRU_GATE_CON(33), 1,
+                            CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+    _assert_registered(clk);
+  }
 }
 
 /****************************************************************************
@@ -669,6 +703,9 @@ static void rk3576_clk_register_axi(void)
  *     hclk_top_biu      CLKSEL_CON19  sel[3:2]
  *     hclk_bus_root     CLKSEL_CON55  sel[1:0]
  *     hclk_center_root  CLKSEL_CON168 sel[11:10]
+ *     hclk_audio_root   CLKSEL_CON42  sel[1:0]
+ *     hclk_sdgmac_root  CLKSEL_CON103 sel[1:0] + GATE_CON42[0]
+ *     hclk_nvm_root     CLKSEL_CON88  sel[1:0] + GATE_CON33[0]
  ****************************************************************************/
 
 static void rk3576_clk_register_ahb(void)
@@ -713,6 +750,44 @@ static void rk3576_clk_register_ahb(void)
                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
                          cru + RK3576_CRU_CLKSEL_CON(42), 0, 2,
                          CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  /* SDGMAC-domain AHB root — dedicated HCLK root of the SDGMAC/SDIO
+   * controller domain.  Source 2-bit mux @ CLKSEL_CON103[1:0] + gate
+   * @ GATE_CON42[0].  This is the parent of hclk_sdio (registered in
+   * rk3576_clk_register_sdio()).
+   */
+
+  clk = clk_register_mux(
+      "hclk_sdgmac_root_sel", parents, nitems(parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(103), 0, 2, CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("hclk_sdgmac_root", "hclk_sdgmac_root_sel",
+                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                              CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(42), 0,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  /* NVM-domain AHB root — dedicated HCLK root of the NVM (eMMC/Flash)
+   * controller domain.  Source 2-bit mux @ CLKSEL_CON88[1:0] + gate
+   * @ GATE_CON33[0].  This is the parent of hclk_emmc (registered in
+   * rk3576_clk_register_emmc()).
+   */
+
+  clk = clk_register_mux(
+      "hclk_nvm_root_sel", parents, nitems(parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(88), 0, 2, CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("hclk_nvm_root", "hclk_nvm_root_sel",
+                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                              CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(33), 0,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
   _assert_registered(clk);
 }
 
@@ -2163,6 +2238,10 @@ static void rk3576_clk_register_sai(void)
  *   Register the SDIO card-clock source and AHB bus gate.  CLKSEL_CON104
  *   contains a two-bit parent selector and a six-bit divider; GATE_CON42
  *   controls the downstream card and bus clocks.
+ *
+ *   The SDIO AHB interface clock (hclk_sdio) is gated from the shared
+ *   SDGMAC HCLK root (hclk_sdgmac_root), registered in
+ *   rk3576_clk_register_ahb().  This gate sits at GATE_CON42[12].
  ****************************************************************************/
 
 static void rk3576_clk_register_sdio(void)
@@ -2199,7 +2278,9 @@ static void rk3576_clk_register_sdio(void)
                           CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
   _assert_registered(clk);
 
-  clk = clk_register_gate("hclk_sdio", NULL, CLK_NAME_IS_STATIC,
+  clk = clk_register_gate("hclk_sdio", "hclk_sdgmac_root",
+                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                              CLK_PARENT_NAME_IS_STATIC,
                           cru + RK3576_CRU_GATE_CON(42), 12,
                           CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
   _assert_registered(clk);
@@ -2209,18 +2290,16 @@ static void rk3576_clk_register_sdio(void)
  * Name: rk3576_clk_register_emmc
  *
  * Description:
- *   Register the RK3576 NVM roots and complete eMMC clock domain.  The card
- *   source is a GPLL/CPLL/24 MHz mux followed by a six-bit divider.  The
- *   controller also consumes AHB, AXI, bus and timer clocks whose gates are
- *   kept under the common NuttX clock framework.
+ *   Register the RK3576 eMMC clock domain.  The card source
+ *   (cclk_src_emmc) is a GPLL/CPLL/24 MHz mux followed by a six-bit
+ *   divider.  The NVM AHB/AXI roots (hclk_nvm_root / aclk_nvm_root) that
+ *   gate the controller's bus/timing interface clocks are registered in
+ *   rk3576_clk_register_ahb() / rk3576_clk_register_axi() respectively;
+ *   only the controller-level interface gates are registered here.
  ****************************************************************************/
 
 static void rk3576_clk_register_emmc(void)
 {
-  static const char *pll_parents[] = {
-    "clk_gpll", /* 0b0 */
-    "clk_cpll", /* 0b1 */
-  };
   static const char *nvm_bus_parents[] = {
     "clk_gpll_div6",  /* 0b00 */
     "clk_cpll_div10", /* 0b01 */
@@ -2233,45 +2312,8 @@ static void rk3576_clk_register_emmc(void)
     "xin_osc0", /* 0b10; 0b11 is undefined */
   };
   const unsigned long cru = RK3576_CRU_ADDR;
-  const unsigned long nvm_sel = cru + RK3576_CRU_CLKSEL_CON(88);
   const unsigned long card_sel = cru + RK3576_CRU_CLKSEL_CON(89);
   FAR struct clk_s *clk;
-
-  /* HCLK_NVM_ROOT: CLKSEL_CON88 parent [1:0], GATE_CON33 bit 0. */
-
-  clk = clk_register_mux(
-      "hclk_nvm_root_sel", nvm_bus_parents, nitems(nvm_bus_parents),
-      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-      nvm_sel, 0, 2, CLK_MUX_HIWORD_MASK);
-  _assert_registered(clk);
-
-  clk = clk_register_gate("hclk_nvm_root", "hclk_nvm_root_sel",
-                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
-                              CLK_PARENT_NAME_IS_STATIC,
-                          cru + RK3576_CRU_GATE_CON(33), 0,
-                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
-  _assert_registered(clk);
-
-  /* ACLK_NVM_ROOT: CLKSEL_CON88 parent bit 7, divider [6:2], gate bit 1. */
-
-  clk = clk_register_mux("aclk_nvm_root_sel", pll_parents, nitems(pll_parents),
-                         CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
-                             CLK_PARENT_NAME_IS_STATIC,
-                         nvm_sel, 7, 1, CLK_MUX_HIWORD_MASK);
-  _assert_registered(clk);
-
-  clk = clk_register_divider(
-      "aclk_nvm_root_div", "aclk_nvm_root_sel",
-      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-      nvm_sel, 2, 5, CLK_DIVIDER_HIWORD_MASK | CLK_DIVIDER_ROUND_CLOSEST);
-  _assert_registered(clk);
-
-  clk = clk_register_gate("aclk_nvm_root", "aclk_nvm_root_div",
-                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
-                              CLK_PARENT_NAME_IS_STATIC,
-                          cru + RK3576_CRU_GATE_CON(33), 1,
-                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
-  _assert_registered(clk);
 
   /* CCLK_SRC_EMMC: CLKSEL_CON89 parent [15:14], divider [13:8], gate bit 8. */
 
