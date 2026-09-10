@@ -28,9 +28,9 @@
  * DesignWare SSI compatible IP (TRM Chapter 30).
  *
  * Master mode only; Motorola SPI frame format (frf=00) with 8-bit data
- * frames.  Transfers run over the 32-entry TX/RX FIFOs with polled status
- * (no interrupt/DMA path).  All five controllers (SPI0..SPI4) and both
- * slave-select lines per controller are supported; the driver is
+ * frames.  Transfers run over the 64-location (64x16-bit) TX/RX FIFOs with
+ * polled status (no interrupt/DMA path).  All five controllers (SPI0..SPI4)
+ * and both slave-select lines per controller are supported; the driver is
  * data-driven at runtime.
  *
  * Pin muxing (SS_N, SCK, MOSI, MISO) is the board's responsibility; this
@@ -185,8 +185,8 @@ static void rk3576_spi_setctr0(struct rk3576_spi_priv_s *priv)
 
   ctrlr0 |= RK3576_SPI_CTRLR0_CSM_KEEP_LOW << RK3576_SPI_CTRLR0_CSM_SHIFT;
 
-  /* Enable APB-to-SPI 8-bit access (bht=1) so a 32-bit TXDR/RXDR access
-   * carries 4 data frames like Linux's rockchip spi driver.
+  /* 8-bit data frames: select APB 8-bit access (bht=1) so each FIFO
+   * write/read matches one 8-bit frame.
    */
 
   ctrlr0 |= RK3576_SPI_CTRLR0_BHT;
