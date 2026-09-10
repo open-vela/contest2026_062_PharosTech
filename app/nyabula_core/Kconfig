@@ -1,0 +1,212 @@
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more contributor
+# license agreements.  See the NOTICE file distributed with this work for
+# additional information regarding copyright ownership.  The ASF licenses this
+# file to you under the Apache License, Version 2.0 (the "License"); you may not
+# use this file except in compliance with the License.  You may obtain a copy of
+# the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+# License for the specific language governing permissions and limitations under
+# the License.
+#
+# For a description of the syntax of this configuration file,
+# see the kconfig-language.txt file in the NuttX tools repository.
+#
+
+config CONTEST2026_062_NYABULA_CORE
+	bool "Nyabula Core plugin launcher"
+	default n
+	select ALLOW_ICS_COMPONENTS
+	select INTERPRETERS_QUICKJS
+	select NETUTILS_CJSON
+	---help---
+		Enable the Nyabula Core plugin launcher and its isolated QuickJS
+		runtime.
+
+if CONTEST2026_062_NYABULA_CORE
+
+config NYABULA_CORE_WAMR
+	bool "Enable WAMR plugin runtime"
+	default y
+	select INTERPRETERS_WAMR
+	select INTERPRETERS_WAMR_THREAD_MGR
+
+config NYABULA_CORE_HTTP
+	bool "Enable Core non-blocking HTTP transport"
+	default n
+	depends on NET_TCP && NET_IPv4
+	select NETUTILS_WEBCLIENT
+	---help---
+		Build the broker-owned transport using upstream webclient. The
+		current transport accepts IPv4 HTTP endpoints and DNS hostnames.
+		TLS requires further integration.
+
+config NYABULA_CORE_PRIORITY
+	int "Nyabula Core task priority"
+	default 100
+
+config NYABULA_CORE_BACKGROUND_PRIORITY
+	int "Nyabula background plugin priority"
+	default 80
+	range 1 254
+
+config NYABULA_CORE_STACKSIZE
+	int "Nyabula Core task stack size"
+	default 32768
+
+config NYABULA_CORE_PLUGIN_MEMORY
+	int "Maximum QuickJS heap per plugin"
+	default 8388608
+
+config NYABULA_CORE_PLUGIN_STACK
+	int "Maximum QuickJS stack per plugin"
+	default 262144
+
+config NYABULA_CORE_EVENT_TIMEOUT_MS
+	int "Maximum execution time per plugin event"
+	default 100
+
+config NYABULA_CORE_ASYNC_TIMEOUT_MS
+	int "Maximum elapsed time per lifecycle callback"
+	default 5000
+	range 100 60000
+	---help---
+		Bound the entire asynchronous callback, including provider waits.
+		The manifest CPU budget still bounds accumulated script execution;
+		waiting for a completion does not replenish that budget.
+
+config NYABULA_CORE_EVENTS_PER_MINUTE
+	int "Default events allowed per plugin per minute"
+	default 120
+	range 1 600
+
+config NYABULA_CORE_MAX_EVENTS_PER_MINUTE
+	int "Maximum events a plugin may request per minute"
+	default 600
+	range 1 3600
+
+config NYABULA_CORE_SOURCE_LIMIT
+	int "Maximum plugin source size"
+	default 1048576
+
+config NYABULA_CORE_MANIFEST_LIMIT
+	int "Maximum plugin manifest size"
+	default 16384
+	range 1024 65536
+
+config NYABULA_CORE_REQUIRE_SIGNATURE
+	bool "Require signed plugin packages"
+	default y
+	select LIBSODIUM
+
+config NYABULA_CORE_TRUST_STORE
+	string "Trusted plugin public key store"
+	default "/data/nyabula/trusted-keys.json"
+	depends on NYABULA_CORE_REQUIRE_SIGNATURE
+
+config NYABULA_CORE_GRANT_STORE
+	string "Plugin permission grant store"
+	default "/data/nyabula/grants.json"
+
+config NYABULA_CORE_PACKAGE_STORE
+	string "Installed plugin package store"
+	default "/data/nyabula/apps"
+
+config NYABULA_CORE_HEALTH_STORE
+	string "Plugin crash health store"
+	default "/data/nyabula/health"
+
+config NYABULA_CORE_REVOCATION_STORE
+	string "Plugin signer and version revocation store"
+	default "/data/nyabula/revocations.json"
+
+config NYABULA_CORE_QUARANTINE_FAILURES
+	int "Failures before a plugin version is quarantined"
+	default 3
+	range 1 100
+
+config NYABULA_CORE_PACKAGE_FILE_LIMIT
+	int "Maximum files per plugin package"
+	default 128
+	range 8 1024
+
+config NYABULA_CORE_PACKAGE_SIZE_LIMIT
+	int "Maximum verified plugin package size"
+	default 8388608
+	range 65536 67108864
+
+config NYABULA_CORE_MAX_PLUGINS
+	int "Maximum concurrently scheduled plugins"
+	default 4
+	range 1 16
+
+config NYABULA_CORE_MAX_BACKGROUND_PLUGINS
+	int "Maximum concurrently scheduled background plugins"
+	default 2
+	range 1 8
+
+config NYABULA_CORE_EVENT_DEPTH
+	int "Queued events per plugin"
+	default 8
+	range 1 64
+
+config NYABULA_CORE_EVENT_SIZE
+	int "Maximum event payload size"
+	default 256
+	range 32 4096
+
+config NYABULA_CORE_STORAGE_VALUE_LIMIT
+	int "Maximum private storage value size"
+	default 4096
+	range 128 65536
+
+config NYABULA_CORE_AI_RESPONSE_LIMIT
+	int "Maximum AI response size"
+	default 4096
+	range 128 65536
+
+config NYABULA_CORE_STATE_SQLITE
+	bool "Transactional Core state database"
+	default y if !BUILD_KERNEL
+	depends on !BUILD_KERNEL && !LIB_SQLITE
+	---help---
+		Use the upstream SQLite rollback journal for Core state. The flat
+		build shares one serialized broker. Kernel builds require a single
+		broker process before enabling this database integration.
+
+config NYABULA_CORE_STATE_DATABASE
+	string "Core private state database"
+	default "/data/nyabula/core.sqlite"
+	depends on NYABULA_CORE_STATE_SQLITE
+
+config NYABULA_CORE_STORAGE_BYTES_LIMIT
+	int "Maximum stored value bytes per plugin"
+	default 65536
+	range 128 67108864
+
+config NYABULA_CORE_STORAGE_KEYS_LIMIT
+	int "Maximum stored keys per plugin"
+	default 64
+	range 1 1024
+
+config NYABULA_CORE_JOB_LIMIT
+	int "Maximum microtasks per plugin event"
+	default 256
+	range 8 4096
+
+config NYABULA_CORE_MOCK_CAPABILITIES
+	bool "Mock external capabilities"
+	default y if ARCH_SIM
+	default n
+	---help---
+		Use deterministic network, UI and AI capability mocks.  This is for
+		the simulator and must remain disabled on production boards.
+
+endif
