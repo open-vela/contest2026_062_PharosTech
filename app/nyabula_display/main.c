@@ -22,7 +22,9 @@
  * Included Files
  ****************************************************************************/
 
+#include <errno.h>
 #include <nuttx/config.h>
+#include <stdio.h>
 #include <sys/boardctl.h>
 #include <unistd.h>
 
@@ -31,6 +33,9 @@
 
 #include "nyabula_display.h"
 #include "nyabula_dual_demo.h"
+#ifdef CONFIG_NYABULA_DISPLAY_EYES
+#include <nyabula_eye_service.h>
+#endif
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -70,6 +75,8 @@
  * lv_screen_active()).
  */
 
+#ifndef CONFIG_NYABULA_DISPLAY_EYES
+static void lv_demo_dual_apps(void);
 static void lv_demo_dual_apps(void)
 {
   lv_display_t *d0 = nyabula_display_get_screen(0);
@@ -77,6 +84,7 @@ static void lv_demo_dual_apps(void)
 
   nyabula_dual_demo_create(d0, d1);
 }
+#endif
 
 /****************************************************************************
  * Public Functions
@@ -100,6 +108,12 @@ int main(int argc, FAR char *argv[])
 {
   int ret;
 
+  if (lv_is_initialized())
+    {
+      fprintf(stderr, "nyabula_display: LVGL is already owned\n");
+      return EBUSY;
+    }
+
 #ifdef NEED_BOARDINIT
   /* Perform board-specific driver initialization */
   boardctl(BOARDIOC_INIT, 0);
@@ -119,21 +133,40 @@ int main(int argc, FAR char *argv[])
       return 1;
     }
 
-  /* Create demo UI for both screens.  LVGL is single-threaded, so the UI
-   * must be built before entering the render loop. */
+    /* Create demo UI for both screens.  LVGL is single-threaded, so the UI
+     * must be built before entering the render loop. */
+#ifdef CONFIG_NYABULA_DISPLAY_EYES
+  ret = nyabula_eye_service_attach(
+      lv_display_get_screen_active(nyabula_display_get_screen(0)),
+      lv_display_get_screen_active(nyabula_display_get_screen(1)));
+  if (ret < 0)
+    {
+      fprintf(stderr, "nyabula_display: eye attach failed: %d\n", ret);
+      nyabula_display_deinit();
+      return 1;
+    }
+  printf("nyabula_display: Eye Engine attached to LCD0 and LCD1\n");
+#else
   lv_demo_dual_apps();
+#endif
 
   /* Drive the render loop from this (main) thread.  The display pipeline
    * (TE + transfer threads) was started by init(); main simply hosts the
    * lv_timer_handler() call and consumes TE-driven render requests. */
   for (;;)
     {
+#ifdef CONFIG_NYABULA_DISPLAY_EYES
+      nyabula_eye_service_tick();
+#endif
       nyabula_display_task();
 
       /* main is free to do other work here between render steps. */
     }
 
-  /* Cleanup (unreachable in this demo) */
+    /* Cleanup (unreachable in this demo) */
+#ifdef CONFIG_NYABULA_DISPLAY_EYES
+  nyabula_eye_service_detach();
+#endif
   nyabula_display_deinit();
 
   return 0;
