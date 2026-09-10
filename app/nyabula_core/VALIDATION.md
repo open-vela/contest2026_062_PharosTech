@@ -54,6 +54,30 @@ python3 app/nyabula/tools/generate_fonts.py --download-fallback
 依赖源码复用正式repo的LVGL/QuickJS/WAMR/libc++等，不另外克隆单仓替代manifest。
 CI从官方固定Noto版本生成字体，并随构建产物保留OFL说明和字体哈希清单。
 
+## 正式CI补充：WAMR配置所有权
+
+首轮正式CI（run 34448121705）中，字体生成与Make均成功，但CMake失败：
+
+```text
+<command-line>: error: "WASM_ENABLE_MODULE_INST_CONTEXT" redefined [-Werror]
+```
+
+原因是Core额外向WAMR目标注入`=0`，与正式工程的`=1`冲突。
+此前独立测试树未覆盖该正式工程设置，因此本地构建通过不代表这次CI通过。
+修复仅删除Core对依赖内部配置的覆盖，保留WAMR自身定义和编译器的`-Werror`。
+
+回归用真实Core的CMakeLists构造依赖目标，分别验证上游定义为0、1时均不被Core修改：
+
+```sh
+for context in 0 1; do
+  cmake -S tools/nyabula_core/tests/cmake \
+    -B "out/core-wamr-$context" -DNYCORE_TEST_CONTEXT="$context"
+  cmake --build "out/core-wamr-$context"
+done
+```
+
+此检查只证明CMake配置所有权，不冒充完整WAMR运行测试；完整工程结果以修复后的CI为准。
+
 ## 未覆盖与边界
 
 - 当前仅主板，双屏未连接：未验证物理左右、色序、TE/QSPI时序、帧率和长稳。

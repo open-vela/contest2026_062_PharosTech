@@ -67,6 +67,19 @@ jobs:
           ctest --test-dir out/nyampd --output-on-failure
           python3 tools/amp/test_application_pty.py . out/nyampd/nyampd
 
+  core_build_contract:
+    name: Core dependency configuration
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preserve WAMR-owned context configuration
+        run: |
+          for context in 0 1; do
+            cmake -S tools/nyabula_core/tests/cmake \
+              -B "out/core-wamr-$context" -DNYCORE_TEST_CONTEXT="$context"
+            cmake --build "out/core-wamr-$context"
+          done
+
   # 扫描 defconfig，生成 build matrix
   scan_configs:
     name: Scan Configs
