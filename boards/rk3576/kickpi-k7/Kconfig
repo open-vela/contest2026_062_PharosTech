@@ -158,10 +158,10 @@ config KICKPI_K7_WDT
 		it.
 
 		WDT_NS is the natural watchdog for the NuttX kernel/user space:
-		its counting clock is a fixed 24 MHz, and its pclk/tclk clock
-		gates are opened by the bootloader, so it needs no staging by
-		software.  The rk3576_wdt driver currently implements only this
-		non-secure instance (the SoC also exposes a PMU-domain WDT, but
-		that one is not supported by the driver yet).
+		its counting clock is a fixed 24 MHz, and it has no pclk/tclk
+		clock gate, so it needs no staging by software.  The rk3576_wdt
+		driver currently implements only this non-secure instance (the
+		SoC also exposes a PMU-domain WDT, but that one is not supported
+		by the driver yet).
 
 endif # ARCH_BOARD_KICKPI_K7

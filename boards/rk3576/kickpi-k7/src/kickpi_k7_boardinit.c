@@ -209,10 +209,10 @@ void board_late_initialize(void)
    * into the CLK framework (no clk_get/clk_enable), so it is safe to run
    * here even though rk3576_clk_tree_initialize() has not run yet.
    *
-   * The only implicit dependency is that the bootloader has left the WDT
-   * pclk gate open — same assumption as the other on-chip peripherals.
-   * The upper-half starts disabled, so registering early is side-effect
-   * free; the kernel auto-monitor or user space enables it later.
+   * WDT_NS has no pclk/tclk clock gate (TRM Ch15), so there is no clock
+   * enable dependency on the bootloader here.  The upper-half starts
+   * disabled, so registering early is side-effect free; the kernel
+   * auto-monitor or user space enables it later.
    */
 
   {
