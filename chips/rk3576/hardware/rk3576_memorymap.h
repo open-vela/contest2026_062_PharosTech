@@ -133,6 +133,10 @@
 #define RK3576_LITCORE_CRU_ADDR 0x27240000
 #define RK3576_CCI_CRU_ADDR     0x27248000
 
+/* System General Register Files (SYS_GRF), TRM Chapter 5.5. */
+
+#define RK3576_SYS_GRF_ADDR 0x2600A000
+
 /* Generic programmable interval timers (TRM).  Only the non-secure NS
  * instances are exported; each block has 6 independent channels at a
  * 0x1000 stride (see rk3576_timer.h).

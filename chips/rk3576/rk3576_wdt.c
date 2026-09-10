@@ -103,20 +103,42 @@
 /* ---- Global-reset routing for the WDT (TRM Part1) -------------------
  *
  * A WDT timeout alone does NOT reset the SoC.  The WDT reset output is
- * merely a request; it must be routed to the CRU global soft reset by
- * setting the enable bit in CRU_GLB_RST_CON (defaults to 0 = disabled):
+ * merely a request; it must be routed to the system reset through TWO
+ * in-series gates (both default to 0 = disabled):
  *
- *   CRU_GLB_RST_CON[wdt_trig_glbrst_en] - WDT (any instance) is allowed
- *   to trigger the CRU global soft reset.
+ *   1. SYS_GRF_SOC_CON4[wdtns_glb_reset_en] (SYS_GRF side) - allows the
+ *      WDT_NS reset output to reset the system at all.
+ *
+ *   2. CRU_GLB_RST_CON[wdt_trig_glbrst_en] (CRU side) - WDT (any
+ *      instance) is allowed to trigger the CRU global soft reset.
  *
  * The CRU_GLB_RST_CON fields are normal RW (no hiword write-mask); we use
  * read-modify-write so we never clobber bits configured by the bootloader
- * for other reset sources.
+ * for other reset sources.  SYS_GRF_SOC_CON4, by contrast, uses the GRF
+ * hiword-mask scheme (upper 16 bits = per-bit write enable), so it must be
+ * written with the write-enable bit set in the upper half.
  * -------------------------------------------------------------------- */
 
 /* CRU_GLB_RST_CON bit 6: wdt_trig_glbrst_en (WDT triggers global reset). */
 
 #define RK3576_CRU_GLB_RST_CON_WDT_TRIG_GLBRST_EN (1 << 6)
+
+/* SYS_GRF_SOC_CON4 (offset 0x0010) bit 8: wdtns_glb_reset_en.
+ *
+ *   WDT_NS global reset enable.
+ *   1'b0: Disable. WDT_NS reset output cannot reset system.
+ *   1'b1: Enable.  WDT_NS reset output can reset system.
+ *
+ * SYS_GRF registers use the hiword-mask write scheme: bits [31:16] are the
+ * per-bit write-enable mask, bits [15:0] the value.  To set bit 8 the write
+ * must carry the value bit (1 << 8) together with its write-enable bit
+ * (1 << (8 + 16)).
+ */
+
+#define RK3576_SYS_GRF_SOC_CON4 (0x0010)
+
+#define RK3576_SYS_GRF_SOC_CON4_WDTNS_GLB_RESET_EN \
+  ((1u << 8) | (1u << (8 + 16))) /* write_enable + value */
 
 /****************************************************************************
  * Private Types
@@ -338,11 +360,21 @@ static int rk3576_wdt_start(FAR struct watchdog_lowerhalf_s *lower)
 
   flags = spin_lock_irqsave(&priv->lock);
 
-  /* Route the WDT reset output to the CRU global soft reset.  The
-   * CRU_GLB_RST_CON[wdt_trig_glbrst_en] master switch defaults to 0, i.e.
-   * without it the WDT timeout would NOT reboot the SoC.  Read-modify-write
-   * so we preserve bootloader config for the other reset sources.
+  /* Route the WDT reset output to the system reset through both in-series
+   * gates:
+   *
+   *   1. SYS_GRF_SOC_CON4[wdtns_glb_reset_en] - allow the WDT_NS reset
+   *      output to reset the system.  GRF hiword-mask write (no RMW).
+   *
+   *   2. CRU_GLB_RST_CON[wdt_trig_glbrst_en] - allow WDT to trigger the
+   *      CRU global soft reset.  Read-modify-write so we preserve
+   *      bootloader config for the other reset sources.
+   *
+   * Without both the WDT timeout would NOT reboot the SoC.
    */
+
+  putreg32(RK3576_SYS_GRF_SOC_CON4_WDTNS_GLB_RESET_EN,
+           RK3576_SYS_GRF_ADDR + RK3576_SYS_GRF_SOC_CON4);
 
   {
     uint32_t glb_rst;
