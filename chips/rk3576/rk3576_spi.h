@@ -27,15 +27,6 @@
  * struct spi_ops_s) for the Rockchip RK3576 SPI controller (a Synopsys
  * DesignWare SSI compatible IP).  Master mode only, polled FIFO transfers.
  *
- * Usage example:
- *
- *   FAR struct spi_dev_s *spi;
- *   spi = rk3576_spi_initialize(0);   // SPI0
- *   SPI_SELECT(spi, SPIDEV_FLASH(0), true);
- *   SPI_SETMODE(spi, SPIDEV_MODE0);
- *   SPI_SETBITS(spi, 8);
- *   SPI_SETFREQUENCY(spi, 10000000);
- *   SPI_EXCHANGE(spi, txbuf, rxbuf, nwords);
  ****************************************************************************/
 
 #ifndef __ARCH_ARM64_SRC_RK3576_RK3576_SPI_H
