@@ -65,6 +65,8 @@ int ny_broker_http_step(struct ny_broker_http_s *request,
 int ny_broker_http_close(struct ny_broker_http_s *request);
 int ny_broker_ui_notify(const struct ny_broker_client_s *client,
                         const char *message, size_t length);
+int ny_broker_ui_eye(const struct ny_broker_client_s *client,
+                     const char *command, size_t length);
 int ny_broker_ai_invoke(const struct ny_broker_client_s *client,
                         const char *prompt, size_t prompt_length,
                         char *response, size_t response_capacity);

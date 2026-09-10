@@ -32,6 +32,9 @@
 #include <string.h>
 
 #include "ny_provider.h"
+#ifdef CONFIG_NYABULA_CORE_EYE
+#include <nyabula_eye_service.h>
+#endif
 
 /****************************************************************************
  * Private Data
@@ -80,6 +83,10 @@ int ny_provider_ui_notify(const char *plugin_id, const char *message,
       return g_provider_ops->ui_notify(g_provider_context, plugin_id, message,
                                        length);
     }
+
+#ifdef CONFIG_NYABULA_CORE_EYE
+  return nyabula_eye_service_notify(plugin_id, message, length);
+#endif
 
 #ifdef CONFIG_NYABULA_CORE_MOCK_CAPABILITIES
   if (length > INT_MAX)

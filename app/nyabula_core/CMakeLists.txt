@@ -35,6 +35,9 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
       ny_scheduler.c
       ny_wasm.c)
   set(NYABULA_CORE_DEPENDS libqjs)
+  if(CONFIG_NYABULA_CORE_EYE)
+    list(APPEND NYABULA_CORE_DEPENDS nyabula_eye)
+  endif()
 
   if(CONFIG_NYABULA_CORE_HTTP)
     list(APPEND NYABULA_CORE_SRCS ny_http.c ny_broker_http.c)

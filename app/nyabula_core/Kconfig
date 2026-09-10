@@ -32,6 +32,14 @@ config CONTEST2026_062_NYABULA_CORE
 
 if CONTEST2026_062_NYABULA_CORE
 
+config NYABULA_CORE_EYE
+	bool "Connect UI capabilities to Nyabula Eye Engine"
+	default n
+	depends on NYABULA_EYE_ENGINE && !BUILD_KERNEL
+	---help---
+		ui.notify displays a caption and ui.eye submits the Eye command
+		contract. Requires an attached LVGL display owner.
+
 config NYABULA_CORE_WAMR
 	bool "Enable WAMR plugin runtime"
 	default y

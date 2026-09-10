@@ -22,6 +22,10 @@
 
 include $(APPDIR)/Make.defs
 
+ifeq ($(CONFIG_NYABULA_CORE_EYE),y)
+CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/graphics/nyabula_eye/include
+endif
+
 PROGNAME  = nycore
 PRIORITY  = $(CONFIG_NYABULA_CORE_PRIORITY)
 STACKSIZE = $(CONFIG_NYABULA_CORE_STACKSIZE)

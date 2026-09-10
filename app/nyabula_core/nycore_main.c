@@ -26,6 +26,7 @@
 #include <nuttx/config.h>
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,9 @@
 #include "ny_runtime.h"
 #include "ny_scheduler.h"
 #include "ny_wasm.h"
+#ifdef CONFIG_NYABULA_CORE_EYE
+#include <nyabula_eye_service.h>
+#endif
 
 /****************************************************************************
  * Private Function Prototypes
@@ -47,6 +51,10 @@ static int nycore_run(const char *path, const char *event);
 static int nycore_run_package(const char *path, const char *event);
 static int nycore_start_installed(const char *id);
 static int nycore_isolation(void);
+#ifdef CONFIG_NYABULA_CORE_EYE
+static int nycore_eye(const char *path);
+static int nycore_eye_status(void);
+#endif
 
 /****************************************************************************
  * Private Functions
@@ -81,7 +89,52 @@ static void nycore_usage(void)
                   "  nycore packages\n"
                   "  nycore isolation\n"
                   "  nycore list\n");
+#ifdef CONFIG_NYABULA_CORE_EYE
+  fprintf(stderr, "  nycore eye <command.json>\n"
+                  "  nycore eye-status\n");
+#endif
 }
+
+#ifdef CONFIG_NYABULA_CORE_EYE
+static int nycore_eye(const char *path)
+{
+  FILE *stream;
+  char *json = malloc(NYABULA_EYE_JSON_LIMIT + 1);
+  size_t length;
+  int ret;
+  if (json == NULL)
+    {
+      return -ENOMEM;
+    }
+  stream = fopen(path, "rb");
+  if (stream == NULL)
+    {
+      ret = -errno;
+      free(json);
+      return ret;
+    }
+  length = fread(json, 1, NYABULA_EYE_JSON_LIMIT + 1, stream);
+  ret =
+      ferror(stream) ? -EIO : nyabula_eye_service_submit("nsh", json, length);
+  fclose(stream);
+  free(json);
+  return ret;
+}
+
+static int nycore_eye_status(void)
+{
+  struct nyabula_core_snapshot_s state;
+  int ret = nyabula_eye_service_snapshot(&state);
+  if (ret == 0)
+    {
+      printf("eye revision=%" PRIu64 " expression=%d scene=%d queued=%zu "
+             "status=%d source=%s\n",
+             state.revision, state.expression, state.scene, state.queue_depth,
+             state.last_status, state.expression_owner.source);
+    }
+  return ret;
+}
+#endif
 
 static int nycore_isolation(void)
 {
@@ -224,7 +277,18 @@ int main(int argc, char *argv[])
       return EXIT_FAILURE;
     }
 
-  if (strcmp(argv[1], "run") == 0)
+#ifdef CONFIG_NYABULA_CORE_EYE
+  if (strcmp(argv[1], "eye-status") == 0 && argc == 2)
+    {
+      ret = nycore_eye_status();
+    }
+  else if (strcmp(argv[1], "eye") == 0 && argc == 3)
+    {
+      ret = nycore_eye(argv[2]);
+    }
+  else
+#endif
+      if (strcmp(argv[1], "run") == 0)
     {
       const char *event = NULL;
 

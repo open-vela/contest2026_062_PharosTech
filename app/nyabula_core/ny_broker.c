@@ -40,6 +40,9 @@
 #include "ny_broker.h"
 #include "ny_manifest.h"
 #include "ny_provider.h"
+#ifdef CONFIG_NYABULA_CORE_EYE
+#include <nyabula_eye_service.h>
+#endif
 #ifdef CONFIG_NYABULA_CORE_STATE_SQLITE
 #include "ny_state.h"
 #endif
@@ -483,6 +486,21 @@ int ny_broker_ui_notify(const struct ny_broker_client_s *client,
     }
 
   return ny_provider_ui_notify(client->id, message, length);
+}
+
+int ny_broker_ui_eye(const struct ny_broker_client_s *client,
+                     const char *command, size_t length)
+{
+  if (client == NULL || client->id == NULL ||
+      (client->permissions & NY_PERMISSION_UI_NOTIFY) == 0)
+    {
+      return -EACCES;
+    }
+#ifdef CONFIG_NYABULA_CORE_EYE
+  return nyabula_eye_service_submit(client->id, command, length);
+#else
+  return -ENOSYS;
+#endif
 }
 
 int ny_broker_ai_invoke(const struct ny_broker_client_s *client,

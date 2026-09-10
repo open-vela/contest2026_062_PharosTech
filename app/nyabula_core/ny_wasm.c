@@ -101,6 +101,8 @@ static int32_t ny_wasm_network_request(wasm_exec_env_t environment,
                                        int32_t output_capacity);
 static int32_t ny_wasm_ui_notify(wasm_exec_env_t environment, int32_t offset,
                                  int32_t length);
+static int32_t ny_wasm_ui_eye(wasm_exec_env_t environment, int32_t offset,
+                              int32_t length);
 static int32_t ny_wasm_ai_invoke(wasm_exec_env_t environment,
                                  int32_t input_offset, int32_t input_length,
                                  int32_t output_offset,
@@ -150,6 +152,7 @@ static NativeSymbol g_wasm_symbols[] = {
   { "storage_put", (void *)ny_wasm_storage_put, "(iiii)i", NULL },
   { "network_request", (void *)ny_wasm_network_request, "(iiii)i", NULL },
   { "ui_notify", (void *)ny_wasm_ui_notify, "(ii)i", NULL },
+  { "ui_eye", (void *)ny_wasm_ui_eye, "(ii)i", NULL },
   { "ai_invoke", (void *)ny_wasm_ai_invoke, "(iiii)i", NULL },
 };
 
@@ -360,6 +363,27 @@ static int32_t ny_wasm_ui_notify(wasm_exec_env_t environment, int32_t offset,
       ret = ny_broker_ui_notify(&client, message, (size_t)length);
     }
 
+  return ret;
+}
+
+static int32_t ny_wasm_ui_eye(wasm_exec_env_t environment, int32_t offset,
+                              int32_t length)
+{
+  struct ny_wasm_plugin_s *plugin = wasm_runtime_get_user_data(environment);
+  struct ny_broker_client_s client;
+  void *command;
+  int ret;
+  if (plugin == NULL)
+    {
+      return -EINVAL;
+    }
+  ret = ny_wasm_memory(environment, offset, length,
+                       NY_WASM_BROKER_PAYLOAD_LIMIT, &command);
+  if (ret == 0)
+    {
+      ny_wasm_client(plugin, &client);
+      ret = ny_broker_ui_eye(&client, command, (size_t)length);
+    }
   return ret;
 }
 
