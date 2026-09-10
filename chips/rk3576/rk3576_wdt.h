@@ -38,9 +38,9 @@
  * Only these two values are meaningful to a caller:
  *
  *   RK3576_WDT_NS  - non-secure world WDT (fixed 24 MHz counting clock;
- *                    pclk/tclk gates opened by the bootloader).  The
- *                    natural watchdog for the NuttX kernel/user space and
- *                    the only instance this driver implements.
+ *                    has no pclk/tclk clock gate to open).  The natural
+ *                    watchdog for the NuttX kernel/user space and the
+ *                    only instance this driver implements.
  *
  *   RK3576_WDT_PMU - kept purely as a future-proof API input; it is NOT
  *                    supported (initializing it returns NULL - add PMU

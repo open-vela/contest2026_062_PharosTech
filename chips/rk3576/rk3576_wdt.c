@@ -113,8 +113,8 @@
  *      instance) is allowed to trigger the CRU global soft reset.
  *
  * The CRU_GLB_RST_CON fields are normal RW (no hiword write-mask); we use
- * read-modify-write so we never clobber bits configured by the bootloader
- * for other reset sources.  SYS_GRF_SOC_CON4, by contrast, uses the GRF
+ * read-modify-write so we never clobber bits used by the other reset
+ * sources.  SYS_GRF_SOC_CON4, by contrast, uses the GRF
  * hiword-mask scheme (upper 16 bits = per-bit write enable), so it must be
  * written with the write-enable bit set in the upper half.
  * -------------------------------------------------------------------- */
@@ -547,8 +547,9 @@ static int rk3576_wdt_settimeout(FAR struct watchdog_lowerhalf_s *lower,
  *
  *   This driver implements only RK3576_WDT_NS (the non-secure watchdog,
  *   24 MHz).  It is the natural watchdog for NuttX kernel/user space: it
- *   needs no CRU staging by software, its pclk/tclk gates are opened by
- *   the bootloader, and its counting clock is a fixed 24 MHz.
+ *   needs no CRU staging by software (WDT_NS has no pclk/tclk clock gate,
+ *   so there is nothing to enable), and its counting clock is a fixed
+ *   24 MHz.
  *
  *   RK3576_WDT_PMU is accepted as an input only so callers keep a
  *   future-proof API, but it is NOT implemented: initializing it returns
