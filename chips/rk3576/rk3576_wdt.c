@@ -104,29 +104,19 @@
  *
  * A WDT timeout alone does NOT reset the SoC.  The WDT reset output is
  * merely a request; it must be routed to the CRU global soft reset by
- * setting two enable bits (both default to 0 = disabled):
+ * setting the enable bit in CRU_GLB_RST_CON (defaults to 0 = disabled):
  *
- *   1. CRU_GLBRST_ST_NCLR[glbrst_wdtns_rst] - the WDT_NS instance this
- *      driver uses is allowed to drive the CRU global reset.
+ *   CRU_GLB_RST_CON[wdt_trig_glbrst_en] - WDT (any instance) is allowed
+ *   to trigger the CRU global soft reset.
  *
- *   2. CRU_GLB_RST_CON[wdt_trig_glbrst_en]  - WDT (any instance) is
- *      allowed to trigger the CRU global soft reset.
- *
- * These CRU fields are normal RW (no hiword write-mask); we use read-
- * modify-write so we never clobber bits configured by the bootloader for
- * other reset sources.
+ * The CRU_GLB_RST_CON fields are normal RW (no hiword write-mask); we use
+ * read-modify-write so we never clobber bits configured by the bootloader
+ * for other reset sources.
  * -------------------------------------------------------------------- */
 
 /* CRU_GLB_RST_CON bit 6: wdt_trig_glbrst_en (WDT triggers global reset). */
 
 #define RK3576_CRU_GLB_RST_CON_WDT_TRIG_GLBRST_EN (1 << 6)
-
-/* CRU_GLBRST_ST_NCLR[glbrst_wdtns_rst] - the WDT_NS instance may drive the
- * CRU global soft reset.  This is the only instance the driver uses (the
- * other hardware instances are not reachable/usable from NuttX).
- */
-
-#define RK3576_CRU_GLBRST_ST_NCLR_WDT_NS (1 << 12) /* glbrst_wdtns_rst */
 
 /****************************************************************************
  * Private Types
@@ -348,20 +338,14 @@ static int rk3576_wdt_start(FAR struct watchdog_lowerhalf_s *lower)
 
   flags = spin_lock_irqsave(&priv->lock);
 
-  /* Route the WDT reset output to the CRU global soft reset.  Both the
-   * CRU_GLBRST_ST_NCLR[glbrst_wdtns_rst] bit and the CRU_GLB_RST_CON
-   * [wdt_trig_glbrst_en] master switch default to 0, i.e. without them the
-   * WDT timeout would NOT reboot the SoC.  Read-modify-write so we
-   * preserve bootloader config for the other reset sources.
+  /* Route the WDT reset output to the CRU global soft reset.  The
+   * CRU_GLB_RST_CON[wdt_trig_glbrst_en] master switch defaults to 0, i.e.
+   * without it the WDT timeout would NOT reboot the SoC.  Read-modify-write
+   * so we preserve bootloader config for the other reset sources.
    */
 
   {
-    uint32_t glbrst;
     uint32_t glb_rst;
-
-    glbrst = getreg32(RK3576_CRU_ADDR + RK3576_CRU_GLBRST_ST_NCLR);
-    glbrst |= RK3576_CRU_GLBRST_ST_NCLR_WDT_NS;
-    putreg32(glbrst, RK3576_CRU_ADDR + RK3576_CRU_GLBRST_ST_NCLR);
 
     glb_rst = getreg32(RK3576_CRU_ADDR + RK3576_CRU_GLB_RST_CON);
     glb_rst |= RK3576_CRU_GLB_RST_CON_WDT_TRIG_GLBRST_EN;
