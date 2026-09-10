@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
+ifeq ($(CONFIG_NYABULA_EYE_ENGINE),y)
+CONFIGURED_APPS += $(APPDIR)/graphics/nyabula_eye
+endif

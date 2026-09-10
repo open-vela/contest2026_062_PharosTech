@@ -1,0 +1,14 @@
+Noto Sans CJK SC Bold
+Copyright 2014-2021 Adobe (http://www.adobe.com/).
+Licensed under the SIL Open Font License, Version 1.1.
+See LICENSE-NOTO-SANS.txt in this directory.
+
+Official source: https://github.com/notofonts/noto-cjk
+Pinned revision: f8d157532fbfaeda587e826d4cd5b21a49186f7c
+File: Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf
+SHA-256: b5f0d1a190a7f9b43c310a8850630af12553df32c4c050543f9059732d9b4c0a
+
+The build converts selected glyphs into LVGL bitmap tables named
+nyabula_font_*.c. These generated font assets retain the OFL license;
+they are not relicensed as Apache-2.0 application code.
+Distribute this notice and the OFL alongside firmware containing them.

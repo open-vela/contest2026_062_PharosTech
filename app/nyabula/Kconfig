@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+
+config NYABULA_EYE_ENGINE
+	bool "Nyabula dual-eye engine"
+	depends on GRAPHICS_LVGL && LIBCXX && LIBCXXABI && !BUILD_KERNEL
+	select LV_USE_FLOAT
+	select LV_USE_VECTOR_GRAPHIC
+	select LV_USE_THORVG
+	select LV_USE_CANVAS
+	select NETUTILS_CJSON
+	---help---
+		Build the existing expression/scene engine as a library. A display
+		owner attaches two LVGL roots and drains the bounded command queue.
+
+if NYABULA_EYE_ENGINE
+
+config CONTEST2026_062_NYABULA_DYNAMIC_FONTS
+	bool "Load complete Eye fonts with FreeType"
+	default n
+	select LIB_FREETYPE
+	select LV_USE_FREETYPE
+
+config CONTEST2026_062_NYABULA_FONT_ROOT
+	string "Complete Eye font directory"
+	default "/data/nyabula/fonts"
+	depends on CONTEST2026_062_NYABULA_DYNAMIC_FONTS
+
+endif

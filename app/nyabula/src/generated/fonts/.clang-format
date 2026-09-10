@@ -1,0 +1,3 @@
+# Preserve lv_font_conv glyph tables verbatim.
+DisableFormat: true
+SortIncludes: false
