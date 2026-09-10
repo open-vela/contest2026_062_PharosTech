@@ -8,4 +8,14 @@ CSRCS += $(wildcard src/generated/fonts/*.c)
 CXXSRCS = src/nyabula_core.cxx
 CXXFLAGS += -std=c++17 -fno-exceptions -fno-rtti
 
+ifeq ($(CONFIG_NYABULA_EYE_DISPLAY),y)
+PROGNAME = nyabula_eye
+PRIORITY = $(CONFIG_NYABULA_EYE_PRIORITY)
+STACKSIZE = $(CONFIG_NYABULA_EYE_STACKSIZE)
+MODULE = $(CONFIG_NYABULA_EYE_DISPLAY)
+MAINSRC = src/nyabula_eye_main.c
+CFLAGS += ${INCDIR_PREFIX}$(CURDIR)/include
+CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/graphics/nyabula_display
+endif
+
 include $(APPDIR)/Application.mk

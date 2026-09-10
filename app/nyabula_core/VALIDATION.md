@@ -3,13 +3,16 @@
 日期：2026-09-10。Core来源512956f0，Eye来源16364a3e；本次应用层基线为团队主线fb03361b。
 保留原Eye表情/Scene渲染及Display的双缓冲、BlankGated、TE和FSPI调度。
 
-## 已通过
+## 初次集成验证（入口解耦前）
+
+以下二进制哈希与运行记录属于最初把Eye接在Display demo入口的版本。
+该入口组织方式已按review纠正，不作为独立产品入口版本的验收结果。
 
 | 门禁 | 结果 |
 | --- | --- |
 | K7 core_eye，CMake/Ninja，AArch64 GCC 13.4 | nuttx.bin 2340168字节 |
 | K7 core_eye，Make，AArch64 GCC 13.4 | nuttx.bin 2336000字节 |
-| NuttX sim，真实Core/Eye/Display主程序 | 签名JS/Wasm、13表情、25场景、字幕、撤权、lease回退通过 |
+| NuttX sim，Core/Eye接入旧Display demo入口 | 签名JS/Wasm、13表情、25场景、字幕、撤权、lease回退通过 |
 | 非法命令 | reset拒绝-13，17层嵌套拒绝-7，非有限数字/负hold_ms拒绝-34 |
 | SDK | TypeScript strict类型检查、Rust wasm32 metadata编译通过；C/WAMR导入实际运行 |
 | 字体 | 原字体优先/缺失回退等4项单测通过；相同输入重生成10份表，全部逐字节一致 |
@@ -24,13 +27,30 @@ Make SHA-256：`4bbd419005325488722fd3f55d02359319b21d128ebe659fb229c7e9f2959686
 防止旧绝对路径导致Eye/Display被静默漏选；正式repo工作区不需要复制这类缓存。
 构建沿用原有`.note.gnu.build-id section discarded`提示，不宣称零警告。
 
-sim只替换物理LCD设备端点为内存ioctl接收端，仍运行生产Display主程序、调度器、
+该轮sim只替换物理LCD设备端点为内存ioctl接收端，运行当时的入口、Display调度器、
 LVGL/ThorVG、Eye服务和插件Broker。服务没有mock图像或mock-ui输出。
 最终输出：
 
 ```text
 EYE_INTEGRATION_PASS signed-js signed-wasm captions revoke expressions=13 scenes=25 lease invalid=4 noto-fallback
 ```
+
+## 入口解耦验证
+
+按模块边界review，`app/nyabula_display`已完整恢复到PR前的fb03361b版本。
+该目录的所有文件与基线比较无差异。新的产品入口为
+`app/nyabula/src/nyabula_eye_main.c`，通过`nyabula_display.h`公开API使用显示服务。
+Display没有对Eye/Core的引用；旧`nyabula_display`仍只是demo命令。
+
+同一组模拟器测试只将启动命令改为`nyabula_eye &`，结果：
+
+```text
+EYE_INTEGRATION_PASS entry=nyabula_eye signed-js signed-wasm captions revoke expressions=13 scenes=25 lease invalid=4 noto-fallback
+```
+
+另外运行`python3 tools/nyabula_core/tests/test_display_ownership.py`，两项检查通过：
+Display无反向依赖、新入口只使用公开Display API且不调用demo。
+修改后的K7构建结果以本次入口修正对应的正式CI为准；上面的旧二进制哈希不冒充新版本。
 
 ## 构建入口
 

@@ -16,11 +16,15 @@ QuickJS/WAMR、Core与Eye。它不启用SD host；LCD与SD共用FSPI1引脚，
 原字体由客户自行下载；缺失时生成Noto Sans回退字形，CI同样走官方源。
 字体文件和生成表不提交Git，参见app/nyabula/res/fonts/README.md。
 
-    nyabula_display &
+    nyabula_eye &
     nycore eye-status
     nycore grant my.plugin core.log
     nycore grant my.plugin ui.notify
     nycore run-package /data/plugins/my.plugin
+
+`nyabula_eye`是Eye模块自己的产品入口，通过Display公共API使用显示服务。
+`nyabula_display`命令仍是队友的双屏demo，不承担Eye初始化；两者不要同时运行。
+本PR不改动`app/nyabula_display`目录中的任何文件。
 
 示例配置的运行状态位于/tmp/nyabula，重启后丢失；可信公钥默认读取
 /data/nyabula/trusted-keys.json。先提供签名包与trust store，再运行插件。
@@ -50,7 +54,7 @@ JSON最多4096字节、嵌套16层；拒绝非有限数字及整数溢出。
 core.reset属于管理操作，不开放给此接口；来源只能release自己的请求。
 
 Promise成功表示已入队，nycore eye-status给出渲染线程应用命令后的状态；
-不表示面板完成物理扫描。Display未启动返回ENODEV。函数始终在相同
+不表示面板完成物理扫描。Eye产品入口未启动返回ENODEV。函数始终在相同
 ui.notify权限下运行；撤权会拒绝之后的请求，已入队/显示的场景按lease退出。
 
 支持13类表情、左右/双眼眨眼、凝视、自动眨眼、环境光、异瞳、25类Scene的
@@ -62,8 +66,8 @@ nycore eye /path/command.json投递同一协议。
 
 ## 生命周期与测试边界
 
-Display持有Eye实例；attach/detach只能在LVGL所有者线程进行。服务锁保护
-提交与销毁，销毁后的新请求返回ENODEV。现有Display常驻循环仍不提供强制
+Eye产品入口持有Eye实例；attach/detach只能在LVGL所有者线程进行。服务锁保护
+提交与销毁，销毁后的新请求返回ENODEV。常驻渲染循环仍不提供强制
 kill后的清理保证；需要重启显示时使用系统重启。
 
 UI生产配置关闭mock；本PR不接AI模型、网络offload或新沙箱。测试结果以PR正文

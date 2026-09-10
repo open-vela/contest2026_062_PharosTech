@@ -39,8 +39,5 @@ CSRCS += nyabula_te_gpio.c
 endif
 
 CFLAGS += -DCONFIG_NYABULA_DISPLAY_BUFFER_SIZE=$(CONFIG_NYABULA_DISPLAY_BUFFER_SIZE)
-ifeq ($(CONFIG_NYABULA_DISPLAY_EYES),y)
-CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/graphics/nyabula_eye/include
-endif
 
 include $(APPDIR)/Application.mk

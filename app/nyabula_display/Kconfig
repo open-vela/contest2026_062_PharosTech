@@ -13,16 +13,6 @@ menuconfig GRAPHICS_NYABULA_DISPLAY
 
 if GRAPHICS_NYABULA_DISPLAY
 
-config NYABULA_DISPLAY_EYES
-	bool "Render Nyabula Eye Engine instead of the dual demo"
-	default n
-	depends on GRAPHICS_NYABULA_DISPLAY=y && !BUILD_KERNEL
-	depends on LIBCXX && LIBCXXABI
-	select NYABULA_EYE_ENGINE
-	---help---
-		Attach the engine to the two existing display roots. Core workers
-		enqueue commands; the display main thread owns all LVGL operations.
-
 config NYABULA_DISPLAY_PRIORITY
 	int "nyabula_display task priority"
 	default 100

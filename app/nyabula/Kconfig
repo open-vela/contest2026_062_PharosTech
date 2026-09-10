@@ -14,6 +14,26 @@ config NYABULA_EYE_ENGINE
 
 if NYABULA_EYE_ENGINE
 
+config NYABULA_EYE_DISPLAY
+	bool "Nyabula Eye display owner application"
+	default n
+	depends on GRAPHICS_NYABULA_DISPLAY=y
+	---help---
+		Build the nyabula_eye product entry point. It calls the public
+		Display API and owns Eye/LVGL updates without using the Display demo.
+
+if NYABULA_EYE_DISPLAY
+
+config NYABULA_EYE_PRIORITY
+	int "Eye display task priority"
+	default 100
+
+config NYABULA_EYE_STACKSIZE
+	int "Eye display task stack size"
+	default 32768
+
+endif
+
 config CONTEST2026_062_NYABULA_DYNAMIC_FONTS
 	bool "Load complete Eye fonts with FreeType"
 	default n

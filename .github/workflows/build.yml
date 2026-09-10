@@ -79,6 +79,7 @@ jobs:
               -B "out/core-wamr-$context" -DNYCORE_TEST_CONTEXT="$context"
             cmake --build "out/core-wamr-$context"
           done
+          python3 tools/nyabula_core/tests/test_display_ownership.py
 
   # 扫描 defconfig，生成 build matrix
   scan_configs:

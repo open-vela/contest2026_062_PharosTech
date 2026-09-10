@@ -19,10 +19,6 @@
 # ##############################################################################
 
 if(CONFIG_GRAPHICS_NYABULA_DISPLAY)
-  set(NYABULA_DISPLAY_DEPENDS lvgl)
-  if(CONFIG_NYABULA_DISPLAY_EYES)
-    list(APPEND NYABULA_DISPLAY_DEPENDS nyabula_eye)
-  endif()
 
   set(NYABULA_SRCS
       main.c
@@ -49,9 +45,7 @@ if(CONFIG_GRAPHICS_NYABULA_DISPLAY)
     MODULE
     ${CONFIG_GRAPHICS_NYABULA_DISPLAY}
     SRCS
-    ${NYABULA_SRCS}
-    DEPENDS
-    ${NYABULA_DISPLAY_DEPENDS})
+    ${NYABULA_SRCS})
 
   target_compile_definitions(
     apps

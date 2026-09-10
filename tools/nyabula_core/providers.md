@@ -25,7 +25,8 @@ ret = ny_provider_register(&g_ops, service_context);
 sim 的 `CONFIG_NYABULA_CORE_MOCK_CAPABILITIES` 保留确定性 provider：UI 输出
 `nymock-ui[id]`，AI 原样返回 prompt。它用于回归测试，不代表真实 Eye 或模型
 服务。生产配置不会静默使用mock。启用`NYABULA_CORE_EYE`后，未注册的UI
-provider自动使用Eye服务；Display未启动返回`-ENODEV`。未接入的AI仍返回`-ENOSYS`。
+provider自动使用Eye服务；`nyabula_eye`产品入口未启动返回`-ENODEV`。
+未接入的AI仍返回`-ENOSYS`。
 
-本次UI已通过有界队列投递到Display所属的Eye渲染线程，`ui.eye`与`ui.notify`
+本次UI通过有界队列投递到Eye产品入口的渲染线程，`ui.eye`与`ui.notify`
 共用权限，不直接跨线程操作LVGL。AI到ai_agent或Linux AMP服务的接入不在此PR内。

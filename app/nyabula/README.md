@@ -10,10 +10,15 @@ Eye是插件Core的视觉子模块，以库形式构建。app/nyabula_core负责
 
 启用Eye前需选择HAVE_CXX、LIBCXX与LIBCXXABI；K7的core_eye配置已包含这些依赖。
 
-Nyabula Display创建两块真实LCD的独立LVGL screen，调用
-nyabula_eye_service_attach(left, right)。每轮先执行nyabula_eye_service_tick()，
-再执行现有nyabula_display_task()。只有该线程调用Eye/LVGL；插件线程只复制并
-投递有界命令。原有双屏缓冲、TE和QSPI调度仍由Display管理。
+产品入口位于本模块的`src/nyabula_eye_main.c`，命令为`nyabula_eye`。
+它通过`nyabula_display.h`的公开API初始化显示、取得左右screen，再attach Eye服务。
+每轮先执行nyabula_eye_service_tick()，再执行nyabula_display_task()。
+该入口线程持有Eye并调用LVGL；插件线程只复制并投递有界命令。
+原有双屏缓冲、TE和QSPI调度仍由Display管理。
+
+`app/nyabula_display`与PR前完全一致，既不依赖Eye，也不调用Eye服务。
+其中`main.c`仍然只是双屏demo；产品入口不调用该main，也不创建demo对象。
+启用`NYABULA_EYE_DISPLAY`即可构建产品入口，不能同时运行它和Display demo。
 
 公共入口在include/nyabula_eye_service.h；渲染细节与场景字段见
 [DISPLAY_INTEGRATION.md](DISPLAY_INTEGRATION.md)和[SCENE_SCHEMA.md](SCENE_SCHEMA.md)。

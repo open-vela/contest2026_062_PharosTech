@@ -13,4 +13,14 @@ if(CONFIG_NYABULA_EYE_ENGINE)
   target_link_libraries(nyabula_eye PUBLIC lvgl)
   set_source_files_properties(src/nyabula_core.cxx PROPERTIES
     COMPILE_OPTIONS "-std=c++17;-fno-exceptions;-fno-rtti")
+
+  if(CONFIG_NYABULA_EYE_DISPLAY)
+    nuttx_add_application(
+      NAME nyabula_eye
+      PRIORITY ${CONFIG_NYABULA_EYE_PRIORITY}
+      STACKSIZE ${CONFIG_NYABULA_EYE_STACKSIZE}
+      SRCS src/nyabula_eye_main.c
+      INCLUDE_DIRECTORIES ${NUTTX_APPS_DIR}/graphics/nyabula_display
+      DEPENDS nyabula_eye apps_nyabula_display lvgl)
+  endif()
 endif()
