@@ -9,6 +9,9 @@ configs/core_eye是K7独立系统配置，启用真实双屏驱动、LVGL矢量�
 QuickJS/WAMR、Core与Eye。它不启用SD host；LCD与SD共用FSPI1引脚，
 接屏前按板级接线要求准备。AMP的LCD/IRQ所有权需另外配置。
 
+真机使用面板GPIO TE中断：屏0为`/dev/gpio1`，屏1为`/dev/gpio2`。
+软件TE仅保留在模拟器验证配置中，模拟器调度结果不代表真机帧率。
+
 首次构建前在队伍仓执行：
 
     python3 app/nyabula/tools/generate_fonts.py --download-fallback
