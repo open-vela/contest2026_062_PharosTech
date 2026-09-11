@@ -21,6 +21,11 @@ class CoreEyeProfileTest(unittest.TestCase):
         self.assertEqual(self.config.get("CONFIG_NYABULA_DISPLAY_TE0_DEVPATH"), '"/dev/gpio1"')
         self.assertEqual(self.config.get("CONFIG_NYABULA_DISPLAY_TE1_DEVPATH"), '"/dev/gpio2"')
 
+    def test_gc9b72_initialization(self):
+        self.assertEqual(self.config.get("CONFIG_LCD_ST77916"), "y")
+        self.assertEqual(self.config.get("CONFIG_LCD_ST77916_CHIP_TYPE_GC9B72"), "y")
+        self.assertNotEqual(self.config.get("CONFIG_LCD_ST77916_CHIP_TYPE_ST77916"), "y")
+
 
 if __name__ == "__main__":
     unittest.main()

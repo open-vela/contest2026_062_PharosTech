@@ -11,6 +11,8 @@ QuickJS/WAMR、Core与Eye。它不启用SD host；LCD与SD共用FSPI1引脚，
 
 真机使用面板GPIO TE中断：屏0为`/dev/gpio1`，屏1为`/dev/gpio2`。
 软件TE仅保留在模拟器验证配置中，模拟器调度结果不代表真机帧率。
+屏幕控制器选择GC9B72，使用ST77916-family驱动中的GC9B72初始化序列，
+不能沿用该驱动默认的ST77916控制器配置。
 
 首次构建前在队伍仓执行：
 
