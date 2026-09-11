@@ -197,7 +197,6 @@ struct nyabula_eye_renderer_s
   uint32_t copy_total;
   uint32_t flush_total;
   uint32_t frames;
-  uint32_t shared_frames;
   uint32_t reused_eyes;
   uint32_t base_cache_hits;
   uint32_t base_cache_builds;
@@ -286,8 +285,6 @@ static void page_remember_base(struct page_state_s *state,
                                const struct eye_s *e);
 static void page_remember_dynamic_area(struct page_state_s *state,
                                        const struct eye_s *e, bool simple);
-static lv_area_t page_dirty_union(const struct page_state_s *first,
-                                  const struct page_state_s *second);
 static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e);
 static void ellipse_path(struct nyabula_eye_renderer_s *r, float cx, float cy,
                          float rx, float ry, float rotation);
@@ -483,8 +480,6 @@ static void render_scene_lid_mask(struct nyabula_eye_renderer_s *r,
                                   const struct eye_s *scene_eye, int id);
 static bool render_scene(struct nyabula_eye_renderer_s *r,
                          const struct nyabula_eye_frame_s *frame, int id);
-static bool frames_can_share_pixels(
-    const struct nyabula_eye_frame_s frames[NYABULA_EYE_COUNT]);
 static bool
 scene_eye_is_time_independent(const struct nyabula_eye_scene_frame_s *scene,
                               int id);
@@ -1523,22 +1518,6 @@ static void page_remember_dynamic_area(struct page_state_s *state,
   state->dirty.y1 = state->dirty.y1 < 0 ? 0 : state->dirty.y1;
   state->dirty.x2 = state->dirty.x2 >= W ? W - 1 : state->dirty.x2;
   state->dirty.y2 = state->dirty.y2 >= H ? H - 1 : state->dirty.y2;
-}
-
-static lv_area_t page_dirty_union(const struct page_state_s *first,
-                                  const struct page_state_s *second)
-{
-  lv_area_t area;
-
-  area.x1 =
-      first->dirty.x1 < second->dirty.x1 ? first->dirty.x1 : second->dirty.x1;
-  area.y1 =
-      first->dirty.y1 < second->dirty.y1 ? first->dirty.y1 : second->dirty.y1;
-  area.x2 =
-      first->dirty.x2 > second->dirty.x2 ? first->dirty.x2 : second->dirty.x2;
-  area.y2 =
-      first->dirty.y2 > second->dirty.y2 ? first->dirty.y2 : second->dirty.y2;
-  return area;
 }
 
 static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e)
@@ -4424,25 +4403,6 @@ static bool render_scene(struct nyabula_eye_renderer_s *r,
   return true;
 }
 
-static bool frames_can_share_pixels(
-    const struct nyabula_eye_frame_s frames[NYABULA_EYE_COUNT])
-{
-  const struct nyabula_eye_frame_s *frame = &frames[NYABULA_EYE_LEFT];
-
-  if (memcmp(&frames[NYABULA_EYE_LEFT], &frames[NYABULA_EYE_RIGHT],
-             sizeof(frames[0])) != 0 ||
-      frame->scene.scene != NYABULA_EYE_SCENE_NONE ||
-      frame->scene.previous_scene != NYABULA_EYE_SCENE_NONE ||
-      fabsf(frame->lid_slant) > 0.0001f || fabsf(frame->derp) > 0.0001f)
-    {
-      return false;
-    }
-
-  return frame->expression != NYABULA_EYE_EXPRESSION_STAR &&
-         frame->expression != NYABULA_EYE_EXPRESSION_DIZZY &&
-         frame->expression != NYABULA_EYE_EXPRESSION_SLEEP;
-}
-
 static bool
 scene_eye_is_time_independent(const struct nyabula_eye_scene_frame_s *scene,
                               int id)
@@ -4567,7 +4527,7 @@ static void report(struct nyabula_eye_renderer_s *r, uint32_t render_ms)
       uint32_t elapsed = lv_tick_elaps(r->perf_start);
       LV_LOG_USER("nyabula_eye: %u.%u fps, %u.%02u ms dual vector; "
                   "%u.%02u build, %u.%02u raster, %u.%02u copy, "
-                  "%u.%02u flush, %u%% shared, %u%% reused, "
+                  "%u.%02u flush, %u%% reused, "
                   "%u/%u base hit/build",
                   300000u / elapsed, (3000000u / elapsed) % 10u,
                   r->render_total / r->frames,
@@ -4580,7 +4540,6 @@ static void report(struct nyabula_eye_renderer_s *r, uint32_t render_ms)
                   (r->copy_total * 100u / r->frames) % 100u,
                   r->flush_total / r->frames,
                   (r->flush_total * 100u / r->frames) % 100u,
-                  r->shared_frames * 100u / r->frames,
                   r->reused_eyes * 50u / r->frames, r->base_cache_hits,
                   r->base_cache_builds);
       (void)elapsed;
@@ -4590,7 +4549,6 @@ static void report(struct nyabula_eye_renderer_s *r, uint32_t render_ms)
       r->raster_total = 0;
       r->copy_total = 0;
       r->flush_total = 0;
-      r->shared_frames = 0;
       r->reused_eyes = 0;
       r->base_cache_hits = 0;
       r->base_cache_builds = 0;
@@ -4909,15 +4867,10 @@ void nyabula_eye_renderer_destroy(struct nyabula_eye_renderer_s *r)
     }
 }
 
-void nyabula_eye_renderer_render(struct nyabula_eye_renderer_s *r,
-                                 const struct nyabula_eye_frame_s frames[2])
+void nyabula_eye_renderer_update_particles(struct nyabula_eye_renderer_s *r,
+                                           const struct nyabula_eye_frame_s *f)
 {
-  struct eye_s e;
-  uint32_t start;
-  bool share_pixels;
-  int id;
-
-  if (r == NULL || frames == NULL)
+  if (r == NULL || f == NULL)
     {
       return;
     }
@@ -4928,226 +4881,196 @@ void nyabula_eye_renderer_render(struct nyabula_eye_renderer_s *r,
       r->baked = true;
     }
 
-  start = lv_tick_get();
-  graphics_trace_beginex("eye_render");
-  update_z(r, &frames[0]);
-  share_pixels = frames_can_share_pixels(frames);
-  for (id = 0; id < NYABULA_EYE_COUNT; id++)
+  update_z(r, f);
+}
+
+void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
+                                     const struct nyabula_eye_frame_s *frame)
+{
+  struct eye_s e;
+  uint32_t eye_start;
+  uint32_t stage_start;
+  lv_draw_buf_t *base_buffer = NULL;
+  struct page_state_s *page_state;
+  bool minimal_exit;
+  bool eye_content;
+  bool open_lids = false;
+
+  if (r == NULL || frame == NULL || id < 0 || id >= NYABULA_EYE_COUNT)
     {
-      uint32_t eye_start = lv_tick_get();
-      uint32_t stage_start;
-      lv_draw_buf_t *base_buffer = NULL;
-      struct page_state_s *page_state;
-      bool minimal_exit;
-      bool eye_content;
-      bool open_lids = false;
+      return;
+    }
 
-      if (frame_pixels_unchanged(r, &frames[id], id))
+  if (!r->baked)
+    {
+      bake_base(r);
+      r->baked = true;
+    }
+
+  if (frame_pixels_unchanged(r, frame, id))
+    {
+      r->reused_eyes++;
+      graphics_trace_mark("eye_reuse");
+      return;
+    }
+
+  eye_start = lv_tick_get();
+  graphics_trace_beginex(id == NYABULA_EYE_LEFT ? "eye_left" : "eye_right");
+  r->index[id] ^= 1u;
+  r->mask_ready = false;
+  r->draw = r->buffer[id][r->index[id]];
+  page_state = &r->page_state[id][r->index[id]];
+  lv_canvas_set_draw_buf(r->canvas[id], r->draw);
+
+  minimal_exit = frame->scene.scene != NYABULA_EYE_SCENE_NONE &&
+                 frame->scene.style == NYABULA_EYE_SCENE_STYLE_MINIMAL &&
+                 frame->scene.lid < 0.999f && frame->scene.alpha < 0.999f;
+  eye_content = frame->scene.scene == NYABULA_EYE_SCENE_NONE || minimal_exit;
+  if (eye_content)
+    {
+      if (frame->scene.lid > 0.001f &&
+          (frame->scene.scene == NYABULA_EYE_SCENE_NONE || minimal_exit))
         {
-          r->reused_eyes++;
-          graphics_trace_mark("eye_reuse");
-          continue;
-        }
-
-      graphics_trace_beginex(id == NYABULA_EYE_LEFT ? "eye_left"
-                                                    : "eye_right");
-      r->index[id] ^= 1u;
-      r->mask_ready = false;
-      r->draw = r->buffer[id][r->index[id]];
-      page_state = &r->page_state[id][r->index[id]];
-      lv_canvas_set_draw_buf(r->canvas[id], r->draw);
-      if (id == NYABULA_EYE_RIGHT && share_pixels)
-        {
-          const struct page_state_s *source_state =
-              &r->page_state[NYABULA_EYE_LEFT][r->index[NYABULA_EYE_LEFT]];
-          const lv_area_t *copy_area = NULL;
-          lv_area_t dirty_union;
-
-          prepare(&e, &frames[id], id);
-          if (page_base_matches(page_state, &e) &&
-              page_base_matches(source_state, &e))
-            {
-              dirty_union = page_dirty_union(page_state, source_state);
-              copy_area = &dirty_union;
-            }
-
-          graphics_trace_beginex("share_copy");
-          stage_start = lv_tick_get();
-          lv_draw_buf_copy(
-              r->draw, copy_area,
-              r->buffer[NYABULA_EYE_LEFT][r->index[NYABULA_EYE_LEFT]],
-              copy_area);
-          r->copy_total += lv_tick_elaps(stage_start);
-          stage_start = lv_tick_get();
-          lv_obj_invalidate(r->canvas[id]);
-          r->flush_total += lv_tick_elaps(stage_start);
-          graphics_trace_endex("share_copy");
-          r->shared_frames++;
-          *page_state =
-              r->page_state[NYABULA_EYE_LEFT][r->index[NYABULA_EYE_LEFT]];
-          remember_frame(r, &frames[id], id);
-          graphics_trace_endex(id == NYABULA_EYE_LEFT ? "eye_left"
-                                                      : "eye_right");
-          continue;
-        }
-
-      minimal_exit =
-          frames[id].scene.scene != NYABULA_EYE_SCENE_NONE &&
-          frames[id].scene.style == NYABULA_EYE_SCENE_STYLE_MINIMAL &&
-          frames[id].scene.lid < 0.999f && frames[id].scene.alpha < 0.999f;
-      eye_content =
-          frames[id].scene.scene == NYABULA_EYE_SCENE_NONE || minimal_exit;
-      if (eye_content)
-        {
-          if (frames[id].scene.lid > 0.001f &&
-              (frames[id].scene.scene == NYABULA_EYE_SCENE_NONE ||
-               minimal_exit))
-            {
-              prepare_scene_lids(&e, &frames[id], id, frames[id].scene.lid);
-            }
-          else
-            {
-              prepare(&e, &frames[id], id);
-            }
-
-          graphics_trace_beginex("base_cache");
-          base_buffer = base_cache_get(r, &e);
-          graphics_trace_endex("base_cache");
-          open_lids = lids_are_open(&e);
-        }
-
-      if (base_buffer != NULL)
-        {
-          const lv_area_t *restore_area =
-              page_base_matches(page_state, &e) ? &page_state->dirty : NULL;
-
-          graphics_trace_beginex("base_restore");
-          stage_start = lv_tick_get();
-          lv_draw_buf_copy(r->draw, restore_area, base_buffer, restore_area);
-          r->copy_total += lv_tick_elaps(stage_start);
-          graphics_trace_endex("base_restore");
+          prepare_scene_lids(&e, frame, id, frame->scene.lid);
         }
       else
         {
-          lv_canvas_fill_bg(r->canvas[id], lv_color_black(), LV_OPA_COVER);
+          prepare(&e, frame, id);
         }
 
-      lv_canvas_init_layer(r->canvas[id], &r->layer);
-      if (r->vector == NULL)
+      graphics_trace_beginex("base_cache");
+      base_buffer = base_cache_get(r, &e);
+      graphics_trace_endex("base_cache");
+      open_lids = lids_are_open(&e);
+    }
+
+  if (base_buffer != NULL)
+    {
+      const lv_area_t *restore_area =
+          page_base_matches(page_state, &e) ? &page_state->dirty : NULL;
+
+      graphics_trace_beginex("base_restore");
+      stage_start = lv_tick_get();
+      lv_draw_buf_copy(r->draw, restore_area, base_buffer, restore_area);
+      r->copy_total += lv_tick_elaps(stage_start);
+      graphics_trace_endex("base_restore");
+    }
+  else
+    {
+      lv_canvas_fill_bg(r->canvas[id], lv_color_black(), LV_OPA_COVER);
+    }
+
+  lv_canvas_init_layer(r->canvas[id], &r->layer);
+  if (r->vector == NULL)
+    {
+      r->vector = lv_vector_dsc_create(&r->layer);
+    }
+
+  if (r->path == NULL)
+    {
+      r->path = lv_vector_path_create(LV_VECTOR_PATH_QUALITY_HIGH);
+    }
+
+  if (r->vector == NULL || r->path == NULL)
+    {
+      if (r->path != NULL)
         {
-          r->vector = lv_vector_dsc_create(&r->layer);
+          lv_vector_path_delete(r->path);
+          r->path = NULL;
         }
 
-      if (r->path == NULL)
+      if (r->vector != NULL)
         {
-          r->path = lv_vector_path_create(LV_VECTOR_PATH_QUALITY_HIGH);
+          lv_vector_dsc_delete(r->vector);
+          r->vector = NULL;
         }
 
-      if (r->vector == NULL || r->path == NULL)
+      graphics_trace_endex(id == NYABULA_EYE_LEFT ? "eye_left" : "eye_right");
+      lv_canvas_finish_layer(r->canvas[id], &r->layer);
+      return;
+    }
+
+  if (frame->scene.scene != NYABULA_EYE_SCENE_NONE && !minimal_exit)
+    {
+      graphics_trace_beginex("scene_draw");
+      render_scene(r, frame, id);
+      graphics_trace_endex("scene_draw");
+      prepare_scene(&e, frame, id);
+      arc(r, &e, 0.0f, 0.0f, R - 0.8f, 0.0f, PI * 2.0f, 2.0f, 0x3c4655, 0.45f);
+    }
+  else
+    {
+      if (base_buffer == NULL)
         {
-          if (r->path != NULL)
-            {
-              lv_vector_path_delete(r->path);
-              r->path = NULL;
-            }
-
-          if (r->vector != NULL)
-            {
-              lv_vector_dsc_delete(r->vector);
-              r->vector = NULL;
-            }
-
-          graphics_trace_endex(id == NYABULA_EYE_LEFT ? "eye_left"
-                                                      : "eye_right");
-          lv_canvas_finish_layer(r->canvas[id], &r->layer);
-          continue;
+          graphics_trace_beginex("base_build");
+          base(r, &e);
+          graphics_trace_endex("base_build");
         }
 
-      if (frames[id].scene.scene != NYABULA_EYE_SCENE_NONE && !minimal_exit)
+      if (base_buffer == NULL)
         {
-          graphics_trace_beginex("scene_draw");
-          render_scene(r, &frames[id], id);
-          graphics_trace_endex("scene_draw");
-          prepare_scene(&e, &frames[id], id);
+          graphics_trace_beginex("iris_build");
+          iris(r, &e);
+          graphics_trace_endex("iris_build");
+        }
+      pupil(r, &e);
+      overlays(r, &e);
+      highlights(r, &e);
+      if (!open_lids)
+        {
+          lids(r, &e);
+        }
+
+      draw_z(r, &e);
+      if (minimal_exit)
+        {
+          render_scene(r, frame, id);
+        }
+
+      if (base_buffer == NULL || !open_lids)
+        {
           arc(r, &e, 0.0f, 0.0f, R - 0.8f, 0.0f, PI * 2.0f, 2.0f, 0x3c4655,
               0.45f);
         }
-      else
-        {
-          if (base_buffer == NULL)
-            {
-              graphics_trace_beginex("base_build");
-              base(r, &e);
-              graphics_trace_endex("base_build");
-            }
-
-          if (base_buffer == NULL)
-            {
-              graphics_trace_beginex("iris_build");
-              iris(r, &e);
-              graphics_trace_endex("iris_build");
-            }
-          pupil(r, &e);
-          overlays(r, &e);
-          highlights(r, &e);
-          if (!open_lids)
-            {
-              lids(r, &e);
-            }
-
-          draw_z(r, &e);
-          if (minimal_exit)
-            {
-              render_scene(r, &frames[id], id);
-            }
-
-          if (base_buffer == NULL || !open_lids)
-            {
-              arc(r, &e, 0.0f, 0.0f, R - 0.8f, 0.0f, PI * 2.0f, 2.0f, 0x3c4655,
-                  0.45f);
-            }
-        }
-
-      r->build_total += lv_tick_elaps(eye_start);
-      stage_start = lv_tick_get();
-      graphics_trace_beginex("raster");
-      lv_draw_vector(r->vector);
-      if (r->mask_ready)
-        {
-          lv_draw_image_dsc_t image_descriptor;
-          lv_area_t area = { 0, 0, W - 1, H - 1 };
-
-          lv_draw_image_dsc_init(&image_descriptor);
-          image_descriptor.src = &r->mask_image;
-          lv_draw_image(&r->layer, &image_descriptor, &area);
-        }
-
-      lv_canvas_finish_layer(r->canvas[id], &r->layer);
-      graphics_trace_endex("raster");
-      r->raster_total += lv_tick_elaps(stage_start);
-      stage_start = lv_tick_get();
-      lv_draw_buf_flush_cache(r->draw, NULL);
-      lv_obj_invalidate(r->canvas[id]);
-      r->flush_total += lv_tick_elaps(stage_start);
-      graphics_trace_endex(id == NYABULA_EYE_LEFT ? "eye_left" : "eye_right");
-      if (eye_content && fabsf(e.t.sn) <= 0.0001f &&
-          fabsf(e.t.cs - 1.0f) <= 0.0001f)
-        {
-          bool simple = frames[id].scene.scene == NYABULA_EYE_SCENE_NONE &&
-                        frames[id].expression == NYABULA_EYE_EXPRESSION_IDLE &&
-                        open_lids && frames[id].overlay <= 0.02f;
-
-          page_remember_base(page_state, &e);
-          page_remember_dynamic_area(page_state, &e, simple);
-        }
-      else
-        {
-          page_state->valid = false;
-        }
-
-      remember_frame(r, &frames[id], id);
     }
 
-  graphics_trace_endex("eye_render");
-  report(r, lv_tick_elaps(start));
+  r->build_total += lv_tick_elaps(eye_start);
+  stage_start = lv_tick_get();
+  graphics_trace_beginex("raster");
+  lv_draw_vector(r->vector);
+  if (r->mask_ready)
+    {
+      lv_draw_image_dsc_t image_descriptor;
+      lv_area_t area = { 0, 0, W - 1, H - 1 };
+
+      lv_draw_image_dsc_init(&image_descriptor);
+      image_descriptor.src = &r->mask_image;
+      lv_draw_image(&r->layer, &image_descriptor, &area);
+    }
+
+  lv_canvas_finish_layer(r->canvas[id], &r->layer);
+  graphics_trace_endex("raster");
+  r->raster_total += lv_tick_elaps(stage_start);
+  stage_start = lv_tick_get();
+  lv_draw_buf_flush_cache(r->draw, NULL);
+  lv_obj_invalidate(r->canvas[id]);
+  r->flush_total += lv_tick_elaps(stage_start);
+  graphics_trace_endex(id == NYABULA_EYE_LEFT ? "eye_left" : "eye_right");
+  if (eye_content && fabsf(e.t.sn) <= 0.0001f &&
+      fabsf(e.t.cs - 1.0f) <= 0.0001f)
+    {
+      bool simple = frame->scene.scene == NYABULA_EYE_SCENE_NONE &&
+                    frame->expression == NYABULA_EYE_EXPRESSION_IDLE &&
+                    open_lids && frame->overlay <= 0.02f;
+
+      page_remember_base(page_state, &e);
+      page_remember_dynamic_area(page_state, &e, simple);
+    }
+  else
+    {
+      page_state->valid = false;
+    }
+
+  remember_frame(r, frame, id);
+  report(r, lv_tick_elaps(eye_start));
 }
