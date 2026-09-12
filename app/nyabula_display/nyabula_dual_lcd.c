@@ -87,6 +87,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 #include <nuttx/sched_note.h>
 
 #include <lvgl/lvgl.h>
@@ -748,6 +752,206 @@ static void flush_wait_cb(lv_display_t *disp)
 }
 
 /****************************************************************************
+ * Name: rgb888_to_rgb565_dithered
+ *
+ * Description:
+ *   Convert a full-frame RGB888 buffer (BGR byte order, 3 bytes/pixel) into
+ *   a big-endian RGB565 buffer (panel GRAM byte order, 2 bytes/pixel) with
+ *   ordered (Bayer 4x4) dithering applied BEFORE the 8-bit -> 5/6-bit
+ *   quantization.  The dithering breaks up the banding that plain truncation
+ *   produces on smooth gradients (the iris glow / disc radial gradients).
+ *
+ *   R and B are quantized to 5 bits (quantum 8), G to 6 bits (quantum 4).
+ *   A Bayer 4x4 matrix in [-0.5, +0.5] quantum units is added per channel to
+ *   spread the truncation error spatially; the residual noise is far less
+ *   visible than Mach bands.  The Bayer phase is (x & 3, y & 3), so it is
+ *   stable frame-to-frame for a fixed-pitch buffer (no temporal flicker).
+ *
+ * Input Parameters:
+ *   src      - RGB888 source buffer (3 bytes/pixel, BGR order)
+ *   src_stride - bytes per scan line of src (== width * 3)
+ *   dst      - RGB565 destination buffer (2 bytes/pixel, big-endian)
+ *   dst_stride - bytes per scan line of dst (== width * 2)
+ *   w, h     - frame dimensions in pixels
+ *
+ ****************************************************************************/
+
+static void rgb888_to_rgb565_dithered(const uint8_t *src, int src_stride,
+                                      uint8_t *dst, int dst_stride, int w,
+                                      int h)
+{
+  /* Bayer 4x4 ordered-dither matrix (values 0..15). */
+  static const uint8_t bayer[4][4] = {
+    { 0, 8, 2, 10 },
+    { 12, 4, 14, 6 },
+    { 3, 11, 1, 9 },
+    { 15, 7, 13, 5 },
+  };
+  int x;
+  int y;
+
+#if defined(__ARM_NEON)
+  {
+    /* Per-row signed dither offsets as 8-lane int8 vectors (Bayer row spans
+     * 4 columns, wrapped twice: x & 3 = 0,1,2,3,0,1,2,3 for 8 pixels).
+     *   5-bit channels (R/B): offset = (b >> 1) - 4   (range -4..+3)
+     *   6-bit channel  (G)  : offset = (b >> 2) - 2   (range -2..+1)
+     */
+    const int8_t off5[4][8] = {
+      { -4, 0, -3, 1, -4, 0, -3, 1 }, /* row 0: 0,8,2,10 */
+      { 2, -2, 3, -1, 2, -2, 3, -1 }, /* row 1: 12,4,14,6 */
+      { -3, 1, -4, 0, -3, 1, -4, 0 }, /* row 2: 3,11,1,9 */
+      { 3, -1, 2, -2, 3, -1, 2, -2 }, /* row 3: 15,7,13,5 */
+    };
+    const int8_t off6[4][8] = {
+      { -2, 0, -2, 0, -2, 0, -2, 0 }, /* row 0: 0,8 -> 0,2 -> 0,2 */
+      { 1, -1, 1, -1, 1, -1, 1, -1 }, /* row 1: 12,4 -> 3,1 -> 1,-1 */
+      { -2, 0, -2, 0, -2, 0, -2, 0 }, /* row 2: 3,11 -> 0,2 */
+      { 1, -1, 1, -1, 1, -1, 1, -1 }, /* row 3: 15,7 -> 3,1 */
+    };
+
+    for (y = 0; y < h; y++)
+      {
+        const uint8_t *s = src + (size_t)y * src_stride;
+        uint8_t *d = dst + (size_t)y * dst_stride;
+        int row = y & 3;
+        int8x8_t vo5 = vld1_s8(off5[row]);
+        int8x8_t vo6 = vld1_s8(off6[row]);
+
+        for (x = 0; x + 8 <= w; x += 8)
+          {
+            uint8x8x3_t px = vld3_u8(s + x * 3);
+
+            /* Widen to signed 16-bit, add the signed dither offset, then
+             * clamp to [0, 255].  The lower bound is needed because the
+             * offset can push a 0 pixel negative; the upper bound is needed
+             * because a near-saturated R/B pixel (253..255) plus the +3
+             * offset reaches 256..258, whose >>3 yields 32 -- out of the
+             * 5-bit field -- and then <<11 wraps the 565 halfword to 0
+             * (a black flash instead of white). */
+            int16x8_t r =
+                vaddw_s8(vreinterpretq_s16_u16(vmovl_u8(px.val[2])), vo5);
+            int16x8_t g =
+                vaddw_s8(vreinterpretq_s16_u16(vmovl_u8(px.val[1])), vo6);
+            int16x8_t b =
+                vaddw_s8(vreinterpretq_s16_u16(vmovl_u8(px.val[0])), vo5);
+
+            r = vmaxq_s16(r, vdupq_n_s16(0));
+            r = vminq_s16(r, vdupq_n_s16(255));
+            g = vmaxq_s16(g, vdupq_n_s16(0));
+            g = vminq_s16(g, vdupq_n_s16(255));
+            b = vmaxq_s16(b, vdupq_n_s16(0));
+            b = vminq_s16(b, vdupq_n_s16(255));
+
+            /* Quantize and pack into 565: (R5 << 11) | (G6 << 5) | B5. */
+            uint16x8_t v565 = vorrq_u16(
+                vorrq_u16(
+                    vshlq_n_u16(vshrq_n_u16(vreinterpretq_u16_s16(r), 3), 11),
+                    vshlq_n_u16(vshrq_n_u16(vreinterpretq_u16_s16(g), 2), 5)),
+                vshrq_n_u16(vreinterpretq_u16_s16(b), 3));
+
+            /* Emit big-endian: high byte then low byte per 565 halfword. */
+            uint8x8_t hi = vmovn_u16(vshrq_n_u16(v565, 8));
+            uint8x8_t lo = vmovn_u16(v565);
+            uint8x8x2_t out = { { hi, lo } };
+            vst2_u8(d + x * 2, out);
+          }
+
+        /* Scalar tail for widths not a multiple of 8 (360 % 8 == 0, so this
+         * is normally empty).  Uses the same >0 clamp as below. */
+        for (; x < w; x++)
+          {
+            int b = bayer[row][x & 3];
+            int r = s[x * 3 + 2] + ((b >> 1) - 4);
+            int g = s[x * 3 + 1] + ((b >> 2) - 2);
+            int bl = s[x * 3 + 0] + ((b >> 1) - 4);
+            uint16_t v;
+
+            if (r < 0)
+              {
+                r = 0;
+              }
+            else if (r > 255)
+              {
+                r = 255;
+              }
+
+            if (g < 0)
+              {
+                g = 0;
+              }
+            else if (g > 255)
+              {
+                g = 255;
+              }
+
+            if (bl < 0)
+              {
+                bl = 0;
+              }
+            else if (bl > 255)
+              {
+                bl = 255;
+              }
+
+            v = (uint16_t)((r >> 3) << 11) | (uint16_t)((g >> 2) << 5) |
+                (uint16_t)(bl >> 3);
+            d[x * 2 + 0] = (uint8_t)(v >> 8);
+            d[x * 2 + 1] = (uint8_t)(v & 0xFF);
+          }
+      }
+  }
+#else
+  for (y = 0; y < h; y++)
+    {
+      const uint8_t *s = src + (size_t)y * src_stride;
+      uint8_t *d = dst + (size_t)y * dst_stride;
+
+      for (x = 0; x < w; x++)
+        {
+          int b = bayer[y & 3][x & 3];
+          int r = s[x * 3 + 2] + ((b >> 1) - 4);
+          int g = s[x * 3 + 1] + ((b >> 2) - 2);
+          int bl = s[x * 3 + 0] + ((b >> 1) - 4);
+          uint16_t v;
+
+          if (r < 0)
+            {
+              r = 0;
+            }
+          else if (r > 255)
+            {
+              r = 255;
+            }
+
+          if (g < 0)
+            {
+              g = 0;
+            }
+          else if (g > 255)
+            {
+              g = 255;
+            }
+
+          if (bl < 0)
+            {
+              bl = 0;
+            }
+          else if (bl > 255)
+            {
+              bl = 255;
+            }
+
+          v = (uint16_t)((r >> 3) << 11) | (uint16_t)((g >> 2) << 5) |
+              (uint16_t)(bl >> 3);
+          d[x * 2 + 0] = (uint8_t)(v >> 8);
+          d[x * 2 + 1] = (uint8_t)(v & 0xFF);
+        }
+    }
+#endif
+}
+
+/****************************************************************************
  * Name: flush_cb
  *
  * Description:
@@ -769,20 +973,36 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area,
 
   (void)area; /* Full-refresh: LVGL flushes the whole screen each frame. */
 
-  buf_idx = (color_p == scr->buf[0].data) ? 0 : 1;
+  /* LVGL renders into one of the two RGB888 draw buffers (color_p).  The
+   * slot index is the descriptor LVGL was redirected to by the render loop
+   * (request_render chose it, lv_display_set_draw_buffers applied it); we
+   * recover it by matching color_p against the two draw buffer bases. */
+  if (color_p == scr->draw_data[0])
+    {
+      buf_idx = 0;
+    }
+  else if (color_p == scr->draw_data[1])
+    {
+      buf_idx = 1;
+    }
+  else
+    {
+      buf_idx = 0;
+    }
 
-  /* Byte-swap the rendered RGB565 frame in place to the big-endian byte
-   * order the panel GRAM expects (the st77916 driver no longer does this).
-   * color_p is scr->buf[buf_idx].data, the same buffer the transfer thread
-   * later DMAs, and LVGL has just finished rendering it synchronously, so
-   * it is safe to touch here.  This runs on the render thread, overlapping
-   * with the transfer thread's DMA of the other screen -- swapping at flush
-   * time (rather than in the transfer path) keeps the CPU work off the
-   * shared-bus critical path.  The buffer is not reused by LVGL until its
-   * slot is fully written to GRAM (busy reset to false in on_buf_free), so
-   * the swapped byte order survives until the DMA reads it.
-   */
-  lv_draw_sw_rgb565_swap(scr->buf[buf_idx].data, scr->width * scr->height);
+  /* Convert the just-rendered RGB888 frame into big-endian RGB565 with
+   * ordered dithering, writing directly into the DMA buffer for this slot.
+   * This replaces the previous lv_draw_sw_rgb565_swap(): the byte swap is
+   * folded into the conversion (the emitter writes the 565 halfword
+   * big-endian).  It runs on the render thread, overlapping the transfer
+   * thread's DMA of the other screen, so the CPU work stays off the
+   * shared-bus critical path.  The DMA buffer is not reused by LVGL until
+   * its slot is fully written to GRAM (busy reset in on_buf_free), so the
+   * converted content survives until the DMA reads it. */
+  sched_note_beginex(NOTE_TAG_ALWAYS, "nyabula:rgb565_dither");
+  rgb888_to_rgb565_dithered(color_p, scr->draw_stride, scr->buf[buf_idx].data,
+                            scr->stride, scr->width, scr->height);
+  sched_note_endex(NOTE_TAG_ALWAYS, "nyabula:rgb565_dither");
 
   sem_wait(&scr->st_mutex);
 
@@ -936,9 +1156,11 @@ static int screen_init(nyabula_screen_t *scr, int sid, const char *dev_path,
   scr->screen_id = sid;
   scr->width = width;
   scr->height = height;
-  scr->stride = width * 2; /* RGB565: 2 bytes per pixel */
+  scr->stride = width * 2;      /* RGB565 DMA buffer: 2 bytes per pixel */
+  scr->draw_stride = width * 3; /* RGB888 draw buffer: 3 bytes per pixel */
   scr->total_lines = height;
   scr->buf_size = (uint32_t)width * height * 2;
+  scr->draw_size = (uint32_t)width * height * 3;
   scr->pending_slot = -1;
   scr->render_request = false;
   scr->dual = NULL; /* set by the caller (nyabula_dual_lcd_create) */
@@ -988,6 +1210,18 @@ static int screen_init(nyabula_screen_t *scr, int sid, const char *dev_path,
   scr->buf[1].busy = false;
   memset(scr->buf[1].data, 0, scr->buf_size);
 
+  /* Allocate the two RGB888 draw buffers for LVGL.  These are only CPU
+   * written/read (LVGL renders here, flush_cb converts them to RGB565), so
+   * they need no DMA alignment. */
+  scr->draw_data[0] = lv_malloc(scr->draw_size);
+  scr->draw_data[1] = lv_malloc(scr->draw_size);
+  if (scr->draw_data[0] == NULL || scr->draw_data[1] == NULL)
+    {
+      LV_LOG_ERROR("Screen %d: failed to allocate RGB888 draw buffers", sid);
+      xerr = -ENOMEM;
+      goto err_draw;
+    }
+
   /* Initialize sync primitives */
   sem_init(&scr->buf_free, 0, 0);
   sem_init(&scr->st_mutex, 0, 1);
@@ -1003,24 +1237,24 @@ static int screen_init(nyabula_screen_t *scr, int sid, const char *dev_path,
 
   /* LVGL renders one full frame per buffer and calls flush_cb once for the
    * whole screen; this matches the BlankGated whole-frame write model. */
-  lv_display_set_buffers(scr->disp, scr->buf[0].data, scr->buf[1].data,
-                         scr->buf_size, LV_DISPLAY_RENDER_MODE_FULL);
+  lv_display_set_color_format(scr->disp, LV_COLOR_FORMAT_RGB888);
+  lv_display_set_buffers(scr->disp, scr->draw_data[0], scr->draw_data[1],
+                         scr->draw_size, LV_DISPLAY_RENDER_MODE_FULL);
   lv_display_set_flush_cb(scr->disp, flush_cb);
   lv_display_set_flush_wait_cb(scr->disp, flush_wait_cb);
   lv_display_set_driver_data(scr->disp, scr);
 
-  /* Build two LVGL draw-buffer descriptors bound to the same offscreen data
-   * buffers.  The algorithm owns slot selection: request_render redirects
-   * LVGL to the chosen slot by calling lv_display_set_draw_buffers with that
-   * slot's descriptor first (the active draw buffer becomes buf_1).  Use the
-   * display's own color format and our stride so the descriptors match what
-   * set_buffers set up. */
+  /* Build two LVGL draw-buffer descriptors bound to the RGB888 draw buffers.
+   * The algorithm owns slot selection: request_render redirects LVGL to the
+   * chosen slot by calling lv_display_set_draw_buffers with that slot's
+   * descriptor first (the active draw buffer becomes buf_1).  Use the
+   * display's RGB888 color format and our draw stride so the descriptors
+   * match what set_buffers set up. */
   {
-    lv_color_format_t cf = lv_display_get_color_format(scr->disp);
-    lv_draw_buf_init(&scr->draw_buf[0], width, height, cf, scr->stride,
-                     scr->buf[0].data, scr->buf_size);
-    lv_draw_buf_init(&scr->draw_buf[1], width, height, cf, scr->stride,
-                     scr->buf[1].data, scr->buf_size);
+    lv_draw_buf_init(&scr->draw_buf[0], width, height, LV_COLOR_FORMAT_RGB888,
+                     scr->draw_stride, scr->draw_data[0], scr->draw_size);
+    lv_draw_buf_init(&scr->draw_buf[1], width, height, LV_COLOR_FORMAT_RGB888,
+                     scr->draw_stride, scr->draw_data[1], scr->draw_size);
   }
 
   /* Retain the default refresh timer: lv_refr_now() needs a non-NULL
@@ -1058,6 +1292,20 @@ static int screen_init(nyabula_screen_t *scr, int sid, const char *dev_path,
 err_disp:
   sem_destroy(&scr->buf_free);
   sem_destroy(&scr->st_mutex);
+
+err_draw:
+  if (scr->draw_data[0] != NULL)
+    {
+      lv_free(scr->draw_data[0]);
+      scr->draw_data[0] = NULL;
+    }
+
+  if (scr->draw_data[1] != NULL)
+    {
+      lv_free(scr->draw_data[1]);
+      scr->draw_data[1] = NULL;
+    }
+
 err_fd:
   close(scr->fd);
   scr->fd = -1;
@@ -1098,6 +1346,19 @@ static void screen_destroy(nyabula_screen_t *scr)
   scr->buf[0].busy = false;
   scr->buf[1].data = NULL;
   scr->buf[1].busy = false;
+
+  /* The RGB888 draw buffers are heap-allocated; free them. */
+  if (scr->draw_data[0] != NULL)
+    {
+      lv_free(scr->draw_data[0]);
+      scr->draw_data[0] = NULL;
+    }
+
+  if (scr->draw_data[1] != NULL)
+    {
+      lv_free(scr->draw_data[1]);
+      scr->draw_data[1] = NULL;
+    }
 
   if (scr->fd >= 0)
     {
