@@ -14,12 +14,11 @@ class CoreEyeProfileTest(unittest.TestCase):
         lines = (ROOT / "configs/core_eye/defconfig").read_text(encoding="utf-8").splitlines()
         cls.config = dict(line.split("=", 1) for line in lines if line.startswith("CONFIG_"))
 
-    def test_physical_te_gpio(self):
-        self.assertEqual(self.config.get("CONFIG_NYABULA_DISPLAY_TE_GPIO"), "y")
+    def test_physical_te_boardctl(self):
+        self.assertEqual(self.config.get("CONFIG_NYABULA_DISPLAY_TE_BOARDCTL"), "y")
         self.assertNotEqual(self.config.get("CONFIG_NYABULA_DISPLAY_TE_SW"), "y")
+        self.assertEqual(self.config.get("CONFIG_BOARDCTL_IOCTL"), "y")
         self.assertEqual(self.config.get("CONFIG_DEV_GPIO"), "y")
-        self.assertEqual(self.config.get("CONFIG_NYABULA_DISPLAY_TE0_DEVPATH"), '"/dev/gpio1"')
-        self.assertEqual(self.config.get("CONFIG_NYABULA_DISPLAY_TE1_DEVPATH"), '"/dev/gpio2"')
 
     def test_gc9b72_initialization(self):
         self.assertEqual(self.config.get("CONFIG_LCD_ST77916"), "y")

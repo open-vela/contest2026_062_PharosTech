@@ -27,6 +27,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
+#include <nuttx/trace.h>
+
 #include "generated/fonts/nyabula_eye_fonts.h"
 #include "generated/nyabula_eye_icons.h"
 #include "nyabula_eye_internal.h"
@@ -41,10 +47,13 @@
 #define FONT_CACHE_COUNT 32
 #define TEXT_CACHE_COUNT 32
 #define TEXT_CACHE_BYTES 96
-#define BASE_CACHE_COUNT 2
 #define HEART_SAMPLES    96
 #define LID_SAMPLES      400
 #define LID_OFFSET       200
+
+/* Base-baking: bake the iris glow & disc once (in white/tinted) at init and
+ * tint per-frame via multiply. 0x80 keeps shade(1.25f) from saturating. */
+#define BAKE_BASE_CHANNEL 0x80u
 
 struct scene_point_s;
 
@@ -119,51 +128,23 @@ struct fiber_s
   float outer_radius;
 };
 
-struct base_cache_s
-{
-  lv_obj_t *canvas;
-  lv_draw_buf_t *buffer;
-  uint32_t iris_rgb;
-  uint32_t age;
-  int16_t gaze_x;
-  int16_t gaze_y;
-  uint16_t iris_radius;
-  uint16_t scale_y;
-  uint16_t glow;
-  bool valid;
-};
-
-struct page_state_s
-{
-  lv_area_t dirty;
-  uint32_t iris_rgb;
-  int16_t gaze_x;
-  int16_t gaze_y;
-  uint16_t iris_radius;
-  uint16_t scale_y;
-  uint16_t glow;
-  bool valid;
-};
-
 struct nyabula_eye_renderer_s
 {
   lv_obj_t *canvas[NYABULA_EYE_COUNT];
   lv_obj_t *mask_canvas;
   lv_draw_buf_t *buffer[NYABULA_EYE_COUNT][2];
   lv_draw_buf_t *mask_buffer;
-  struct base_cache_s base_cache[BASE_CACHE_COUNT];
-  struct page_state_s page_state[NYABULA_EYE_COUNT][2];
   lv_image_dsc_t mask_image;
   lv_draw_buf_t *draw;
   lv_layer_t layer;
   lv_vector_dsc_t *vector;
   lv_vector_path_t *path;
-  lv_layer_t cache_layer;
-  lv_vector_dsc_t *cache_vector;
-  lv_vector_path_t *cache_path;
   lv_layer_t mask_layer;
   lv_vector_dsc_t *mask_vector;
   lv_vector_path_t *mask_path;
+  lv_draw_buf_t *baked_iris;
+  lv_draw_buf_t *baked_glow;
+  bool baked;
   lv_fpoint_t icon_points[2048];
   bool icon_moves[2048];
   lv_fpoint_t heart_points[HEART_SAMPLES];
@@ -174,19 +155,14 @@ struct nyabula_eye_renderer_s
   struct font_cache_s font_cache[FONT_CACHE_COUNT];
 #endif
   uint32_t random;
-  uint32_t base_cache_clock;
   uint32_t text_cache_clock;
   uint32_t perf_start;
   uint32_t render_total;
   uint32_t build_total;
   uint32_t raster_total;
-  uint32_t copy_total;
   uint32_t flush_total;
   uint32_t frames;
-  uint32_t shared_frames;
   uint32_t reused_eyes;
-  uint32_t base_cache_hits;
-  uint32_t base_cache_builds;
   uint8_t index[NYABULA_EYE_COUNT];
   struct nyabula_eye_frame_s last_frame[NYABULA_EYE_COUNT];
   bool last_frame_valid[NYABULA_EYE_COUNT];
@@ -208,7 +184,8 @@ struct nyabula_eye_renderer_s
 };
 
 static bool in_lids(const struct eye_s *e, float sx, float sy);
-static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e);
+static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
+                 lv_draw_buf_t *target);
 
 #if defined(CONFIG_CONTEST2026_062_NYABULA_DYNAMIC_FONTS) && LV_USE_FREETYPE
 static lv_font_t *renderer_create_font(const char *filename, uint32_t size);
@@ -261,17 +238,12 @@ static void arc(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
                 float cx, float cy, float radius, float start, float sweep,
                 float width, uint32_t color, float opacity);
 static void base(struct nyabula_eye_renderer_s *r, const struct eye_s *e);
-static lv_draw_buf_t *base_cache_get(struct nyabula_eye_renderer_s *r,
-                                     const struct eye_s *e);
-static bool page_base_matches(const struct page_state_s *state,
-                              const struct eye_s *e);
-static void page_remember_base(struct page_state_s *state,
-                               const struct eye_s *e);
-static void page_remember_dynamic_area(struct page_state_s *state,
-                                       const struct eye_s *e, bool simple);
-static lv_area_t page_dirty_union(const struct page_state_s *first,
-                                  const struct page_state_s *second);
-static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e);
+static void bake_base(struct nyabula_eye_renderer_s *r);
+static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
+                                          const struct eye_s *e,
+                                          lv_draw_buf_t *target);
+static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
+                 lv_draw_buf_t *target);
 static void ellipse_path(struct nyabula_eye_renderer_s *r, float cx, float cy,
                          float rx, float ry, float rotation);
 static void ellipse(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
@@ -466,8 +438,6 @@ static void render_scene_lid_mask(struct nyabula_eye_renderer_s *r,
                                   const struct eye_s *scene_eye, int id);
 static bool render_scene(struct nyabula_eye_renderer_s *r,
                          const struct nyabula_eye_frame_s *frame, int id);
-static bool frames_can_share_pixels(
-    const struct nyabula_eye_frame_s frames[NYABULA_EYE_COUNT]);
 static bool
 scene_eye_is_time_independent(const struct nyabula_eye_scene_frame_s *scene,
                               int id);
@@ -947,6 +917,7 @@ static void base(struct nyabula_eye_renderer_s *r, const struct eye_s *e)
   lv_vector_dsc_set_fill_gradient_color_stops(r->vector, glow_stops, 2);
   lv_vector_dsc_set_fill_gradient_spread(r->vector,
                                          LV_VECTOR_GRADIENT_SPREAD_PAD);
+  // ~11ms
   lv_vector_dsc_add_path(r->vector, r->path);
 
   memset(iris_stops, 0, sizeof(iris_stops));
@@ -976,199 +947,486 @@ static void base(struct nyabula_eye_renderer_s *r, const struct eye_s *e)
   lv_vector_dsc_set_fill_gradient_color_stops(r->vector, iris_stops, 4);
   lv_vector_dsc_set_fill_gradient_spread(r->vector,
                                          LV_VECTOR_GRADIENT_SPREAD_PAD);
+  // ~19ms
   lv_vector_dsc_add_path(r->vector, r->path);
 }
 
-static lv_draw_buf_t *base_cache_get(struct nyabula_eye_renderer_s *r,
-                                     const struct eye_s *e)
+/* Draw a single radial-gradient circle centred at the eye's screen centre
+ * ((W/2, CY)) onto the renderer's temporary off-screen layer. The circle is
+ * unscaled and unrotated (the base disc/glow are rotation-invariant), matching
+ * what base() produces after its centre translation. Used only during the
+ * one-time bake; drawn at full `iris_rgb` so the tinted result can later be
+ * recoloured per-frame by a plain multiply. */
+static void bake_draw_radial(lv_layer_t *layer, float radius,
+                             const lv_gradient_stop_t *stops, uint32_t count)
 {
-  struct base_cache_s *entry = NULL;
-  lv_vector_dsc_t *main_vector;
-  lv_vector_path_t *main_path;
-  uint16_t glow;
-  int16_t gaze_x;
-  int16_t gaze_y;
-  uint16_t iris_radius;
-  uint16_t scale_y;
-  int index;
+  lv_fpoint_t center = { W * 0.5f, CY };
+  lv_vector_dsc_t *v = lv_vector_dsc_create(layer);
+  lv_vector_path_t *p = lv_vector_path_create(LV_VECTOR_PATH_QUALITY_HIGH);
 
-  if (fabsf(e->t.sn) > 0.0001f || fabsf(e->t.cs - 1.0f) > 0.0001f)
+  if (v == NULL || p == NULL)
     {
-      return NULL;
-    }
-
-  glow = (uint16_t)lroundf(clampf(e->f->glow, 0.0f, 1.0f) * 4095.0f);
-  gaze_x = (int16_t)lroundf(e->gx * 16.0f);
-  gaze_y = (int16_t)lroundf(e->gy * 16.0f);
-  iris_radius = (uint16_t)lroundf(e->ir * 16.0f);
-  scale_y = (uint16_t)lroundf(clampf(e->t.sy, 0.0f, 1.0f) * 4095.0f);
-  for (index = 0; index < BASE_CACHE_COUNT; index++)
-    {
-      struct base_cache_s *candidate = &r->base_cache[index];
-
-      if (candidate->valid && candidate->iris_rgb == e->f->iris_rgb &&
-          candidate->glow == glow && candidate->gaze_x == gaze_x &&
-          candidate->gaze_y == gaze_y &&
-          candidate->iris_radius == iris_radius &&
-          candidate->scale_y == scale_y)
+      if (v != NULL)
         {
-          candidate->age = ++r->base_cache_clock;
-          r->base_cache_hits++;
-          return candidate->buffer;
+          lv_vector_dsc_delete(v);
         }
 
-      if (entry == NULL || !candidate->valid || candidate->age < entry->age)
+      if (p != NULL)
         {
-          entry = candidate;
-          if (!candidate->valid)
-            {
-              break;
-            }
+          lv_vector_path_delete(p);
         }
-    }
 
-  if (entry == NULL || entry->canvas == NULL || entry->buffer == NULL)
-    {
-      return NULL;
-    }
-
-  main_vector = r->vector;
-  main_path = r->path;
-  lv_canvas_fill_bg(entry->canvas, lv_color_black(), LV_OPA_COVER);
-  lv_canvas_init_layer(entry->canvas, &r->cache_layer);
-  if (r->cache_vector == NULL)
-    {
-      r->cache_vector = lv_vector_dsc_create(&r->cache_layer);
-    }
-
-  if (r->cache_path == NULL)
-    {
-      r->cache_path = lv_vector_path_create(LV_VECTOR_PATH_QUALITY_HIGH);
-    }
-
-  r->vector = r->cache_vector;
-  r->path = r->cache_path;
-  if (r->vector == NULL || r->path == NULL)
-    {
-      lv_canvas_finish_layer(entry->canvas, &r->cache_layer);
-      r->vector = main_vector;
-      r->path = main_path;
-      return NULL;
-    }
-
-  base(r, e);
-  iris(r, e);
-  arc(r, e, 0.0f, 0.0f, R - 0.8f, 0.0f, PI * 2.0f, 2.0f, 0x3c4655, 0.45f);
-  lv_draw_vector(r->vector);
-  lv_canvas_finish_layer(entry->canvas, &r->cache_layer);
-  lv_draw_buf_flush_cache(entry->buffer, NULL);
-  r->vector = main_vector;
-  r->path = main_path;
-  entry->iris_rgb = e->f->iris_rgb;
-  entry->glow = glow;
-  entry->gaze_x = gaze_x;
-  entry->gaze_y = gaze_y;
-  entry->iris_radius = iris_radius;
-  entry->scale_y = scale_y;
-  entry->age = ++r->base_cache_clock;
-  entry->valid = true;
-  r->base_cache_builds++;
-  return entry->buffer;
-}
-
-static bool page_base_matches(const struct page_state_s *state,
-                              const struct eye_s *e)
-{
-  return state->valid && state->iris_rgb == e->f->iris_rgb &&
-         state->glow ==
-             (uint16_t)lroundf(clampf(e->f->glow, 0.0f, 1.0f) * 4095.0f) &&
-         state->gaze_x == (int16_t)lroundf(e->gx * 16.0f) &&
-         state->gaze_y == (int16_t)lroundf(e->gy * 16.0f) &&
-         state->iris_radius == (uint16_t)lroundf(e->ir * 16.0f) &&
-         state->scale_y ==
-             (uint16_t)lroundf(clampf(e->t.sy, 0.0f, 1.0f) * 4095.0f);
-}
-
-static void page_remember_base(struct page_state_s *state,
-                               const struct eye_s *e)
-{
-  state->iris_rgb = e->f->iris_rgb;
-  state->glow = (uint16_t)lroundf(clampf(e->f->glow, 0.0f, 1.0f) * 4095.0f);
-  state->gaze_x = (int16_t)lroundf(e->gx * 16.0f);
-  state->gaze_y = (int16_t)lroundf(e->gy * 16.0f);
-  state->iris_radius = (uint16_t)lroundf(e->ir * 16.0f);
-  state->scale_y = (uint16_t)lroundf(clampf(e->t.sy, 0.0f, 1.0f) * 4095.0f);
-  state->valid = true;
-}
-
-static void page_remember_dynamic_area(struct page_state_s *state,
-                                       const struct eye_s *e, bool simple)
-{
-  float rx;
-  float ry;
-  float px;
-  float py;
-  float left;
-  float top;
-  float right;
-  float bottom;
-  float radius;
-
-  if (!simple)
-    {
-      state->dirty = (lv_area_t){ 0, 0, W - 1, H - 1 };
       return;
     }
 
-  rx = e->ir * e->f->pupil_width * 0.80f;
-  ry = e->ir * e->f->pupil_height * 0.84f;
-  px = e->gx;
-  py = e->gy;
-  clamp_to_eye_globe(&px, &py, fmaxf(rx, ry) + 1.0f);
-  left = px - rx;
-  right = px + rx;
-  top = py - ry;
-  bottom = py + ry;
-
-  radius = e->ir * 0.13f;
-  left = fminf(left, -e->ir * 0.33f + e->gx * 0.55f - radius);
-  right = fmaxf(right, -e->ir * 0.33f + e->gx * 0.55f + radius);
-  top = fminf(top, -e->ir * 0.38f + e->gy * 0.55f - radius);
-  bottom = fmaxf(bottom, -e->ir * 0.38f + e->gy * 0.55f + radius);
-
-  radius = e->ir * 0.05f;
-  left = fminf(left, e->ir * 0.30f + e->gx * 0.60f - radius);
-  right = fmaxf(right, e->ir * 0.30f + e->gx * 0.60f + radius);
-  top = fminf(top, e->ir * 0.24f + e->gy * 0.60f - radius);
-  bottom = fmaxf(bottom, e->ir * 0.24f + e->gy * 0.60f + radius);
-
-  state->dirty.x1 = (int32_t)floorf(e->t.cx + left - 4.0f);
-  state->dirty.x2 = (int32_t)ceilf(e->t.cx + right + 4.0f);
-  state->dirty.y1 = (int32_t)floorf(e->t.cy + top * e->t.sy - 4.0f);
-  state->dirty.y2 = (int32_t)ceilf(e->t.cy + bottom * e->t.sy + 4.0f);
-  state->dirty.x1 = state->dirty.x1 < 0 ? 0 : state->dirty.x1;
-  state->dirty.y1 = state->dirty.y1 < 0 ? 0 : state->dirty.y1;
-  state->dirty.x2 = state->dirty.x2 >= W ? W - 1 : state->dirty.x2;
-  state->dirty.y2 = state->dirty.y2 >= H ? H - 1 : state->dirty.y2;
+  lv_vector_path_clear(p);
+  lv_vector_path_append_circle(p, &center, radius, radius);
+  lv_vector_dsc_set_stroke_opa(v, LV_OPA_TRANSP);
+  lv_vector_dsc_set_fill_opa(v, LV_OPA_COVER);
+  lv_vector_dsc_set_fill_radial_gradient(v, center.x, center.y, radius);
+  lv_vector_dsc_set_fill_gradient_color_stops(v, stops, count);
+  lv_vector_dsc_set_fill_gradient_spread(v, LV_VECTOR_GRADIENT_SPREAD_PAD);
+  lv_vector_dsc_add_path(v, p);
+  lv_draw_vector(v);
+  lv_vector_path_delete(p);
+  lv_vector_dsc_delete(v);
 }
 
-static lv_area_t page_dirty_union(const struct page_state_s *first,
-                                  const struct page_state_s *second)
+/* Bake the base layer (iris glow + iris disc) exactly once at init into two
+ * premultiplied, tinted (0x808080) ARGB8888 textures. Per-frame recolouring is
+ * a plain multiply in bake_base_composite(); no re-rasterisation happens here
+ * regardless of iris_rgb / glow / gaze / rotation changes. */
+static void bake_base(struct nyabula_eye_renderer_s *r)
 {
-  lv_area_t area;
+  const uint32_t bake_rgb =
+      BAKE_BASE_CHANNEL << 16 | BAKE_BASE_CHANNEL << 8 | BAKE_BASE_CHANNEL;
+  lv_gradient_stop_t glow_stops[2];
+  lv_gradient_stop_t iris_stops[4];
+  lv_layer_t layer;
+  float globe_radius = eye_globe_radius();
 
-  area.x1 =
-      first->dirty.x1 < second->dirty.x1 ? first->dirty.x1 : second->dirty.x1;
-  area.y1 =
-      first->dirty.y1 < second->dirty.y1 ? first->dirty.y1 : second->dirty.y1;
-  area.x2 =
-      first->dirty.x2 > second->dirty.x2 ? first->dirty.x2 : second->dirty.x2;
-  area.y2 =
-      first->dirty.y2 > second->dirty.y2 ? first->dirty.y2 : second->dirty.y2;
-  return area;
+  r->baked_iris =
+      lv_draw_buf_create(W, H, LV_COLOR_FORMAT_ARGB8888, LV_STRIDE_AUTO);
+  r->baked_glow =
+      lv_draw_buf_create(W, H, LV_COLOR_FORMAT_ARGB8888, LV_STRIDE_AUTO);
+  if (r->baked_iris == NULL || r->baked_glow == NULL)
+    {
+      return;
+    }
+
+  /* Reuse the mask canvas as a scratch off-screen target; its own layer is
+   * restored afterwards and mask rendering is the only other user. */
+  lv_canvas_set_draw_buf(r->mask_canvas, r->baked_glow);
+  lv_canvas_fill_bg(r->mask_canvas, lv_color_black(), LV_OPA_TRANSP);
+  lv_canvas_init_layer(r->mask_canvas, &layer);
+
+  memset(glow_stops, 0, sizeof(glow_stops));
+  glow_stops[0].color = lv_color_hex(bake_rgb);
+  glow_stops[0].opa = vector_opa(0.175f);
+  glow_stops[0].frac = 0;
+  glow_stops[1].color = lv_color_hex(bake_rgb);
+  glow_stops[1].opa = LV_OPA_TRANSP;
+  glow_stops[1].frac = 255;
+  bake_draw_radial(&layer, R, glow_stops, 2);
+  lv_canvas_finish_layer(r->mask_canvas, &layer);
+
+  lv_canvas_set_draw_buf(r->mask_canvas, r->baked_iris);
+  lv_canvas_fill_bg(r->mask_canvas, lv_color_black(), LV_OPA_TRANSP);
+  lv_canvas_init_layer(r->mask_canvas, &layer);
+
+  memset(iris_stops, 0, sizeof(iris_stops));
+  iris_stops[0].color = lv_color_hex(shade(bake_rgb, 1.25f));
+  iris_stops[0].opa = LV_OPA_COVER;
+  iris_stops[0].frac = 0;
+  iris_stops[1].color = lv_color_hex(bake_rgb);
+  iris_stops[1].opa = LV_OPA_COVER;
+  iris_stops[1].frac = 140;
+  iris_stops[2].color = lv_color_hex(shade(bake_rgb, 0.55f));
+  iris_stops[2].opa = LV_OPA_COVER;
+  iris_stops[2].frac = 217;
+  iris_stops[3].color = lv_color_hex(shade(bake_rgb, 0.30f));
+  iris_stops[3].opa = LV_OPA_COVER;
+  iris_stops[3].frac = 255;
+  bake_draw_radial(&layer, globe_radius, iris_stops, 4);
+  lv_canvas_finish_layer(r->mask_canvas, &layer);
+
+  /* Restore the mask canvas to its own buffer. */
+  lv_canvas_set_draw_buf(r->mask_canvas, r->mask_buffer);
 }
 
-static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e)
+/* Composite the baked base (glow + iris) for the current frame. The baked
+ * textures hold a tinted (0x808080) premultiplied base baked with glow == 1;
+ * recolouring to the live iris_rgb and scaling the glow alpha is done by a
+ * single per-pixel multiply, replacing the per-frame vector rasterisation.
+ * The result is written directly into `target` (the current page buffer), so
+ * no intermediate cache buffer or whole/partial-buffer copy is needed. */
+static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
+                                          const struct eye_s *e,
+                                          lv_draw_buf_t *target)
+{
+  uint32_t rgb = e->f->iris_rgb & 0xffffffu;
+  uint32_t r_scale = (rgb >> 16) & 255u;
+  uint32_t g_scale = (rgb >> 8) & 255u;
+  uint32_t b_scale = rgb & 255u;
+  uint32_t glow = (uint32_t)lroundf(clampf(e->f->glow, 0.0f, 1.0f) * 255.0f);
+  uint32_t stride = target->header.stride;
+
+  if (r->baked_iris == NULL || r->baked_glow == NULL || target == NULL)
+    {
+      return NULL;
+    }
+
+#if defined(__ARM_NEON)
+  {
+    const uint8_t *src;
+    uint8_t *dst;
+    uint32_t x;
+    uint32_t y;
+
+    /* Glow recolour: out = g * s * glow / (0x80 * 255) == (g * s') >> 7 with
+     * s' = s * glow / 255 (glow folded into the per-channel coefficient). The
+     * baked glow RGB stays small (< 0x80), so the >>7 result never exceeds
+     * 255; vqshrn saturates defensively just in case. */
+    const uint8_t sr = (uint8_t)((r_scale * glow) / 255u);
+    const uint8_t sg = (uint8_t)((g_scale * glow) / 255u);
+    const uint8_t sb = (uint8_t)((b_scale * glow) / 255u);
+    const uint8x8_t vr = vdup_n_u8(sr);
+    const uint8x8_t vg = vdup_n_u8(sg);
+    const uint8x8_t vb = vdup_n_u8(sb);
+    const uint8x8_t cover = vdup_n_u8(255);
+
+    dst = (uint8_t *)target->data;
+    src = (const uint8_t *)r->baked_glow->data;
+
+    for (y = 0; y < H; y++)
+      {
+        for (x = 0; x < W; x += 8)
+          {
+            /* val[0]=blue, val[1]=green, val[2]=red, val[3]=alpha (BGRA). */
+            uint8x8x4_t g = vld4_u8(src + x * 4);
+            uint8x8_t rout;
+            uint8x8_t gout;
+            uint8x8_t bout;
+
+            rout = vqshrn_n_u16(vmull_u8(g.val[2], vr), 7);
+            gout = vqshrn_n_u16(vmull_u8(g.val[1], vg), 7);
+            bout = vqshrn_n_u16(vmull_u8(g.val[0], vb), 7);
+
+            {
+              uint8x8x4_t out;
+              out.val[0] = bout;
+              out.val[1] = gout;
+              out.val[2] = rout;
+              out.val[3] = cover;
+              vst4_u8(dst + x * 4, out);
+            }
+          }
+
+        src += stride;
+        dst += stride;
+      }
+
+    /* Iris over glow. The iris is premultiplied, so a zero-alpha pixel also
+     * has zero RGB; its over() degenerates to the sink value, which matches
+     * the scalar `continue` without needing a per-element mask. */
+    {
+      const uint8x8_t ir_scale = vdup_n_u8((uint8_t)r_scale);
+      const uint8x8_t ig_scale = vdup_n_u8((uint8_t)g_scale);
+      const uint8x8_t ib_scale = vdup_n_u8((uint8_t)b_scale);
+      const uint8x8_t full = vdup_n_u8(255);
+      const uint16x8_t one = vdupq_n_u16(1);
+
+      dst = (uint8_t *)target->data;
+      src = (const uint8_t *)r->baked_iris->data;
+
+      for (y = 0; y < H; y++)
+        {
+          for (x = 0; x < W; x += 8)
+            {
+              uint8x8x4_t i = vld4_u8(src + x * 4);
+              uint8x8x4_t d = vld4_u8(dst + x * 4);
+              uint8x8_t a_inv = vsub_u8(full, i.val[3]);
+              uint16x8_t t;
+
+              /* Recolour with saturation (>1.0 shade stops clamp to 255). */
+              uint8x8_t rp = vqshrn_n_u16(vmull_u8(i.val[2], ir_scale), 7);
+              uint8x8_t gp = vqshrn_n_u16(vmull_u8(i.val[1], ig_scale), 7);
+              uint8x8_t bp = vqshrn_n_u16(vmull_u8(i.val[0], ib_scale), 7);
+
+              /* t = sink * a_inv / 255 via the classic (t + (t>>8) + 1)>>8. */
+              t = vmull_u8(d.val[2], a_inv);
+              t = vshrq_n_u16(vaddq_u16(vaddq_u16(t, vshrq_n_u16(t, 8)), one),
+                              8);
+              d.val[2] = vqmovn_u16(vaddw_u8(t, rp));
+
+              t = vmull_u8(d.val[1], a_inv);
+              t = vshrq_n_u16(vaddq_u16(vaddq_u16(t, vshrq_n_u16(t, 8)), one),
+                              8);
+              d.val[1] = vqmovn_u16(vaddw_u8(t, gp));
+
+              t = vmull_u8(d.val[0], a_inv);
+              t = vshrq_n_u16(vaddq_u16(vaddq_u16(t, vshrq_n_u16(t, 8)), one),
+                              8);
+              d.val[0] = vqmovn_u16(vaddw_u8(t, bp));
+
+              vst4_u8(dst + x * 4, d);
+            }
+
+          src += stride;
+          dst += stride;
+        }
+    }
+  }
+#else
+  {
+    const lv_color32_t *src;
+    lv_color32_t *dst;
+    uint32_t x;
+    uint32_t y;
+    uint32_t inv = BAKE_BASE_CHANNEL;
+
+    dst = (lv_color32_t *)target->data;
+    src = (const lv_color32_t *)r->baked_glow->data;
+
+    /* Glow sits under the iris disc on the opaque black canvas. The baked
+     * glow texture is premultiplied (alpha already folded into RGB) with the
+     * 0x80 tint and glow == 1. Per-frame recolour = multiply RGB by live
+     * iris_rgb / 0x80, and scale the whole glow body by the live `glow`. */
+    for (y = 0; y < H; y++)
+      {
+        for (x = 0; x < W; x++)
+          {
+            const lv_color32_t g = src[x];
+
+            dst[x].alpha = LV_OPA_COVER;
+            dst[x].red = (uint8_t)((g.red * r_scale * glow) / (inv * 255u));
+            dst[x].green =
+                (uint8_t)((g.green * g_scale * glow) / (inv * 255u));
+            dst[x].blue = (uint8_t)((g.blue * b_scale * glow) / (inv * 255u));
+          }
+
+        src = (const lv_color32_t *)((const uint8_t *)src + stride);
+        dst = (lv_color32_t *)((uint8_t *)dst + stride);
+      }
+
+    /* Iris disc composites over the glow: opaque centre, antialiased rim. */
+    dst = (lv_color32_t *)target->data;
+    src = (const lv_color32_t *)r->baked_iris->data;
+    for (y = 0; y < H; y++)
+      {
+        for (x = 0; x < W; x++)
+          {
+            const lv_color32_t i = src[x];
+            uint32_t a_inv;
+            uint32_t ir;
+            uint32_t ig;
+            uint32_t ib;
+
+            if (i.alpha == LV_OPA_TRANSP)
+              {
+                continue;
+              }
+
+            ir = (uint32_t)i.red * r_scale / inv;
+            ig = (uint32_t)i.green * g_scale / inv;
+            ib = (uint32_t)i.blue * b_scale / inv;
+
+            if (ir > 255u)
+              {
+                ir = 255u;
+              }
+
+            if (ig > 255u)
+              {
+                ig = 255u;
+              }
+
+            if (ib > 255u)
+              {
+                ib = 255u;
+              }
+
+            a_inv = 255u - (uint32_t)i.alpha;
+            ir += dst[x].red * a_inv / 255u;
+            ig += dst[x].green * a_inv / 255u;
+            ib += dst[x].blue * a_inv / 255u;
+
+            dst[x].red = ir > 255u ? 255u : (uint8_t)ir;
+            dst[x].green = ig > 255u ? 255u : (uint8_t)ig;
+            dst[x].blue = ib > 255u ? 255u : (uint8_t)ib;
+          }
+
+        src = (const lv_color32_t *)((const uint8_t *)src + stride);
+        dst = (lv_color32_t *)((uint8_t *)dst + stride);
+      }
+  }
+#endif
+
+  lv_draw_buf_flush_cache(target, NULL);
+  return target;
+}
+
+/* Scalar SDF line rasteriser. Composites a single 1px antialiased straight
+ * line onto the ARGB8888 `target` buffer using straight-alpha src-over,
+ * replacing the thorvg vector_stroke path (LV_VECTOR_BLEND_SRC_OVER maps to
+ * thorvg NORMAL = straight src-over, colour * alpha + dst * (1 - alpha)).
+ * Endpoints are already in screen space (via to_screen). */
+static void iris_rast_line(lv_draw_buf_t *target, float ax, float ay, float bx,
+                           float by, uint32_t color, float opacity)
+{
+  const float half = 0.5f; /* width == 1.0: HALF_LINE_WIDTH = LINE_WIDTH / 2 */
+  /* Soft-edge band thresholds (squared) for early-out without sqrtf. */
+  const float in2 = (half - 0.25f) * (half - 0.25f);
+  const float out2 = (half + 0.25f) * (half + 0.25f);
+  const uint32_t stride_px = target->header.stride >> 2;
+  lv_color32_t *data = (lv_color32_t *)target->data;
+  const uint8_t cr = (uint8_t)((color >> 16) & 255u);
+  const uint8_t cg = (uint8_t)((color >> 8) & 255u);
+  const uint8_t cb = (uint8_t)(color & 255u);
+  float abx = bx - ax;
+  float aby = by - ay;
+  float len2 = abx * abx + aby * aby;
+  float inv_len2;
+  bool horizontal;
+  int min_y;
+  int max_y;
+  int y;
+
+  /* Degenerate (zero-length) line: guard the projection division. */
+  if (len2 < 1e-6f)
+    {
+      len2 = 1e-6f;
+    }
+
+  inv_len2 = 1.0f / len2;
+
+  /* y extent mirrors the GLSL pre-pass: expand by LINE_WIDTH (== 1.0), not
+   * by HALF_LINE_WIDTH. */
+  min_y = (int)floorf(fminf(ay, by) - 1.0f);
+  max_y = (int)ceilf(fmaxf(ay, by) + 1.0f);
+  horizontal = fabsf(aby) < 1e-8f;
+
+  {
+    /* y-invariant terms hoisted out of the per-row loop. */
+    const float iaby = 1.0f / aby;
+    const float slope = abx * iaby;
+    const float sqrt_len = sqrtf(len2);
+    const float x_half = half * sqrt_len * fabsf(iaby) + 1.0f;
+    const int x_center_x0 = (int)floorf(fminf(ax, bx) - half - 1.0f);
+    const int x_center_x1 = (int)ceilf(fmaxf(ax, bx) + half + 1.0f);
+
+    for (y = min_y; y <= max_y; y++)
+      {
+        /* Narrow-band x range mirroring the GLSL reference exactly. The
+         * non-horizontal branch walks x around the row's line centre with a
+         * spread of line_x_width/2 = LINE_WIDTH * length(r) / (2 * |r.y|),
+         * the x-span of the line's anti-aliased footprint at that row. This
+         * spread grows as the line approaches horizontal, so it must not be
+         * replaced by a fixed half-width. */
+        int min_x;
+        int max_x;
+        int x;
+
+        if (y < 0 || y >= H)
+          {
+            continue;
+          }
+
+        if (horizontal)
+          {
+            min_x = x_center_x0;
+            max_x = x_center_x1;
+          }
+        else
+          {
+            float x_center = ax + ((float)y - ay) * slope;
+
+            min_x = (int)floorf(x_center - x_half);
+            max_x = (int)ceilf(x_center + x_half);
+          }
+
+        for (x = min_x; x <= max_x; x++)
+          {
+            float px;
+            float py;
+            float apx;
+            float apy;
+            float t;
+            float cx;
+            float cy;
+            float dx;
+            float dy;
+            float d2;
+            float w;
+            uint32_t sa;
+            lv_color32_t *dst;
+
+            if (x < 0 || x >= W)
+              {
+                continue;
+              }
+
+            px = (float)x;
+            py = (float)y;
+
+            /* Closest point on the segment to (px,py). */
+            apx = px - ax;
+            apy = py - ay;
+            t = (apx * abx + apy * aby) * inv_len2;
+            if (t < 0.0f)
+              {
+                cx = ax;
+                cy = ay;
+              }
+            else if (t > 1.0f)
+              {
+                cx = bx;
+                cy = by;
+              }
+            else
+              {
+                cx = ax + t * abx;
+                cy = ay + t * aby;
+              }
+
+            dx = px - cx;
+            dy = py - cy;
+            d2 = dx * dx + dy * dy;
+
+            /* Early-out on squared distance; only the soft band needs a real
+             * sqrtf to recover the exact coverage weight. */
+            if (d2 >= out2)
+              {
+                continue;
+              }
+
+            if (d2 <= in2)
+              {
+                w = 1.0f;
+              }
+            else
+              {
+                w = (half + 0.25f - sqrtf(d2)) / 0.5f;
+              }
+
+            sa = (uint32_t)lroundf(w * opacity * 255.0f);
+            if (sa > 255u)
+              {
+                sa = 255u;
+              }
+
+            dst = data + (uint32_t)y * stride_px + (uint32_t)x;
+            dst->red = (uint8_t)((cr * sa + dst->red * (255u - sa)) / 255u);
+            dst->green =
+                (uint8_t)((cg * sa + dst->green * (255u - sa)) / 255u);
+            dst->blue = (uint8_t)((cb * sa + dst->blue * (255u - sa)) / 255u);
+          }
+      }
+  }
+}
+
+static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
+                 lv_draw_buf_t *target)
 {
   uint32_t color = shade(e->f->iris_rgb, 1.6f);
   int i;
@@ -1182,10 +1440,16 @@ static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e)
       float y1 = e->gy + fiber->sine * r1;
       float x2 = e->gx * 0.3f + fiber->cosine * r2;
       float y2 = e->gy * 0.3f + fiber->sine * r2;
+      float sx1;
+      float sy1;
+      float sx2;
+      float sy2;
 
       clamp_to_eye_globe(&x1, &y1, 1.0f);
       clamp_to_eye_globe(&x2, &y2, 1.0f);
-      line(r, e, x1, y1, x2, y2, 1.0f, color, 0.16f, false);
+      to_screen(&e->t, x1, y1, &sx1, &sy1);
+      to_screen(&e->t, x2, y2, &sx2, &sy2);
+      iris_rast_line(target, sx1, sy1, sx2, sy2, color, 0.16f);
     }
 }
 
@@ -1263,13 +1527,28 @@ static void pupil(struct nyabula_eye_renderer_s *r, const struct eye_s *e)
       stops[2].opa = LV_OPA_COVER;
       stops[2].frac = 255;
 
+      /* Fill the pupil disc first with NO stroke attached.  ThorVG's SW
+       * rasteriser disables fill anti-aliasing on any shape whose stroke
+       * width is >= 2px (it assumes the stroke covers the fill outline).
+       * The pupil's decorative ring stroke is ~e->ir * 0.02 (>= 3px), so
+       * drawing it on the same shape as the fill was silently turning off
+       * the fill edge AA, producing the jagged pupil rim.  Keep a
+       * stroke-less fill shape so AA stays enabled, then draw the ring as a
+       * separate stroke-only shape. */
+
       ellipse_path(r, px, py, rx, ry, 0.0f);
       vector_eye_transform(r, e);
+      lv_vector_dsc_set_stroke_opa(r->vector, LV_OPA_TRANSP);
       lv_vector_dsc_set_fill_opa(r->vector, LV_OPA_COVER);
       lv_vector_dsc_set_fill_radial_gradient(r->vector, px, py, fmaxf(rx, ry));
       lv_vector_dsc_set_fill_gradient_color_stops(r->vector, stops, 3);
       lv_vector_dsc_set_fill_gradient_spread(r->vector,
                                              LV_VECTOR_GRADIENT_SPREAD_PAD);
+      lv_vector_dsc_add_path(r->vector, r->path);
+
+      ellipse_path(r, px, py, rx, ry, 0.0f);
+      vector_eye_transform(r, e);
+      lv_vector_dsc_set_fill_opa(r->vector, LV_OPA_TRANSP);
       lv_vector_dsc_set_stroke_color(
           r->vector, lv_color_hex(shade(e->f->iris_rgb, 1.7f)));
       lv_vector_dsc_set_stroke_opa(r->vector, vector_opa(0.5f));
@@ -4051,25 +4330,6 @@ static bool render_scene(struct nyabula_eye_renderer_s *r,
   return true;
 }
 
-static bool frames_can_share_pixels(
-    const struct nyabula_eye_frame_s frames[NYABULA_EYE_COUNT])
-{
-  const struct nyabula_eye_frame_s *frame = &frames[NYABULA_EYE_LEFT];
-
-  if (memcmp(&frames[NYABULA_EYE_LEFT], &frames[NYABULA_EYE_RIGHT],
-             sizeof(frames[0])) != 0 ||
-      frame->scene.scene != NYABULA_EYE_SCENE_NONE ||
-      frame->scene.previous_scene != NYABULA_EYE_SCENE_NONE ||
-      fabsf(frame->lid_slant) > 0.0001f || fabsf(frame->derp) > 0.0001f)
-    {
-      return false;
-    }
-
-  return frame->expression != NYABULA_EYE_EXPRESSION_STAR &&
-         frame->expression != NYABULA_EYE_EXPRESSION_DIZZY &&
-         frame->expression != NYABULA_EYE_EXPRESSION_SLEEP;
-}
-
 static bool
 scene_eye_is_time_independent(const struct nyabula_eye_scene_frame_s *scene,
                               int id)
@@ -4193,9 +4453,8 @@ static void report(struct nyabula_eye_renderer_s *r, uint32_t render_ms)
     {
       uint32_t elapsed = lv_tick_elaps(r->perf_start);
       LV_LOG_USER("nyabula_eye: %u.%u fps, %u.%02u ms dual vector; "
-                  "%u.%02u build, %u.%02u raster, %u.%02u copy, "
-                  "%u.%02u flush, %u%% shared, %u%% reused, "
-                  "%u/%u base hit/build",
+                  "%u.%02u build, %u.%02u raster, "
+                  "%u.%02u flush, %u%% reused",
                   300000u / elapsed, (3000000u / elapsed) % 10u,
                   r->render_total / r->frames,
                   (r->render_total * 100u / r->frames) % 100u,
@@ -4203,24 +4462,16 @@ static void report(struct nyabula_eye_renderer_s *r, uint32_t render_ms)
                   (r->build_total * 100u / r->frames) % 100u,
                   r->raster_total / r->frames,
                   (r->raster_total * 100u / r->frames) % 100u,
-                  r->copy_total / r->frames,
-                  (r->copy_total * 100u / r->frames) % 100u,
                   r->flush_total / r->frames,
                   (r->flush_total * 100u / r->frames) % 100u,
-                  r->shared_frames * 100u / r->frames,
-                  r->reused_eyes * 50u / r->frames, r->base_cache_hits,
-                  r->base_cache_builds);
+                  r->reused_eyes * 50u / r->frames);
       (void)elapsed;
       r->frames = 0;
       r->render_total = 0;
       r->build_total = 0;
       r->raster_total = 0;
-      r->copy_total = 0;
       r->flush_total = 0;
-      r->shared_frames = 0;
       r->reused_eyes = 0;
-      r->base_cache_hits = 0;
-      r->base_cache_builds = 0;
       r->perf_start = lv_tick_get();
     }
 }
@@ -4389,26 +4640,6 @@ nyabula_eye_renderer_create(lv_obj_t *left_parent, lv_obj_t *right_parent)
   lv_draw_buf_to_image(r->mask_buffer, &r->mask_image);
   lv_obj_add_flag(r->mask_canvas, LV_OBJ_FLAG_HIDDEN);
 
-  for (page = 0; page < BASE_CACHE_COUNT; page++)
-    {
-      r->base_cache[page].buffer =
-          lv_draw_buf_create(W, H, LV_COLOR_FORMAT_ARGB8888, LV_STRIDE_AUTO);
-      if (r->base_cache[page].buffer == NULL)
-        {
-          goto fail;
-        }
-
-      r->base_cache[page].canvas = lv_canvas_create(left_parent);
-      if (r->base_cache[page].canvas == NULL)
-        {
-          goto fail;
-        }
-
-      lv_canvas_set_draw_buf(r->base_cache[page].canvas,
-                             r->base_cache[page].buffer);
-      lv_obj_add_flag(r->base_cache[page].canvas, LV_OBJ_FLAG_HIDDEN);
-    }
-
   r->random = 0x5a7a5a7au;
   r->perf_start = lv_tick_get();
 #if defined(CONFIG_CONTEST2026_062_NYABULA_DYNAMIC_FONTS) && LV_USE_FREETYPE
@@ -4417,19 +4648,6 @@ nyabula_eye_renderer_create(lv_obj_t *left_parent, lv_obj_t *right_parent)
   return r;
 
 fail:
-  for (page = 0; page < BASE_CACHE_COUNT; page++)
-    {
-      if (r->base_cache[page].canvas != NULL)
-        {
-          lv_obj_delete(r->base_cache[page].canvas);
-        }
-
-      if (r->base_cache[page].buffer != NULL)
-        {
-          lv_draw_buf_destroy(r->base_cache[page].buffer);
-        }
-    }
-
   if (r->mask_canvas != NULL)
     {
       lv_obj_delete(r->mask_canvas);
@@ -4481,6 +4699,16 @@ void nyabula_eye_renderer_destroy(struct nyabula_eye_renderer_s *r)
 
       lv_obj_delete(r->mask_canvas);
       lv_draw_buf_destroy(r->mask_buffer);
+      if (r->baked_iris != NULL)
+        {
+          lv_draw_buf_destroy(r->baked_iris);
+        }
+
+      if (r->baked_glow != NULL)
+        {
+          lv_draw_buf_destroy(r->baked_glow);
+        }
+
       if (r->path != NULL)
         {
           lv_vector_path_delete(r->path);
@@ -4489,16 +4717,6 @@ void nyabula_eye_renderer_destroy(struct nyabula_eye_renderer_s *r)
       if (r->vector != NULL)
         {
           lv_vector_dsc_delete(r->vector);
-        }
-
-      if (r->cache_path != NULL)
-        {
-          lv_vector_path_delete(r->cache_path);
-        }
-
-      if (r->cache_vector != NULL)
-        {
-          lv_vector_dsc_delete(r->cache_vector);
         }
 
       if (r->mask_path != NULL)
@@ -4511,225 +4729,173 @@ void nyabula_eye_renderer_destroy(struct nyabula_eye_renderer_s *r)
           lv_vector_dsc_delete(r->mask_vector);
         }
 
-      for (page = 0; page < BASE_CACHE_COUNT; page++)
-        {
-          lv_obj_delete(r->base_cache[page].canvas);
-          lv_draw_buf_destroy(r->base_cache[page].buffer);
-        }
-
       free(r);
     }
 }
 
-void nyabula_eye_renderer_render(struct nyabula_eye_renderer_s *r,
-                                 const struct nyabula_eye_frame_s frames[2])
+void nyabula_eye_renderer_update_particles(struct nyabula_eye_renderer_s *r,
+                                           const struct nyabula_eye_frame_s *f)
 {
-  struct eye_s e;
-  uint32_t start;
-  bool share_pixels;
-  int id;
-
-  if (r == NULL || frames == NULL)
+  if (r == NULL || f == NULL)
     {
       return;
     }
 
-  start = lv_tick_get();
-  update_z(r, &frames[0]);
-  share_pixels = frames_can_share_pixels(frames);
-  for (id = 0; id < NYABULA_EYE_COUNT; id++)
+  if (!r->baked)
     {
-      uint32_t eye_start = lv_tick_get();
-      uint32_t stage_start;
-      lv_draw_buf_t *base_buffer = NULL;
-      struct page_state_s *page_state;
-      bool minimal_exit;
-      bool eye_content;
-      bool open_lids = false;
-
-      if (frame_pixels_unchanged(r, &frames[id], id))
-        {
-          r->reused_eyes++;
-          continue;
-        }
-
-      r->index[id] ^= 1u;
-      r->mask_ready = false;
-      r->draw = r->buffer[id][r->index[id]];
-      page_state = &r->page_state[id][r->index[id]];
-      lv_canvas_set_draw_buf(r->canvas[id], r->draw);
-      if (id == NYABULA_EYE_RIGHT && share_pixels)
-        {
-          const struct page_state_s *source_state =
-              &r->page_state[NYABULA_EYE_LEFT][r->index[NYABULA_EYE_LEFT]];
-          const lv_area_t *copy_area = NULL;
-          lv_area_t dirty_union;
-
-          prepare(&e, &frames[id], id);
-          if (page_base_matches(page_state, &e) &&
-              page_base_matches(source_state, &e))
-            {
-              dirty_union = page_dirty_union(page_state, source_state);
-              copy_area = &dirty_union;
-            }
-
-          stage_start = lv_tick_get();
-          lv_draw_buf_copy(
-              r->draw, copy_area,
-              r->buffer[NYABULA_EYE_LEFT][r->index[NYABULA_EYE_LEFT]],
-              copy_area);
-          r->copy_total += lv_tick_elaps(stage_start);
-          stage_start = lv_tick_get();
-          lv_obj_invalidate(r->canvas[id]);
-          r->flush_total += lv_tick_elaps(stage_start);
-          r->shared_frames++;
-          *page_state =
-              r->page_state[NYABULA_EYE_LEFT][r->index[NYABULA_EYE_LEFT]];
-          remember_frame(r, &frames[id], id);
-          continue;
-        }
-
-      minimal_exit =
-          frames[id].scene.scene != NYABULA_EYE_SCENE_NONE &&
-          frames[id].scene.style == NYABULA_EYE_SCENE_STYLE_MINIMAL &&
-          frames[id].scene.lid < 0.999f && frames[id].scene.alpha < 0.999f;
-      eye_content =
-          frames[id].scene.scene == NYABULA_EYE_SCENE_NONE || minimal_exit;
-      if (eye_content)
-        {
-          if (frames[id].scene.lid > 0.001f &&
-              (frames[id].scene.scene == NYABULA_EYE_SCENE_NONE ||
-               minimal_exit))
-            {
-              prepare_scene_lids(&e, &frames[id], id, frames[id].scene.lid);
-            }
-          else
-            {
-              prepare(&e, &frames[id], id);
-            }
-
-          base_buffer = base_cache_get(r, &e);
-          open_lids = lids_are_open(&e);
-        }
-
-      if (base_buffer != NULL)
-        {
-          const lv_area_t *restore_area =
-              page_base_matches(page_state, &e) ? &page_state->dirty : NULL;
-
-          stage_start = lv_tick_get();
-          lv_draw_buf_copy(r->draw, restore_area, base_buffer, restore_area);
-          r->copy_total += lv_tick_elaps(stage_start);
-        }
-      else
-        {
-          lv_canvas_fill_bg(r->canvas[id], lv_color_black(), LV_OPA_COVER);
-        }
-
-      lv_canvas_init_layer(r->canvas[id], &r->layer);
-      if (r->vector == NULL)
-        {
-          r->vector = lv_vector_dsc_create(&r->layer);
-        }
-
-      if (r->path == NULL)
-        {
-          r->path = lv_vector_path_create(LV_VECTOR_PATH_QUALITY_HIGH);
-        }
-
-      if (r->vector == NULL || r->path == NULL)
-        {
-          if (r->path != NULL)
-            {
-              lv_vector_path_delete(r->path);
-              r->path = NULL;
-            }
-
-          if (r->vector != NULL)
-            {
-              lv_vector_dsc_delete(r->vector);
-              r->vector = NULL;
-            }
-
-          lv_canvas_finish_layer(r->canvas[id], &r->layer);
-          continue;
-        }
-
-      if (frames[id].scene.scene != NYABULA_EYE_SCENE_NONE && !minimal_exit)
-        {
-          render_scene(r, &frames[id], id);
-          prepare_scene(&e, &frames[id], id);
-          arc(r, &e, 0.0f, 0.0f, R - 0.8f, 0.0f, PI * 2.0f, 2.0f, 0x3c4655,
-              0.45f);
-        }
-      else
-        {
-          if (base_buffer == NULL)
-            {
-              base(r, &e);
-            }
-
-          if (base_buffer == NULL)
-            {
-              iris(r, &e);
-            }
-          pupil(r, &e);
-          overlays(r, &e);
-          highlights(r, &e);
-          if (!open_lids)
-            {
-              lids(r, &e);
-            }
-
-          draw_z(r, &e);
-          if (minimal_exit)
-            {
-              render_scene(r, &frames[id], id);
-            }
-
-          if (base_buffer == NULL || !open_lids)
-            {
-              arc(r, &e, 0.0f, 0.0f, R - 0.8f, 0.0f, PI * 2.0f, 2.0f, 0x3c4655,
-                  0.45f);
-            }
-        }
-
-      r->build_total += lv_tick_elaps(eye_start);
-      stage_start = lv_tick_get();
-      lv_draw_vector(r->vector);
-      if (r->mask_ready)
-        {
-          lv_draw_image_dsc_t image_descriptor;
-          lv_area_t area = { 0, 0, W - 1, H - 1 };
-
-          lv_draw_image_dsc_init(&image_descriptor);
-          image_descriptor.src = &r->mask_image;
-          lv_draw_image(&r->layer, &image_descriptor, &area);
-        }
-
-      lv_canvas_finish_layer(r->canvas[id], &r->layer);
-      r->raster_total += lv_tick_elaps(stage_start);
-      stage_start = lv_tick_get();
-      lv_draw_buf_flush_cache(r->draw, NULL);
-      lv_obj_invalidate(r->canvas[id]);
-      r->flush_total += lv_tick_elaps(stage_start);
-      if (eye_content && fabsf(e.t.sn) <= 0.0001f &&
-          fabsf(e.t.cs - 1.0f) <= 0.0001f)
-        {
-          bool simple = frames[id].scene.scene == NYABULA_EYE_SCENE_NONE &&
-                        frames[id].expression == NYABULA_EYE_EXPRESSION_IDLE &&
-                        open_lids && frames[id].overlay <= 0.02f;
-
-          page_remember_base(page_state, &e);
-          page_remember_dynamic_area(page_state, &e, simple);
-        }
-      else
-        {
-          page_state->valid = false;
-        }
-
-      remember_frame(r, &frames[id], id);
+      bake_base(r);
+      r->baked = true;
     }
 
-  report(r, lv_tick_elaps(start));
+  update_z(r, f);
+}
+
+void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
+                                     const struct nyabula_eye_frame_s *frame)
+{
+  struct eye_s e;
+  uint32_t eye_start;
+  uint32_t stage_start;
+  bool minimal_exit;
+  bool eye_content;
+  bool open_lids = false;
+
+  if (r == NULL || frame == NULL || id < 0 || id >= NYABULA_EYE_COUNT)
+    {
+      return;
+    }
+
+  if (!r->baked)
+    {
+      bake_base(r);
+      r->baked = true;
+    }
+
+  if (frame_pixels_unchanged(r, frame, id))
+    {
+      r->reused_eyes++;
+      graphics_trace_mark("eye_reuse");
+      return;
+    }
+
+  eye_start = lv_tick_get();
+  graphics_trace_beginex(id == NYABULA_EYE_LEFT ? "eye_left" : "eye_right");
+  r->index[id] ^= 1u;
+  r->mask_ready = false;
+  r->draw = r->buffer[id][r->index[id]];
+  lv_canvas_set_draw_buf(r->canvas[id], r->draw);
+
+  minimal_exit = frame->scene.scene != NYABULA_EYE_SCENE_NONE &&
+                 frame->scene.style == NYABULA_EYE_SCENE_STYLE_MINIMAL &&
+                 frame->scene.lid < 0.999f && frame->scene.alpha < 0.999f;
+  eye_content = frame->scene.scene == NYABULA_EYE_SCENE_NONE || minimal_exit;
+  if (eye_content)
+    {
+      if (frame->scene.lid > 0.001f &&
+          (frame->scene.scene == NYABULA_EYE_SCENE_NONE || minimal_exit))
+        {
+          prepare_scene_lids(&e, frame, id, frame->scene.lid);
+        }
+      else
+        {
+          prepare(&e, frame, id);
+        }
+
+      open_lids = lids_are_open(&e);
+    }
+
+  lv_canvas_init_layer(r->canvas[id], &r->layer);
+  if (r->vector == NULL)
+    {
+      r->vector = lv_vector_dsc_create(&r->layer);
+    }
+
+  if (r->path == NULL)
+    {
+      r->path = lv_vector_path_create(LV_VECTOR_PATH_QUALITY_HIGH);
+    }
+
+  if (r->vector == NULL || r->path == NULL)
+    {
+      if (r->path != NULL)
+        {
+          lv_vector_path_delete(r->path);
+          r->path = NULL;
+        }
+
+      if (r->vector != NULL)
+        {
+          lv_vector_dsc_delete(r->vector);
+          r->vector = NULL;
+        }
+
+      graphics_trace_endex(id == NYABULA_EYE_LEFT ? "eye_left" : "eye_right");
+      lv_canvas_finish_layer(r->canvas[id], &r->layer);
+      return;
+    }
+
+  if (frame->scene.scene != NYABULA_EYE_SCENE_NONE && !minimal_exit)
+    {
+      graphics_trace_beginex("scene_draw");
+      render_scene(r, frame, id);
+      graphics_trace_endex("scene_draw");
+      prepare_scene(&e, frame, id);
+    }
+  else
+    {
+      /* Composite the baked base (glow + iris disc) directly into the
+       * current page buffer and overlay the iris fibers in place. No
+       * intermediate cache buffer or whole/partial-copy is needed: the baked
+       * textures are recoloured per-frame by a NEON multiply. */
+      graphics_trace_beginex("base_build");
+      if (bake_base_composite(r, &e, r->draw) == NULL)
+        {
+          lv_canvas_fill_bg(r->canvas[id], lv_color_black(), LV_OPA_COVER);
+          base(r, &e);
+        }
+
+      graphics_trace_endex("base_build");
+      graphics_trace_beginex("iris_build");
+      iris(r, &e, r->draw);
+      graphics_trace_endex("iris_build");
+      pupil(r, &e);
+      overlays(r, &e);
+      highlights(r, &e);
+      if (!open_lids)
+        {
+          lids(r, &e);
+        }
+
+      draw_z(r, &e);
+      if (minimal_exit)
+        {
+          render_scene(r, frame, id);
+        }
+    }
+
+  r->build_total += lv_tick_elaps(eye_start);
+  stage_start = lv_tick_get();
+  graphics_trace_beginex("raster");
+  lv_draw_vector(r->vector);
+  if (r->mask_ready)
+    {
+      lv_draw_image_dsc_t image_descriptor;
+      lv_area_t area = { 0, 0, W - 1, H - 1 };
+
+      lv_draw_image_dsc_init(&image_descriptor);
+      image_descriptor.src = &r->mask_image;
+      lv_draw_image(&r->layer, &image_descriptor, &area);
+    }
+
+  lv_canvas_finish_layer(r->canvas[id], &r->layer);
+  graphics_trace_endex("raster");
+  r->raster_total += lv_tick_elaps(stage_start);
+  stage_start = lv_tick_get();
+  lv_draw_buf_flush_cache(r->draw, NULL);
+  lv_obj_invalidate(r->canvas[id]);
+  r->flush_total += lv_tick_elaps(stage_start);
+  graphics_trace_endex(id == NYABULA_EYE_LEFT ? "eye_left" : "eye_right");
+
+  remember_frame(r, frame, id);
+  report(r, lv_tick_elaps(eye_start));
 }

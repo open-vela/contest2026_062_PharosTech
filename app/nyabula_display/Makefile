@@ -34,8 +34,8 @@ ifeq ($(CONFIG_NYABULA_DISPLAY_TE_SW),y)
 CSRCS += nyabula_te_sw.c
 endif
 
-ifeq ($(CONFIG_NYABULA_DISPLAY_TE_GPIO),y)
-CSRCS += nyabula_te_gpio.c
+ifeq ($(CONFIG_NYABULA_DISPLAY_TE_BOARDCTL),y)
+CSRCS += nyabula_te_boardctl.c
 endif
 
 CFLAGS += -DCONFIG_NYABULA_DISPLAY_BUFFER_SIZE=$(CONFIG_NYABULA_DISPLAY_BUFFER_SIZE)

@@ -247,6 +247,15 @@ struct nyabula_eye_engine_s *
 nyabula_eye_engine_create_dual(lv_obj_t *left_parent, lv_obj_t *right_parent);
 void nyabula_eye_engine_destroy(struct nyabula_eye_engine_s *engine);
 
+/* Render a single eye into its own display's canvas, sampling the animation
+ * clock at call time.  This is the per-screen frame-composition entry point
+ * invoked (by the display layer's per-screen render hook) right before that
+ * screen's TE-aligned lv_refr_now(), so each screen renders with fresh
+ * animation time instead of a shared frozen snapshot.  Must be called on the
+ * LVGL owner thread. */
+void nyabula_eye_engine_render_eye(struct nyabula_eye_engine_s *engine,
+                                   int eye_id);
+
 int nyabula_eye_engine_set_expression(struct nyabula_eye_engine_s *engine,
                                       enum nyabula_eye_expression_e expression,
                                       uint32_t transition_ms);
