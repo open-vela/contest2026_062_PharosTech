@@ -108,8 +108,13 @@ struct nyabula_te_s
 
 /* Trace mark name for each TE edge: bs = blank-start (rising), ss =
  * scan-start (falling).  Uses a per-edge mark (not a begin/end span) so the
- * visualizer never has to pair unmatched events. */
+ * visualizer never has to pair unmatched events.
+ *
+ * Only defined when sched_note_mark() actually emits a trace entry;
+ * otherwise the symbol would be unused and trigger a -Wunused-function
+ * warning. */
 
+#if defined(CONFIG_SCHED_INSTRUMENTATION_DUMP) && defined(CONFIG_DRIVERS_NOTE)
 static const char *te_edge_mark_name(int sid, bool bs)
 {
   static const char *const names[2][2] = {
@@ -119,6 +124,7 @@ static const char *te_edge_mark_name(int sid, bool bs)
 
   return names[sid][bs ? 0 : 1];
 }
+#endif
 
 /* Consumer thread: block on its edge semaphore, then drive the framework
  * callback (and trace the edge) when it fires. */
