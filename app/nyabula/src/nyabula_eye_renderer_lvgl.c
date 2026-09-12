@@ -47,7 +47,6 @@
 #define FONT_CACHE_COUNT 32
 #define TEXT_CACHE_COUNT 32
 #define TEXT_CACHE_BYTES 96
-#define BASE_CACHE_COUNT 2
 #define HEART_SAMPLES    96
 #define LID_SAMPLES      400
 #define LID_OFFSET       200
@@ -129,48 +128,17 @@ struct fiber_s
   float outer_radius;
 };
 
-struct base_cache_s
-{
-  lv_obj_t *canvas;
-  lv_draw_buf_t *buffer;
-  uint32_t iris_rgb;
-  uint32_t age;
-  int16_t gaze_x;
-  int16_t gaze_y;
-  uint16_t iris_radius;
-  uint16_t scale_y;
-  uint16_t glow;
-  bool valid;
-};
-
-struct page_state_s
-{
-  lv_area_t dirty;
-  uint32_t iris_rgb;
-  int16_t gaze_x;
-  int16_t gaze_y;
-  uint16_t iris_radius;
-  uint16_t scale_y;
-  uint16_t glow;
-  bool valid;
-};
-
 struct nyabula_eye_renderer_s
 {
   lv_obj_t *canvas[NYABULA_EYE_COUNT];
   lv_obj_t *mask_canvas;
   lv_draw_buf_t *buffer[NYABULA_EYE_COUNT][2];
   lv_draw_buf_t *mask_buffer;
-  struct base_cache_s base_cache[BASE_CACHE_COUNT];
-  struct page_state_s page_state[NYABULA_EYE_COUNT][2];
   lv_image_dsc_t mask_image;
   lv_draw_buf_t *draw;
   lv_layer_t layer;
   lv_vector_dsc_t *vector;
   lv_vector_path_t *path;
-  lv_layer_t cache_layer;
-  lv_vector_dsc_t *cache_vector;
-  lv_vector_path_t *cache_path;
   lv_layer_t mask_layer;
   lv_vector_dsc_t *mask_vector;
   lv_vector_path_t *mask_path;
@@ -187,18 +155,14 @@ struct nyabula_eye_renderer_s
   struct font_cache_s font_cache[FONT_CACHE_COUNT];
 #endif
   uint32_t random;
-  uint32_t base_cache_clock;
   uint32_t text_cache_clock;
   uint32_t perf_start;
   uint32_t render_total;
   uint32_t build_total;
   uint32_t raster_total;
-  uint32_t copy_total;
   uint32_t flush_total;
   uint32_t frames;
   uint32_t reused_eyes;
-  uint32_t base_cache_hits;
-  uint32_t base_cache_builds;
   uint8_t index[NYABULA_EYE_COUNT];
   struct nyabula_eye_frame_s last_frame[NYABULA_EYE_COUNT];
   bool last_frame_valid[NYABULA_EYE_COUNT];
@@ -278,14 +242,6 @@ static void bake_base(struct nyabula_eye_renderer_s *r);
 static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
                                           const struct eye_s *e,
                                           lv_draw_buf_t *target);
-static lv_draw_buf_t *base_cache_get(struct nyabula_eye_renderer_s *r,
-                                     const struct eye_s *e);
-static bool page_base_matches(const struct page_state_s *state,
-                              const struct eye_s *e);
-static void page_remember_base(struct page_state_s *state,
-                               const struct eye_s *e);
-static void page_remember_dynamic_area(struct page_state_s *state,
-                                       const struct eye_s *e, bool simple);
 static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
                  lv_draw_buf_t *target);
 static void ellipse_path(struct nyabula_eye_renderer_s *r, float cx, float cy,
@@ -1102,8 +1058,8 @@ static void bake_base(struct nyabula_eye_renderer_s *r)
  * textures hold a tinted (0x808080) premultiplied base baked with glow == 1;
  * recolouring to the live iris_rgb and scaling the glow alpha is done by a
  * single per-pixel multiply, replacing the per-frame vector rasterisation.
- * The result is written directly into `target` (the cache entry buffer) so
- * the separate whole-buffer copy in base_cache_get is no longer necessary. */
+ * The result is written directly into `target` (the current page buffer), so
+ * no intermediate cache buffer or whole/partial-buffer copy is needed. */
 static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
                                           const struct eye_s *e,
                                           lv_draw_buf_t *target)
@@ -1308,194 +1264,6 @@ static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
 
   lv_draw_buf_flush_cache(target, NULL);
   return target;
-}
-
-static lv_draw_buf_t *base_cache_get(struct nyabula_eye_renderer_s *r,
-                                     const struct eye_s *e)
-{
-  struct base_cache_s *entry = NULL;
-  uint16_t glow;
-  int16_t gaze_x;
-  int16_t gaze_y;
-  uint16_t iris_radius;
-  uint16_t scale_y;
-  int index;
-
-  if (fabsf(e->t.sn) > 0.0001f || fabsf(e->t.cs - 1.0f) > 0.0001f)
-    {
-      return NULL;
-    }
-
-  glow = (uint16_t)lroundf(clampf(e->f->glow, 0.0f, 1.0f) * 4095.0f);
-  gaze_x = (int16_t)lroundf(e->gx * 16.0f);
-  gaze_y = (int16_t)lroundf(e->gy * 16.0f);
-  iris_radius = (uint16_t)lroundf(e->ir * 16.0f);
-  scale_y = (uint16_t)lroundf(clampf(e->t.sy, 0.0f, 1.0f) * 4095.0f);
-  for (index = 0; index < BASE_CACHE_COUNT; index++)
-    {
-      struct base_cache_s *candidate = &r->base_cache[index];
-
-      if (candidate->valid && candidate->iris_rgb == e->f->iris_rgb &&
-          candidate->glow == glow && candidate->gaze_x == gaze_x &&
-          candidate->gaze_y == gaze_y &&
-          candidate->iris_radius == iris_radius &&
-          candidate->scale_y == scale_y)
-        {
-          candidate->age = ++r->base_cache_clock;
-          r->base_cache_hits++;
-          return candidate->buffer;
-        }
-
-      if (entry == NULL || !candidate->valid || candidate->age < entry->age)
-        {
-          entry = candidate;
-          if (!candidate->valid)
-            {
-              break;
-            }
-        }
-    }
-
-  if (entry == NULL || entry->canvas == NULL || entry->buffer == NULL)
-    {
-      return NULL;
-    }
-
-  /* The bake mechanism supplies the base layer cheaply (a baked texture
-   * recoloured by iris_rgb/glow, written directly into the cache buffer) —
-   * no vector rasterisation or whole-buffer copy is needed on this path. */
-  graphics_trace_beginex("bc_build_base");
-  if (bake_base_composite(r, e, entry->buffer) == NULL)
-    {
-      /* Fall back to the vector path only if the baked textures are
-       * unavailable. */
-      lv_vector_dsc_t *main_vector = r->vector;
-      lv_vector_path_t *main_path = r->path;
-
-      graphics_trace_beginex("bc_fill_bg");
-      lv_canvas_fill_bg(entry->canvas, lv_color_black(), LV_OPA_COVER);
-      graphics_trace_endex("bc_fill_bg");
-      graphics_trace_beginex("bc_init_layer");
-      lv_canvas_init_layer(entry->canvas, &r->cache_layer);
-      if (r->cache_vector == NULL)
-        {
-          r->cache_vector = lv_vector_dsc_create(&r->cache_layer);
-        }
-
-      if (r->cache_path == NULL)
-        {
-          r->cache_path = lv_vector_path_create(LV_VECTOR_PATH_QUALITY_HIGH);
-        }
-
-      r->vector = r->cache_vector;
-      r->path = r->cache_path;
-      graphics_trace_endex("bc_init_layer");
-      if (r->vector != NULL && r->path != NULL)
-        {
-          base(r, e);
-          graphics_trace_beginex("bc_raster");
-          lv_draw_vector(r->vector);
-          graphics_trace_endex("bc_raster");
-        }
-
-      lv_canvas_finish_layer(entry->canvas, &r->cache_layer);
-      r->vector = main_vector;
-      r->path = main_path;
-    }
-
-  graphics_trace_endex("bc_build_base");
-  graphics_trace_beginex("bc_build_iris");
-  iris(r, e, entry->buffer);
-  graphics_trace_endex("bc_build_iris");
-  graphics_trace_beginex("bc_flush_cache");
-  lv_draw_buf_flush_cache(entry->buffer, NULL);
-  graphics_trace_endex("bc_flush_cache");
-  entry->iris_rgb = e->f->iris_rgb;
-  entry->glow = glow;
-  entry->gaze_x = gaze_x;
-  entry->gaze_y = gaze_y;
-  entry->iris_radius = iris_radius;
-  entry->scale_y = scale_y;
-  entry->age = ++r->base_cache_clock;
-  entry->valid = true;
-  r->base_cache_builds++;
-  return entry->buffer;
-}
-
-static bool page_base_matches(const struct page_state_s *state,
-                              const struct eye_s *e)
-{
-  return state->valid && state->iris_rgb == e->f->iris_rgb &&
-         state->glow ==
-             (uint16_t)lroundf(clampf(e->f->glow, 0.0f, 1.0f) * 4095.0f) &&
-         state->gaze_x == (int16_t)lroundf(e->gx * 16.0f) &&
-         state->gaze_y == (int16_t)lroundf(e->gy * 16.0f) &&
-         state->iris_radius == (uint16_t)lroundf(e->ir * 16.0f) &&
-         state->scale_y ==
-             (uint16_t)lroundf(clampf(e->t.sy, 0.0f, 1.0f) * 4095.0f);
-}
-
-static void page_remember_base(struct page_state_s *state,
-                               const struct eye_s *e)
-{
-  state->iris_rgb = e->f->iris_rgb;
-  state->glow = (uint16_t)lroundf(clampf(e->f->glow, 0.0f, 1.0f) * 4095.0f);
-  state->gaze_x = (int16_t)lroundf(e->gx * 16.0f);
-  state->gaze_y = (int16_t)lroundf(e->gy * 16.0f);
-  state->iris_radius = (uint16_t)lroundf(e->ir * 16.0f);
-  state->scale_y = (uint16_t)lroundf(clampf(e->t.sy, 0.0f, 1.0f) * 4095.0f);
-  state->valid = true;
-}
-
-static void page_remember_dynamic_area(struct page_state_s *state,
-                                       const struct eye_s *e, bool simple)
-{
-  float rx;
-  float ry;
-  float px;
-  float py;
-  float left;
-  float top;
-  float right;
-  float bottom;
-  float radius;
-
-  if (!simple)
-    {
-      state->dirty = (lv_area_t){ 0, 0, W - 1, H - 1 };
-      return;
-    }
-
-  rx = e->ir * e->f->pupil_width * 0.80f;
-  ry = e->ir * e->f->pupil_height * 0.84f;
-  px = e->gx;
-  py = e->gy;
-  clamp_to_eye_globe(&px, &py, fmaxf(rx, ry) + 1.0f);
-  left = px - rx;
-  right = px + rx;
-  top = py - ry;
-  bottom = py + ry;
-
-  radius = e->ir * 0.13f;
-  left = fminf(left, -e->ir * 0.33f + e->gx * 0.55f - radius);
-  right = fmaxf(right, -e->ir * 0.33f + e->gx * 0.55f + radius);
-  top = fminf(top, -e->ir * 0.38f + e->gy * 0.55f - radius);
-  bottom = fmaxf(bottom, -e->ir * 0.38f + e->gy * 0.55f + radius);
-
-  radius = e->ir * 0.05f;
-  left = fminf(left, e->ir * 0.30f + e->gx * 0.60f - radius);
-  right = fmaxf(right, e->ir * 0.30f + e->gx * 0.60f + radius);
-  top = fminf(top, e->ir * 0.24f + e->gy * 0.60f - radius);
-  bottom = fmaxf(bottom, e->ir * 0.24f + e->gy * 0.60f + radius);
-
-  state->dirty.x1 = (int32_t)floorf(e->t.cx + left - 4.0f);
-  state->dirty.x2 = (int32_t)ceilf(e->t.cx + right + 4.0f);
-  state->dirty.y1 = (int32_t)floorf(e->t.cy + top * e->t.sy - 4.0f);
-  state->dirty.y2 = (int32_t)ceilf(e->t.cy + bottom * e->t.sy + 4.0f);
-  state->dirty.x1 = state->dirty.x1 < 0 ? 0 : state->dirty.x1;
-  state->dirty.y1 = state->dirty.y1 < 0 ? 0 : state->dirty.y1;
-  state->dirty.x2 = state->dirty.x2 >= W ? W - 1 : state->dirty.x2;
-  state->dirty.y2 = state->dirty.y2 >= H ? H - 1 : state->dirty.y2;
 }
 
 /* Scalar SDF line rasteriser. Composites a single 1px antialiased straight
@@ -4670,9 +4438,8 @@ static void report(struct nyabula_eye_renderer_s *r, uint32_t render_ms)
     {
       uint32_t elapsed = lv_tick_elaps(r->perf_start);
       LV_LOG_USER("nyabula_eye: %u.%u fps, %u.%02u ms dual vector; "
-                  "%u.%02u build, %u.%02u raster, %u.%02u copy, "
-                  "%u.%02u flush, %u%% reused, "
-                  "%u/%u base hit/build",
+                  "%u.%02u build, %u.%02u raster, "
+                  "%u.%02u flush, %u%% reused",
                   300000u / elapsed, (3000000u / elapsed) % 10u,
                   r->render_total / r->frames,
                   (r->render_total * 100u / r->frames) % 100u,
@@ -4680,22 +4447,16 @@ static void report(struct nyabula_eye_renderer_s *r, uint32_t render_ms)
                   (r->build_total * 100u / r->frames) % 100u,
                   r->raster_total / r->frames,
                   (r->raster_total * 100u / r->frames) % 100u,
-                  r->copy_total / r->frames,
-                  (r->copy_total * 100u / r->frames) % 100u,
                   r->flush_total / r->frames,
                   (r->flush_total * 100u / r->frames) % 100u,
-                  r->reused_eyes * 50u / r->frames, r->base_cache_hits,
-                  r->base_cache_builds);
+                  r->reused_eyes * 50u / r->frames);
       (void)elapsed;
       r->frames = 0;
       r->render_total = 0;
       r->build_total = 0;
       r->raster_total = 0;
-      r->copy_total = 0;
       r->flush_total = 0;
       r->reused_eyes = 0;
-      r->base_cache_hits = 0;
-      r->base_cache_builds = 0;
       r->perf_start = lv_tick_get();
     }
 }
@@ -4864,26 +4625,6 @@ nyabula_eye_renderer_create(lv_obj_t *left_parent, lv_obj_t *right_parent)
   lv_draw_buf_to_image(r->mask_buffer, &r->mask_image);
   lv_obj_add_flag(r->mask_canvas, LV_OBJ_FLAG_HIDDEN);
 
-  for (page = 0; page < BASE_CACHE_COUNT; page++)
-    {
-      r->base_cache[page].buffer =
-          lv_draw_buf_create(W, H, LV_COLOR_FORMAT_ARGB8888, LV_STRIDE_AUTO);
-      if (r->base_cache[page].buffer == NULL)
-        {
-          goto fail;
-        }
-
-      r->base_cache[page].canvas = lv_canvas_create(left_parent);
-      if (r->base_cache[page].canvas == NULL)
-        {
-          goto fail;
-        }
-
-      lv_canvas_set_draw_buf(r->base_cache[page].canvas,
-                             r->base_cache[page].buffer);
-      lv_obj_add_flag(r->base_cache[page].canvas, LV_OBJ_FLAG_HIDDEN);
-    }
-
   r->random = 0x5a7a5a7au;
   r->perf_start = lv_tick_get();
 #if defined(CONFIG_CONTEST2026_062_NYABULA_DYNAMIC_FONTS) && LV_USE_FREETYPE
@@ -4892,19 +4633,6 @@ nyabula_eye_renderer_create(lv_obj_t *left_parent, lv_obj_t *right_parent)
   return r;
 
 fail:
-  for (page = 0; page < BASE_CACHE_COUNT; page++)
-    {
-      if (r->base_cache[page].canvas != NULL)
-        {
-          lv_obj_delete(r->base_cache[page].canvas);
-        }
-
-      if (r->base_cache[page].buffer != NULL)
-        {
-          lv_draw_buf_destroy(r->base_cache[page].buffer);
-        }
-    }
-
   if (r->mask_canvas != NULL)
     {
       lv_obj_delete(r->mask_canvas);
@@ -4976,16 +4704,6 @@ void nyabula_eye_renderer_destroy(struct nyabula_eye_renderer_s *r)
           lv_vector_dsc_delete(r->vector);
         }
 
-      if (r->cache_path != NULL)
-        {
-          lv_vector_path_delete(r->cache_path);
-        }
-
-      if (r->cache_vector != NULL)
-        {
-          lv_vector_dsc_delete(r->cache_vector);
-        }
-
       if (r->mask_path != NULL)
         {
           lv_vector_path_delete(r->mask_path);
@@ -4994,12 +4712,6 @@ void nyabula_eye_renderer_destroy(struct nyabula_eye_renderer_s *r)
       if (r->mask_vector != NULL)
         {
           lv_vector_dsc_delete(r->mask_vector);
-        }
-
-      for (page = 0; page < BASE_CACHE_COUNT; page++)
-        {
-          lv_obj_delete(r->base_cache[page].canvas);
-          lv_draw_buf_destroy(r->base_cache[page].buffer);
         }
 
       free(r);
@@ -5029,8 +4741,6 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
   struct eye_s e;
   uint32_t eye_start;
   uint32_t stage_start;
-  lv_draw_buf_t *base_buffer = NULL;
-  struct page_state_s *page_state;
   bool minimal_exit;
   bool eye_content;
   bool open_lids = false;
@@ -5058,7 +4768,6 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
   r->index[id] ^= 1u;
   r->mask_ready = false;
   r->draw = r->buffer[id][r->index[id]];
-  page_state = &r->page_state[id][r->index[id]];
   lv_canvas_set_draw_buf(r->canvas[id], r->draw);
 
   minimal_exit = frame->scene.scene != NYABULA_EYE_SCENE_NONE &&
@@ -5077,26 +4786,7 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
           prepare(&e, frame, id);
         }
 
-      graphics_trace_beginex("base_cache");
-      base_buffer = base_cache_get(r, &e);
-      graphics_trace_endex("base_cache");
       open_lids = lids_are_open(&e);
-    }
-
-  if (base_buffer != NULL)
-    {
-      const lv_area_t *restore_area =
-          page_base_matches(page_state, &e) ? &page_state->dirty : NULL;
-
-      graphics_trace_beginex("base_restore");
-      stage_start = lv_tick_get();
-      lv_draw_buf_copy(r->draw, restore_area, base_buffer, restore_area);
-      r->copy_total += lv_tick_elaps(stage_start);
-      graphics_trace_endex("base_restore");
-    }
-  else
-    {
-      lv_canvas_fill_bg(r->canvas[id], lv_color_black(), LV_OPA_COVER);
     }
 
   lv_canvas_init_layer(r->canvas[id], &r->layer);
@@ -5135,23 +4825,24 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
       render_scene(r, frame, id);
       graphics_trace_endex("scene_draw");
       prepare_scene(&e, frame, id);
-      arc(r, &e, 0.0f, 0.0f, R - 0.8f, 0.0f, PI * 2.0f, 2.0f, 0x3c4655, 0.45f);
     }
   else
     {
-      if (base_buffer == NULL)
+      /* Composite the baked base (glow + iris disc) directly into the
+       * current page buffer and overlay the iris fibers in place. No
+       * intermediate cache buffer or whole/partial-copy is needed: the baked
+       * textures are recoloured per-frame by a NEON multiply. */
+      graphics_trace_beginex("base_build");
+      if (bake_base_composite(r, &e, r->draw) == NULL)
         {
-          graphics_trace_beginex("base_build");
+          lv_canvas_fill_bg(r->canvas[id], lv_color_black(), LV_OPA_COVER);
           base(r, &e);
-          graphics_trace_endex("base_build");
         }
 
-      if (base_buffer == NULL)
-        {
-          graphics_trace_beginex("iris_build");
-          iris(r, &e, r->draw);
-          graphics_trace_endex("iris_build");
-        }
+      graphics_trace_endex("base_build");
+      graphics_trace_beginex("iris_build");
+      iris(r, &e, r->draw);
+      graphics_trace_endex("iris_build");
       pupil(r, &e);
       overlays(r, &e);
       highlights(r, &e);
@@ -5164,12 +4855,6 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
       if (minimal_exit)
         {
           render_scene(r, frame, id);
-        }
-
-      if (base_buffer == NULL || !open_lids)
-        {
-          arc(r, &e, 0.0f, 0.0f, R - 0.8f, 0.0f, PI * 2.0f, 2.0f, 0x3c4655,
-              0.45f);
         }
     }
 
@@ -5195,20 +4880,6 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
   lv_obj_invalidate(r->canvas[id]);
   r->flush_total += lv_tick_elaps(stage_start);
   graphics_trace_endex(id == NYABULA_EYE_LEFT ? "eye_left" : "eye_right");
-  if (eye_content && fabsf(e.t.sn) <= 0.0001f &&
-      fabsf(e.t.cs - 1.0f) <= 0.0001f)
-    {
-      bool simple = frame->scene.scene == NYABULA_EYE_SCENE_NONE &&
-                    frame->expression == NYABULA_EYE_EXPRESSION_IDLE &&
-                    open_lids && frame->overlay <= 0.02f;
-
-      page_remember_base(page_state, &e);
-      page_remember_dynamic_area(page_state, &e, simple);
-    }
-  else
-    {
-      page_state->valid = false;
-    }
 
   remember_frame(r, frame, id);
   report(r, lv_tick_elaps(eye_start));
