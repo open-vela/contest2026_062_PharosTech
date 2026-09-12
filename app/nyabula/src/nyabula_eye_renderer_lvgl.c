@@ -221,7 +221,8 @@ struct nyabula_eye_renderer_s
 };
 
 static bool in_lids(const struct eye_s *e, float sx, float sy);
-static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e);
+static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
+                 lv_draw_buf_t *target);
 
 #if defined(CONFIG_CONTEST2026_062_NYABULA_DYNAMIC_FONTS) && LV_USE_FREETYPE
 static lv_font_t *renderer_create_font(const char *filename, uint32_t size);
@@ -285,7 +286,8 @@ static void page_remember_base(struct page_state_s *state,
                                const struct eye_s *e);
 static void page_remember_dynamic_area(struct page_state_s *state,
                                        const struct eye_s *e, bool simple);
-static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e);
+static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
+                 lv_draw_buf_t *target);
 static void ellipse_path(struct nyabula_eye_renderer_s *r, float cx, float cy,
                          float rx, float ry, float rotation);
 static void ellipse(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
@@ -1414,12 +1416,10 @@ static lv_draw_buf_t *base_cache_get(struct nyabula_eye_renderer_s *r,
   }
   graphics_trace_endex("bc_build_base");
   graphics_trace_beginex("bc_build_iris");
-  // ~0ms
-  iris(r, e);
+  iris(r, e, entry->buffer);
   graphics_trace_endex("bc_build_iris");
   graphics_trace_beginex("bc_build_ring");
-  // ~2ms
-  arc(r, e, 0.0f, 0.0f, R - 0.8f, 0.0f, PI * 2.0f, 2.0f, 0x3c4655, 0.45f);
+  // arc(r, e, 0.0f, 0.0f, R - 0.8f, 0.0f, PI * 2.0f, 2.0f, 0x3c4655, 0.45f);
   graphics_trace_endex("bc_build_ring");
   graphics_trace_beginex("bc_raster");
   lv_draw_vector(r->vector);
@@ -1520,7 +1520,167 @@ static void page_remember_dynamic_area(struct page_state_s *state,
   state->dirty.y2 = state->dirty.y2 >= H ? H - 1 : state->dirty.y2;
 }
 
-static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e)
+/* Scalar SDF line rasteriser. Composites a single 1px antialiased straight
+ * line onto the ARGB8888 `target` buffer using straight-alpha src-over,
+ * replacing the thorvg vector_stroke path (LV_VECTOR_BLEND_SRC_OVER maps to
+ * thorvg NORMAL = straight src-over, colour * alpha + dst * (1 - alpha)).
+ * Endpoints are already in screen space (via to_screen). */
+static void iris_rast_line(lv_draw_buf_t *target, float ax, float ay, float bx,
+                           float by, uint32_t color, float opacity)
+{
+  const float half = 0.5f; /* width == 1.0: HALF_LINE_WIDTH = LINE_WIDTH / 2 */
+  /* Soft-edge band thresholds (squared) for early-out without sqrtf. */
+  const float in2 = (half - 0.25f) * (half - 0.25f);
+  const float out2 = (half + 0.25f) * (half + 0.25f);
+  const uint32_t stride_px = target->header.stride >> 2;
+  lv_color32_t *data = (lv_color32_t *)target->data;
+  const uint8_t cr = (uint8_t)((color >> 16) & 255u);
+  const uint8_t cg = (uint8_t)((color >> 8) & 255u);
+  const uint8_t cb = (uint8_t)(color & 255u);
+  float abx = bx - ax;
+  float aby = by - ay;
+  float len2 = abx * abx + aby * aby;
+  float inv_len2;
+  bool horizontal;
+  int min_y;
+  int max_y;
+  int y;
+
+  /* Degenerate (zero-length) line: guard the projection division. */
+  if (len2 < 1e-6f)
+    {
+      len2 = 1e-6f;
+    }
+
+  inv_len2 = 1.0f / len2;
+
+  /* y extent mirrors the GLSL pre-pass: expand by LINE_WIDTH (== 1.0), not
+   * by HALF_LINE_WIDTH. */
+  min_y = (int)floorf(fminf(ay, by) - 1.0f);
+  max_y = (int)ceilf(fmaxf(ay, by) + 1.0f);
+  horizontal = fabsf(aby) < 1e-8f;
+
+  {
+    /* y-invariant terms hoisted out of the per-row loop. */
+    const float iaby = 1.0f / aby;
+    const float slope = abx * iaby;
+    const float sqrt_len = sqrtf(len2);
+    const float x_half = half * sqrt_len * fabsf(iaby) + 1.0f;
+    const int x_center_x0 = (int)floorf(fminf(ax, bx) - half - 1.0f);
+    const int x_center_x1 = (int)ceilf(fmaxf(ax, bx) + half + 1.0f);
+
+    for (y = min_y; y <= max_y; y++)
+      {
+        /* Narrow-band x range mirroring the GLSL reference exactly. The
+         * non-horizontal branch walks x around the row's line centre with a
+         * spread of line_x_width/2 = LINE_WIDTH * length(r) / (2 * |r.y|),
+         * the x-span of the line's anti-aliased footprint at that row. This
+         * spread grows as the line approaches horizontal, so it must not be
+         * replaced by a fixed half-width. */
+        int min_x;
+        int max_x;
+        int x;
+
+        if (y < 0 || y >= H)
+          {
+            continue;
+          }
+
+        if (horizontal)
+          {
+            min_x = x_center_x0;
+            max_x = x_center_x1;
+          }
+        else
+          {
+            float x_center = ax + ((float)y - ay) * slope;
+
+            min_x = (int)floorf(x_center - x_half);
+            max_x = (int)ceilf(x_center + x_half);
+          }
+
+        for (x = min_x; x <= max_x; x++)
+          {
+            float px;
+            float py;
+            float apx;
+            float apy;
+            float t;
+            float cx;
+            float cy;
+            float dx;
+            float dy;
+            float d2;
+            float w;
+            uint32_t sa;
+            lv_color32_t *dst;
+
+            if (x < 0 || x >= W)
+              {
+                continue;
+              }
+
+            px = (float)x;
+            py = (float)y;
+
+            /* Closest point on the segment to (px,py). */
+            apx = px - ax;
+            apy = py - ay;
+            t = (apx * abx + apy * aby) * inv_len2;
+            if (t < 0.0f)
+              {
+                cx = ax;
+                cy = ay;
+              }
+            else if (t > 1.0f)
+              {
+                cx = bx;
+                cy = by;
+              }
+            else
+              {
+                cx = ax + t * abx;
+                cy = ay + t * aby;
+              }
+
+            dx = px - cx;
+            dy = py - cy;
+            d2 = dx * dx + dy * dy;
+
+            /* Early-out on squared distance; only the soft band needs a real
+             * sqrtf to recover the exact coverage weight. */
+            if (d2 >= out2)
+              {
+                continue;
+              }
+
+            if (d2 <= in2)
+              {
+                w = 1.0f;
+              }
+            else
+              {
+                w = (half + 0.25f - sqrtf(d2)) / 0.5f;
+              }
+
+            sa = (uint32_t)lroundf(w * opacity * 255.0f);
+            if (sa > 255u)
+              {
+                sa = 255u;
+              }
+
+            dst = data + (uint32_t)y * stride_px + (uint32_t)x;
+            dst->red = (uint8_t)((cr * sa + dst->red * (255u - sa)) / 255u);
+            dst->green =
+                (uint8_t)((cg * sa + dst->green * (255u - sa)) / 255u);
+            dst->blue = (uint8_t)((cb * sa + dst->blue * (255u - sa)) / 255u);
+          }
+      }
+  }
+}
+
+static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
+                 lv_draw_buf_t *target)
 {
   uint32_t color = shade(e->f->iris_rgb, 1.6f);
   int i;
@@ -1534,10 +1694,16 @@ static void iris(struct nyabula_eye_renderer_s *r, const struct eye_s *e)
       float y1 = e->gy + fiber->sine * r1;
       float x2 = e->gx * 0.3f + fiber->cosine * r2;
       float y2 = e->gy * 0.3f + fiber->sine * r2;
+      float sx1;
+      float sy1;
+      float sx2;
+      float sy2;
 
       clamp_to_eye_globe(&x1, &y1, 1.0f);
       clamp_to_eye_globe(&x2, &y2, 1.0f);
-      line(r, e, x1, y1, x2, y2, 1.0f, color, 0.16f, false);
+      to_screen(&e->t, x1, y1, &sx1, &sy1);
+      to_screen(&e->t, x2, y2, &sx2, &sy2);
+      iris_rast_line(target, sx1, sy1, sx2, sy2, color, 0.16f);
     }
 }
 
@@ -5010,7 +5176,7 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
       if (base_buffer == NULL)
         {
           graphics_trace_beginex("iris_build");
-          iris(r, &e);
+          iris(r, &e, r->draw);
           graphics_trace_endex("iris_build");
         }
       pupil(r, &e);
