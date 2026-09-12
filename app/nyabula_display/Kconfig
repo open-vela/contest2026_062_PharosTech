@@ -77,6 +77,21 @@ config NYABULA_DISPLAY_TE_GPIO
 		edge by reading the pin level and calls the framework edge
 		callbacks.  Requires the board to register the TE pins as
 		interrupt GPIOs and the dev-path/signal Kconfig options below.
+
+config NYABULA_DISPLAY_TE_BOARDCTL
+	bool "Panel TE GPIO via boardctl-registered semaphores"
+	depends on BOARDCTL_IOCTL
+	---help---
+		Each screen's TE pin drives a BOARD-LEVEL GPIO interrupt whose ISR
+		classifies the edge direction at interrupt time (HIGH=blanking,
+		LOW=scanning) and posts one semaphore per direction.  The
+		semaphores are registered with the board through
+		boardctl(BOARDIOC_USER).  This avoids both the POSIX-signal path
+		and the stale pin-level read that the signal-based source suffers
+		under heavy CPU load.  Requires the board to attach a driver-level
+		both-edge interrupt on the TE pins and to implement a board_ioctl
+		that accepts BOARDIOC_USER with a four-sem_t* array (bs0, ss0,
+		bs1, ss1).
 endchoice
 
 if NYABULA_DISPLAY_TE_GPIO

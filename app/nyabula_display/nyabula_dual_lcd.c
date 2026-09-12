@@ -646,6 +646,7 @@ static void *transfer_thread_func(void *arg)
 
   while (dual->running)
     {
+      sched_note_beginex(NOTE_TAG_ALWAYS, "nyabula:xfer_job_take");
       xfer_job_take(dual, &job);
 
       if (!dual->running)
@@ -665,6 +666,8 @@ static void *transfer_thread_func(void *arg)
       lcd_area.stride = scr->stride;
       lcd_area.data = scr->buf[job.buf_idx].data;
 
+      sched_note_endex(NOTE_TAG_ALWAYS, "nyabula:xfer_job_take");
+
       /* Mark begin/end of the blocking PUTAREA ioctl so the ~ms transfer
        * interval is visible in the trace dump.  ioctl()'s body lives in the
        * non-instrumented kernel fs_ioctl.c, so the automatic function
@@ -683,6 +686,8 @@ static void *transfer_thread_func(void *arg)
                   lcd_area.row_start, lcd_area.row_end, -ret);
         }
 
+      sched_note_beginex(NOTE_TAG_ALWAYS, "nyabula:on_xfer_done");
+
       /* Whole-frame transfer complete: report the edge to the BlankGated
        * algorithm, which releases the single-flight bus and (because a slot
        * is complete exactly when its single whole-frame write ends) frees the
@@ -690,6 +695,7 @@ static void *transfer_thread_func(void *arg)
        * submitted write, which is the physical signal the algorithm keys its
        * bookkeeping on. */
       nyabula_sch_bg_on_xfer_done(&dual->sch, job.screen_id, job.buf_idx);
+      sched_note_endex(NOTE_TAG_ALWAYS, "nyabula:on_xfer_done");
     }
 
   return NULL;

@@ -38,6 +38,10 @@ ifeq ($(CONFIG_NYABULA_DISPLAY_TE_GPIO),y)
 CSRCS += nyabula_te_gpio.c
 endif
 
+ifeq ($(CONFIG_NYABULA_DISPLAY_TE_BOARDCTL),y)
+CSRCS += nyabula_te_boardctl.c
+endif
+
 CFLAGS += -DCONFIG_NYABULA_DISPLAY_BUFFER_SIZE=$(CONFIG_NYABULA_DISPLAY_BUFFER_SIZE)
 
 include $(APPDIR)/Application.mk

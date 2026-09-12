@@ -30,9 +30,29 @@
 #include <nuttx/config.h>
 #include <stdint.h>
 
+#include <semaphore.h>
+
 #ifndef __ASSEMBLY__
 
 struct sdio_dev_s;
+
+/****************************************************************************
+ * Public Data
+ ****************************************************************************/
+
+/* Per-edge TE semaphores registered by the nyabula_display application via
+ * boardctl(BOARDIOC_USER).  Layout (fixed ABI contract):
+ *   g_te_sem[0] = screen 0 blank-start (bs, rising)
+ *   g_te_sem[1] = screen 0 scan-start  (ss, falling)
+ *   g_te_sem[2] = screen 1 blank-start
+ *   g_te_sem[3] = screen 1 scan-start
+ *
+ * Defined in kickpi_k7_boardctl.c (together with board_ioctl()); consumed by
+ * the TE GPIO ISR in kickpi_k7_lcd.c.  NULL until the app registers them. */
+
+#ifdef CONFIG_BOARDCTL_IOCTL
+extern FAR sem_t *g_te_sem[4];
+#endif
 
 /****************************************************************************
  * Public Function Prototypes
