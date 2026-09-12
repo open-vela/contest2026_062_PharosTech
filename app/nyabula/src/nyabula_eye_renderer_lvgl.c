@@ -1527,13 +1527,28 @@ static void pupil(struct nyabula_eye_renderer_s *r, const struct eye_s *e)
       stops[2].opa = LV_OPA_COVER;
       stops[2].frac = 255;
 
+      /* Fill the pupil disc first with NO stroke attached.  ThorVG's SW
+       * rasteriser disables fill anti-aliasing on any shape whose stroke
+       * width is >= 2px (it assumes the stroke covers the fill outline).
+       * The pupil's decorative ring stroke is ~e->ir * 0.02 (>= 3px), so
+       * drawing it on the same shape as the fill was silently turning off
+       * the fill edge AA, producing the jagged pupil rim.  Keep a
+       * stroke-less fill shape so AA stays enabled, then draw the ring as a
+       * separate stroke-only shape. */
+
       ellipse_path(r, px, py, rx, ry, 0.0f);
       vector_eye_transform(r, e);
+      lv_vector_dsc_set_stroke_opa(r->vector, LV_OPA_TRANSP);
       lv_vector_dsc_set_fill_opa(r->vector, LV_OPA_COVER);
       lv_vector_dsc_set_fill_radial_gradient(r->vector, px, py, fmaxf(rx, ry));
       lv_vector_dsc_set_fill_gradient_color_stops(r->vector, stops, 3);
       lv_vector_dsc_set_fill_gradient_spread(r->vector,
                                              LV_VECTOR_GRADIENT_SPREAD_PAD);
+      lv_vector_dsc_add_path(r->vector, r->path);
+
+      ellipse_path(r, px, py, rx, ry, 0.0f);
+      vector_eye_transform(r, e);
+      lv_vector_dsc_set_fill_opa(r->vector, LV_OPA_TRANSP);
       lv_vector_dsc_set_stroke_color(
           r->vector, lv_color_hex(shade(e->f->iris_rgb, 1.7f)));
       lv_vector_dsc_set_stroke_opa(r->vector, vector_opa(0.5f));
