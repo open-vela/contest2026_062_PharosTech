@@ -19,14 +19,17 @@
  * calls them on the actual edges.  Exactly one source implementation is
  * compiled, selected by Kconfig:
  *
- *   CONFIG_NYABULA_DISPLAY_TE_SW    - software frame clock (no TE pin
- *                                     wired).  A high-priority thread
- *                                     synthesizes the two edges per frame.
- *   CONFIG_NYABULA_DISPLAY_TE_GPIO  - one panel TE GPIO per screen,
- *                                     interrupt driven (deferred to a
- *                                     high-priority thread; the ISR only
- *                                     flags + posts, it never calls the
- *                                     algorithm entry points directly).
+ *   CONFIG_NYABULA_DISPLAY_TE_SW       - software frame clock (no TE pin
+ *                                        wired).  A high-priority thread
+ *                                        synthesizes the two edges per
+ *                                        frame.
+ *   CONFIG_NYABULA_DISPLAY_TE_BOARDCTL - one panel TE GPIO per screen; a
+ *                                        BOARD-LEVEL ISR classifies the edge
+ *                                        direction and posts a per-direction
+ *                                        semaphore (registered via
+ *                                        boardctl), which a high-priority
+ *                                        thread consumes to drive the
+ *                                        algorithm entry points.
  *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with

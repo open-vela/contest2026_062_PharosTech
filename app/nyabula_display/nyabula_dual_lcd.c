@@ -62,8 +62,8 @@
  *
  *   The edge callbacks (registered with the TE source) forward to the
  *   algorithm (which takes its own lock).  A GPIO TE ISR must NOT call them
- *   from interrupt context; the GPIO TE source defers to a thread (see
- *   nyabula_te_gpio.c).
+ *   from interrupt context; the BOARD-LEVEL TE ISR only posts a semaphore
+ *   and a high-priority thread (nyabula_te_boardctl.c) drives them.
  *
  * Framework <-> algorithm interface (see nyabula_scheduler_blankgated.h):
  *   framework -> algorithm : on_scan_start / on_blank_start / on_render_done

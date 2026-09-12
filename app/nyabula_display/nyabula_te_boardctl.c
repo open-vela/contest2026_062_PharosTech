@@ -4,10 +4,10 @@
  * Panel TE GPIO interrupt source via boardctl-registered semaphores
  * (CONFIG_NYABULA_DISPLAY_TE_BOARDCTL).
  *
- * Unlike nyabula_te_gpio.c (which uses the POSIX-signal /dev/gpioN path),
- * this source relies on the BOARD registering a driver-level GPIO interrupt
- * for each TE pin and posting, from interrupt context, one semaphore per
- * edge direction.  The semaphores are registered with the board through
+ * Unlike the former POSIX-signal /dev/gpioN approach, this source relies
+ * on the BOARD registering a driver-level GPIO interrupt for each TE pin
+ * and posting, from interrupt context, one semaphore per edge direction.
+ * The semaphores are registered with the board through
  * boardctl(BOARDIOC_USER, ...), so the ISR never goes through the
  * sigqueue/sigwaitinfo signal stack.
  *

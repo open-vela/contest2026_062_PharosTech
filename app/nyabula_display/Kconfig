@@ -67,17 +67,6 @@ config NYABULA_DISPLAY_TE_SW
 		blank-start (TE rising) edges at the frame rate, with the two
 		screens staggered 90 degrees.
 
-config NYABULA_DISPLAY_TE_GPIO
-	bool "Panel TE GPIO interrupt (one pin per screen)"
-	depends on DEV_GPIO
-	---help---
-		Each screen's TE pin (HIGH=blanking, LOW=scanning) drives a GPIO
-		interrupt.  The GPIO driver signals the process (CONFIG_DEV_GPIO +
-		CONFIG_DEV_GPIO_NSIGNALS); a high-priority thread classifies the
-		edge by reading the pin level and calls the framework edge
-		callbacks.  Requires the board to register the TE pins as
-		interrupt GPIOs and the dev-path/signal Kconfig options below.
-
 config NYABULA_DISPLAY_TE_BOARDCTL
 	bool "Panel TE GPIO via boardctl-registered semaphores"
 	depends on BOARDCTL_IOCTL
@@ -93,22 +82,6 @@ config NYABULA_DISPLAY_TE_BOARDCTL
 		that accepts BOARDIOC_USER with a four-sem_t* array (bs0, ss0,
 		bs1, ss1).
 endchoice
-
-if NYABULA_DISPLAY_TE_GPIO
-
-config NYABULA_DISPLAY_TE0_DEVPATH
-	string "TE GPIO device path for screen 0"
-	default "/dev/gpio1"
-	---help---
-		Path to the registered TE GPIO character device for screen 0.
-
-config NYABULA_DISPLAY_TE1_DEVPATH
-	string "TE GPIO device path for screen 1"
-	default "/dev/gpio2"
-	---help---
-		Path to the registered TE GPIO character device for screen 1.
-
-endif # NYABULA_DISPLAY_TE_GPIO
 
 config NYABULA_DISPLAY_AUDIT
 	bool "Enable dual-screen audit / profiling instrumentation"
