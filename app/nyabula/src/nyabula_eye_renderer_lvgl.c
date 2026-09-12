@@ -176,7 +176,6 @@ struct nyabula_eye_renderer_s
   lv_vector_path_t *mask_path;
   lv_draw_buf_t *baked_iris;
   lv_draw_buf_t *baked_glow;
-  lv_draw_buf_t *baked_composite;
   bool baked;
   lv_fpoint_t icon_points[2048];
   bool icon_moves[2048];
@@ -277,7 +276,8 @@ static void arc(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
 static void base(struct nyabula_eye_renderer_s *r, const struct eye_s *e);
 static void bake_base(struct nyabula_eye_renderer_s *r);
 static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
-                                          const struct eye_s *e);
+                                          const struct eye_s *e,
+                                          lv_draw_buf_t *target);
 static lv_draw_buf_t *base_cache_get(struct nyabula_eye_renderer_s *r,
                                      const struct eye_s *e);
 static bool page_base_matches(const struct page_state_s *state,
@@ -1053,10 +1053,7 @@ static void bake_base(struct nyabula_eye_renderer_s *r)
       lv_draw_buf_create(W, H, LV_COLOR_FORMAT_ARGB8888, LV_STRIDE_AUTO);
   r->baked_glow =
       lv_draw_buf_create(W, H, LV_COLOR_FORMAT_ARGB8888, LV_STRIDE_AUTO);
-  r->baked_composite =
-      lv_draw_buf_create(W, H, LV_COLOR_FORMAT_ARGB8888, LV_STRIDE_AUTO);
-  if (r->baked_iris == NULL || r->baked_glow == NULL ||
-      r->baked_composite == NULL)
+  if (r->baked_iris == NULL || r->baked_glow == NULL)
     {
       return;
     }
@@ -1104,19 +1101,21 @@ static void bake_base(struct nyabula_eye_renderer_s *r)
 /* Composite the baked base (glow + iris) for the current frame. The baked
  * textures hold a tinted (0x808080) premultiplied base baked with glow == 1;
  * recolouring to the live iris_rgb and scaling the glow alpha is done by a
- * single per-pixel multiply, replacing the per-frame vector rasterisation. */
+ * single per-pixel multiply, replacing the per-frame vector rasterisation.
+ * The result is written directly into `target` (the cache entry buffer) so
+ * the separate whole-buffer copy in base_cache_get is no longer necessary. */
 static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
-                                          const struct eye_s *e)
+                                          const struct eye_s *e,
+                                          lv_draw_buf_t *target)
 {
   uint32_t rgb = e->f->iris_rgb & 0xffffffu;
   uint32_t r_scale = (rgb >> 16) & 255u;
   uint32_t g_scale = (rgb >> 8) & 255u;
   uint32_t b_scale = rgb & 255u;
   uint32_t glow = (uint32_t)lroundf(clampf(e->f->glow, 0.0f, 1.0f) * 255.0f);
-  uint32_t stride = r->baked_composite->header.stride;
+  uint32_t stride = target->header.stride;
 
-  if (r->baked_iris == NULL || r->baked_glow == NULL ||
-      r->baked_composite == NULL)
+  if (r->baked_iris == NULL || r->baked_glow == NULL || target == NULL)
     {
       return NULL;
     }
@@ -1140,7 +1139,7 @@ static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
     const uint8x8_t vb = vdup_n_u8(sb);
     const uint8x8_t cover = vdup_n_u8(255);
 
-    dst = (uint8_t *)r->baked_composite->data;
+    dst = (uint8_t *)target->data;
     src = (const uint8_t *)r->baked_glow->data;
 
     for (y = 0; y < H; y++)
@@ -1181,7 +1180,7 @@ static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
       const uint8x8_t full = vdup_n_u8(255);
       const uint16x8_t one = vdupq_n_u16(1);
 
-      dst = (uint8_t *)r->baked_composite->data;
+      dst = (uint8_t *)target->data;
       src = (const uint8_t *)r->baked_iris->data;
 
       for (y = 0; y < H; y++)
@@ -1230,7 +1229,7 @@ static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
     uint32_t y;
     uint32_t inv = BAKE_BASE_CHANNEL;
 
-    dst = (lv_color32_t *)r->baked_composite->data;
+    dst = (lv_color32_t *)target->data;
     src = (const lv_color32_t *)r->baked_glow->data;
 
     /* Glow sits under the iris disc on the opaque black canvas. The baked
@@ -1255,7 +1254,7 @@ static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
       }
 
     /* Iris disc composites over the glow: opaque centre, antialiased rim. */
-    dst = (lv_color32_t *)r->baked_composite->data;
+    dst = (lv_color32_t *)target->data;
     src = (const lv_color32_t *)r->baked_iris->data;
     for (y = 0; y < H; y++)
       {
@@ -1307,16 +1306,14 @@ static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
   }
 #endif
 
-  lv_draw_buf_flush_cache(r->baked_composite, NULL);
-  return r->baked_composite;
+  lv_draw_buf_flush_cache(target, NULL);
+  return target;
 }
 
 static lv_draw_buf_t *base_cache_get(struct nyabula_eye_renderer_s *r,
                                      const struct eye_s *e)
 {
   struct base_cache_s *entry = NULL;
-  lv_vector_dsc_t *main_vector;
-  lv_vector_path_t *main_path;
   uint16_t glow;
   int16_t gaze_x;
   int16_t gaze_y;
@@ -1364,74 +1361,55 @@ static lv_draw_buf_t *base_cache_get(struct nyabula_eye_renderer_s *r,
       return NULL;
     }
 
-  main_vector = r->vector;
-  main_path = r->path;
-  graphics_trace_beginex("bc_fill_bg");
-  lv_canvas_fill_bg(entry->canvas, lv_color_black(), LV_OPA_COVER);
-  graphics_trace_endex("bc_fill_bg");
-  graphics_trace_beginex("bc_init_layer");
-  lv_canvas_init_layer(entry->canvas, &r->cache_layer);
-  if (r->cache_vector == NULL)
+  /* The bake mechanism supplies the base layer cheaply (a baked texture
+   * recoloured by iris_rgb/glow, written directly into the cache buffer) —
+   * no vector rasterisation or whole-buffer copy is needed on this path. */
+  graphics_trace_beginex("bc_build_base");
+  if (bake_base_composite(r, e, entry->buffer) == NULL)
     {
-      r->cache_vector = lv_vector_dsc_create(&r->cache_layer);
-    }
+      /* Fall back to the vector path only if the baked textures are
+       * unavailable. */
+      lv_vector_dsc_t *main_vector = r->vector;
+      lv_vector_path_t *main_path = r->path;
 
-  if (r->cache_path == NULL)
-    {
-      r->cache_path = lv_vector_path_create(LV_VECTOR_PATH_QUALITY_HIGH);
-    }
+      graphics_trace_beginex("bc_fill_bg");
+      lv_canvas_fill_bg(entry->canvas, lv_color_black(), LV_OPA_COVER);
+      graphics_trace_endex("bc_fill_bg");
+      graphics_trace_beginex("bc_init_layer");
+      lv_canvas_init_layer(entry->canvas, &r->cache_layer);
+      if (r->cache_vector == NULL)
+        {
+          r->cache_vector = lv_vector_dsc_create(&r->cache_layer);
+        }
 
-  r->vector = r->cache_vector;
-  r->path = r->cache_path;
-  graphics_trace_endex("bc_init_layer");
-  if (r->vector == NULL || r->path == NULL)
-    {
+      if (r->cache_path == NULL)
+        {
+          r->cache_path = lv_vector_path_create(LV_VECTOR_PATH_QUALITY_HIGH);
+        }
+
+      r->vector = r->cache_vector;
+      r->path = r->cache_path;
+      graphics_trace_endex("bc_init_layer");
+      if (r->vector != NULL && r->path != NULL)
+        {
+          base(r, e);
+          graphics_trace_beginex("bc_raster");
+          lv_draw_vector(r->vector);
+          graphics_trace_endex("bc_raster");
+        }
+
       lv_canvas_finish_layer(entry->canvas, &r->cache_layer);
       r->vector = main_vector;
       r->path = main_path;
-      return NULL;
     }
 
-  graphics_trace_beginex("bc_build_base");
-  /* The bake mechanism supplies the base layer cheaply (a baked texture
-   * recoloured by iris_rgb/glow) instead of re-rasterising the two radial
-   * gradient circles each time. Fall back to the vector path only if the
-   * baked textures are unavailable. */
-  {
-    graphics_trace_beginex("bake_base_composite");
-    // ~9ms (scalar) / ~1.7ms (NEON)
-    lv_draw_buf_t *composite = bake_base_composite(r, e);
-    graphics_trace_endex("bake_base_composite");
-
-    if (composite != NULL)
-      {
-        // ~3ms
-        lv_draw_buf_copy(entry->buffer, NULL, composite, NULL);
-      }
-    else
-      {
-        // ~30ms
-        base(r, e);
-      }
-  }
   graphics_trace_endex("bc_build_base");
   graphics_trace_beginex("bc_build_iris");
   iris(r, e, entry->buffer);
   graphics_trace_endex("bc_build_iris");
-  graphics_trace_beginex("bc_build_ring");
-  // arc(r, e, 0.0f, 0.0f, R - 0.8f, 0.0f, PI * 2.0f, 2.0f, 0x3c4655, 0.45f);
-  graphics_trace_endex("bc_build_ring");
-  graphics_trace_beginex("bc_raster");
-  lv_draw_vector(r->vector);
-  graphics_trace_endex("bc_raster");
-  graphics_trace_beginex("bc_finish_layer");
-  lv_canvas_finish_layer(entry->canvas, &r->cache_layer);
-  graphics_trace_endex("bc_finish_layer");
   graphics_trace_beginex("bc_flush_cache");
   lv_draw_buf_flush_cache(entry->buffer, NULL);
   graphics_trace_endex("bc_flush_cache");
-  r->vector = main_vector;
-  r->path = main_path;
   entry->iris_rgb = e->f->iris_rgb;
   entry->glow = glow;
   entry->gaze_x = gaze_x;
@@ -4986,11 +4964,6 @@ void nyabula_eye_renderer_destroy(struct nyabula_eye_renderer_s *r)
       if (r->baked_glow != NULL)
         {
           lv_draw_buf_destroy(r->baked_glow);
-        }
-
-      if (r->baked_composite != NULL)
-        {
-          lv_draw_buf_destroy(r->baked_composite);
         }
 
       if (r->path != NULL)
