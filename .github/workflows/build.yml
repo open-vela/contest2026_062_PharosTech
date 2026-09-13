@@ -176,6 +176,7 @@ jobs:
           make_placeholder "$FIRMWARE_DIR/SWT6621S_DRAM_SDIO.bin" 193224
           make_placeholder "$FIRMWARE_DIR/SWT6621S_NV_SDIO_ALONE.bin" 220
           make_placeholder "$FIRMWARE_DIR/SWT6621S_SEEKWAVE_R00001.bin" 2372
+          make_placeholder "$FIRMWARE_DIR/sv6160lite.nvbin" 37
 
       - name: Apply AMP GIC dependency
         if: matrix.config == 'boards/rk3576/kickpi-k7/configs/amp'
