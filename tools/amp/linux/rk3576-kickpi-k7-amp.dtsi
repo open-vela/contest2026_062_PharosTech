@@ -51,6 +51,12 @@
 		#size-cells = <2>;
 		ranges;
 
+		/* BL32: 2 MiB TEE OS, 12 MiB TA RAM and 2 MiB shared RAM. */
+		optee_reserved: optee@48400000 {
+			reg = <0x0 0x48400000 0x0 0x1000000>;
+			no-map;
+		};
+
 		rpmsg_reserved: rpmsg@47800000 {
 			reg = <0x0 0x47800000 0x0 0x200000>;
 			no-map;
