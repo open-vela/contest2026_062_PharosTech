@@ -70,6 +70,21 @@ RAM启动分别 `bootamp 60000000 21a9200` / `bootamp 60000000 21a9600`。
 
 ## Draft 转正式前的验收清单
 
+### 第一批纯软件接口（2026-09-14）
+
+- 资源清单覆盖LLM/ASR/TTS、tokenizer/lexicon、四项主要runtime与glibc/GCC依赖，
+  固定字节数和SHA256；未知上游revision/分发许可保留发布缺口，不伪装为release已批准。
+- 资源校验/确定性打包与清单测试15项通过；包含内容损坏、路径穿越、软链接、覆盖、
+  许可缺失、目标/依赖版本不符和重复打包hash一致性。
+- 模型API回放通过：LLM/ASR/TTS typed输入输出、常驻复用、generation、重复ID、
+  背压、异常、deadline、跨线程取消与输出生命周期；ASan/UBSan检查通过。
+- 真实CPU ASR分别回放公开0.wav/1.wav：完整请求各10/12次partial、1次final；
+  第二请求首partial后取消，0次final；第三次同recognizer重跑，与第一次文本一致。
+  每次恰好1次terminal；输出`NYAMP_ASR_FILE_PASS real_inference=1 mic_capture=0`。
+- 三个真实backend及各自文件入口AArch64编译/链接通过，动态库隔离。
+  此处的RKLLM/Melo新适配代码没有板上执行证据，旧R038/R039不自动转为新接口板测通过。
+- CI加入无模型权重的资源测试和接口回放，不下载vendor SDK，不伪装为真实NPU CI。
+
 ### 本PR改动验证（2026-09-14）
 
 - 新增 `TopologyTest.test_board_reserves_optee`：修复前失败
@@ -94,6 +109,8 @@ RAM启动分别 `bootamp 60000000 21a9200` / `bootamp 60000000 21a9600`。
 
 - [x] AMP基础控制协议与health/info已存在主分支。
 - [x] OP-TEE16MiB保留区修复已有板上因果对照；本PR纳入基础DTS。
+- [x] 依赖文件清单、资源包v1、内容/兼容校验和确定性打包工具。
+- [x] Linux进程内模型接口、真实后端编译、离线生命周期回放、真实CPU ASR文件验证。
 - [ ] 将媒体Linux配置、OV5647/CIF修正按许可与单一职责整理；不复制GPL实现进Apache驱动。
 - [ ] 外部RKLLM/RKNN/sherpa/ORT版本、模型下载/校验/许可、可复现构建和更新文档齐备。
 - [ ] 大数据buffer分配/归还、generation失效、背压与超时实测通过。
