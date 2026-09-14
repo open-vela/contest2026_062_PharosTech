@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.16)
+project(nyamp_models LANGUAGES CXX)
+
+find_package(Threads REQUIRED)
+add_library(nyamp_models STATIC nyamp_models.cpp)
+target_include_directories(nyamp_models PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(nyamp_models PUBLIC cxx_std_17)
+target_compile_options(nyamp_models PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(nyamp_models PUBLIC Threads::Threads)
+
+enable_testing()
+add_executable(nyamp_models_replay_test nyamp_models_replay_test.cpp)
+target_compile_options(nyamp_models_replay_test PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(nyamp_models_replay_test PRIVATE nyamp_models)
+add_test(NAME nyamp_models_replay_test COMMAND nyamp_models_replay_test)
