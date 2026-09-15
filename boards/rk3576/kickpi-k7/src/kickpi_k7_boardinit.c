@@ -158,8 +158,7 @@ void rk3576_board_initialize(void)
 
 static int kickpi_k7_emmc_pinmux(void)
 {
-  gpio_pinset_t common =
-      GPIO_PORT1 | GPIO_ALT | GPIO_AF1 | GPIO_PULLUP | GPIO_DRV_STRENGTH_66OHM;
+  gpio_pinset_t common = GPIO_PORT1;
   FAR struct gpio_dev_s *handle;
   unsigned int pin;
   int ret;

@@ -58,12 +58,6 @@ typedef CODE int (*rk3576_gpio_irq_callback_t)(FAR struct gpio_dev_s *dev,
  *  Bit [4:0]   - Pin number within port (0-31)
  *  Bit [7:5]   - Port number (0-4)
  *
- *  NOTE: Historically the pinset also packed function fields (mode, pull,
- *  drive, AF, interrupt config) in bits [24:8].  Those functional bit
- *  macros below are DEPRECATED: a pinset now expresses only the pin
- *  identity (port + pin).  Pin function must be set via the
- *  rk3576_gpio_set_*() setters, which take their own enums.
- *
  * Pin naming convention:
  *   RK_GPIO0_A0 = GPIO_PORT0 | GPIO_PIN_A0
  *   RK_GPIO4_D7 = GPIO_PORT4 | GPIO_PIN_D7
@@ -121,119 +115,12 @@ typedef CODE int (*rk3576_gpio_irq_callback_t)(FAR struct gpio_dev_s *dev,
 #define GPIO_PORT3      (3 << GPIO_PORT_SHIFT) /* GPIO3 */
 #define GPIO_PORT4      (4 << GPIO_PORT_SHIFT) /* GPIO4 */
 
-/* Mode encoding *************************************************************/
-
-#define GPIO_MODE_SHIFT (8) /* Bits 8-9: Pin mode */
-#define GPIO_MODE_MASK  (0x3 << GPIO_MODE_SHIFT)
-#define GPIO_INPUT      (0 << GPIO_MODE_SHIFT) /* Input mode */
-#define GPIO_OUTPUT     (1 << GPIO_MODE_SHIFT) /* Output mode */
-#define GPIO_ALT        (2 << GPIO_MODE_SHIFT) /* Alternate function */
-
-/* Pull-up/Pull-down
- * **********************************************************/
-
-#define GPIO_PUPD_SHIFT (10) /* Bits 10-11: Pull-up/pull-down */
-#define GPIO_PUPD_MASK  (0x3 << GPIO_PUPD_SHIFT)
-#define GPIO_FLOAT      (0 << GPIO_PUPD_SHIFT) /* No pull */
-#define GPIO_PULLUP     (1 << GPIO_PUPD_SHIFT) /* Pull-up */
-#define GPIO_PULLDOWN   (2 << GPIO_PUPD_SHIFT) /* Pull-down */
-
-/* Drive strength encoding — 3-bit field (for output and AF pins)
- *
- * Bit layout: DRV_STRENGTH[2:0] = bits [14:12]
- *
- *
- *   GPIO_DRV_STRENGTH_DEFAULT (0) — hardware reset value (50Ω for 4-level,
- *                                    40Ω for 6-level GPIOs)
- *   GPIO_DRV_STRENGTH_100OHM  (1) — 100 ohms — both 4-level and 6-level GPIOs
- *   GPIO_DRV_STRENGTH_66OHM   (2) —  66 ohms — 6-level GPIOs only (error on
- * 4-level) GPIO_DRV_STRENGTH_50OHM   (3) —  50 ohms — both 4-level and 6-level
- * GPIOs GPIO_DRV_STRENGTH_40OHM   (4) —  40 ohms — 6-level GPIOs only (error
- * on 4-level) GPIO_DRV_STRENGTH_33OHM   (5) —  33 ohms — both 4-level and
- * 6-level GPIOs GPIO_DRV_STRENGTH_25OHM   (6) —  25 ohms — both 4-level and
- * 6-level GPIOs
- *
- */
-
-#define GPIO_DRV_STRENGTH_SHIFT (12) /* Bits 12-14: Drive strength */
-#define GPIO_DRV_STRENGTH_MASK  (0x7 << GPIO_DRV_STRENGTH_SHIFT)
-#define GPIO_DRV_STRENGTH_DEFAULT \
-  (0 << GPIO_DRV_STRENGTH_SHIFT) /* hw reset: 50Ω(4-lv) / 40Ω(6-lv) */
-#define GPIO_DRV_STRENGTH_100OHM             \
-  (1 << GPIO_DRV_STRENGTH_SHIFT) /* 100 ohms \
-                                  */
-#define GPIO_DRV_STRENGTH_66OHM \
-  (2 << GPIO_DRV_STRENGTH_SHIFT) /*  66 ohms — 6-level only */
-#define GPIO_DRV_STRENGTH_50OHM (3 << GPIO_DRV_STRENGTH_SHIFT) /*  50 ohms */
-#define GPIO_DRV_STRENGTH_40OHM \
-  (4 << GPIO_DRV_STRENGTH_SHIFT) /*  40 ohms — 6-level only */
-#define GPIO_DRV_STRENGTH_33OHM (5 << GPIO_DRV_STRENGTH_SHIFT) /*  33 ohms */
-#define GPIO_DRV_STRENGTH_25OHM (6 << GPIO_DRV_STRENGTH_SHIFT) /*  25 ohms */
-
-/* Alternate function encoding
- * ************************************************/
-
-#define GPIO_AF_SHIFT (15) /* Bits 15-18: AF number (0-15) */
-#define GPIO_AF_MASK  (0xf << GPIO_AF_SHIFT)
-#define GPIO_AF0      (0 << GPIO_AF_SHIFT)
-#define GPIO_AF1      (1 << GPIO_AF_SHIFT)
-#define GPIO_AF2      (2 << GPIO_AF_SHIFT)
-#define GPIO_AF3      (3 << GPIO_AF_SHIFT)
-#define GPIO_AF4      (4 << GPIO_AF_SHIFT)
-#define GPIO_AF5      (5 << GPIO_AF_SHIFT)
-#define GPIO_AF6      (6 << GPIO_AF_SHIFT)
-#define GPIO_AF7      (7 << GPIO_AF_SHIFT)
-#define GPIO_AF8      (8 << GPIO_AF_SHIFT)
-#define GPIO_AF9      (9 << GPIO_AF_SHIFT)
-#define GPIO_AF10     (10 << GPIO_AF_SHIFT)
-#define GPIO_AF11     (11 << GPIO_AF_SHIFT)
-#define GPIO_AF12     (12 << GPIO_AF_SHIFT)
-#define GPIO_AF13     (13 << GPIO_AF_SHIFT)
-#define GPIO_AF14     (14 << GPIO_AF_SHIFT)
-#define GPIO_AF15     (15 << GPIO_AF_SHIFT)
-
-/* Initial output value
- * *******************************************************/
-
-#define GPIO_OUTPUT_SET (1 << 19) /* Bit 19: Initial output high */
-
-/* Interrupt configuration
- * ****************************************************/
-
-#define GPIO_EXTI            (1 << 20) /* Bit 20: Enable EXTI interrupt */
-
-#define GPIO_INTTYPE_SHIFT   (21) /* Bit 21: Interrupt type */
-#define GPIO_INTTYPE_MASK    (0x1 << GPIO_INTTYPE_SHIFT)
-#define GPIO_INT_LEVEL       (0 << GPIO_INTTYPE_SHIFT) /* Level triggered */
-#define GPIO_INT_EDGE        (1 << GPIO_INTTYPE_SHIFT) /* Edge triggered */
-
-#define GPIO_INTPOL_SHIFT    (22) /* Bit 22: Interrupt polarity */
-#define GPIO_INTPOL_MASK     (0x1 << GPIO_INTPOL_SHIFT)
-#define GPIO_INT_LOW_FALLING (0 << GPIO_INTPOL_SHIFT)
-#define GPIO_INT_HIGH_RISING (1 << GPIO_INTPOL_SHIFT)
-
-/* Schmitt trigger (kernel-internal use, automatically set by config_gpio
- * based on pin mode; user programs use GPIOC_SETPINTYPE ioctl instead)
- */
-
-#define GPIO_SCHMITT      (1 << 23) /* Bit 23: Enable schmitt trigger */
-
-#define GPIO_INT_BOTHEDGE (1 << 24) /* Bit 24: Both-edge trigger */
-
-/* Convenience macros for common pin configurations
- * ***************************/
-
-#define GPIO_INPUT_PULLUP    (GPIO_INPUT | GPIO_PULLUP)
-#define GPIO_INPUT_PULLDOWN  (GPIO_INPUT | GPIO_PULLDOWN)
-#define GPIO_OUTPUT_PUSHPULL (GPIO_OUTPUT)
-
 /****************************************************************************
  * Public Types
  ****************************************************************************/
 
 /* GPIO pin identity encoded as a 32-bit value: bits [4:0] = pin, [7:5] =
- * port.  (The bit-encoded function fields historically packed in a pinset
- * are deprecated; use the rk3576_gpio_set_*() setters with their own enums.)
+ * port.
  */
 
 typedef uint32_t gpio_pinset_t;
@@ -571,20 +458,5 @@ void rk3576_gpio_set_int_type(FAR struct gpio_dev_s *handle,
 
 void rk3576_gpio_set_int_pol(FAR struct gpio_dev_s *handle,
                              enum rk3576_gpio_int_pol_e int_pol);
-
-/****************************************************************************
- * Deprecated stateless APIs
- *
- * These operate on a bit-encoded pinset and re-decode port/pin on every
- * call.  They are retained for compatibility with existing callers (e.g.
- * board pin-mux setup) and their behavior is unchanged, but new code should
- * prefer rk3576_gpio_get()/put() with the associated handle-based accessors.
- * ****************************************************************************/
-
-int rk3576_config_gpio(gpio_pinset_t pinset) deprecated_function;
-
-void rk3576_gpio_write(gpio_pinset_t pinset, bool value) deprecated_function;
-
-bool rk3576_gpio_read(gpio_pinset_t pinset) deprecated_function;
 
 #endif /* __VENDOR_ROCKCHIP_RK3576_GPIO_H */
