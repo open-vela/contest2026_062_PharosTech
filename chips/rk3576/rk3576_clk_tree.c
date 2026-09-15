@@ -1192,10 +1192,12 @@ static void rk3576_clk_register_i2c(void)
  *   gate_reg    - GATE register address (HCLK and SCLK share this)
  *   hclk_bit    - HCLK GATE bit
  *   sclk_bit    - SCLK GATE bit
+ *   hclk_parent - HCLK parent name (FSPI0: hclk_nvm_root,
+ *                 FSPI1: hclk_sdgmac_root)
  */
 
 #define RK3576_CLK_REGISTER_FSPI_ONE(id, sel_reg, sel_shift, gate_reg,        \
-                                     hclk_bit, sclk_bit)                      \
+                                     hclk_bit, sclk_bit, hclk_parent)         \
   do                                                                          \
     {                                                                         \
       struct clk_s *_clk;                                                     \
@@ -1230,9 +1232,9 @@ static void rk3576_clk_register_i2c(void)
                             CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);  \
       _assert_registered(_clk);                                               \
                                                                               \
-      /* HCLK gate: AHB bus clock, parent is hclk_bus_root */                 \
+      /* HCLK gate: AHB bus clock, parent is hclk_parent */                   \
       _clk = clk_register_gate(                                               \
-          "hclk_fspi" #id, "hclk_bus_root",                                   \
+          "hclk_fspi" #id, hclk_parent,                                       \
           CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC, gate_reg, hclk_bit, \
           CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);                    \
       _assert_registered(_clk);                                               \
@@ -1254,8 +1256,10 @@ static void rk3576_clk_register_i2c(void)
  *   - sclk_fspiX_x2      : SCLK_x2 functional clock gate
  *   - hclk_fspiX         : AHB bus clock gate
  *
- *   FSPI0: CLKSEL_CON(89) mux@[7:6] div@[5:0], GATE_CON(33) hclk@7 sclk@6
- *   FSPI1: CLKSEL_CON(106) mux@[7:6] div@[5:0], GATE_CON(43) hclk@4 sclk@3
+ *   FSPI0: CLKSEL_CON(89) mux@[7:6] div@[5:0], GATE_CON(33) hclk@7 sclk@6,
+ *          HCLK parent hclk_nvm_root
+ *   FSPI1: CLKSEL_CON(106) mux@[7:6] div@[5:0], GATE_CON(43) hclk@4 sclk@3,
+ *          HCLK parent hclk_sdgmac_root
  ****************************************************************************/
 
 static void rk3576_clk_register_fspi(void)
@@ -1271,12 +1275,14 @@ static void rk3576_clk_register_fspi(void)
   /* FSPI0 */
 
   RK3576_CLK_REGISTER_FSPI_ONE(0, cru + RK3576_CRU_CLKSEL_CON(89), 6,
-                               cru + RK3576_CRU_GATE_CON(33), 7, 6);
+                               cru + RK3576_CRU_GATE_CON(33), 7, 6,
+                               "hclk_nvm_root");
 
   /* FSPI1 */
 
   RK3576_CLK_REGISTER_FSPI_ONE(1, cru + RK3576_CRU_CLKSEL_CON(106), 6,
-                               cru + RK3576_CRU_GATE_CON(43), 4, 3);
+                               cru + RK3576_CRU_GATE_CON(43), 4, 3,
+                               "hclk_sdgmac_root");
 }
 
 #undef RK3576_CLK_REGISTER_FSPI_ONE
