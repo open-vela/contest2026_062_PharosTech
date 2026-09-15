@@ -79,6 +79,11 @@
 #define RK3576_CRU_SDIO_RESET_CON 42
 #define RK3576_CRU_SDIO_RESET_BIT 12
 
+/* SDMMC controller (mmc@2a300000) reset control. */
+
+#define RK3576_CRU_SDMMC_RESET_CON 43
+#define RK3576_CRU_SDMMC_RESET_BIT 2
+
 /* Mailbox peripheral clock gate. */
 
 #define RK3576_CRU_MAILBOX_GATE_CON 17

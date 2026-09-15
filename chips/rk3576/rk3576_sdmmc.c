@@ -69,9 +69,11 @@
  * Pre-processor Definitions
  ***************************************************************************/
 
-/* Base clock frequency (the bootloader has configured the ciu clock source).
- * RK dw-mshc commonly uses 50MHz; this value is only used to compute the
- * CLKDIV divider, the actual frequency follows the loader.
+/* Base clock frequency (ciu) programmed into the CRU via the CLK framework
+ * in rk3576_sdmmc_enable_sdmmc0_clock()/rk3576_sdmmc_enable_sdio_clock().
+ * This is the target source rate passed to clk_set_rate(); the actual
+ * ciu frequency is read back with clk_get_rate() into priv->clkin, which is
+ * then used to compute the CLKDIV divider.
  */
 
 #define RK3576_SDMMC_CLKIN  50000000
@@ -783,8 +785,9 @@ static int rk3576_sdmmc_interrupt(int irq, void *context, void *arg)
  *
  * Description:
  *   Reset the controller and FIFO, clear interrupts, restore default clock/bus
- *   width.  Does not include CRU clock gating/soft reset or pinctrl; relies
- *   on the bootloader having configured them.
+ *   width.  CRU clock gating/soft reset are done separately in
+ *   rk3576_sdmmc_enable_sdmmc0_clock()/rk3576_sdmmc_enable_sdio_clock()
+ *   via the CLK framework; pinctrl is owned by the board code.
  ***************************************************************************/
 
 static void rk3576_sdmmc_reset(struct sdio_dev_s *dev)
@@ -1781,6 +1784,54 @@ static void rk3576_sdmmc_blocksetup(struct sdio_dev_s *dev,
  * Public Functions
  ***************************************************************************/
 
+#ifdef CONFIG_RK3576_SDMMC
+static int rk3576_sdmmc_enable_sdmmc0_clock(struct rk3576_sdmmc_dev_s *priv)
+{
+  FAR struct clk_s *hclk;
+  FAR struct clk_s *cclk;
+  int ret;
+
+  hclk = clk_get("hclk_sdmmc0");
+  cclk = clk_get("cclk_src_sdmmc0");
+  if (hclk == NULL || cclk == NULL)
+    {
+      return -ENODEV;
+    }
+
+  ret = clk_set_rate(cclk, RK3576_SDMMC_CLKIN);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = clk_enable(hclk);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = clk_enable(cclk);
+  if (ret < 0)
+    {
+      clk_disable(hclk);
+      return ret;
+    }
+
+  priv->clkin = clk_get_rate(cclk);
+
+  putreg32((1u << (RK3576_CRU_SDMMC_RESET_BIT + 16)) |
+               (1u << RK3576_CRU_SDMMC_RESET_BIT),
+           RK3576_CRU_ADDR +
+               RK3576_CRU_SOFTRST_CON(RK3576_CRU_SDMMC_RESET_CON));
+  up_udelay(20);
+  putreg32(1u << (RK3576_CRU_SDMMC_RESET_BIT + 16),
+           RK3576_CRU_ADDR +
+               RK3576_CRU_SOFTRST_CON(RK3576_CRU_SDMMC_RESET_CON));
+  up_udelay(20);
+  return OK;
+}
+#endif
+
 #ifdef CONFIG_RK3576_SDIO
 static int rk3576_sdmmc_enable_sdio_clock(struct rk3576_sdmmc_dev_s *priv)
 {
@@ -1866,6 +1917,18 @@ struct sdio_dev_s *rk3576_sdmmc_initialize(int slotno)
   priv->irq = g_sdmmc_config[slotno].irq;
   priv->clkin = g_sdmmc_config[slotno].clkin;
   priv->nonremovable = g_sdmmc_config[slotno].nonremovable;
+
+#ifdef CONFIG_RK3576_SDMMC
+  if (slotno == RK3576_SDMMC_SLOT)
+    {
+      ret = rk3576_sdmmc_enable_sdmmc0_clock(priv);
+      if (ret < 0)
+        {
+          mcerr("ERROR: failed to enable SDMMC0 clock: %d\n", ret);
+          return NULL;
+        }
+    }
+#endif
 
 #ifdef CONFIG_RK3576_SDIO
   if (slotno == RK3576_SDIO_SLOT)
