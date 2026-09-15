@@ -2384,6 +2384,60 @@ static void rk3576_clk_register_sdio(void)
 }
 
 /****************************************************************************
+ * Name: rk3576_clk_register_sdmmc0
+ *
+ * Description:
+ *   Register the RK3576 SDMMC0 (SD card) card-clock source and AHB bus gate.
+ *   CLKSEL_CON105 contains a two-bit parent selector and a six-bit divider;
+ *   GATE_CON43 controls the downstream card and bus clocks.
+ *
+ *   The SDMMC0 AHB interface clock (hclk_sdmmc0) is gated from the shared
+ *   SDGMAC HCLK root (hclk_sdgmac_root), registered in
+ *   rk3576_clk_register_ahb().  This gate sits at GATE_CON43[2].
+ ***************************************************************************/
+
+static void rk3576_clk_register_sdmmc0(void)
+{
+  static const char *sdmmc0_parents[] = {
+    "clk_gpll", /* 0b00 */
+    "clk_cpll", /* 0b01 */
+    "xin_osc0", /* 0b10; 0b11 is undefined */
+  };
+  const unsigned long cru = RK3576_CRU_ADDR;
+  const unsigned long sel = cru + RK3576_CRU_CLKSEL_CON(105);
+  FAR struct clk_s *clk;
+
+  /* CLKSEL_CON105 (0x04a4): parent select [14:13], divider [12:7]. */
+
+  clk = clk_register_mux(
+      "cclk_src_sdmmc0_sel", sdmmc0_parents, nitems(sdmmc0_parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      sel, 13, 2, CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_divider(
+      "cclk_src_sdmmc0_div", "cclk_src_sdmmc0_sel",
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      sel, 7, 6, CLK_DIVIDER_HIWORD_MASK | CLK_DIVIDER_ROUND_CLOSEST);
+  _assert_registered(clk);
+
+  /* GATE_CON43 (0x08ac): card clock bit 1, AHB clock bit 2. */
+
+  clk = clk_register_gate("cclk_src_sdmmc0", "cclk_src_sdmmc0_div",
+                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                              CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(43), 1,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("hclk_sdmmc0", "hclk_sdgmac_root",
+                          CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(43), 2,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+}
+
+/****************************************************************************
  * Name: rk3576_clk_register_emmc
  *
  * Description:
@@ -3028,6 +3082,8 @@ void rk3576_clk_tree_initialize(void)
   rk3576_clk_register_dmac();
 
   rk3576_clk_register_sdio();
+
+  rk3576_clk_register_sdmmc0();
 
   rk3576_clk_register_emmc();
 
