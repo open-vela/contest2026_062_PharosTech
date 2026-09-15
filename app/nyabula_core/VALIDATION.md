@@ -35,23 +35,6 @@ LVGL/ThorVG、Eye服务和插件Broker。服务没有mock图像或mock-ui输出�
 EYE_INTEGRATION_PASS signed-js signed-wasm captions revoke expressions=13 scenes=25 lease invalid=4 noto-fallback
 ```
 
-## 入口解耦验证
-
-按模块边界review，`app/nyabula_display`已完整恢复到PR前的fb03361b版本。
-该目录的所有文件与基线比较无差异。新的产品入口为
-`app/nyabula/src/nyabula_eye_main.c`，通过`nyabula_display.h`公开API使用显示服务。
-Display没有对Eye/Core的引用；旧`nyabula_display`仍只是demo命令。
-
-同一组模拟器测试只将启动命令改为`nyabula_eye &`，结果：
-
-```text
-EYE_INTEGRATION_PASS entry=nyabula_eye signed-js signed-wasm captions revoke expressions=13 scenes=25 lease invalid=4 noto-fallback
-```
-
-另外运行`python3 tools/nyabula_core/tests/test_display_ownership.py`，两项检查通过：
-Display无反向依赖、新入口只使用公开Display API且不调用demo。
-修改后的K7构建结果以本次入口修正对应的正式CI为准；上面的旧二进制哈希不冒充新版本。
-
 ## 构建入口
 
 在正式repo工作区先进入队伍仓准备字体：
@@ -98,22 +81,8 @@ done
 
 此检查只证明CMake配置所有权，不冒充完整WAMR运行测试；完整工程结果以修复后的CI为准。
 
-## 协作者真机配置反馈（2026-09-11）
-
-yunline在PR #85指出：软件TE使真机帧率不稳定，应使用`/dev/gpio1`和`/dev/gpio2`
-的面板TE中断；屏幕需要GC9B72初始化序列，默认ST77916选项无法点亮。
-`configs/core_eye`据此显式选择GPIO TE及GC9B72，不修改Display组件实现。
-
-协作者在[板测反馈](https://github.com/open-vela/contest2026_062_PharosTech/pull/85#issuecomment-5632255796)
-报告修正配置后成功点亮并提供照片。这是协作者板测反馈，不是本机重新上板测得；
-没有据此宣称帧率数值、时序和长稳已验收。
-
-配置回归覆盖GPIO TE、两个设备路径和GC9B72选型，修复前均失败、修复后通过。
-此前ca68ef28协作测试包仍是旧配置，不应继续用它验证这套GC9B72面板。
-
 ## 未覆盖与边界
 
-- 本机双屏尚未连接；协作者已反馈点亮。物理左右、色序、TE/QSPI时序、帧率和长稳尚未完整验收。
 - 本次没有刷写或改动现有AMP/普通NuttX槽位。
 - core_eye是独立系统配置；AMP下的LCD/IRQ所有权和接线需另行配置。
 - 插件与Eye服务为内建配置，同一地址空间；不声称新增MMU隔离或跨进程Broker。
