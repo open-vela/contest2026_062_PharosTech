@@ -37,7 +37,6 @@
 #include <assert.h>
 #include <debug.h>
 #include <errno.h>
-#include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -56,8 +55,6 @@
 #include <nuttx/wqueue.h>
 
 #include "arm64_arch.h"
-#include "arm64_internal.h"
-#include "chip.h"
 #include "hardware/rk3576_cru.h"
 #include "hardware/rk3576_memorymap.h"
 #include "hardware/rk3576_sdmmc.h"
