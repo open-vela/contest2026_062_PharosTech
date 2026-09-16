@@ -32,6 +32,15 @@ config CONTEST2026_062_NYABULA_CORE
 
 if CONTEST2026_062_NYABULA_CORE
 
+config NYABULA_CORE_AGENT
+	bool "Nyabot official ai_agent adapter"
+	default n
+	depends on NYABULA_CORE_PRODUCT && EXAMPLES_AI_AGENT_VELA
+	select LIBSODIUM
+	---help---
+		Use the official ai_agent loop with Core-owned run records and
+		owner-only requests. Standalone channels are not started here.
+
 config NYABULA_CORE_EYE
 	bool "Connect UI capabilities to Nyabula Eye Engine"
 	default n
@@ -40,11 +49,29 @@ config NYABULA_CORE_EYE
 		ui.notify displays a caption and ui.eye submits the Eye command
 		contract. Requires an attached LVGL display owner.
 
+config NYABULA_CORE_WEATHER
+	bool "Core QWeather service"
+	default y if NYABULA_CORE_AGENT
+	depends on NYABULA_CORE_AGENT
+	---help---
+		Run configurable weather polling with verified HTTPS, bounded JSON
+		responses and persistent alert deduplication. No bundled credentials.
+
 config NYABULA_CORE_WAMR
 	bool "Enable WAMR plugin runtime"
 	default y
 	select INTERPRETERS_WAMR
 	select INTERPRETERS_WAMR_THREAD_MGR
+
+config NYABULA_CORE_WEB
+	bool "Core WebSocket service"
+	default n
+	depends on NYABULA_CORE_EYE && NET_TCP && NET_IPv4 && !BUILD_KERNEL
+	select NET_SOCKOPTS
+	select NET_LOOPBACK
+	select CRYPTO
+	select NETUTILS_CODECS
+	select CODECS_BASE64
 
 config NYABULA_CORE_HTTP
 	bool "Enable Core non-blocking HTTP transport"
@@ -193,6 +220,35 @@ config NYABULA_CORE_STATE_DATABASE
 	string "Core private state database"
 	default "/data/nyabula/core.sqlite"
 	depends on NYABULA_CORE_STATE_SQLITE
+
+config NYABULA_CORE_PRODUCT
+	bool "Nyabula persistent product services"
+	default n
+	depends on NYABULA_CORE_STATE_SQLITE
+	---help---
+		Enable Core-owned product state and services shared by WebUI,
+		plugins and the AI Agent. No state is owned by a browser session.
+
+config NYABULA_CORE_MEDIA
+	bool "Native local media playback"
+	default n
+	depends on NYABULA_CORE_PRODUCT && AUDIO
+	select SYSTEM_NXPLAYER
+	select AUDIO_DRIVER_SPECIFIC_BUFFERS
+	select NXPLAYER_INCLUDE_PREFERRED_DEVICE
+	---help---
+		Play local PCM WAV files through the existing NuttX audio stack.
+		The product worker owns playback and device descriptors.
+
+config NYABULA_CORE_MEDIA_ROOT
+	string "Local media directory"
+	default "/data/music"
+	depends on NYABULA_CORE_MEDIA
+
+config NYABULA_CORE_MEDIA_DEVICE
+	string "Default output audio device"
+	default "/dev/audio/pcm0"
+	depends on NYABULA_CORE_MEDIA
 
 config NYABULA_CORE_STORAGE_BYTES_LIMIT
 	int "Maximum stored value bytes per plugin"
