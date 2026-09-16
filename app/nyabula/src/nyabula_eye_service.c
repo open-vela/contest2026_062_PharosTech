@@ -32,13 +32,12 @@ static struct nyabula_eye_engine_s *g_eye_engine;
 static struct nyabula_core_s *g_eye_control;
 static pthread_t g_eye_owner;
 
-static int nyabula_eye_service_check_depth(const char *json, size_t length);
 static int nyabula_eye_service_enqueue(struct nyabula_core_command_s *command,
                                        const char *source);
 
 /* Bound cJSON recursion before entering its recursive parser. */
 
-static int nyabula_eye_service_check_depth(const char *json, size_t length)
+int nyabula_eye_service_check_depth(const char *json, size_t length)
 {
   unsigned int depth = 0;
   bool quoted = false;

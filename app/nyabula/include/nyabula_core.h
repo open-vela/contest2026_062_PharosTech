@@ -145,6 +145,12 @@ struct nyabula_core_snapshot_s
 {
   uint64_t revision;
   uint64_t uptime_ms;
+  uint64_t expression_since_ms;
+  uint64_t scene_since_ms;
+  float gaze_x;
+  float gaze_y;
+  uint64_t gaze_until_ms;
+  bool gaze_active;
   size_t queue_depth;
   enum nyabula_eye_expression_e expression;
   struct nyabula_core_owner_s expression_owner;

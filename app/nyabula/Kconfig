@@ -14,6 +14,15 @@ config NYABULA_EYE_ENGINE
 
 if NYABULA_EYE_ENGINE
 
+config NYABULA_EYE_WS
+	bool "Legacy Nyabula Eye WebSocket command"
+	default n
+	depends on NYABULA_CORE_EYE && NET_TCP && NET_IPv4
+	select NYABULA_CORE_WEB
+	---help---
+		Keep the nyabula_eye_ws command as an alias for the Core-owned
+		WebSocket service. New integrations use nyabula_web.
+
 config NYABULA_EYE_DISPLAY
 	bool "Nyabula Eye display owner application"
 	default n
