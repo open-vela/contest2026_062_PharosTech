@@ -1,0 +1,14 @@
+{
+  "name": "nyabula-web",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm --filter @nyabula/eye-engine build && pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "packageManager": "pnpm@10.6.4",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "vue-demi"]
+  }
+}
