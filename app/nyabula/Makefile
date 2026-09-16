@@ -3,6 +3,7 @@ include $(APPDIR)/Make.defs
 
 CSRCS = src/nyabula_eye_engine.c src/nyabula_eye_renderer_lvgl.c
 CSRCS += src/nyabula_eye_service.c src/nyabula_eye_json.c
+CSRCS += src/nyabula_eye_wire.c
 CSRCS += src/generated/nyabula_eye_icons.c
 CSRCS += $(wildcard src/generated/fonts/*.c)
 CXXSRCS = src/nyabula_core.cxx

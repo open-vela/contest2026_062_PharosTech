@@ -308,6 +308,7 @@ static void nyabula_core_apply_winners(struct nyabula_core_s *core,
                                         transition_ms);
       core->expression_winner = expression;
       core->snapshot.expression = value;
+      core->snapshot.expression_since_ms = now;
       core->snapshot.revision++;
     }
 
@@ -345,6 +346,7 @@ static void nyabula_core_apply_winners(struct nyabula_core_s *core,
         }
 
       core->scene_winner = scene;
+      core->snapshot.scene_since_ms = now;
       core->snapshot.revision++;
     }
 
@@ -428,9 +430,21 @@ static int nyabula_core_process(struct nyabula_core_s *core,
         }
 
       case NYABULA_CORE_ACTION_GAZE:
-        return nyabula_eye_engine_set_gaze(
-            core->eye_engine, command->data.gaze.x, command->data.gaze.y,
-            command->data.gaze.hold_ms);
+        {
+          int ret = nyabula_eye_engine_set_gaze(
+              core->eye_engine, command->data.gaze.x, command->data.gaze.y,
+              command->data.gaze.hold_ms);
+          if (ret == 0)
+            {
+              core->snapshot.gaze_x = command->data.gaze.x;
+              core->snapshot.gaze_y = command->data.gaze.y;
+              core->snapshot.gaze_until_ms = now + command->data.gaze.hold_ms;
+              core->snapshot.gaze_active = command->data.gaze.hold_ms > 0;
+              core->snapshot.revision++;
+            }
+
+          return ret;
+        }
 
       case NYABULA_CORE_ACTION_AUTO_BLINK:
         nyabula_eye_engine_set_auto_blink(core->eye_engine,
@@ -639,6 +653,11 @@ extern "C" void nyabula_core_tick(struct nyabula_core_s *core)
     }
   now = nyabula_core_now_ms();
   core->snapshot.uptime_ms = now;
+  if (core->snapshot.gaze_active && now >= core->snapshot.gaze_until_ms)
+    {
+      core->snapshot.gaze_active = false;
+      core->snapshot.revision++;
+    }
 
   while (core->queue_depth > 0)
     {
