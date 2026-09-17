@@ -20,6 +20,9 @@
 #include "nyamp_backends.h"
 #include "rkllm.h"
 
+#include <cstdio>
+#include <sys/stat.h>
+
 namespace nyamp::models
 {
 namespace
@@ -95,7 +98,30 @@ Status RkllmBackend::Load(const std::string &directory)
     {
       return Status::kBusy;
     }
-  path_ = directory + "/model.rkllm";
+
+  /* Resolve the weights instead of assuming one file name.  A deployment may
+   * lay them out as <directory>/model.rkllm, or hand over the vendor artefact
+   * under its own name.  Absence is reported as not-ready so the caller can
+   * tell "nothing to load here" apart from "the runtime failed".
+   */
+
+  struct stat information;
+  if (stat(directory.c_str(), &information) == 0 &&
+      S_ISREG(information.st_mode))
+    {
+      path_ = directory;
+    }
+  else
+    {
+      path_ = directory + "/model.rkllm";
+      if (stat(path_.c_str(), &information) != 0)
+        {
+          std::fprintf(stderr, "nyampd: no model at %s or %s/model.rkllm\n",
+                       directory.c_str(), directory.c_str());
+          return Status::kNotReady;
+        }
+    }
+
   RKLLMParam parameters = rkllm_createDefaultParam();
   parameters.model_path = path_.c_str();
   parameters.max_context_len = 2048;
@@ -113,6 +139,8 @@ Status RkllmBackend::Load(const std::string &directory)
   callbacks.result_callback = Callback;
   if (rkllm_init(&handle_, &parameters, &callbacks) != 0)
     {
+      std::fprintf(stderr, "nyampd: rkllm_init failed for %s\n",
+                   path_.c_str());
       Unload();
       return Status::kBackendError;
     }
