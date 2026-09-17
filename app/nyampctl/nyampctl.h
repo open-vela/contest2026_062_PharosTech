@@ -42,4 +42,11 @@ int nyampctl_llm_unload(int fd);
 int nyampctl_llm_generate(int fd, const char *source, uint32_t max_new_tokens,
                           bool inline_ids);
 
+/* Write a pattern across the shared region and read it back, so a size or
+ * mapping disagreement with the compute domain is caught here rather than
+ * surfacing later as corrupted audio.  With `keep` set the pattern is left in
+ * place for the peer to inspect; otherwise the region is cleared.
+ */
+int nyampctl_shmem_test(bool keep);
+
 #endif /* __APP_NYAMPCTL_NYAMPCTL_H */
