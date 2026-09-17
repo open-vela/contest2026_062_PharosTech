@@ -5,23 +5,57 @@
  ****************************************************************************/
 
 #include "nyampd_core.h"
+#include "nyampd_llm.h"
 
+#include "nyamp_backends.h"
 #include "nyamp_protocol.h"
 
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <sys/random.h>
 #include <unistd.h>
 
 namespace
 {
+
+/* Milliseconds tick used to drain queued LLM events while idle.  The daemon
+ * must stay responsive to the peer, so the loop never blocks indefinitely on
+ * the transport when a generation is running.
+ */
+
+constexpr int kIdlePollMs = 20;
+
+using BackendFactory = nyamp::LlmService::BackendFactory;
+
+/****************************************************************************
+ * Name: SelectBackendFactory
+ *
+ * Description:
+ *   Pick the LLM backend this build can actually provide.  A build without the
+ *   external RKLLM runtime returns an empty factory, which the service turns
+ *   into an unsupported answer for every LLM request.  Never substitute a test
+ *   backend here: a daemon that answers generate requests without inference is
+ *   worse than one that refuses them.
+ *
+ ****************************************************************************/
+
+BackendFactory SelectBackendFactory()
+{
+#ifdef NYAMP_WITH_RKLLM
+  return &nyamp::models::CreateRkllmBackend;
+#endif
+  return BackendFactory();
+}
 
 std::uint64_t SharedCounterMilliseconds()
 {
@@ -148,6 +182,58 @@ std::size_t CpuInfo(char *output, std::size_t capacity)
   return used;
 }
 
+/****************************************************************************
+ * Name: WriteAll
+ *
+ * Description:
+ *   Write one complete frame.  RPMsg message boundaries are one write each, so
+ *   a short write is a transport failure rather than a reason to retry a
+ *   partial message.
+ *
+ ****************************************************************************/
+
+bool WriteAll(int fd, const std::uint8_t *data, std::size_t size)
+{
+  ssize_t written;
+
+  do
+    {
+      written = write(fd, data, size);
+    }
+  while (written < 0 && errno == EINTR);
+
+  return written == static_cast<ssize_t>(size);
+}
+
+/****************************************************************************
+ * Name: DrainEvents
+ *
+ * Description:
+ *   Flush every queued LLM event to the peer.  Returns false when the
+ *   transport failed, which the caller treats as a fatal error so PID1 can
+ *   restart the daemon with a fresh generation.
+ *
+ ****************************************************************************/
+
+bool DrainEvents(int fd, nyamp::LlmService &llm)
+{
+  for (;;)
+    {
+      nyamp::LlmFrame frame;
+      if (!llm.Poll(&frame))
+        {
+          return true;
+        }
+
+      if (!WriteAll(fd, frame.data, frame.size))
+        {
+          std::fprintf(stderr, "nyampd: event write failed: %s\n",
+                       std::strerror(errno));
+          return false;
+        }
+    }
+}
+
 int Run(const char *requested_device)
 {
   std::uint8_t request[NYAMP_RPMSG_MTU];
@@ -170,7 +256,7 @@ int Run(const char *requested_device)
       device = discovered;
     }
 
-  fd = open(device, O_RDWR | O_CLOEXEC);
+  fd = open(device, O_RDWR | O_CLOEXEC | O_NONBLOCK);
 
   if (fd < 0)
     {
@@ -182,6 +268,15 @@ int Run(const char *requested_device)
   std::fprintf(stderr, "nyampd: generation=%u device=%s\n", generation,
                device);
 
+  /* The service is always constructed so a client can learn from the health
+   * capability mask whether an LLM backend was compiled in.  Without the
+   * external RKLLM runtime the factory is absent and every LLM opcode is
+   * answered unsupported rather than reported as working.
+   */
+
+  nyamp::LlmService llm(generation, SharedCounterMilliseconds,
+                        SelectBackendFactory());
+
   // Standard Linux RPMsg does not announce dynamically assigned addresses.
   // The first message lets the remote learn our endpoint address.
   nyamp_header_s ready{};
@@ -191,13 +286,7 @@ int Run(const char *requested_device)
   ready.request_id = 1;
   ready.generation = generation;
   nyamp_header_encode(response, sizeof(response), &ready);
-  ssize_t announced;
-  do
-    {
-      announced = write(fd, response, NYAMP_WIRE_HEADER_SIZE);
-    }
-  while (announced < 0 && errno == EINTR);
-  if (announced != NYAMP_WIRE_HEADER_SIZE)
+  if (!WriteAll(fd, response, NYAMP_WIRE_HEADER_SIZE))
     {
       std::fprintf(stderr, "nyampd: endpoint announcement failed\n");
       close(fd);
@@ -206,55 +295,82 @@ int Run(const char *requested_device)
 
   for (;;)
     {
-      const ssize_t received = read(fd, request, sizeof(request));
-      std::size_t response_size = 0;
+      struct pollfd pollfd = { fd, POLLIN, 0 };
+      const int ready_count = poll(&pollfd, 1, kIdlePollMs);
 
-      if (received < 0 && errno == EINTR)
+      if (ready_count < 0 && errno != EINTR)
         {
-          continue;
-        }
-
-      if (received <= 0)
-        {
-          std::fprintf(stderr, "nyampd: transport disconnected: %s\n",
-                       received == 0 ? "end of file" : std::strerror(errno));
+          std::fprintf(stderr, "nyampd: transport poll failed: %s\n",
+                       std::strerror(errno));
           close(fd);
           return 1;
         }
 
-      char info[NYAMP_INLINE_MAX - 4];
-      std::size_t info_size = 0;
-      nyamp_header_s header;
-      if (nyamp_header_decode(&header, request,
-                              static_cast<std::size_t>(received)) ==
-              NYAMP_OK &&
-          header.service == NYAMP_SERVICE_HEALTH &&
-          header.opcode == nyamp::kInfoQuery)
+      if (ready_count > 0 && (pollfd.revents & (POLLERR | POLLHUP | POLLNVAL)))
         {
-          info_size = CpuInfo(info, sizeof(info));
+          std::fprintf(stderr, "nyampd: transport disconnected\n");
+          close(fd);
+          return 1;
         }
 
-      const int result = nyamp::Dispatch(
-          request, static_cast<std::size_t>(received),
-          SharedCounterMilliseconds(), generation, response, sizeof(response),
-          &response_size, std::string_view(info, info_size));
-      if (result != NYAMP_OK)
+      if (ready_count > 0 && (pollfd.revents & POLLIN) != 0)
         {
-          std::fprintf(stderr, "nyampd: malformed request: %d\n", result);
-          continue;
+          const ssize_t received = read(fd, request, sizeof(request));
+
+          if (received < 0 && (errno == EINTR || errno == EAGAIN))
+            {
+              if (!DrainEvents(fd, llm))
+                {
+                  close(fd);
+                  return 1;
+                }
+
+              continue;
+            }
+
+          if (received <= 0)
+            {
+              std::fprintf(stderr, "nyampd: transport disconnected: %s\n",
+                           received == 0 ? "end of file"
+                                         : std::strerror(errno));
+              close(fd);
+              return 1;
+            }
+
+          char info[NYAMP_INLINE_MAX - 4];
+          std::size_t info_size = 0;
+          std::size_t response_size = 0;
+          nyamp_header_s header;
+          if (nyamp_header_decode(&header, request,
+                                  static_cast<std::size_t>(received)) ==
+                  NYAMP_OK &&
+              header.service == NYAMP_SERVICE_HEALTH &&
+              header.opcode == nyamp::kInfoQuery)
+            {
+              info_size = CpuInfo(info, sizeof(info));
+            }
+
+          const int result =
+              nyamp::Dispatch(request, static_cast<std::size_t>(received),
+                              SharedCounterMilliseconds(), generation,
+                              response, sizeof(response), &response_size,
+                              std::string_view(info, info_size), &llm);
+          if (result == NYAMP_OK && !WriteAll(fd, response, response_size))
+            {
+              std::fprintf(stderr, "nyampd: transport write failed: %s\n",
+                           std::strerror(errno));
+              close(fd);
+              return 1;
+            }
+
+          if (result != NYAMP_OK)
+            {
+              std::fprintf(stderr, "nyampd: malformed request: %d\n", result);
+            }
         }
 
-      ssize_t written;
-      do
+      if (!DrainEvents(fd, llm))
         {
-          written = write(fd, response, response_size);
-        }
-      while (written < 0 && errno == EINTR);
-
-      if (written != static_cast<ssize_t>(response_size))
-        {
-          std::fprintf(stderr, "nyampd: transport write failed: %s\n",
-                       written < 0 ? std::strerror(errno) : "short write");
           close(fd);
           return 1;
         }
