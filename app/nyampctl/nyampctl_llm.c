@@ -308,6 +308,52 @@ static int nyampctl_llm_read_ids(const char *path, int32_t *ids,
   return used == 0 ? -EINVAL : 0;
 }
 
+/****************************************************************************
+ * Name: nyampctl_llm_parse_ids
+ *
+ * Description:
+ *   Parse comma or space separated ids from a single command line argument.
+ *   A minimal AMP profile may have no filesystem at all, and the product
+ *   domain already holds the token array in memory, so the array must be
+ *   acceptable without a file on disk.
+ *
+ ****************************************************************************/
+
+static int nyampctl_llm_parse_ids(const char *text, int32_t *ids,
+                                  size_t capacity, size_t *count)
+{
+  size_t used = 0;
+  const char *cursor = text;
+
+  while (*cursor != '\0')
+    {
+      char *end = NULL;
+      long value;
+
+      while (*cursor == ',' || *cursor == ' ' || *cursor == '\t')
+        {
+          ++cursor;
+        }
+
+      if (*cursor == '\0')
+        {
+          break;
+        }
+
+      value = strtol(cursor, &end, 10);
+      if (end == cursor || value < 0 || value > INT32_MAX || used >= capacity)
+        {
+          return -EINVAL;
+        }
+
+      ids[used++] = (int32_t)value;
+      cursor = end;
+    }
+
+  *count = used;
+  return used == 0 ? -EINVAL : 0;
+}
+
 static int nyampctl_llm_request(int fd, uint16_t opcode, uint64_t request_id,
                                 const uint8_t *body, size_t body_size)
 {
@@ -321,7 +367,7 @@ static int nyampctl_llm_request(int fd, uint16_t opcode, uint64_t request_id,
     .generation = 0,
     .payload_size = (uint32_t)body_size,
   };
-  struct nyamp_header_s response;
+  struct nyamp_header_s response = { 0 };
   size_t length = 0;
   int32_t status;
   int ret;
@@ -387,10 +433,13 @@ int nyampctl_llm_unload(int fd)
  *   response to each chunk is consumed before the next chunk is written, so
  *   the endpoint never holds two requests at once.
  *
+ *   `source` is either a file path or, with `inline_ids` set, the array
+ *   itself as comma separated decimal ids.
+ *
  ****************************************************************************/
 
-int nyampctl_llm_generate(int fd, const char *ids_path,
-                          uint32_t max_new_tokens)
+int nyampctl_llm_generate(int fd, const char *source, uint32_t max_new_tokens,
+                          bool inline_ids)
 {
   static int32_t ids[NYAMP_LLM_MAX_CHUNK_IDS * 16];
   size_t total = 0;
@@ -398,13 +447,27 @@ int nyampctl_llm_generate(int fd, const char *ids_path,
   uint64_t request_id = nyampctl_llm_request_id();
   int ret;
 
-  ret = nyampctl_llm_read_ids(ids_path, ids, sizeof(ids) / sizeof(ids[0]),
-                              &total);
-  if (ret < 0)
+  if (inline_ids)
     {
-      fprintf(stderr, "nyampctl: cannot read token ids from %s: %d\n",
-              ids_path, -ret);
-      return ret;
+      ret = nyampctl_llm_parse_ids(source, ids, sizeof(ids) / sizeof(ids[0]),
+                                   &total);
+      if (ret < 0)
+        {
+          fprintf(stderr, "nyampctl: cannot parse inline token ids: %d\n",
+                  -ret);
+          return ret;
+        }
+    }
+  else
+    {
+      ret = nyampctl_llm_read_ids(source, ids, sizeof(ids) / sizeof(ids[0]),
+                                  &total);
+      if (ret < 0)
+        {
+          fprintf(stderr, "nyampctl: cannot read token ids from %s: %d\n",
+                  source, -ret);
+          return ret;
+        }
     }
 
   for (offset = 0; offset < total;)

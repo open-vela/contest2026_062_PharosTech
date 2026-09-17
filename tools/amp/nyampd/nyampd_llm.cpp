@@ -66,7 +66,28 @@ models::Status LlmService::Load(const std::string &directory)
           std::make_unique<models::Session>(factory_(), generation_, clock_);
     }
 
-  return session_->Load(directory);
+  const models::Status status = session_->Load(directory);
+
+  /* Record the attempt so the info query can report why a load was refused. */
+  {
+    std::lock_guard<std::mutex> report_lock(report_mutex_);
+    last_load_ = status;
+    last_directory_ = directory;
+  }
+
+  return status;
+}
+
+models::Status LlmService::LastLoadStatus() const
+{
+  std::lock_guard<std::mutex> lock(report_mutex_);
+  return last_load_;
+}
+
+std::string LlmService::LastLoadDirectory() const
+{
+  std::lock_guard<std::mutex> lock(report_mutex_);
+  return last_directory_;
 }
 
 models::Status LlmService::Unload()

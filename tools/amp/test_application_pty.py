@@ -68,7 +68,7 @@ int main(int argc,char **argv) {{
   rc=nyampctl_llm_load(fd,argv[3]);
  }} else if(strcmp(argv[2],"generate")==0) {{
   if(argc!=4)return 2;
-  rc=nyampctl_llm_generate(fd,argv[3],4);
+  rc=nyampctl_llm_generate(fd,argv[3],4,0);
  }} else {{
   return 2;
  }}
