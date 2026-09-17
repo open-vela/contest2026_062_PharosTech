@@ -141,6 +141,25 @@ config RK3576_RPTUN
 		addresses are fixed by Rockchip's rk3576-amp.dtsi and compiled in
 		(see rk3576_rptun.c).
 
+config RK3576_SHMEM
+	bool "AMP shared-memory region"
+	default n
+	depends on RK3576_RPTUN
+	---help---
+		Map the reserved shared region at 0x47c00000 non-cacheable and
+		validate its arena header against the compute domain.
+
+		Audio payloads do not fit the RPMsg inline limit, so they travel
+		through this region while the messages carry only a descriptor.
+		Both domains must agree on the region's size: a disagreement would
+		shift every slot and corrupt data silently, so bring-up reports a
+		mismatch instead of adapting to it.
+
+		The region lies inside DRAM0_BANK1, which is otherwise mapped
+		cacheable.  It is remapped because the peer maps the same pages
+		with plain ioremap, and one physical page shared under two
+		cacheabilities is undefined behaviour.
+
 config RK3576_GPIO
 	bool "GPIO"
 	default n
