@@ -244,12 +244,207 @@ static int test_cancel_has_no_payload(void)
   return 0;
 }
 
+static int test_buffer_descriptor(void)
+{
+  uint8_t payload[NYAMP_BUFFER_SIZE];
+  size_t size = 0;
+  struct nyamp_buffer_s in = {
+    .magic = NYAMP_BUFFER_MAGIC,
+    .version = NYAMP_BUFFER_VERSION,
+    .flags = NYAMP_BUFFER_IN_SHMEM,
+    .offset = 0x1000,
+    .length = 64000,
+    .capacity = 65536,
+    .format = NYAMP_FORMAT_F32,
+    .lease = 0x1122334455667788ULL,
+    .generation = 42,
+    .reserved = 0,
+  };
+  struct nyamp_buffer_s out;
+
+  CHECK(nyamp_buffer_encode(payload, sizeof(payload), &size, &in) == NYAMP_OK);
+  CHECK(size == NYAMP_BUFFER_SIZE);
+  CHECK(nyamp_buffer_decode(&out, payload, size) == NYAMP_OK);
+  CHECK(out.offset == 0x1000 && out.length == 64000 && out.capacity == 65536);
+  CHECK(out.lease == 0x1122334455667788ULL && out.generation == 42);
+  CHECK(out.format == NYAMP_FORMAT_F32 && out.flags == NYAMP_BUFFER_IN_SHMEM);
+
+  /* The descriptor must be self-contained: a stored copy has to validate
+   * without any surrounding message context.
+   */
+  payload[0] ^= 0xff;
+  CHECK(nyamp_buffer_decode(&out, payload, size) == NYAMP_EPROTO);
+  payload[0] ^= 0xff;
+
+  payload[4] = 0xff;
+  CHECK(nyamp_buffer_decode(&out, payload, size) == NYAMP_EPROTO);
+  payload[4] = NYAMP_BUFFER_VERSION;
+
+  /* More valid bytes than the grant holds is impossible by construction. */
+  in.length = in.capacity + 1;
+  CHECK(nyamp_buffer_encode(payload, sizeof(payload), &size, &in) ==
+        NYAMP_EINVAL);
+  in.length = 64000;
+
+  /* An undefined flag bit means the two sides disagree on the format. */
+  in.flags = 0x8000;
+  CHECK(nyamp_buffer_encode(payload, sizeof(payload), &size, &in) ==
+        NYAMP_EINVAL);
+  in.flags = NYAMP_BUFFER_IN_SHMEM;
+
+  /* A short frame is refused rather than read past. */
+  CHECK(nyamp_buffer_decode(&out, payload, NYAMP_BUFFER_SIZE - 1) ==
+        NYAMP_EMSGSIZE);
+  return 0;
+}
+
+static int test_asr_messages(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  size_t size = 0;
+  uint32_t sample_rate = 0, max_samples = 0, sequence = 0;
+  uint32_t total_samples = 0, consumed = 0;
+  uint16_t channels = 0, flags = 0;
+  const char *text = NULL;
+  size_t text_length = 0;
+  struct nyamp_buffer_s buffer = {
+    .magic = NYAMP_BUFFER_MAGIC,
+    .version = NYAMP_BUFFER_VERSION,
+    .flags = NYAMP_BUFFER_IN_SHMEM,
+    .offset = 0x1000,
+    .length = 64000,
+    .capacity = 65536,
+    .format = NYAMP_FORMAT_F32,
+    .lease = 7,
+    .generation = 3,
+  };
+  struct nyamp_buffer_s decoded;
+
+  CHECK(nyamp_asr_begin_encode(payload, sizeof(payload), &size, 16000, 1, 0,
+                               480000) == NYAMP_OK);
+  CHECK(size == NYAMP_ASR_BEGIN_SIZE);
+  CHECK(nyamp_asr_begin_decode(&sample_rate, &channels, &flags, &max_samples,
+                               payload, size) == NYAMP_OK);
+  CHECK(sample_rate == 16000 && channels == 1 && max_samples == 480000);
+
+  CHECK(nyamp_asr_push_encode(payload, sizeof(payload), &size, &buffer, 5, 0,
+                              40000, 40000) == NYAMP_OK);
+  CHECK(size == NYAMP_ASR_PUSH_HEADER_SIZE);
+  CHECK(nyamp_asr_push_decode(&decoded, &sequence, &flags, &total_samples,
+                              &consumed, payload, size) == NYAMP_OK);
+  CHECK(decoded.lease == 7 && sequence == 5 && total_samples == 40000);
+  CHECK(consumed == 40000 && decoded.length == 64000);
+
+  /* Text travels as a delta with its own length, so it needs no NUL. */
+  CHECK(nyamp_asr_partial_encode(payload, sizeof(payload), &size, 9, 40000,
+                                 NYAMP_BUFFER_RESYNC, "world", 5) == NYAMP_OK);
+  CHECK(size == NYAMP_ASR_PARTIAL_HEADER_SIZE + 5);
+  CHECK(nyamp_asr_partial_decode(&sequence, &consumed, &flags, &text,
+                                 &text_length, payload, size) == NYAMP_OK);
+  CHECK(sequence == 9 && consumed == 40000 && text_length == 5);
+  CHECK(memcmp(text, "world", 5) == 0);
+  CHECK((flags & NYAMP_BUFFER_RESYNC) != 0);
+
+  /* Empty text is legal: a window may produce no new words. */
+  CHECK(nyamp_asr_partial_encode(payload, sizeof(payload), &size, 10, 40000, 0,
+                                 NULL, 0) == NYAMP_OK);
+  CHECK(size == NYAMP_ASR_PARTIAL_HEADER_SIZE);
+  CHECK(nyamp_asr_partial_decode(&sequence, &consumed, &flags, &text,
+                                 &text_length, payload, size) == NYAMP_OK);
+  CHECK(text_length == 0);
+
+  /* The largest legal delta must fit the inline payload. */
+  {
+    static char big[NYAMP_ASR_MAX_TEXT + 1];
+    CHECK(nyamp_asr_partial_encode(payload, sizeof(payload), &size, 11, 1, 0,
+                                   big, NYAMP_ASR_MAX_TEXT) == NYAMP_OK);
+    CHECK(size == NYAMP_INLINE_MAX);
+    CHECK(nyamp_asr_partial_encode(payload, sizeof(payload), &size, 11, 1, 0,
+                                   big,
+                                   NYAMP_ASR_MAX_TEXT + 1) == NYAMP_EMSGSIZE);
+  }
+
+  CHECK(nyamp_asr_finish_encode(payload, sizeof(payload), &size,
+                                NYAMP_MODEL_CANCELLED, 12) == NYAMP_OK);
+  {
+    int32_t asr_status = 0;
+    CHECK(nyamp_asr_finish_decode(&asr_status, &sequence, payload, size) ==
+          NYAMP_OK);
+    CHECK(asr_status == NYAMP_MODEL_CANCELLED && sequence == 12);
+  }
+  return 0;
+}
+
+static int test_tts_messages(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  size_t size = 0;
+  uint32_t phoneme_count = 0, speaker_id = 0, bucket_frames = 0;
+  uint32_t sequence = 0, sample_rate = 0, channels = 0, valid_samples = 0;
+  uint32_t total_samples = 0;
+  float speed = 0.0f;
+  struct nyamp_buffer_s buffer = {
+    .magic = NYAMP_BUFFER_MAGIC,
+    .version = NYAMP_BUFFER_VERSION,
+    .flags = NYAMP_BUFFER_IN_SHMEM | NYAMP_BUFFER_FROM_COMPUTE,
+    .offset = 0x101000,
+    .length = 700416, /* 342 frames, not the full 512-frame buffer. */
+    .capacity = 1048576,
+    .format = NYAMP_FORMAT_F32,
+    .lease = 11,
+    .generation = 3,
+  };
+  struct nyamp_buffer_s decoded;
+
+  CHECK(nyamp_tts_synth_encode(payload, sizeof(payload), &size, 95, 1, 1.0f,
+                               512) == NYAMP_OK);
+  CHECK(size == NYAMP_TTS_SYNTH_SIZE);
+  CHECK(nyamp_tts_synth_decode(&phoneme_count, &speaker_id, &speed,
+                               &bucket_frames, payload, size) == NYAMP_OK);
+  CHECK(phoneme_count == 95 && speaker_id == 1 && bucket_frames == 512);
+  CHECK(speed == 1.0f);
+
+  /* The float survives the round trip through its bit pattern. */
+  CHECK(nyamp_tts_synth_encode(payload, sizeof(payload), &size, 4, 2, 0.5f,
+                               512) == NYAMP_OK);
+  CHECK(nyamp_tts_synth_decode(&phoneme_count, &speaker_id, &speed,
+                               &bucket_frames, payload, size) == NYAMP_OK);
+  CHECK(speed == 0.5f);
+
+  CHECK(nyamp_tts_pcm_encode(payload, sizeof(payload), &size, &buffer, 3,
+                             44100, 1, 175104) == NYAMP_OK);
+  CHECK(size == NYAMP_TTS_PCM_HEADER_SIZE);
+  CHECK(size <= NYAMP_INLINE_MAX);
+  CHECK(nyamp_tts_pcm_decode(&decoded, &sequence, &sample_rate, &channels,
+                             &valid_samples, payload, size) == NYAMP_OK);
+  CHECK(sequence == 3 && sample_rate == 44100 && channels == 1);
+  CHECK(valid_samples == 175104);
+
+  /* Valid samples and granted bytes are different quantities: a decoder that
+   * conflated them would report roughly 1.5x the real audio.
+   */
+  CHECK(decoded.length == 700416 && decoded.capacity == 1048576);
+
+  CHECK(nyamp_tts_finish_encode(payload, sizeof(payload), &size,
+                                NYAMP_MODEL_OK, 4, 175104) == NYAMP_OK);
+  CHECK(size == NYAMP_TTS_FINISH_SIZE);
+  {
+    int32_t tts_status = 0;
+    CHECK(nyamp_tts_finish_decode(&tts_status, &sequence, &total_samples,
+                                  payload, size) == NYAMP_OK);
+    CHECK(tts_status == NYAMP_MODEL_OK && sequence == 4 &&
+          total_samples == 175104);
+  }
+  return 0;
+}
+
 int main(void)
 {
   if (test_round_trip() != 0 || test_rejections() != 0 ||
       test_malformed_inputs() != 0 || test_llm_chunk() != 0 ||
       test_llm_token() != 0 || test_llm_finish() != 0 ||
-      test_cancel_has_no_payload() != 0)
+      test_cancel_has_no_payload() != 0 || test_buffer_descriptor() != 0 ||
+      test_asr_messages() != 0 || test_tts_messages() != 0)
     {
       return 1;
     }
