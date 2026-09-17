@@ -23,9 +23,13 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/random.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include "nyamp_shmem_uapi.h"
 
 namespace
 {
@@ -202,8 +206,7 @@ std::size_t ModelInfo(char *output, std::size_t capacity,
   int size;
 
   size = std::snprintf(output, capacity, "data=%s model=%s last_load=%d\n",
-                       stat("/data", &information) == 0 ? "mounted"
-                                                        : "absent",
+                       stat("/data", &information) == 0 ? "mounted" : "absent",
                        directory != nullptr ? directory : "(none)",
                        static_cast<int>(llm.LastLoadStatus()));
   if (size < 0 || static_cast<std::size_t>(size) >= capacity)
@@ -212,6 +215,153 @@ std::size_t ModelInfo(char *output, std::size_t capacity,
     }
 
   return static_cast<std::size_t>(size);
+}
+
+/****************************************************************************
+ * Name: ShmemInfo
+ *
+ * Description:
+ *   Report whether the shared region is mapped and whether the control
+ *   domain's data pattern is present in it.  This is the compute domain's
+ *   half of the handshake: the control domain can write a pattern and then
+ *   read this back to confirm both sides reach the same memory, which is
+ *   otherwise only observable from whatever audio eventually comes out.
+ *
+ ****************************************************************************/
+
+std::size_t ShmemInfo(char *output, std::size_t capacity)
+{
+  static constexpr std::uint32_t kPatternBase = 0x5a5a0000U;
+  static constexpr std::uint32_t kFirstDataWord = 4;
+
+  const int fd = open("/dev/nyamp-shmem", O_RDWR | O_CLOEXEC);
+  if (fd < 0)
+    {
+      /* Report enough to tell the failure modes apart.  A driver that never
+       * registered, a device that was never created, a probe that failed and
+       * a successful probe that did not create the node all look identical
+       * from the device node alone, and each needs a different fix.
+       */
+      struct stat binding;
+      struct stat device;
+      struct stat bound;
+      const char *driver_state =
+          stat("/sys/bus/platform/drivers/nyamp-shmem", &binding) == 0
+              ? "registered"
+              : "unregistered";
+      const char *device_state =
+          stat("/sys/bus/platform/devices/nyamp-shmem", &device) == 0
+              ? "created"
+              : "missing";
+      /* A device link inside the driver directory means probe ran and the
+       * device bound; a device with no link means the two never matched.
+       */
+      const char *bound_state =
+          stat("/sys/bus/platform/drivers/nyamp-shmem/nyamp-shmem", &bound) == 0
+              ? "bound"
+              : "unbound";
+
+      return static_cast<std::size_t>(
+          std::snprintf(output, capacity, "shmem=novnode driver:%s device:%s %s\n",
+                        driver_state, device_state, bound_state));
+    }
+
+  nyamp_shmem_info info{};
+  if (ioctl(fd, NYAMP_SHMEM_IOC_INFO, &info) < 0)
+    {
+      close(fd);
+      return static_cast<std::size_t>(
+          std::snprintf(output, capacity, "shmem=unqueryable\n"));
+    }
+
+  void *mapping =
+      mmap(nullptr, info.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  close(fd);
+
+  if (mapping == MAP_FAILED)
+    {
+      return static_cast<std::size_t>(
+          std::snprintf(output, capacity, "shmem=unmappable\n"));
+    }
+
+  volatile std::uint32_t *region =
+      static_cast<volatile std::uint32_t *>(mapping);
+  const std::uint32_t count = info.size / sizeof(std::uint32_t);
+  std::uint32_t errors = 0;
+
+  for (std::uint32_t index = kFirstDataWord; index < count; ++index)
+    {
+      if (region[index] != (index ^ kPatternBase))
+        {
+          ++errors;
+        }
+    }
+
+  munmap(mapping, info.size);
+
+  return static_cast<std::size_t>(
+      std::snprintf(output, capacity, "shmem=size:%u pattern_errors:%u\n",
+                    info.size, errors));
+}
+
+/****************************************************************************
+ * Name: BootstrapLogInfo
+ *
+ * Description:
+ *   Surface the tail of the previous boot's kernel console.
+ *
+ *   The compute domain has no console of its own -- the board's only UART
+ *   belongs to the control domain -- so a probe that fails during bring-up
+ *   otherwise leaves no trace anywhere reachable.  pstore keeps the console
+ *   in a reserved region across a reboot, so reading it back is the only way
+ *   to see why bring-up failed.
+ *
+ ****************************************************************************/
+
+std::size_t BootstrapLogInfo(char *output, std::size_t capacity)
+{
+  /* The inline payload is 456 bytes and other fields share it, so only a
+   * short tail fits.  That is still enough to catch a probe failure, which
+   * is what this exists for.
+   */
+  const std::size_t limit = capacity > 200 ? 200 : capacity;
+
+  std::FILE *console = std::fopen("/sys/fs/pstore/console-ramoops-0", "r");
+  if (console == nullptr)
+    {
+      return static_cast<std::size_t>(
+          std::snprintf(output, capacity, "bootlog=unavailable\n"));
+    }
+
+  char buffer[201];
+  std::size_t used = 0;
+
+  while (used < limit)
+    {
+      const std::size_t got =
+          std::fread(buffer + used, 1, limit - used, console);
+      if (got == 0)
+        {
+          break;
+        }
+
+      used += got;
+    }
+
+  std::fclose(console);
+  buffer[used] = '\0';
+
+  /* Collapse newlines so the record stays one line in the info response. */
+  for (std::size_t index = 0; index < used; ++index)
+    {
+      if (buffer[index] == '\n')
+        {
+          buffer[index] = '|';
+        }
+    }
+
+  return static_cast<std::size_t>(std::snprintf(
+      output, capacity, "bootlog=%.*s\n", static_cast<int>(used), buffer));
 }
 
 /****************************************************************************
@@ -383,8 +533,19 @@ int Run(const char *requested_device)
               /* Append the compute-domain view of the model so a refused
                * load can be diagnosed from the control domain.
                */
-              info_size += ModelInfo(info + info_size, sizeof(info) - info_size,
-                                     llm, llm.LastLoadDirectory().c_str());
+              info_size +=
+                  ModelInfo(info + info_size, sizeof(info) - info_size, llm,
+                            llm.LastLoadDirectory().c_str());
+              /* And the shared region, so the control domain can confirm both
+               * sides reach the same memory without needing a console here.
+               */
+              info_size +=
+                  ShmemInfo(info + info_size, sizeof(info) - info_size);
+              /* And the previous boot's kernel log tail: a probe that fails
+               * during bring-up is otherwise invisible from this side.
+               */
+              info_size +=
+                  BootstrapLogInfo(info + info_size, sizeof(info) - info_size);
             }
 
           const int result =

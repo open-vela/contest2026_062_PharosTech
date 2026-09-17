@@ -19,7 +19,8 @@ add_subdirectory(../models models)
 
 add_library(nyampd_core STATIC nyampd_core.cpp nyampd_llm.cpp)
 target_include_directories(
-  nyampd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../models)
+  nyampd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../models
+                     ${CMAKE_CURRENT_SOURCE_DIR}/../linux)
 target_link_libraries(nyampd_core PUBLIC nyamp_protocol nyamp_models)
 target_compile_options(nyampd_core PRIVATE -Wall -Wextra -Werror)
 
@@ -39,3 +40,11 @@ target_compile_options(nyampd_core_test PRIVATE -Wall -Wextra -Werror)
 
 enable_testing()
 add_test(NAME nyampd_core_test COMMAND nyampd_core_test)
+
+# Self-test for the shared region.  It only touches the driver, so it runs
+# standalone: a mapping or geometry disagreement is found here rather than
+# inside a transcription.
+add_executable(nyamp_shmem_test nyamp_shmem_test.cpp)
+target_include_directories(nyamp_shmem_test PRIVATE
+                           ${CMAKE_CURRENT_SOURCE_DIR}/../linux)
+target_compile_options(nyamp_shmem_test PRIVATE -Wall -Wextra -Werror)
