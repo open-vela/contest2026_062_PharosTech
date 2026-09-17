@@ -62,6 +62,7 @@ jobs:
         run: |
           python3 tools/amp/test_amp_topology.py
           python3 tools/amp/test_manifest_layout.py
+          python3 tools/amp/test_shmem_layout.py
           cmake -S tools/amp/nyampd -B out/nyampd
           cmake --build out/nyampd -j2
           ctest --test-dir out/nyampd --output-on-failure
