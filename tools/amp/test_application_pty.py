@@ -45,25 +45,63 @@ static ssize_t nyamp_test_read(int fd,void *buffer,size_t capacity) {{
 #define main unused_nyampctl_main
 #include "{source}"
 #undef main
-int main(int argc,char **argv) {{
- if(argc!=3)return 2;
- return nyampctl_query(atoi(argv[1]),atoi(argv[2]))<0?1:0;
-}}
 ''')
     protocol=repo/'tools/amp/protocol'
+    client_dir=repo/'app/nyampctl'
+    (root/'driver.c').write_text(f'''#include "nyamp_protocol.h"
+#include "nyampctl.h"
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+/* argv[1] is fd, argv[2] selects the entry point under test. */
+int main(int argc,char **argv) {{
+ int fd, rc;
+ if(argc<3)return 2;
+ fd=atoi(argv[1]);
+ if(strcmp(argv[2],"health")==0) {{
+  if(argc!=4)return 2;
+  rc=nyampctl_query(fd,(uint16_t)atoi(argv[3]));
+ }} else if(strcmp(argv[2],"load")==0) {{
+  if(argc!=4)return 2;
+  rc=nyampctl_llm_load(fd,argv[3]);
+ }} else if(strcmp(argv[2],"generate")==0) {{
+  if(argc!=4)return 2;
+  rc=nyampctl_llm_generate(fd,argv[3],4);
+ }} else {{
+  return 2;
+ }}
+ if(rc<0){{fprintf(stderr,"nyampctl: failed: %d\\n",rc);return 1;}}
+ return 0;
+}}
+''')
     subprocess.run(['cc','-std=gnu11','-D_GNU_SOURCE','-Wall','-Werror',
-                    '-I',str(root),'-I',str(protocol),str(root/'client.c'),
-                    str(protocol/'nyamp_protocol.c'),'-o',str(root/'client')],check=True)
+                    '-I',str(root),'-I',str(protocol),'-I',str(client_dir),
+                    str(root/'client.c'), str(root/'driver.c'),
+                    str(client_dir/'nyampctl_llm.c'),
+                    str(protocol/'nyamp_protocol.c'),'-o',str(root/'client')],
+                   check=True)
     master,slave=pty.openpty()
     tty.setraw(slave)
     process=subprocess.Popen([str(daemon),os.ttyname(slave)],stderr=subprocess.PIPE,text=True)
     try:
         for opcode in (1,2):
-            result=subprocess.run([str(root/'client'),str(master),str(opcode)],
+            result=subprocess.run([str(root/'client'),str(master),'health',str(opcode)],
                                   pass_fds=(master,),capture_output=True,text=True,timeout=10)
             assert result.returncode==0, result
             assert ('nyamp health ok:' if opcode==1 else 'online=') in result.stdout
             print(result.stdout,flush=True)
+
+        # The real daemon has no LLM backend compiled in, so a load must be
+        # refused rather than reported as working.  This still exercises the
+        # client's real framing and response correlation on the wire.
+        load=subprocess.run([str(root/'client'),str(master),'load','/data/model'],
+                            pass_fds=(master,),capture_output=True,text=True,timeout=10)
+        assert load.returncode!=0, load
+        assert 'status=-9' in load.stderr, load.stderr
+        print('llm load refused as unsupported without a backend',flush=True)
+
         print('NYAMP_APPLICATION_PTY_PASS')
     finally:
         process.terminate()

@@ -8,3 +8,6 @@
 .depend
 .built
 Make.dep
+
+# Python bytecode from tools/amp test helpers
+__pycache__/
