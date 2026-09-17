@@ -112,6 +112,14 @@ public:
   /* Pop one encoded event frame.  Returns false when nothing is queued. */
   bool Poll(LlmFrame *frame);
 
+  /* Outcome of the most recent Load, and the directory it was asked for.
+   * Exposed so the control domain can diagnose a refused load through the
+   * info query rather than needing a console on this side.
+   */
+
+  models::Status LastLoadStatus() const;
+  std::string LastLoadDirectory() const;
+
 private:
   struct PendingChunks
   {
@@ -155,6 +163,10 @@ private:
 
   std::mutex pending_mutex_;
   PendingChunks pending_;
+
+  mutable std::mutex report_mutex_;
+  models::Status last_load_ = models::Status::kInvalid;
+  std::string last_directory_;
 };
 
 } // namespace nyamp
