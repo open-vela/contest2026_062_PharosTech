@@ -76,10 +76,20 @@ int main(int argc,char **argv) {{
  return 0;
 }}
 ''')
+    # The real shared-region client is excluded here: it reaches the region
+    # directly through a chip header that only exists in a firmware build, and
+    # this harness exercises the transport, not the region.
+    (root / 'shmem_stub.c').write_text(
+        '#include "nyampctl.h"\n'
+        'int nyampctl_shmem_test(bool keep)\n'
+        '{\n'
+        '  (void)keep;\n'
+        '  return -1;\n'
+        '}\n')
     subprocess.run(['cc','-std=gnu11','-D_GNU_SOURCE','-Wall','-Werror',
                     '-I',str(root),'-I',str(protocol),'-I',str(client_dir),
                     str(root/'client.c'), str(root/'driver.c'),
-                    str(client_dir/'nyampctl_llm.c'),
+                    str(client_dir/'nyampctl_llm.c'), str(root/'shmem_stub.c'),
                     str(protocol/'nyamp_protocol.c'),'-o',str(root/'client')],
                    check=True)
     master,slave=pty.openpty()

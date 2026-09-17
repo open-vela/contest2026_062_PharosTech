@@ -52,6 +52,17 @@ def parse_dtsi(path: Path) -> dict[str, tuple[int, int]]:
     require(r"mboxes\s*=\s*<&mailbox0\s+0\s+&mailbox3\s+0>;", text, path)
     require(r"rockchip,link-id\s*=\s*<0x03>;", text, path)
     require(r"GIC_AMP_IRQ_CFG_ROUTE\(174,", text, path)
+
+    # The shared region must stay no-map: that is what keeps it out of the
+    # linear mapping and the page allocator.  Dropping it would let the kernel
+    # hand the pages to something else while the control domain is still
+    # writing audio into them.  The region is referenced by a separate node
+    # rather than carrying a compatible itself, because the kernel only
+    # instantiates reserved-memory children on its own allow-list.
+    require(r'amp_shmem_reserved:\s*amp-shmem@47c00000\s*\{[^}]*'
+            r'\bno-map\s*;', text, path)
+    require(r'compatible\s*=\s*"nyabula,amp-shmem";[^}]*'
+            r'memory-region\s*=\s*<&amp_shmem_reserved>;', text, path)
     for cpu in range(4):
         require(rf'/delete-node/\s*&cpu_l{cpu}\s*;', text, path)
         require(rf'&cpu_b{cpu}\s*\{{\s*status\s*=\s*"okay";', text, path)
