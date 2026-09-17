@@ -68,6 +68,18 @@
 			no-map;
 		};
 
+		/* Audio and image payloads are far past the RPMsg inline limit, so
+		 * the two domains exchange them through this region and the messages
+		 * carry only a descriptor.  no-map keeps it out of the linear
+		 * mapping and the page allocator; the driver maps it with ioremap
+		 * and the control domain maps the same pages the same way, so
+		 * neither side has to maintain cache state for the other.
+		 *
+		 * Declared without a compatible here on purpose: the kernel only
+		 * instantiates reserved-memory children whose compatible is on its
+		 * own allow-list, and the driver below claims the region by
+		 * referencing it instead.
+		 */
 		amp_shmem_reserved: amp-shmem@47c00000 {
 			reg = <0x0 0x47c00000 0x0 0x400000>;
 			no-map;
@@ -92,6 +104,17 @@
 
 	fiq-debugger {
 		status = "disabled";
+	};
+
+	/* The shared region's consumer.  It sits at the top level because the
+	 * kernel only creates platform devices for reserved-memory children on
+	 * its own allow-list; referencing the region from a normal node keeps
+	 * the driver out of that list.
+	 */
+	nyamp_shmem: nyamp-shmem {
+		compatible = "nyabula,amp-shmem";
+		memory-region = <&amp_shmem_reserved>;
+		status = "okay";
 	};
 };
 
