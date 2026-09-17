@@ -236,13 +236,14 @@ int main(int argc, char *argv[])
               "       %s llm load <model-directory-or-file>\n"
               "       %s llm unload\n"
               "       %s llm generate <token-ids-file> [max-new-tokens]\n"
-              "       %s llm generate --inline <id,id,...> [max-new-tokens]\n",
-              argv[0], argv[0], argv[0], argv[0], argv[0]);
+              "       %s llm generate --inline <id,id,...> [max-new-tokens]\n"
+              "       %s shmem test [keep]\n",
+              argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
       return 2;
     }
 
   if (strcmp(argv[1], "health") != 0 && strcmp(argv[1], "info") != 0 &&
-      strcmp(argv[1], "llm") != 0)
+      strcmp(argv[1], "llm") != 0 && strcmp(argv[1], "shmem") != 0)
     {
       fprintf(stderr, "nyampctl: unknown command: %s\n", argv[1]);
       return 2;
@@ -252,6 +253,23 @@ int main(int argc, char *argv[])
     {
       fprintf(stderr, "nyampctl: llm needs load|unload|generate\n");
       return 2;
+    }
+
+  /* The shared region is reached directly, not through the RPMsg endpoint,
+   * so it needs no control channel and no peer to be up.
+   */
+
+  if (strcmp(argv[1], "shmem") == 0)
+    {
+      if (argc < 3 || strcmp(argv[2], "test") != 0)
+        {
+          fprintf(stderr, "nyampctl: shmem needs test [keep]\n");
+          return 2;
+        }
+
+      return nyampctl_shmem_test(argc > 3 && strcmp(argv[3], "keep") == 0) < 0
+                 ? 1
+                 : 0;
     }
 
   opcode = strcmp(argv[1], "info") == 0 ? NYAMPCTL_INFO_OPCODE

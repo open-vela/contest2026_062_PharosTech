@@ -10,6 +10,7 @@ if(CONFIG_EXAMPLES_NYAMPCTL)
     SRCS
     nyampctl_main.c
     nyampctl_llm.c
+    nyampctl_shmem.c
     ${NYAMP_PROTOCOL_DIR}/nyamp_protocol.c
     INCLUDE_DIRECTORIES
     ${CMAKE_CURRENT_LIST_DIR}
