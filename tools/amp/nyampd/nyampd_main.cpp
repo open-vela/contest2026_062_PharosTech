@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <string_view>
 
 #include <dirent.h>
@@ -23,6 +24,7 @@
 #include <limits.h>
 #include <poll.h>
 #include <sys/random.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace
@@ -180,6 +182,36 @@ std::size_t CpuInfo(char *output, std::size_t capacity)
 
   std::fclose(file);
   return used;
+}
+
+/****************************************************************************
+ * Name: LlmInfo
+ *
+ * Description:
+ *   Report what the compute domain can actually see, so a control-domain
+ *   client can diagnose a refused load without needing a console on this
+ *   side.  Only facts are printed: the model directory that was requested,
+ *   whether the storage it lives on is mounted, and the last load outcome.
+ *
+ ****************************************************************************/
+
+std::size_t ModelInfo(char *output, std::size_t capacity,
+                      const nyamp::LlmService &llm, const char *directory)
+{
+  struct stat information;
+  int size;
+
+  size = std::snprintf(output, capacity, "data=%s model=%s last_load=%d\n",
+                       stat("/data", &information) == 0 ? "mounted"
+                                                        : "absent",
+                       directory != nullptr ? directory : "(none)",
+                       static_cast<int>(llm.LastLoadStatus()));
+  if (size < 0 || static_cast<std::size_t>(size) >= capacity)
+    {
+      return 0;
+    }
+
+  return static_cast<std::size_t>(size);
 }
 
 /****************************************************************************
@@ -348,6 +380,11 @@ int Run(const char *requested_device)
               header.opcode == nyamp::kInfoQuery)
             {
               info_size = CpuInfo(info, sizeof(info));
+              /* Append the compute-domain view of the model so a refused
+               * load can be diagnosed from the control domain.
+               */
+              info_size += ModelInfo(info + info_size, sizeof(info) - info_size,
+                                     llm, llm.LastLoadDirectory().c_str());
             }
 
           const int result =

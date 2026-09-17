@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <poll.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -232,10 +233,11 @@ int main(int argc, char *argv[])
     {
       fprintf(stderr,
               "usage: %s health|info\n"
-              "       %s llm load <model-directory>\n"
+              "       %s llm load <model-directory-or-file>\n"
               "       %s llm unload\n"
-              "       %s llm generate <token-ids-file> [max-new-tokens]\n",
-              argv[0], argv[0], argv[0], argv[0]);
+              "       %s llm generate <token-ids-file> [max-new-tokens]\n"
+              "       %s llm generate --inline <id,id,...> [max-new-tokens]\n",
+              argv[0], argv[0], argv[0], argv[0], argv[0]);
       return 2;
     }
 
@@ -294,12 +296,26 @@ int main(int argc, char *argv[])
             {
               ret = nyampctl_llm_unload(fd);
             }
-          else if (strcmp(argv[2], "generate") == 0 &&
-                   (argc == 4 || argc == 5))
+          else if (strcmp(argv[2], "generate") == 0 && argc >= 4)
             {
+              bool inline_ids = strcmp(argv[3], "--inline") == 0;
+              const char *source = inline_ids ? argv[4] : argv[3];
+              int value_index = inline_ids ? 5 : 4;
               uint32_t max_new_tokens =
-                  argc == 5 ? (uint32_t)strtoul(argv[4], NULL, 10) : 128;
-              ret = nyampctl_llm_generate(fd, argv[3], max_new_tokens);
+                  argc > value_index
+                      ? (uint32_t)strtoul(argv[value_index], NULL, 10)
+                      : 128;
+
+              if (inline_ids && argc < 5)
+                {
+                  fprintf(stderr, "nyampctl: --inline needs token ids\n");
+                  ret = -EINVAL;
+                }
+              else
+                {
+                  ret = nyampctl_llm_generate(fd, source, max_new_tokens,
+                                              inline_ids);
+                }
             }
           else
             {

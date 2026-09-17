@@ -27,6 +27,7 @@
  *
  ****************************************************************************/
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Query the health or info opcode on an already bound endpoint. */
@@ -34,7 +35,11 @@ int nyampctl_query(int fd, uint16_t opcode);
 
 int nyampctl_llm_load(int fd, const char *directory);
 int nyampctl_llm_unload(int fd);
-int nyampctl_llm_generate(int fd, const char *ids_path,
-                          uint32_t max_new_tokens);
+
+/* Generate from a token-id file, or from comma separated ids directly when
+ * `inline_ids` is set (a minimal profile may have no filesystem at all).
+ */
+int nyampctl_llm_generate(int fd, const char *source, uint32_t max_new_tokens,
+                          bool inline_ids);
 
 #endif /* __APP_NYAMPCTL_NYAMPCTL_H */
