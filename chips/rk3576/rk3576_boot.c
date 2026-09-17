@@ -48,6 +48,9 @@
 #include "hardware/rk3576_memorymap.h"
 #include "rk3576_boot.h"
 #include "rk3576_serial.h"
+#ifdef CONFIG_RK3576_SHMEM
+#include <arch/chip/rk3576_shmem.h>
+#endif
 
 #ifdef CONFIG_RK3576_DMA_ALLOC
 #include "rk3576_dma_alloc.h"
@@ -74,6 +77,19 @@ static const struct arm_mmu_region g_mmu_regions[] = {
 
   MMU_REGION_FLAT_ENTRY("DRAM0_BANK1", CONFIG_RAMBANK1_ADDR,
                         CONFIG_RAMBANK1_SIZE, MT_NORMAL | MT_RW | MT_SECURE),
+
+#ifdef CONFIG_RK3576_SHMEM
+
+  /* The AMP shared region lies inside BANK1 and must be remapped
+   * non-cacheable: the compute domain maps the same pages with plain ioremap,
+   * and sharing one physical page under two cacheabilities is undefined
+   * behaviour.  It is 2 MiB aligned and exactly two 2 MiB blocks long, so it
+   * can be carved out without splitting the surrounding block mapping.
+   */
+
+  MMU_REGION_FLAT_ENTRY("AMP_SHMEM", RK3576_SHMEM_BASE, RK3576_SHMEM_SIZE,
+                        MT_NORMAL_NC | MT_RW | MT_SECURE),
+#endif
 
 #ifdef CONFIG_RK3576_DMA_ALLOC
   MMU_REGION_FLAT_ENTRY("DMA_HEAP", RK3576_DMA_HEAP_ADDR, RK3576_DMA_HEAP_SIZE,
