@@ -3,6 +3,7 @@
 
 REPO_NAME      ?= contest2026_062_PharosTech
 VELA_ROOT      ?= $(abspath ..)
+REPO_DIR       ?= $(abspath .)
 PRODUCT_CONFIG ?= product
 JOBS           ?= 4
 PY             ?= python3

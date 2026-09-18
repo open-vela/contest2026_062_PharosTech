@@ -19,7 +19,7 @@
 include product/product.mk
 
 .DEFAULT_GOAL := help
-.PHONY: help all product nuttx amp-nuttx linux nyampd initramfs amp nboot rkbin \
+.PHONY: help all setup product nuttx amp-nuttx linux nyampd initramfs amp nboot rkbin \
         data web fonts sd emmc flash-ota flash-amp check clean distclean
 
 help: ## Show this help
@@ -104,6 +104,9 @@ flash-amp: ## Stage amp.itb into the amp_b slot via fastboot and activate
 	fastboot stage $(OUT)/amp.itb && fastboot oem board:flash:amp_b && fastboot oem board:activate:amp_b
 
 # ---------------------------------------------------------------- gates
+setup: ## Wire this repo into the openvela workspace (manifest <linkfile> equivalents)
+	cd $(VELA_ROOT) && $(REPO_DIR)/tools/setup_workspace.sh $(REPO_DIR)
+
 check: ## Host-side gates (layout, bootctrl, protocol, format)
 	$(PY) tools/amp/validate_amp_layout.py
 	$(PY) -m unittest discover -s tools/amp -p 'test_*.py'
