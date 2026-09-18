@@ -38,10 +38,25 @@
 		amp-cpu-aff-maskbits = /bits/ 64 <
 			0x0 0x1 0x1 0x2 0x2 0x4 0x3 0x8
 			0x100 0x10 0x101 0x20 0x102 0x40 0x103 0x80>;
+		/* Interrupts owned by this domain.  Linux brings up the GIC
+		 * distributor and routes every SPI to the A72 cluster by default,
+		 * so anything this side needs must be listed here or it never
+		 * arrives: UART0 for the console, MAILBOX3 for the transport, and
+		 * the three the on-board codec needs -- SAI1 for samples, I2C3 for
+		 * the codec's registers, and PL330 dmac0 which moves both.
+		 */
 		amp-irqs = /bits/ 64 <
 			GIC_AMP_IRQ_CFG_ROUTE(108, 0x80,
 				NYABULA_CPU_AFFINITY(0, 0))
 			GIC_AMP_IRQ_CFG_ROUTE(174, 0x80,
+				NYABULA_CPU_AFFINITY(0, 0))
+			GIC_AMP_IRQ_CFG_ROUTE(220, 0x80,
+				NYABULA_CPU_AFFINITY(0, 0))
+			GIC_AMP_IRQ_CFG_ROUTE(123, 0x80,
+				NYABULA_CPU_AFFINITY(0, 0))
+			GIC_AMP_IRQ_CFG_ROUTE(96, 0x80,
+				NYABULA_CPU_AFFINITY(0, 0))
+			GIC_AMP_IRQ_CFG_ROUTE(97, 0x80,
 				NYABULA_CPU_AFFINITY(0, 0))>;
 		status = "okay";
 	};
@@ -119,6 +134,33 @@
 };
 
 &uart0 {
+	status = "disabled";
+};
+
+/* The on-board codec belongs to the control domain in this split, so Linux
+ * must release the whole path to it: the I2S controller that carries samples,
+ * the I2C bus that carries the codec's registers, the DMA controller that
+ * moves both, and the sound card that would otherwise bind them.  Releasing
+ * only the codec would leave Linux driving a controller the other side owns.
+ *
+ * These are addressed by path rather than by label: the labels sai1, i2c3 and
+ * dmac0 exist on other Rockchip parts in the same tree and would resolve to
+ * the wrong node here.
+ */
+
+&{/sai@2a610000} {
+	status = "disabled";
+};
+
+&{/i2c@2ac60000} {
+	status = "disabled";
+};
+
+&{/dma-controller@2ab90000} {
+	status = "disabled";
+};
+
+&{/es8388-sound} {
 	status = "disabled";
 };
 
