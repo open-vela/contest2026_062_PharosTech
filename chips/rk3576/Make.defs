@@ -21,8 +21,7 @@
 include common/Make.defs
 
 # Rockchip RK3576 specific C source files
-CHIP_CSRCS  = rk3576_boot.c rk3576_serial.c rk3576_clk_tree.c \
-              rk3576_addrenv.c
+CHIP_CSRCS  = rk3576_boot.c rk3576_serial.c rk3576_clk_tree.c
 
 ifeq ($(CONFIG_PM),y)
 CHIP_CSRCS += rk3576_pminitialize.c
@@ -60,7 +59,11 @@ ifeq ($(CONFIG_RK3576_EMMC),y)
 CHIP_CSRCS += rk3576_emmc.c
 endif
 
-ifneq ($(filter y,$(CONFIG_RK3576_DMA) $(CONFIG_RK3576_USBHOST)),)
+# The generic drivers/misc/addrenv.c provides the same up_addrenv_va_to_pa
+# when DEV_SIMPLE_ADDRENV is selected, and the two definitions collide at link
+# time.  Prefer the generic one where it is enabled: it is the maintained copy,
+# and this one is a fork of an older revision of it.
+ifneq ($(CONFIG_DEV_SIMPLE_ADDRENV),y)
 CHIP_CSRCS += rk3576_addrenv.c
 endif
 
