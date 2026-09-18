@@ -402,10 +402,12 @@ static enum bt_buf_type_e sv6621_bluetooth_buffer_type(uint8_t h4_type)
       return BT_ISO_IN;
     }
 
+#ifdef CONFIG_SV6621_BT_SCO
   if (h4_type == SV6621_BT_H4_SCO)
     {
       return BT_SCO_IN;
     }
+#endif
 
   return BT_EVT;
 }
@@ -522,10 +524,12 @@ static int sv6621_bluetooth_send(FAR struct bt_driver_s *driver,
         channel = SV6621_CHANNEL_BT_ISO;
         break;
 
+#ifdef CONFIG_SV6621_BT_SCO
       case BT_SCO_OUT:
         frame[0] = SV6621_BT_H4_SCO;
         channel = SV6621_CHANNEL_BT_AUDIO;
         break;
+#endif
 
       default:
         return -ENOTSUP;
