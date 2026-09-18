@@ -78,6 +78,11 @@ static int ny_product_worker(int argc, char **argv)
       int media_ret = ny_product_media_tick();
       if (ret == 0)
         ret = media_ret;
+#ifdef CONFIG_NYABULA_CORE_NETWORK
+      int network_ret = ny_product_network_tick();
+      if (ret == 0)
+        ret = network_ret;
+#endif
 #ifdef CONFIG_NYABULA_CORE_AGENT
       int agent_ret = ny_agent_automation_tick();
       if (ret == 0)
@@ -90,6 +95,9 @@ static int ny_product_worker(int argc, char **argv)
     }
 
   ny_product_media_shutdown();
+#ifdef CONFIG_NYABULA_CORE_NETWORK
+  ny_product_network_shutdown();
+#endif
 #ifdef CONFIG_NYABULA_CORE_WEATHER
   ny_product_weather_shutdown();
 #endif
