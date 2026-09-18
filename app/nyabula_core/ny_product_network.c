@@ -192,7 +192,7 @@ static void ny_net_default_ap_ssid(char *out, size_t size)
   snprintf(out, size, NY_NET_AP_SSID_FMT, mac[4], mac[5]);
 }
 
-static int ny_net_query_ipv4(char *out, size_t size)
+static int __attribute__((unused)) ny_net_query_ipv4(char *out, size_t size)
 {
   int fd = socket(AF_INET, SOCK_DGRAM, 0);
   struct ifreq request = { 0 };
