@@ -60,6 +60,17 @@ for f in "$WS"/apps/Kconfig "$WS"/apps/*/Kconfig "$WS"/packages/Kconfig "$WS"/pa
   fi
 done
 
+# apps/ and packages/ patches nyabula_core depends on (idempotent: skipped
+# when already applied). See patches/README.md.
+bash "$REPO/tools/apply_dependency_patches.sh" "$WS" "$REPO/patches"
+
+# generated eye fonts are gitignored (need lv_font_conv + font downloads)
+FONTS="$REPO/app/nyabula/src/generated/fonts"
+if ! ls "$FONTS"/nyabula_font_*.c >/dev/null 2>&1; then
+  echo "  WARNING: $FONTS has no nyabula_font_*.c - run app/nyabula/tools/generate_fonts.py"
+  echo "           or copy them from a previous build; the final link needs them."
+fi
+
 # firmware blobs are gitignored; remind the operator
 FW="$REPO/drivers/drivers/sv6621/firmware"
 for f in SWT6621S_IRAM_SDIO.bin SWT6621S_DRAM_SDIO.bin SWT6621S_NV_SDIO_ALONE.bin SWT6621S_SEEKWAVE_R00001.bin sv6160lite.nvbin; do

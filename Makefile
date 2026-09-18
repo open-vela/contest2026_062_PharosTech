@@ -75,7 +75,7 @@ web: ## Build the browser control panel
 	cd app/nyabula_web && $(PNPM) install --frozen-lockfile && $(PNPM) build
 
 data: $(OUT) ## Initial /data image (config template + web dist + build.json)
-	tools/k7_pack/build_data_img.sh product/data $(WEB_DIST) $(VER) $(OUT)/data.img
+	MODELS_DIR=$(MODELS_DIR) tools/k7_pack/build_data_img.sh product/data $(WEB_DIST) $(VER) $(OUT)/data.img $(DATA_MIB)
 
 # ---------------------------------------------------------------- disk images
 sd: nuttx rkbin ## Whole-disk SD image
@@ -83,14 +83,8 @@ sd: nuttx rkbin ## Whole-disk SD image
 	@ls -l $(OUT)/sd/*.img
 
 emmc: nuttx rkbin ## RKDevTool eMMC package (Loader + parameter + partition images)
-	tools/k7_pack/build_emmc.sh $(OUT)/nuttx.bin $(NBOOT_DIR) $(RKBIN) $(OUT)/emmc
-	@if [ -f $(OUT)/amp.itb ]; then \
-	    cp $(OUT)/amp.itb $(OUT)/emmc/$(EMMC_PKG)/Image/amp_a.img; \
-	    cp $(OUT)/amp.itb $(OUT)/emmc/$(EMMC_PKG)/Image/amp_b.img; \
-	    echo "amp slots populated"; fi
-	@if [ -f $(OUT)/data.img ]; then \
-	    cp $(OUT)/data.img $(OUT)/emmc/$(EMMC_PKG)/Image/data.img; echo "data populated"; fi
-	cd $(OUT)/emmc/$(EMMC_PKG) && sha256sum Image/* > SHA256SUMS
+	DATA_IMG=$(OUT)/data.img AMP_ITB=$(OUT)/amp.itb tools/k7_pack/build_emmc.sh $(OUT)/nuttx.bin $(NBOOT_DIR) $(RKBIN) $(OUT)/emmc
+	cd $(OUT)/emmc/$(EMMC_PKG) && sha256sum package-file README.txt Image/* > SHA256SUMS
 
 product: emmc sd ## Final aggregate: emmc package + sd image, zipped with version
 	cd $(OUT) && rm -f $(PRODUCT_ZIP) && zip -qr $(PRODUCT_ZIP) emmc/$(EMMC_PKG) sd/*.img nuttx.elf nuttx.config
