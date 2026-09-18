@@ -274,3 +274,19 @@ config NYABULA_CORE_MOCK_CAPABILITIES
 		the simulator and must remain disabled on production boards.
 
 endif
+
+config NYABULA_CORE_NETWORK
+	bool "Native Wi-Fi provisioning (SoftAP -> STA state machine)"
+	default y
+	depends on NYABULA_CORE_PRODUCT && NET && WIRELESS_WAPI
+	select NETUTILS_NETLIB
+	select NETUTILS_DHCPC
+	select NETUTILS_DHCPD if NET_UDP
+	---help---
+		network.* topics: SoftAP provisioning with QR payload, station
+		connect with DHCP, credentials persisted in the product store.
+
+config NYABULA_CORE_NETWORK_IFNAME
+	string "Wi-Fi interface name"
+	default "wlan0"
+	depends on NYABULA_CORE_NETWORK

@@ -53,6 +53,9 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
          ny_product_cli.c ny_product.c ny_product_timers.c ny_product_runtime.c
          ny_product_alarms.c ny_product_notifications.c ny_product_briefing.c
          ny_product_eyes.c ny_product_device.c ny_product_media.c)
+    if(CONFIG_NYABULA_CORE_NETWORK)
+      list(APPEND NYABULA_CORE_SRCS ny_product_network.c)
+    endif()
   endif()
   if(CONFIG_NYABULA_CORE_EYE)
     list(APPEND NYABULA_CORE_DEPENDS nyabula_eye)
