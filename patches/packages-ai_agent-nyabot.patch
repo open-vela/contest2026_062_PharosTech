@@ -1,0 +1,3440 @@
+--- a/CMakeLists.txt	2026-06-30 23:15:19.586649615 +0800
++++ b/CMakeLists.txt	2026-09-12 11:35:21.000000000 +0800
+@@ -31,6 +31,7 @@
+     src/llm/llm_cache.c
+     src/infra/http_proxy.c
+     src/infra/vela_tls.c
++    src/infra/http_response.c
+     src/infra/config_store.c
+     src/infra/network_manager.c
+     src/infra/cron_service.c
+@@ -199,6 +200,11 @@
+     list(APPEND AGENT_INCDIRS ${ALSA_DIRECT_INC})
+   endif()
+ 
++  set(AGENT_DEPENDS mbedtls)
++  if(CONFIG_AI_AGENT_MQTT)
++    list(APPEND AGENT_DEPENDS mqttc)
++  endif()
++
+   nuttx_add_application(
+     NAME
+       ${CONFIG_EXAMPLES_AI_AGENT_VELA_PROGNAME}
+@@ -207,7 +213,7 @@
+     INCLUDE_DIRECTORIES
+       ${AGENT_INCDIRS}
+     DEPENDS
+-      mqttc
++      ${AGENT_DEPENDS}
+     STACKSIZE
+       ${CONFIG_EXAMPLES_AI_AGENT_VELA_STACKSIZE}
+     PRIORITY
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/Kconfig b/Kconfig
+--- a/Kconfig	2026-06-30 23:15:19.000000000 +0800
++++ b/Kconfig	2026-09-12 14:08:04.546029210 +0800
+@@ -28,6 +28,14 @@
+ 
+ if EXAMPLES_AI_AGENT_VELA
+ 
++config AI_AGENT_SIM_HTTP_FIXTURE
++	bool "Allow loopback HTTP model fixtures in simulator"
++	depends on ARCH_SIM
++	default n
++	---help---
++		Allow plaintext model requests only to the literal address 127.0.0.1.
++		Use synthetic test credentials only. All other targets require TLS.
++
+ config EXAMPLES_AI_AGENT_VELA_PROGNAME
+ 	string "Program name"
+ 	default "ai_agent"
+@@ -122,9 +130,10 @@
+ config AI_AGENT_MQTT
+ 	bool "Enable MQTT channel"
+ 	default y
++	select NETUTILS_MQTTC
+ 	---help---
+-		Enable the MQTT pub/sub channel. Costs ~15KB RAM
+-		(12KB thread + 2KB buffers). Disable to save memory.
++		Enable the MQTT pub/sub channel. Uses a 12KB thread
++		and 80KB buffers for complete JSON agent messages.
+ 
+ config AI_AGENT_AUDIO_PREPROCESS
+ 	bool "Enable audio preprocessing (NS + AGC)"
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/Makefile b/Makefile
+--- a/Makefile	2026-06-30 23:15:19.586649615 +0800
++++ b/Makefile	2026-09-12 11:35:21.000000000 +0800
+@@ -131,6 +131,7 @@
+ CSRCS += src/infra/network_manager.c
+ CSRCS += src/infra/http_proxy.c
+ CSRCS += src/infra/vela_tls.c
++CSRCS += src/infra/http_response.c
+ 
+ ifeq ($(CONFIG_AI_AGENT_BLE_GATT),y)
+ CSRCS += src/infra/ble_gatt.c
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/include/agent_config.h b/include/agent_config.h
+--- a/include/agent_config.h	2026-06-30 23:15:19.598649855 +0800
++++ b/include/agent_config.h	2026-09-12 14:08:02.497990207 +0800
+@@ -314,6 +314,9 @@
+ #define AGENT_MQTT_DEFAULT_PORT 1883
+ #define AGENT_MQTT_KEEPALIVE 60
+ #define AGENT_MQTT_BUF_SIZE 1024
++/* Allow escaped JSON requests and full agent replies on the channel. */
++#define AGENT_MQTT_SEND_BUF_SIZE (64 * 1024)
++#define AGENT_MQTT_RECV_BUF_SIZE (16 * 1024)
+ #define AGENT_MQTT_STACK (12 * 1024)
+ #define AGENT_MQTT_PRIO 45
+ #define AGENT_MQTT_SYNC_INTERVAL_MS 200
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/agent_main.c b/src/agent_main.c
+--- a/src/agent_main.c	2026-06-30 23:15:19.602649935 +0800
++++ b/src/agent_main.c	2026-09-13 11:49:43.077779263 +0800
+@@ -469,6 +469,11 @@
+     (void)argc;
+     (void)argv;
+ 
++#ifdef CONFIG_NYABULA_CORE_AGENT
++    syslog(LOG_ERR, "[agent] Core owns this runtime; use the Core agent API\n");
++    return ERROR;
++#endif
++
+     g_shutdown_requested = false;
+ 
+     struct timespec t0;
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/channels/feishu_bot.c b/src/channels/feishu_bot.c
+--- a/src/channels/feishu_bot.c	2026-06-30 23:15:19.602649935 +0800
++++ b/src/channels/feishu_bot.c	2026-09-12 16:46:49.425647985 +0800
+@@ -24,6 +24,7 @@
+ #include <string.h>
+ #include <time.h>
+ #include <unistd.h>
++#include <stdatomic.h>
+ 
+ static const char* TAG = "feishu";
+ 
+@@ -40,6 +41,15 @@
+ bool s_rng_ready = false;
+ 
+ static sem_t s_cred_sem;
++static bool s_sem_ready;
++static bool s_started;
++static atomic_bool s_running;
++static atomic_bool s_exited = true;
++static atomic_bool s_connected;
++static atomic_int s_last_error;
++static pthread_t s_thread;
++
++static void feishu_wait(unsigned int seconds);
+ 
+ /* ── Simple entropy function (works on NuttX/QEMU) ─────────────── */
+ 
+@@ -65,6 +75,7 @@
+ 
+     if (!frame_buf) {
+         syslog(LOG_ERR, "[%s] OOM for frame_buf\n", TAG);
++        s_exited = true;
+         return NULL;
+     }
+ 
+@@ -76,12 +87,13 @@
+         free(frame_buf);
+         free(ws_host);
+         free(ws_path);
++        s_exited = true;
+         return NULL;
+     }
+ 
+     int32_t svc_id = 0;
+ 
+-    while (1) {
++    while (s_running) {
+         /* Credentials check */
+         if (s_app_id[0] == '\0' || s_app_secret[0] == '\0') {
+             static int s_no_cred_logged = 0;
+@@ -101,8 +113,9 @@
+         /* Refresh access token */
+         if (feishu_token_expired()) {
+             if (feishu_get_app_token() != OK) {
++                s_last_error = -EACCES;
+                 syslog(LOG_WARNING, "[%s] Token refresh failed; retry in 30s\n", TAG);
+-                sleep(30);
++                feishu_wait(30);
+                 continue;
+             }
+         }
+@@ -111,8 +124,9 @@
+         memset(ws_host, 0, 128);
+         memset(ws_path, 0, 768);
+         if (feishu_create_connection(ws_host, 128, ws_path, 768) != OK) {
++            s_last_error = -EPROTO;
+             syslog(LOG_WARNING, "[%s] create_connection failed; retry in 10s\n", TAG);
+-            sleep(10);
++            feishu_wait(10);
+             continue;
+         }
+ 
+@@ -126,18 +140,22 @@
+         /* WebSocket connect */
+         ws_free(&s_ws);
+         if (ws_connect(&s_ws, ws_host, ws_path, s_access_token) != 0) {
++            s_last_error = -ECONNREFUSED;
+             syslog(LOG_WARNING, "[%s] ws_connect failed; retry in 10s\n", TAG);
+-            sleep(10);
++            feishu_wait(10);
+             continue;
+         }
+ 
+         /* Event receive loop */
+         syslog(LOG_INFO, "[%s] Feishu Event Streaming active (svc_id=%ld)\n",
+             TAG, (long)svc_id);
++        s_connected = true;
++        s_last_error = 0;
+ 
+-        while (s_ws.connected) {
++        while (s_running && s_ws.connected) {
+             uint8_t opcode = 0;
+             int n = ws_recv_frame(&s_ws, &opcode, (char*)frame_buf, frame_buf_size);
++            if (!s_running) break;
+ 
+             if (n < 0) {
+                 if (feishu_token_expired()) {
+@@ -177,11 +195,18 @@
+             }
+         }
+ 
++        s_connected = false;
+         ws_free(&s_ws);
+         syslog(LOG_WARNING, "[%s] WS disconnected; reconnecting in 5s\n", TAG);
+-        sleep(5);
++        feishu_wait(5);
+     }
+ 
++    s_connected = false;
++    ws_free(&s_ws);
++    free(frame_buf);
++    free(ws_host);
++    free(ws_path);
++    s_exited = true;
+     return NULL;
+ }
+ 
+@@ -189,9 +214,17 @@
+ 
+ int feishu_bot_init(void)
+ {
++    if (s_started) return ERROR;
+     memset(&s_ws, 0, sizeof(s_ws));
+     mbedtls_net_init(&s_ws.net);
+-    sem_init(&s_cred_sem, 0, 0);
++    if (!s_sem_ready) {
++        sem_init(&s_cred_sem, 0, 0);
++        s_sem_ready = true;
++    }
++    snprintf(s_app_id, sizeof(s_app_id), "%s", AGENT_SECRET_FEISHU_APP_ID);
++    snprintf(s_app_secret, sizeof(s_app_secret), "%s", AGENT_SECRET_FEISHU_APP_SECRET);
++    s_access_token[0] = s_user_token[0] = s_bot_open_id[0] = 0;
++    s_token_expire_ts = 0;
+ 
+     /* Initialize RNG */
+     if (!s_rng_ready) {
+@@ -239,8 +272,45 @@
+ 
+ int feishu_bot_start(void)
+ {
+-    return agent_task_create(feishu_poll_task, "feishu_poll",
+-        AGENT_FEISHU_POLL_STACK, NULL, AGENT_FEISHU_POLL_PRIO);
++    if (s_started) return OK;
++    pthread_attr_t attr;
++    pthread_attr_init(&attr);
++    pthread_attr_setstacksize(&attr, AGENT_FEISHU_POLL_STACK);
++    s_running = true;
++    s_last_error = 0;
++    s_exited = false;
++    int ret = pthread_create(&s_thread, &attr, feishu_poll_task, NULL);
++    pthread_attr_destroy(&attr);
++    if (ret != 0) {
++        s_running = false;
++        s_exited = true;
++        return ERROR;
++    }
++    s_started = true;
++    return OK;
++}
++
++void feishu_bot_request_stop(void)
++{
++    s_running = false;
++    if (s_sem_ready) sem_post(&s_cred_sem);
++}
++
++bool feishu_bot_exited(void) { return s_exited; }
++bool feishu_bot_connected(void) { return s_running && s_connected; }
++int feishu_bot_last_error(void) { return s_last_error; }
++
++void feishu_bot_stop(void)
++{
++    if (!s_started) return;
++    feishu_bot_request_stop();
++    pthread_join(s_thread, NULL);
++    s_started = false;
++}
++
++static void feishu_wait(unsigned int seconds)
++{
++    for (unsigned int i = 0; i < seconds * 5 && s_running; i++) usleep(200000);
+ }
+ 
+ int feishu_set_app(const char* app_id, const char* app_secret)
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/channels/feishu_bot.h b/src/channels/feishu_bot.h
+--- a/src/channels/feishu_bot.h	2026-06-30 23:15:19.602649935 +0800
++++ b/src/channels/feishu_bot.h	2026-09-12 16:46:49.957653147 +0800
+@@ -18,6 +18,9 @@
+ 
+ #include "agent_compat.h"
+ 
++typedef void (*feishu_receiver_t)(const char *chat, const char *request,
++                                  const char *text);
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+@@ -26,6 +29,12 @@
+ 
+ int feishu_bot_init(void);
+ int feishu_bot_start(void);
++void feishu_bot_request_stop(void);
++bool feishu_bot_exited(void);
++bool feishu_bot_connected(void);
++int feishu_bot_last_error(void);
++void feishu_bot_stop(void);
++void feishu_set_receiver(feishu_receiver_t receiver);
+ int feishu_send_message(const char *chat_id, const char *text);
+ int feishu_set_app(const char *app_id, const char *app_secret);
+ int feishu_api_post(const char *path, const char *json_body,
+@@ -45,6 +54,12 @@
+ 
+ static inline int feishu_bot_init(void) { return 0; }
+ static inline int feishu_bot_start(void) { return 0; }
++static inline void feishu_bot_request_stop(void) { }
++static inline bool feishu_bot_exited(void) { return true; }
++static inline bool feishu_bot_connected(void) { return false; }
++static inline int feishu_bot_last_error(void) { return 0; }
++static inline void feishu_bot_stop(void) { }
++static inline void feishu_set_receiver(feishu_receiver_t r) { (void)r; }
+ static inline int feishu_send_message(const char *c, const char *t) { (void)c; (void)t; return -1; }
+ static inline int feishu_set_app(const char *a, const char *s) { (void)a; (void)s; return -1; }
+ static inline int feishu_api_post(const char *p, const char *b, char *r, size_t c) { (void)p; (void)b; (void)r; (void)c; return -1; }
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/channels/feishu_http.c b/src/channels/feishu_http.c
+--- a/src/channels/feishu_http.c	2026-06-30 23:15:19.602649935 +0800
++++ b/src/channels/feishu_http.c	2026-09-12 16:10:33.552056261 +0800
+@@ -31,6 +31,15 @@
+ int feishu_https_post(const char* path, const vela_header_t* extra_headers,
+     const char* json_body, char* resp_buf, size_t resp_cap)
+ {
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++    char port[8] = { 0 };
++    claw_config_get("feishu.fixturePort", port, sizeof(port));
++    if (port[0]) {
++        struct vela_http_response_s response;
++        return vela_http_loopback_post_once(port, path, extra_headers,
++            json_body ? json_body : "", resp_buf, resp_cap, &response, NULL, NULL);
++    }
++#endif
+     if (!http_proxy_is_enabled()) {
+         return vela_https_post_json("open.feishu.cn", "443", path, extra_headers,
+             json_body, resp_buf, resp_cap);
+@@ -117,6 +126,17 @@
+     size_t body_len, char* resp_buf, size_t resp_cap,
+     size_t* out_body_len)
+ {
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++    char port[8] = { 0 };
++    claw_config_get("feishu.fixturePort", port, sizeof(port));
++    if (port[0]) {
++        struct vela_http_response_s response;
++        int ret = vela_http_loopback_request_once(method, port, path, headers,
++            body ? body : "", resp_buf, resp_cap, &response, NULL, NULL);
++        if (out_body_len) *out_body_len = ret < 0 ? 0 : response.body_length;
++        return ret;
++    }
++#endif
+     if (!http_proxy_is_enabled()) {
+         return vela_https_request("open.feishu.cn", "443", method, path, headers,
+             body, body_len, resp_buf, resp_cap, out_body_len);
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/channels/feishu_internal.h b/src/channels/feishu_internal.h
+--- a/src/channels/feishu_internal.h	2026-06-30 23:15:19.602649935 +0800
++++ b/src/channels/feishu_internal.h	2026-09-12 16:10:32.664050299 +0800
+@@ -42,6 +42,9 @@
+     mbedtls_ssl_context ssl;
+     mbedtls_ssl_config conf;
+     bool connected;
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++    bool fixture_plain;
++#endif
+ } feishu_ws_t;
+ 
+ /* ── Protobuf frame structure ───────────────────────────────── */
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/channels/feishu_recv.c b/src/channels/feishu_recv.c
+--- a/src/channels/feishu_recv.c	2026-06-30 23:15:19.606650015 +0800
++++ b/src/channels/feishu_recv.c	2026-09-12 16:10:33.992059218 +0800
+@@ -23,6 +23,12 @@
+ #include <time.h>
+ 
+ static const char* TAG = "feishu_recv";
++static feishu_receiver_t s_receiver;
++
++void feishu_set_receiver(feishu_receiver_t receiver)
++{
++    s_receiver = receiver;
++}
+ 
+ /* ── Message deduplication ring buffer ─────────────────────────── */
+ 
+@@ -402,6 +408,12 @@
+ 
+ static bool handle_image_message(cJSON* msg, const char* chat_id, cJSON* content_j)
+ {
++    if (s_receiver) {
++        cJSON *id = cJSON_GetObjectItemCaseSensitive(msg, "message_id");
++        s_receiver(chat_id, cJSON_IsString(id) ? id->valuestring : "",
++            "An image was received. Image understanding is not available in this channel.");
++        return true;
++    }
+     cJSON* msg_id_j = cJSON_GetObjectItem(msg, "message_id");
+     if (!cJSON_IsString(msg_id_j) || !msg_id_j->valuestring[0]) {
+         syslog(LOG_WARNING, "[%s] image msg but no message_id\n", TAG);
+@@ -830,7 +842,7 @@
+     if (cJSON_IsObject(hdr)) {
+         cJSON* eid = cJSON_GetObjectItem(hdr, "event_id");
+         if (cJSON_IsString(eid) && eid->valuestring[0]) {
+-            if (dedup_check_and_record(eid->valuestring)) {
++            if (!s_receiver && dedup_check_and_record(eid->valuestring)) {
+                 goto cleanup; /* Duplicate event, skip silently */
+             }
+         }
+@@ -970,7 +982,7 @@
+         }
+ 
+         cJSON* msg_id_j = cJSON_GetObjectItem(msg, "message_id");
+-        if (cJSON_IsString(msg_id_j) && msgid_dedup_check(msg_id_j->valuestring)) {
++        if (!s_receiver && cJSON_IsString(msg_id_j) && msgid_dedup_check(msg_id_j->valuestring)) {
+             syslog(LOG_WARNING, "[%s] Duplicate message_id %s, skipping\n",
+                 TAG, msg_id_j->valuestring);
+             free(text);
+@@ -978,7 +990,7 @@
+             goto cleanup;
+         }
+ 
+-        if (!post_image_key[0] && content_dedup_check(chat_id_j->valuestring, text)) {
++        if (!s_receiver && !post_image_key[0] && content_dedup_check(chat_id_j->valuestring, text)) {
+             free(text);
+             text = NULL;
+             goto cleanup;
+@@ -1001,6 +1013,12 @@
+         syslog(LOG_INFO, "[%s] MSG from [%.24s] len=%zu\n", TAG,
+             chat_id_j->valuestring, strlen(text));
+ 
++        if (s_receiver) {
++            s_receiver(chat_id_j->valuestring,
++                       cJSON_IsString(msg_id_j) ? msg_id_j->valuestring : "", text);
++            goto cleanup;
++        }
++
+         agent_msg_t m = { 0 };
+         strncpy(m.channel, AGENT_CHAN_FEISHU, sizeof(m.channel) - 1);
+         strncpy(m.chat_id, chat_id_j->valuestring, sizeof(m.chat_id) - 1);
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/channels/feishu_ws.c b/src/channels/feishu_ws.c
+--- a/src/channels/feishu_ws.c	2026-06-30 23:15:19.606650015 +0800
++++ b/src/channels/feishu_ws.c	2026-09-12 16:17:58.364681648 +0800
+@@ -16,6 +16,7 @@
+ 
+ #include "channels/feishu_internal.h"
+ #include "infra/http_proxy.h"
++#include "infra/config_store.h"
+ 
+ #include <stdlib.h>
+ #include <string.h>
+@@ -30,7 +31,11 @@
+ 
+ void ws_free(feishu_ws_t* ws)
+ {
+-    if (ws->connected) {
++    if (ws->connected
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++        && !ws->fixture_plain
++#endif
++    ) {
+         mbedtls_ssl_close_notify(&ws->ssl);
+     }
+     mbedtls_ssl_free(&ws->ssl);
+@@ -45,6 +50,9 @@
+     mbedtls_ssl_init(&ws->ssl);
+     mbedtls_ssl_config_init(&ws->conf);
+     ws->connected = false;
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++    ws->fixture_plain = false;
++#endif
+ }
+ 
+ /* Read exactly `len` bytes from TLS stream; returns -1 on error. */
+@@ -53,7 +61,12 @@
+     size_t total = 0;
+ 
+     while (total < len) {
+-        int n = mbedtls_ssl_read(&ws->ssl, buf + total, len - total);
++        int n;
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++        if (ws->fixture_plain) n = recv(ws->net.fd, buf + total, len - total, 0);
++        else
++#endif
++        n = mbedtls_ssl_read(&ws->ssl, buf + total, len - total);
+         if (n == MBEDTLS_ERR_SSL_WANT_READ) {
+             continue;
+         }
+@@ -71,7 +84,12 @@
+     size_t written = 0;
+ 
+     while (written < len) {
+-        int n = mbedtls_ssl_write(&ws->ssl, buf + written, len - written);
++        int n;
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++        if (ws->fixture_plain) n = send(ws->net.fd, buf + written, len - written, 0);
++        else
++#endif
++        n = mbedtls_ssl_write(&ws->ssl, buf + written, len - written);
+         if (n == MBEDTLS_ERR_SSL_WANT_WRITE) {
+             continue;
+         }
+@@ -99,6 +117,19 @@
+ 
+     int ret;
+ 
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++    char fixture_port[8] = { 0 };
++    claw_config_get("feishu.fixturePort", fixture_port, sizeof(fixture_port));
++    if (fixture_port[0] && !strcmp(host, "127.0.0.1")) {
++        ret = mbedtls_net_connect(&ws->net, "127.0.0.1", fixture_port, MBEDTLS_NET_PROTO_TCP);
++        if (ret != 0) goto fail;
++        struct timeval timeout = { .tv_sec = 1 };
++        setsockopt(ws->net.fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++        ws->fixture_plain = true;
++        goto websocket_upgrade;
++    }
++#endif
++
+     /* TCP connect — via proxy tunnel if configured, direct otherwise */
+     if (http_proxy_is_enabled()) {
+         int sock = proxy_open_tunnel(host, 443, 30000);
+@@ -170,6 +201,10 @@
+     }
+ 
+     /* ── WebSocket upgrade ──────────────────────────────────── */
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++websocket_upgrade:
++    ;
++#endif
+     uint8_t raw_key[16];
+ 
+     ret = mbedtls_ctr_drbg_random(&s_ctr_drbg, raw_key, sizeof(raw_key));
+@@ -360,11 +395,7 @@
+     size_t total = 0;
+ 
+     while (total < read_len) {
+-        int n = mbedtls_ssl_read(&ws->ssl, (uint8_t*)buf + total,
+-            (int)(read_len - total));
+-        if (n == MBEDTLS_ERR_SSL_WANT_READ) {
+-            continue;
+-        }
++        int n = ws_read_exact(ws, (uint8_t*)buf + total, read_len - total);
+         if (n <= 0) {
+             return -1;
+         }
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/channels/mqtt_channel.c b/src/channels/mqtt_channel.c
+--- a/src/channels/mqtt_channel.c	2026-06-30 23:15:19.606650015 +0800
++++ b/src/channels/mqtt_channel.c	2026-09-12 14:24:08.152494473 +0800
+@@ -33,6 +33,9 @@
+ #include <sys/socket.h>
+ #include <netdb.h>
+ #include <arpa/inet.h>
++#include <stdatomic.h>
++#include <fcntl.h>
++#include <poll.h>
+ 
+ static const char *TAG = "mqtt";
+ 
+@@ -49,10 +52,23 @@
+ /* ── MQTT-C state ──────────────────────────────────────────── */
+ 
+ static struct mqtt_client s_client;
+-static uint8_t s_sendbuf[AGENT_MQTT_BUF_SIZE] __attribute__((aligned(4)));
+-static uint8_t s_recvbuf[AGENT_MQTT_BUF_SIZE];
++static uint8_t s_sendbuf[AGENT_MQTT_SEND_BUF_SIZE] __attribute__((aligned(4)));
++static uint8_t s_recvbuf[AGENT_MQTT_RECV_BUF_SIZE];
+ static int     s_sockfd = -1;
+-static volatile bool s_running;
++static atomic_bool s_running;
++static atomic_bool s_connected;
++static pthread_t s_thread;
++static mqtt_channel_receiver_t s_receiver;
++
++struct mqtt_channel_pending_s {
++    struct mqtt_channel_pending_s *next;
++    char payload[];
++};
++
++static struct mqtt_channel_pending_s *s_pending_head;
++static struct mqtt_channel_pending_s *s_pending_tail;
++
++static void mqtt_channel_dispatch(void);
+ 
+ /* ── TCP connect helper ────────────────────────────────────── */
+ 
+@@ -81,7 +97,24 @@
+         return -1;
+     }
+ 
+-    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
++    /* Keep stop/restart responsive when the broker is unreachable. */
++    int flags = fcntl(fd, F_GETFL, 0);
++    int connected = flags < 0 ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK);
++    if (connected == 0) connected = connect(fd, res->ai_addr, res->ai_addrlen);
++    if (connected < 0 && errno == EINPROGRESS) {
++        struct pollfd event = { .fd = fd, .events = POLLOUT };
++        int error = 0;
++        socklen_t size = sizeof(error);
++        connected = poll(&event, 1, 2000);
++        if (connected > 0 && getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) == 0) {
++            connected = error ? -1 : 0;
++            if (error) errno = error;
++        } else {
++            connected = -1;
++            errno = ETIMEDOUT;
++        }
++    }
++    if (connected < 0 || fcntl(fd, F_SETFL, flags) < 0) {
+         syslog(LOG_ERR, "[%s] TCP connect failed: %s:%d (%s)\n",
+                TAG, host, port, strerror(errno));
+         close(fd);
+@@ -125,6 +158,19 @@
+     memcpy(payload, pub->application_message, len);
+     payload[len] = '\0';
+ 
++    if (s_receiver) {
++        struct mqtt_channel_pending_s *pending = malloc(sizeof(*pending) + len + 1);
++        if (pending) {
++            pending->next = NULL;
++            memcpy(pending->payload, payload, len + 1);
++            if (s_pending_tail) s_pending_tail->next = pending;
++            else s_pending_head = pending;
++            s_pending_tail = pending;
++        }
++        free(payload);
++        return;
++    }
++
+     syslog(LOG_INFO, "[%s] Recv [%.*s]: %.64s\n",
+            TAG, (int)pub->topic_name_size,
+            (const char *)pub->topic_name, payload);
+@@ -148,8 +194,10 @@
+ 
+     cJSON *content_item = cJSON_GetObjectItem(root, "content");
+     cJSON *chat_id_item = cJSON_GetObjectItem(root, "chat_id");
++    cJSON *type_item = cJSON_GetObjectItem(root, "type");
+ 
+-    if (cJSON_IsString(content_item) && content_item->valuestring[0]) {
++    if (cJSON_IsString(content_item) && content_item->valuestring[0] &&
++        !(cJSON_IsString(type_item) && !strcmp(type_item->valuestring, "response"))) {
+         agent_msg_t msg;
+ 
+         memset(&msg, 0, sizeof(msg));
+@@ -179,6 +227,7 @@
+ static void on_reconnect(struct mqtt_client *client, void **state)
+ {
+     (void)state;
++    s_connected = false;
+ 
+     /* Close old socket if any */
+     if (s_sockfd >= 0) {
+@@ -232,6 +281,8 @@
+ 
+     while (s_running) {
+         enum MQTTErrors err = mqtt_sync(&s_client);
++        s_connected = err == MQTT_OK && s_client.event_connect;
++        mqtt_channel_dispatch();
+ 
+         if (err != MQTT_OK) {
+             syslog(LOG_WARNING, "[%s] mqtt_sync error: %d\n", TAG, (int)err);
+@@ -241,6 +292,11 @@
+         usleep(AGENT_MQTT_SYNC_INTERVAL_MS * 1000);
+     }
+ 
++    s_connected = false;
++    if (s_sockfd >= 0) {
++        close(s_sockfd);
++        s_sockfd = -1;
++    }
+     syslog(LOG_INFO, "[%s] Sync thread exited\n", TAG);
+     return NULL;
+ }
+@@ -332,6 +388,7 @@
+ 
+ int mqtt_channel_start(void)
+ {
++    if (s_running) return OK;
+     if (!s_broker_host[0]) {
+         syslog(LOG_INFO, "[%s] No mqtt_broker configured, MQTT disabled\n",
+                TAG);
+@@ -343,12 +400,19 @@
+ 
+     s_running = true;
+ 
+-    int ret = agent_task_create(mqtt_sync_thread, "mqtt_sync",
+-                                   AGENT_MQTT_STACK, NULL,
+-                                   AGENT_MQTT_PRIO);
++    pthread_attr_t attr;
++    pthread_attr_init(&attr);
++    pthread_attr_setstacksize(&attr, AGENT_MQTT_STACK);
++    struct sched_param priority = { .sched_priority = AGENT_MQTT_PRIO };
++    pthread_attr_setschedparam(&attr, &priority);
++    pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
++    pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
++    int ret = pthread_create(&s_thread, &attr, mqtt_sync_thread, NULL);
++    pthread_attr_destroy(&attr);
+     if (ret != OK) {
+         syslog(LOG_ERR, "[%s] Failed to create sync thread\n", TAG);
+         s_running = false;
++        pthread_mutex_destroy(&s_client.mutex);
+         return ERROR;
+     }
+ 
+@@ -359,7 +423,7 @@
+ 
+ int mqtt_channel_send(const char *chat_id, const char *text)
+ {
+-    if (!s_running || s_sockfd < 0 || !chat_id || !text) {
++    if (!s_running || !s_connected || !chat_id || !text) {
+         return ERROR;
+     }
+ 
+@@ -400,14 +464,42 @@
+ 
+     s_running = false;
+ 
+-    /* Close socket first to unblock any blocking recv in sync thread */
+-    if (s_sockfd >= 0) {
+-        close(s_sockfd);
+-        s_sockfd = -1;
+-    }
+-
+-    /* Give sync thread time to notice s_running=false and exit */
+-    usleep(AGENT_MQTT_SYNC_INTERVAL_MS * 2 * 1000);
++    /* The sync thread owns its socket and must exit before reinitialization. */
++    pthread_join(s_thread, NULL);
++    pthread_mutex_destroy(&s_client.mutex);
+ 
+     syslog(LOG_INFO, "[%s] MQTT channel stopped\n", TAG);
+ }
++
++void mqtt_channel_set_receiver(mqtt_channel_receiver_t receiver)
++{
++    if (!s_running) s_receiver = receiver;
++}
++
++bool mqtt_channel_connected(void)
++{
++    return s_connected;
++}
++
++static void mqtt_channel_dispatch(void)
++{
++    while (s_pending_head) {
++        struct mqtt_channel_pending_s *pending = s_pending_head;
++        s_pending_head = pending->next;
++        if (!s_pending_head) s_pending_tail = NULL;
++        cJSON *root = cJSON_Parse(pending->payload);
++        cJSON *chat = cJSON_GetObjectItemCaseSensitive(root, "chat_id");
++        cJSON *request = cJSON_GetObjectItemCaseSensitive(root, "request_id");
++        cJSON *content = cJSON_GetObjectItemCaseSensitive(root, "content");
++        cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
++        /* Wildcard subscriptions may also receive our response topic. */
++        if (s_receiver && (!root || cJSON_IsString(content)) &&
++            !(cJSON_IsString(type) && !strcmp(type->valuestring, "response"))) {
++            s_receiver(cJSON_IsString(chat) && chat->valuestring[0] ? chat->valuestring : "default",
++                       cJSON_IsString(request) ? request->valuestring : "",
++                       root ? content->valuestring : pending->payload);
++        }
++        cJSON_Delete(root);
++        free(pending);
++    }
++}
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/channels/mqtt_channel.h b/src/channels/mqtt_channel.h
+--- a/src/channels/mqtt_channel.h	2026-06-30 23:15:19.606650015 +0800
++++ b/src/channels/mqtt_channel.h	2026-09-12 14:00:51.597836354 +0800
+@@ -16,6 +16,12 @@
+ 
+ #pragma once
+ 
++#include <stdbool.h>
++
++typedef void (*mqtt_channel_receiver_t)(const char *chat_id,
++                                        const char *request_id,
++                                        const char *content);
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+@@ -26,6 +32,9 @@
+ int mqtt_channel_start(void);
+ int mqtt_channel_send(const char *chat_id, const char *text);
+ void mqtt_channel_stop(void);
++/* Set only while stopped. The callback runs outside the MQTT client lock. */
++void mqtt_channel_set_receiver(mqtt_channel_receiver_t receiver);
++bool mqtt_channel_connected(void);
+ 
+ #else /* stubs */
+ 
+@@ -33,6 +42,8 @@
+ static inline int mqtt_channel_start(void) { return 0; }
+ static inline int mqtt_channel_send(const char *c, const char *t) { (void)c; (void)t; return -1; }
+ static inline void mqtt_channel_stop(void) { }
++static inline void mqtt_channel_set_receiver(mqtt_channel_receiver_t r) { (void)r; }
++static inline bool mqtt_channel_connected(void) { return false; }
+ 
+ #endif
+ 
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/channels/weixin_channel.c b/src/channels/weixin_channel.c
+--- a/src/channels/weixin_channel.c	2026-06-30 23:15:19.606650015 +0800
++++ b/src/channels/weixin_channel.c	2026-09-12 16:46:48.585639841 +0800
+@@ -52,6 +52,7 @@
+ #include <string.h>
+ #include <time.h>
+ #include <unistd.h>
++#include <stdatomic.h>
+ 
+ /* ── Constants ────────────────────────────────────────────────── */
+ 
+@@ -76,7 +77,15 @@
+ static char s_token[WEIXIN_TOKEN_MAX] = "";
+ 
+ static pthread_t s_poll_thread;
+-static volatile int s_running = 0;
++static atomic_bool s_running;
++static atomic_bool s_connected;
++static atomic_int s_last_error;
++static atomic_bool s_exited = true;
++static bool s_started;
++static weixin_channel_receiver_t s_receiver;
++
++static int weixin_get(const char *path, char *response, size_t capacity);
++static void weixin_wait(unsigned int seconds);
+ 
+ /* ── Message dedup ring (16 slots on message_id) ─────────────── */
+ 
+@@ -172,6 +181,15 @@
+     weixin_build_headers(hdrs, 5, auth_buf, sizeof(auth_buf),
+         uin_buf, sizeof(uin_buf));
+ 
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++    if (!strcmp(s_host, "127.0.0.1")) {
++        struct vela_http_response_s response;
++        int ret = vela_http_loopback_post_once(s_port, path, hdrs, json_body,
++            resp_buf, resp_cap, &response, NULL, NULL);
++        return ret;
++    }
++#endif
++
+     return vela_https_post_json(
+         s_host, s_port, path,
+         hdrs, json_body,
+@@ -226,7 +244,7 @@
+         return;
+     }
+ 
+-    if (dedup_check_and_record(msg_id_str)) {
++    if (!s_receiver && dedup_check_and_record(msg_id_str)) {
+         syslog(LOG_DEBUG, "[%s] skip: dedup id=%s\n", TAG, msg_id_str);
+         return;
+     }
+@@ -277,6 +295,13 @@
+     syslog(LOG_INFO, "[%s] inbound from=%s len=%zu\n",
+         TAG, from_user_id, strlen(text_buf));
+ 
++    if (s_receiver) {
++        s_receiver(from_user_id, cJSON_IsString(id_j) ? id_j->valuestring : msg_id_str,
++                   ctx_token, text_buf);
++        free(text_buf);
++        return;
++    }
++
+     char chat_id[128];
+     snprintf(chat_id, sizeof(chat_id), "%s|%s",
+         from_user_id, ctx_token);
+@@ -313,13 +338,15 @@
+     char* resp_buf = malloc(WEIXIN_RESP_BUF_SIZE);
+     if (!resp_buf) {
+         syslog(LOG_ERR, "[%s] OOM: response buffer\n", TAG);
++        s_exited = true;
+         return NULL;
+     }
+ 
+     while (s_running) {
+         if (s_token[0] == '\0') {
++            s_connected = false;
+             syslog(LOG_WARNING, "[%s] No token, waiting...\n", TAG);
+-            sleep(WEIXIN_RECONNECT_DELAY_S);
++            weixin_wait(WEIXIN_RECONNECT_DELAY_S);
+             continue;
+         }
+ 
+@@ -341,16 +368,21 @@
+         int http_rc = weixin_post("/ilink/bot/getupdates",
+             req_str, resp_buf, WEIXIN_RESP_BUF_SIZE);
+         free(req_str);
++        if (!s_running) break;
+ 
+         if (http_rc < 0 || http_rc != 200) {
++            s_connected = false;
++            s_last_error = http_rc;
+             syslog(LOG_WARNING, "[%s] getupdates HTTP %d\n",
+                 TAG, http_rc);
+-            sleep(WEIXIN_RECONNECT_DELAY_S);
++            weixin_wait(WEIXIN_RECONNECT_DELAY_S);
+             continue;
+         }
+ 
+         cJSON* resp = cJSON_Parse(resp_buf);
+         if (!resp) {
++            s_connected = false;
++            s_last_error = -EBADMSG;
+             syslog(LOG_WARNING, "[%s] JSON parse failed\n", TAG);
+             sleep(1);
+             continue;
+@@ -370,6 +402,8 @@
+         }
+ 
+         if (ret == -14) {
++            s_connected = false;
++            s_last_error = ret;
+             syslog(LOG_WARNING, "[%s] Session expired (ret=-14), "
+                                 "need re-login\n",
+                 TAG);
+@@ -377,22 +411,26 @@
+             s_token[0] = '\0';
+             claw_config_set("weixin.token", "");
+             cJSON_Delete(resp);
+-            sleep(WEIXIN_RECONNECT_DELAY_S);
++            weixin_wait(WEIXIN_RECONNECT_DELAY_S);
+             continue;
+         }
+ 
+         if (ret != 0) {
++            s_connected = false;
++            s_last_error = ret;
+             syslog(LOG_WARNING, "[%s] getupdates ret=%d, "
+                                 "backoff %ds\n",
+                 TAG, ret, err_backoff);
+             cJSON_Delete(resp);
+-            sleep(err_backoff);
++            weixin_wait(err_backoff);
+             if (err_backoff < 60)
+                 err_backoff *= 2;
+             continue;
+         }
+ 
+         err_backoff = WEIXIN_RECONNECT_DELAY_S; /* reset on success */
++        s_connected = true;
++        s_last_error = 0;
+ 
+         cJSON* next_cursor_j = cJSON_GetObjectItem(resp, "get_updates_buf");
+         if (cJSON_IsString(next_cursor_j)
+@@ -418,8 +456,10 @@
+     }
+ 
+     free(resp_buf);
++    s_connected = false;
+     resp_buf = NULL;
+     syslog(LOG_INFO, "[%s] Poll task exited\n", TAG);
++    s_exited = true;
+     return NULL;
+ }
+ 
+@@ -427,6 +467,11 @@
+ 
+ int weixin_channel_init(void)
+ {
++    if (s_running) return -1;
++    snprintf(s_host, sizeof(s_host), "%s", WEIXIN_DEFAULT_HOST);
++    snprintf(s_port, sizeof(s_port), "%s", WEIXIN_DEFAULT_PORT);
++    s_token[0] = 0;
++    s_connected = false;
+     char host_cfg[WEIXIN_HOST_MAX] = "";
+     char port_cfg[WEIXIN_PORT_MAX] = "";
+     char token_cfg[WEIXIN_TOKEN_MAX] = "";
+@@ -457,11 +502,13 @@
+ 
+ int weixin_channel_start(void)
+ {
+-    if (s_running) {
++    if (s_started) {
+         syslog(LOG_WARNING, "[%s] Already running\n", TAG);
+         return 0;
+     }
+     s_running = 1;
++    s_last_error = 0;
++    s_exited = false;
+ 
+     pthread_attr_t attr;
+     pthread_attr_init(&attr);
+@@ -473,10 +520,12 @@
+     if (rc != 0) {
+         syslog(LOG_ERR, "[%s] pthread_create failed: %d\n", TAG, rc);
+         s_running = 0;
++        s_exited = true;
+         return -1;
+     }
+ 
+     syslog(LOG_INFO, "[%s] Poll task started\n", TAG);
++    s_started = true;
+     return 0;
+ }
+ 
+@@ -573,10 +622,11 @@
+ 
+ void weixin_channel_stop(void)
+ {
+-    if (!s_running)
++    if (!s_started)
+         return;
+     s_running = 0;
+     pthread_join(s_poll_thread, NULL);
++    s_started = false;
+     syslog(LOG_INFO, "[%s] Channel stopped\n", TAG);
+ }
+ 
+@@ -601,7 +651,7 @@
+         return -1;
+ 
+     char resp_buf[2048] = "";
+-    int rc = vela_https_get(s_host, s_port,
++    int rc = weixin_get(
+         "/ilink/bot/get_bot_qrcode?bot_type=3",
+         resp_buf, sizeof(resp_buf));
+     if (rc != 200) {
+@@ -646,7 +696,7 @@
+         return -1;
+ 
+     char resp_buf[2048] = "";
+-    int rc = vela_https_get(s_host, s_port, path,
++    int rc = weixin_get(path,
+         resp_buf, sizeof(resp_buf));
+     if (rc != 200)
+         return -2; /* HTTP error */
+@@ -666,11 +716,19 @@
+         cJSON* tok_j = cJSON_GetObjectItem(resp, "bot_token");
+         cJSON* base_j = cJSON_GetObjectItem(resp, "baseurl");
+ 
++        if (!cJSON_IsString(tok_j) || !tok_j->valuestring[0] ||
++            strlen(tok_j->valuestring) >= sizeof(s_token)) {
++            cJSON_Delete(resp);
++            return -1;
++        }
+         if (cJSON_IsString(tok_j)) {
+             strncpy(s_token, tok_j->valuestring,
+                 sizeof(s_token) - 1);
+             s_token[sizeof(s_token) - 1] = '\0';
+-            claw_config_set("weixin.token", s_token);
++            if (claw_config_set("weixin.token", s_token) != 0) {
++                cJSON_Delete(resp);
++                return -1;
++            }
+         }
+ 
+         if (cJSON_IsString(base_j) && base_j->valuestring[0]) {
+@@ -700,3 +758,43 @@
+     cJSON_Delete(resp);
+     return result;
+ }
++
++void weixin_channel_set_receiver(weixin_channel_receiver_t receiver)
++{
++    if (!s_running) s_receiver = receiver;
++}
++
++bool weixin_channel_connected(void)
++{
++    return s_running && s_connected;
++}
++
++int weixin_channel_last_error(void) { return s_last_error; }
++
++void weixin_channel_request_stop(void)
++{
++    s_running = false;
++}
++
++bool weixin_channel_exited(void)
++{
++    return s_exited;
++}
++
++static int weixin_get(const char *path, char *response, size_t capacity)
++{
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++    if (!strcmp(s_host, "127.0.0.1")) {
++        struct vela_http_response_s metadata;
++        int ret = vela_http_loopback_request_once("GET", s_port, path, NULL, "",
++            response, capacity, &metadata, NULL, NULL);
++        return ret;
++    }
++#endif
++    return vela_https_get(s_host, s_port, path, response, capacity);
++}
++
++static void weixin_wait(unsigned int seconds)
++{
++    for (unsigned int i = 0; i < seconds * 5 && s_running; i++) usleep(200000);
++}
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/channels/weixin_channel.h b/src/channels/weixin_channel.h
+--- a/src/channels/weixin_channel.h	2026-06-30 23:15:19.606650015 +0800
++++ b/src/channels/weixin_channel.h	2026-09-12 16:46:49.005643910 +0800
+@@ -17,6 +17,10 @@
+ #pragma once
+ 
+ #include <stddef.h>
++#include <stdbool.h>
++
++typedef void (*weixin_channel_receiver_t)(const char *user, const char *request,
++                                         const char *context, const char *text);
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -34,6 +38,11 @@
+ int weixin_channel_login(char* qr_url, size_t qr_cap,
+     char* qrcode_id, size_t qrc_cap);
+ int weixin_channel_poll_login(const char* qrcode_id);
++void weixin_channel_set_receiver(weixin_channel_receiver_t receiver);
++bool weixin_channel_connected(void);
++int weixin_channel_last_error(void);
++void weixin_channel_request_stop(void);
++bool weixin_channel_exited(void);
+ 
+ #else /* stubs */
+ 
+@@ -44,6 +53,11 @@
+ static inline int weixin_channel_set_token(const char* t, unsigned int u) { (void)t; (void)u; return -1; }
+ static inline int weixin_channel_login(char* q, size_t qc, char* i, size_t ic) { (void)q; (void)qc; (void)i; (void)ic; return -1; }
+ static inline int weixin_channel_poll_login(const char* q) { (void)q; return -1; }
++static inline void weixin_channel_set_receiver(weixin_channel_receiver_t r) { (void)r; }
++static inline bool weixin_channel_connected(void) { return false; }
++static inline int weixin_channel_last_error(void) { return 0; }
++static inline void weixin_channel_request_stop(void) { }
++static inline bool weixin_channel_exited(void) { return true; }
+ 
+ #endif
+ 
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/config/config_store.h b/src/config/config_store.h
+--- a/src/config/config_store.h	2026-06-30 23:15:19.614650175 +0800
++++ b/src/config/config_store.h	2026-09-12 10:05:11.000000000 +0800
+@@ -42,6 +42,9 @@
+ 
+ /** Write (or overwrite) a string value and persist to disk. */
+ int claw_config_set(const char *key, const char *value);
++/* Persist a set of fields in one replace operation. */
++int claw_config_set_many(const char *const *keys, const char *const *values,
++                        size_t count);
+ 
+ /** Delete a key. Returns OK even if key was absent. */
+ int config_del(const char *key);
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/core/agent_loop.c b/src/core/agent_loop.c
+--- a/src/core/agent_loop.c	2026-06-30 23:15:19.610650095 +0800
++++ b/src/core/agent_loop.c	2026-09-12 11:05:21.000000000 +0800
+@@ -21,6 +21,7 @@
+  */
+ 
+ #include <inttypes.h>
++#include <errno.h>
+ 
+ #include "core/agent_loop.h"
+ #include "core/agent_mem.h"
+@@ -47,6 +48,8 @@
+ #include "cJSON.h"
+ 
+ static const char* TAG = "agent";
++static pthread_mutex_t s_loop_state_lock = PTHREAD_MUTEX_INITIALIZER;
++static int s_loop_state;
+ 
+ #define TOOL_OUTPUT_SIZE (8 * 1024)
+ #define TOOL_OUTPUT_SIZE_LARGE (16 * 1024)
+@@ -844,8 +847,10 @@
+     char* final_text)
+ {
+     if (final_text && final_text[0]) {
+-        session_append(msg->chat_id, "user", msg->content);
+-        session_append(msg->chat_id, "assistant", final_text);
++        if (!msg->history_json && !msg->error && !msg->cancelled) {
++            session_append(msg->chat_id, "user", msg->content);
++            session_append(msg->chat_id, "assistant", final_text);
++        }
+ 
+         agent_msg_t out = { 0 };
+         strncpy(out.channel, msg->channel,
+@@ -853,6 +858,9 @@
+         strncpy(out.chat_id, msg->chat_id,
+             sizeof(out.chat_id) - 1);
+         out.content = final_text;
++        memcpy(out.request_id, msg->request_id, sizeof(out.request_id));
++        out.error = msg->error;
++        out.cancelled = msg->cancelled;
+         if (message_bus_push_outbound(&out) != OK) {
+             free(final_text);
+         }
+@@ -864,6 +872,9 @@
+         strncpy(out.chat_id, msg->chat_id,
+             sizeof(out.chat_id) - 1);
+         out.content = strdup("Sorry, I encountered an error.");
++        out.error = true;
++        memcpy(out.request_id, msg->request_id, sizeof(out.request_id));
++        out.cancelled = msg->cancelled;
+         if (out.content) {
+             if (message_bus_push_outbound(&out) != OK) {
+                 free(out.content);
+@@ -902,6 +913,8 @@
+     }
+ 
+     agent_msg_t status = { 0 };
++    status.interim = true;
++    memcpy(status.request_id, msg->request_id, sizeof(status.request_id));
+ 
+     strncpy(status.channel, msg->channel, sizeof(status.channel) - 1);
+     strncpy(status.chat_id, msg->chat_id, sizeof(status.chat_id) - 1);
+@@ -1014,7 +1027,7 @@
+ /* Run the ReAct tool-calling loop. Returns final_text (caller owns). */
+ static char* run_react_loop(const char* sys_prompt, cJSON* messages,
+     const char* tools_json, char* tool_output, size_t tool_size,
+-    const agent_msg_t* msg)
++    agent_msg_t* msg)
+ {
+     char prev_sig[512];
+     int dup_count;
+@@ -1048,7 +1061,7 @@
+     trace.backend_idx = router_idx;
+ 
+     /* Cache check: for simple queries, try cache before LLM call */
+-    if (msg->content && complexity == LLM_COMPLEXITY_SIMPLE) {
++    if (!msg->direct_llm && msg->content && complexity == LLM_COMPLEXITY_SIMPLE) {
+         char* cached = llm_cache_get(msg->content, strlen(msg->content));
+         if (cached) {
+             syslog(LOG_INFO, "[%s] Cache hit, skipping LLM call\n", TAG);
+@@ -1061,6 +1074,10 @@
+ 
+     for (iteration = 0; iteration < AGENT_AI_AGENT_MAX_TOOL_ITER;
+          iteration++) {
++        if (msg->is_cancelled && msg->is_cancelled(msg->request_id)) {
++            msg->cancelled = true;
++            break;
++        }
+         send_working_status(msg, iteration);
+ 
+         llm_response_t resp;
+@@ -1070,6 +1087,12 @@
+         gettimeofday(&tv_end, NULL);
+         uint32_t latency_ms = calc_elapsed_ms(&tv_start, &tv_end);
+ 
++        if (msg->is_cancelled && msg->is_cancelled(msg->request_id)) {
++            msg->cancelled = true;
++            llm_response_free(&resp);
++            break;
++        }
++
+         /* Router failover: on LLM call failure, try next backend */
+         if (err != OK && router_idx >= 0) {
+             syslog(LOG_WARNING,
+@@ -1092,6 +1115,7 @@
+         }
+ 
+         if (err != OK) {
++            msg->error = true;
+             /* Distinguish timeout-induced failure from other errors */
+             if (llm_call_timed_out(latency_ms)) {
+                 syslog(LOG_WARNING,
+@@ -1118,6 +1142,7 @@
+          * or error response that llm_chat_tools mapped to ERROR above,
+          * but if the call barely completed, we still flag it. */
+         if (llm_call_timed_out(latency_ms)) {
++            msg->error = true;
+             syslog(LOG_WARNING,
+                 "[%s] LLM watchdog: call took %" PRIu32 " ms (limit %ds), "
+                 "treating as timeout\n",
+@@ -1191,6 +1216,7 @@
+ 
+                     /* Watchdog check on cascade retry */
+                     if (llm_call_timed_out(latency_ms)) {
++                        msg->error = true;
+                         syslog(LOG_WARNING,
+                             "[%s] LLM watchdog: cascade retry "
+                             "took %" PRIu32 " ms\n",
+@@ -1234,6 +1260,12 @@
+             break;
+         }
+ 
++        if (msg->is_cancelled && msg->is_cancelled(msg->request_id)) {
++            msg->cancelled = true;
++            llm_response_free(&resp);
++            break;
++        }
++
+         syslog(LOG_INFO, "[%s] Tool iter %d: %d calls\n",
+             TAG, iteration + 1, resp.call_count);
+ 
+@@ -1345,7 +1377,7 @@
+ 
+ send_reply:
+     /* Cache store: save simple query responses for future reuse */
+-    if (final_text && msg->content
++    if (!msg->direct_llm && !msg->error && !msg->cancelled && final_text && msg->content
+         && complexity == LLM_COMPLEXITY_SIMPLE) {
+         llm_cache_put(msg->content, strlen(msg->content), final_text);
+         if (last_total_tokens > 0) {
+@@ -1360,12 +1392,14 @@
+ /* ── Build messages array from session history + current msg ─ */
+ 
+ static cJSON* build_messages(const char* chat_id, const char* content,
+-    char* history_json, size_t hist_size)
++    char* history_json, size_t hist_size, const char* owner_history)
+ {
+-    session_get_history_json(chat_id, history_json, hist_size,
+-        AGENT_AI_AGENT_MAX_HISTORY);
++    if (!owner_history) {
++        session_get_history_json(chat_id, history_json, hist_size,
++            AGENT_AI_AGENT_MAX_HISTORY);
++    }
+ 
+-    cJSON* messages = cJSON_Parse(history_json);
++    cJSON* messages = cJSON_Parse(owner_history ? owner_history : history_json);
+ 
+     if (!messages) {
+         messages = cJSON_CreateArray();
+@@ -1424,6 +1458,9 @@
+     char* tool_output = calloc(1, tool_size);
+ 
+     if (!sys_prompt || !history_json || !tool_output) {
++        pthread_mutex_lock(&s_loop_state_lock);
++        s_loop_state = -ENOMEM;
++        pthread_mutex_unlock(&s_loop_state_lock);
+         syslog(LOG_ERR, "[%s] Failed to allocate agent buffers\n", TAG);
+         free(sys_prompt);
+         free(history_json);
+@@ -1452,6 +1489,9 @@
+ 
+     syslog(LOG_INFO, "[%s] Tools JSON loaded: %d bytes\n",
+         TAG, tools_json ? (int)strlen(tools_json) : 0);
++    pthread_mutex_lock(&s_loop_state_lock);
++    s_loop_state = 1;
++    pthread_mutex_unlock(&s_loop_state_lock);
+ 
+     while (!agent_shutdown_requested()) {
+         agent_msg_t msg;
+@@ -1462,11 +1502,17 @@
+         }
+ 
+         if (agent_shutdown_requested()) {
+-            free(msg.content);
+-            free(msg.image_b64);
++            message_bus_msg_free(&msg);
+             break;
+         }
+ 
++        if (msg.is_cancelled && msg.is_cancelled(msg.request_id)) {
++            msg.cancelled = true;
++            dispatch_response(&msg, NULL);
++            message_bus_msg_free(&msg);
++            continue;
++        }
++
+         syslog(LOG_INFO, "[%s] Processing message from %s:%s\n",
+             TAG, msg.channel, msg.chat_id);
+ 
+@@ -1477,6 +1523,8 @@
+                 "[%s] Low memory: %zu bytes free, skipping\n",
+                 TAG, mem_st.free_heap);
+             agent_msg_t out = { 0 };
++            out.error = true;
++            memcpy(out.request_id, msg.request_id, sizeof(out.request_id));
+             strncpy(out.channel, msg.channel,
+                 sizeof(out.channel) - 1);
+             strncpy(out.chat_id, msg.chat_id,
+@@ -1487,12 +1535,13 @@
+                     free(out.content);
+                 }
+             }
+-            free(msg.content);
++            message_bus_msg_free(&msg);
+             continue;
+         }
+ 
+         /* Slash commands — fast path, bypass LLM */
+-        char* reply = handle_slash_command(&msg);
++        /* Embedded Core owns shortcuts and their success/error contract. */
++        char* reply = msg.direct_llm ? NULL : handle_slash_command(&msg);
+ 
+         /* Prompt injection check — before LLM */
+         if (!reply && tool_guard_check_injection(msg.content)) {
+@@ -1502,18 +1551,19 @@
+             reply = strdup("I can't do that.");
+             if (!reply) {
+                 /* Fail-closed: skip this message entirely */
+-                free(msg.content);
++                message_bus_msg_free(&msg);
+                 continue;
+             }
+         }
+ 
+         /* NL fast path — after injection check, before LLM */
+-        if (!reply) {
++        if (!reply && !msg.direct_llm) {
+             reply = handle_nl_fast_path(msg.content);
+         }
+ 
+         if (reply) {
+             agent_msg_t out = { 0 };
++            memcpy(out.request_id, msg.request_id, sizeof(out.request_id));
+             strncpy(out.channel, msg.channel,
+                 sizeof(out.channel) - 1);
+             strncpy(out.chat_id, msg.chat_id,
+@@ -1522,7 +1572,7 @@
+             if (message_bus_push_outbound(&out) != OK) {
+                 free(reply);
+             }
+-            free(msg.content);
++            message_bus_msg_free(&msg);
+             continue;
+         }
+ 
+@@ -1532,7 +1582,12 @@
+             skill_loader_refresh();
+         }
+ 
+-        context_build_system_prompt(sys_prompt, ctx_size);
++        if (context_build_system_prompt(sys_prompt, ctx_size) != OK) {
++            msg.error = true;
++            dispatch_response(&msg, strdup("Unable to load agent context."));
++            message_bus_msg_free(&msg);
++            continue;
++        }
+         inject_session_context(sys_prompt, ctx_size,
+             msg.channel, msg.chat_id);
+ 
+@@ -1541,7 +1596,7 @@
+         tools_json = tool_registry_get_tools_json();
+ 
+         cJSON* messages = build_messages(msg.chat_id, msg.content,
+-            history_json, hist_size);
++            history_json, hist_size, msg.history_json);
+ 
+         char* final_text = NULL;
+ 
+@@ -1557,12 +1612,15 @@
+             cJSON_Delete(messages);
+         }
+ 
++        if (msg.is_cancelled && msg.is_cancelled(msg.request_id)) {
++            msg.cancelled = true;
++        }
+         dispatch_response(&msg, final_text);
+ 
+         /* Free image_b64 if not already freed by vision path */
+         free(msg.image_b64);
+         msg.image_b64 = NULL;
+-        free(msg.content);
++        message_bus_msg_free(&msg);
+     }
+ 
+     /* Cleanup (unreachable in normal operation) */
+@@ -1574,6 +1632,9 @@
+     free(sys_prompt);
+     free(history_json);
+     free(tool_output);
++    pthread_mutex_lock(&s_loop_state_lock);
++    s_loop_state = -ECANCELED;
++    pthread_mutex_unlock(&s_loop_state_lock);
+     return NULL;
+ }
+ 
+@@ -1587,6 +1648,9 @@
+ 
+ int agent_loop_start(void)
+ {
++    pthread_mutex_lock(&s_loop_state_lock);
++    s_loop_state = 0;
++    pthread_mutex_unlock(&s_loop_state_lock);
+     int ret = agent_task_create(agent_loop_task, "agent_loop",
+         AGENT_AI_AGENT_STACK, NULL, AGENT_AI_AGENT_PRIO);
+ 
+@@ -1596,3 +1660,11 @@
+     }
+     return ret;
+ }
++
++int agent_loop_status(void)
++{
++    pthread_mutex_lock(&s_loop_state_lock);
++    int state = s_loop_state;
++    pthread_mutex_unlock(&s_loop_state_lock);
++    return state;
++}
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/core/agent_loop.h b/src/core/agent_loop.h
+--- a/src/core/agent_loop.h	2026-06-30 23:15:19.610650095 +0800
++++ b/src/core/agent_loop.h	2026-09-12 10:26:31.000000000 +0800
+@@ -30,6 +30,8 @@
+ 
+ int agent_loop_init(void);
+ int agent_loop_start(void);
++/* Zero while starting, positive when buffers are ready, negative on failure. */
++int agent_loop_status(void);
+ 
+ #ifdef __cplusplus
+ }
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/core/context_builder.c b/src/core/context_builder.c
+--- a/src/core/context_builder.c	2026-06-30 23:15:19.610650095 +0800
++++ b/src/core/context_builder.c	2026-09-12 11:01:13.000000000 +0800
+@@ -31,18 +31,45 @@
+ #endif
+ 
+ #include <stdio.h>
++#include <stdarg.h>
++#include <errno.h>
+ #include <stdbool.h>
+ #include <string.h>
+ #include <time.h>
+ #include "cJSON.h"
+ 
+ static const char *TAG = "context";
++static int (*s_context_provider)(char *buf, size_t size);
++
++void context_set_provider(int (*provider)(char *buf, size_t size))
++{
++    s_context_provider = provider;
++}
++
++static size_t context_append(char *buf, size_t size, const char *format, ...);
++
++/* Return bytes stored so append offsets remain inside the destination. */
++static size_t context_append(char *buf, size_t size, const char *format, ...)
++{
++    if (size == 0) return 0;
++    va_list args;
++    va_start(args, format);
++    int written = vsnprintf(buf, size, format, args);
++    va_end(args);
++    if (written < 0) {
++        buf[0] = '\0';
++        return 0;
++    }
++    return (size_t)written < size ? (size_t)written : size - 1;
++}
+ 
+ /* Build a comma-separated list of registered tool names.
+  * Returns number of bytes written (excluding NUL). */
+ 
+ static size_t build_tool_names(char *buf, size_t size)
+ {
++    if (buf == NULL || size == 0) return 0;
++    buf[0] = '\0';
+     char *tools_json = tool_registry_get_tools_json();
+     if (!tools_json) {
+         return 0;
+@@ -61,7 +88,7 @@
+     cJSON_ArrayForEach(item, arr) {
+         cJSON *name = cJSON_GetObjectItem(item, "name");
+         if (name && cJSON_IsString(name) && off < size - 1) {
+-            off += snprintf(buf + off, size - off, "%s%s",
++            off += context_append(buf + off, size - off, "%s%s",
+                 first ? "" : ", ", name->valuestring);
+             first = false;
+         }
+@@ -74,11 +101,12 @@
+ static size_t append_file(char *buf, size_t size, size_t offset,
+                            const char *path, const char *header)
+ {
++    if (size == 0 || offset >= size - 1) return offset;
+     FILE *f = fopen(path, "r");
+     if (!f) return offset;
+ 
+     if (header && offset < size - 1) {
+-        offset += snprintf(buf + offset, size - offset, "\n## %s\n\n", header);
++        offset += context_append(buf + offset, size - offset, "\n## %s\n\n", header);
+     }
+ 
+     size_t n = fread(buf + offset, 1, size - offset - 1, f);
+@@ -90,6 +118,9 @@
+ 
+ int context_build_system_prompt(char *buf, size_t size)
+ {
++    if (buf == NULL || size == 0) return -EINVAL;
++    buf[0] = '\0';
++    if (s_context_provider != NULL) return s_context_provider(buf, size);
+     size_t off = 0;
+ 
+     /* Current time — essential for cron scheduling.
+@@ -102,7 +133,7 @@
+     char time_str[64];
+     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_now);
+ 
+-    off += snprintf(buf + off, size - off,
++    off += context_append(buf + off, size - off,
+         "# AI Agent\n\n"
+         "Personal AI on Vela/NuttX. Channels: Feishu, WebSocket, CLI.\n"
+         "Time: %s CST (UTC+8, tz=%s). For epoch, call get_current_time.\n\n"
+@@ -127,7 +158,7 @@
+         char tool_names[1024];
+         size_t names_len = build_tool_names(tool_names, sizeof(tool_names));
+         if (names_len > 0) {
+-            off += snprintf(buf + off, size - off,
++            off += context_append(buf + off, size - off,
+                 "## Capability Boundary\n"
+                 "Your ONLY tools: %s.\n"
+                 "If a user request needs a tool not in this list, "
+@@ -137,7 +168,7 @@
+         }
+     }
+ 
+-    off += snprintf(buf + off, size - off,
++    off += context_append(buf + off, size - off,
+         "## Memory\n"
+         "Long-term: %s/memory/MEMORY.md | Daily: %s/memory/daily/<YYYY-MM-DD>.md\n\n"
+         "## Skills\n"
+@@ -149,22 +180,22 @@
+     off = append_file(buf, size, off, AGENT_USER_FILE, "User Info");
+ 
+     /* Long-term memory — write directly into buf */
+-    off += snprintf(buf + off, size - off, "\n## Long-term Memory\n\n");
++    off += context_append(buf + off, size - off, "\n## Long-term Memory\n\n");
+     {
+         size_t avail = size - off - 1;
+         if (avail > 0 && memory_read_long_term(buf + off, avail) == OK && buf[off]) {
+             off += strlen(buf + off);
+-            off += snprintf(buf + off, size - off, "\n");
++            off += context_append(buf + off, size - off, "\n");
+         }
+     }
+ 
+     /* Recent daily notes — write directly into buf */
+-    off += snprintf(buf + off, size - off, "\n## Recent Notes\n\n");
++    off += context_append(buf + off, size - off, "\n## Recent Notes\n\n");
+     {
+         size_t avail = size - off - 1;
+         if (avail > 0 && memory_read_recent(buf + off, avail, 3) == OK && buf[off]) {
+             off += strlen(buf + off);
+-            off += snprintf(buf + off, size - off, "\n");
++            off += context_append(buf + off, size - off, "\n");
+         }
+     }
+ 
+@@ -172,7 +203,7 @@
+     char skills_buf[1024];
+     size_t skills_len = skill_loader_build_summary(skills_buf, sizeof(skills_buf));
+     if (skills_len > 0) {
+-        off += snprintf(buf + off, size - off,
++        off += context_append(buf + off, size - off,
+             "\n## Skills\n%s\n", skills_buf);
+     }
+ 
+@@ -181,7 +212,7 @@
+     char node_buf[512];
+     int node_count = node_manager_list(node_buf, sizeof(node_buf));
+     if (node_count > 0) {
+-        off += snprintf(buf + off, size - off,
++        off += context_append(buf + off, size - off,
+             "\n## Nodes\n"
+             "Remote devices. Use node:<id>:<cmd> tools for remote queries.\n%s\n",
+             node_buf);
+@@ -195,6 +226,7 @@
+ int context_build_messages(const char *history_json, const char *user_message,
+                                   char *buf, size_t size)
+ {
++    if (buf == NULL || size == 0) return -EINVAL;
+     cJSON *history = cJSON_Parse(history_json);
+     if (!history) {
+         history = cJSON_CreateArray();
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/core/context_builder.h b/src/core/context_builder.h
+--- a/src/core/context_builder.h	2026-06-30 23:15:19.610650095 +0800
++++ b/src/core/context_builder.h	2026-09-12 11:01:13.000000000 +0800
+@@ -30,6 +30,8 @@
+ #endif
+ 
+ int context_build_system_prompt(char *buf, size_t size);
++/* Set once before starting the loop; the embedding owner supplies context. */
++void context_set_provider(int (*provider)(char *buf, size_t size));
+ int context_build_messages(const char *history_json, const char *user_message,
+                                   char *buf, size_t size);
+ 
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/core/message_bus.c b/src/core/message_bus.c
+--- a/src/core/message_bus.c	2026-06-30 23:15:19.610650095 +0800
++++ b/src/core/message_bus.c	2026-09-12 09:54:24.000000000 +0800
+@@ -164,6 +164,8 @@
+         free(msg->image_b64);
+         msg->image_b64 = NULL;
+     }
++    free(msg->history_json);
++    msg->history_json = NULL;
+ }
+ 
+ int message_bus_init(void)
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/core/message_bus.h b/src/core/message_bus.h
+--- a/src/core/message_bus.h	2026-06-30 23:15:19.610650095 +0800
++++ b/src/core/message_bus.h	2026-09-12 09:54:24.000000000 +0800
+@@ -36,6 +36,13 @@
+     char  chat_id[64];   /**< chat_id (Feishu IDs are ~36 chars) */
+     char *content;       /**< Heap-allocated text; receiver must free. */
+     char *image_b64;     /**< Optional base64-encoded image; receiver must free. NULL if none. */
++    bool interim;       /**< Progress notification rather than a final response. */
++    bool error;         /**< Final response represents an execution failure. */
++    bool direct_llm;    /**< Embedding owner handles shortcuts outside this loop. */
++    char request_id[64]; /**< Embedding request identity, echoed in responses. */
++    bool cancelled;     /**< Cancellation observed at an execution boundary. */
++    bool (*is_cancelled)(const char *request_id);
++    char *history_json; /**< Optional owner-provided history; receiver frees. */
+ } agent_msg_t;
+ 
+ /** Free heap members (content, image_b64) of a message.
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/infra/config_store.c b/src/infra/config_store.c
+--- a/src/infra/config_store.c	2026-06-30 23:15:19.614650175 +0800
++++ b/src/infra/config_store.c	2026-09-12 10:05:11.000000000 +0800
+@@ -31,6 +31,7 @@
+ #include <unistd.h>
+ #include <sys/stat.h>
+ #include <pthread.h>
++#include <errno.h>
+ #include "cJSON.h"
+ 
+ static const char *TAG = "cfgstore";
+@@ -57,24 +58,26 @@
+ static cJSON *load_json(void)
+ {
+     FILE *f = fopen(AGENT_CONFIG_FILE, "r");
+-    if (!f) return cJSON_CreateObject();
++    if (!f) return errno == ENOENT ? cJSON_CreateObject() : NULL;
+ 
+     fseek(f, 0, SEEK_END);
+     long sz = ftell(f);
+     fseek(f, 0, SEEK_SET);
+ 
+-    if (sz <= 0) { fclose(f); return cJSON_CreateObject(); }
++    if (sz <= 0 || sz > 65536) { fclose(f); return NULL; }
+ 
+     char *buf = (char *)malloc((size_t)(sz + 1));
+-    if (!buf) { fclose(f); return cJSON_CreateObject(); }
++    if (!buf) { fclose(f); return NULL; }
+ 
+     size_t n = fread(buf, 1, (size_t)sz, f);
+     buf[n] = '\0';
++    bool complete = n == (size_t)sz && !ferror(f);
+     fclose(f);
+ 
+-    cJSON *root = cJSON_Parse(buf);
++    cJSON *root = complete ? cJSON_Parse(buf) : NULL;
+     free(buf);
+-    return root ? root : cJSON_CreateObject();
++    if (root && !cJSON_IsObject(root)) { cJSON_Delete(root); root = NULL; }
++    return root;
+ }
+ 
+ static int save_json(cJSON *root)
+@@ -84,16 +87,19 @@
+ 
+     /* Use open() with explicit 0600 to ensure config file is owner-only.
+      * fopen("w") inherits umask which may be too permissive. */
+-    int fd = open(AGENT_CONFIG_FILE,
++    const char *temporary = AGENT_CONFIG_FILE ".tmp";
++    int fd = open(temporary,
+                   O_WRONLY | O_CREAT | O_TRUNC, 0600);
+     if (fd < 0) { free(str); return ERROR; }
+ 
+     FILE *f = fdopen(fd, "w");
+     if (!f) { close(fd); free(str); return ERROR; }
+-    fputs(str, f);
+-    fclose(f);
++    bool success = fputs(str, f) >= 0 && fflush(f) == 0 && fsync(fd) == 0;
++    if (fclose(f) != 0) success = false;
+     free(str);
+-    return OK;
++    if (success && rename(temporary, AGENT_CONFIG_FILE) == 0) return OK;
++    unlink(temporary);
++    return ERROR;
+ }
+ 
+ /* ── public API ──────────────────────────────────────────────── */
+@@ -126,11 +132,23 @@
+ 
+ int claw_config_set(const char *key, const char *value)
+ {
++    const char *keys[] = { key };
++    const char *values[] = { value };
++    return claw_config_set_many(keys, values, 1);
++}
++
++int claw_config_set_many(const char *const *keys, const char *const *values,
++                        size_t count)
++{
+     pthread_mutex_lock(&s_lock);
+     cJSON *root = load_json();
+-    cJSON_DeleteItemFromObject(root, key);
+-    cJSON_AddStringToObject(root, key, value);
+-    int ret = save_json(root);
++    bool valid = root != NULL && keys != NULL && values != NULL && count <= 32;
++    for (size_t i = 0; valid && i < count; i++) {
++        if (!keys[i] || !values[i]) { valid = false; break; }
++        cJSON_DeleteItemFromObject(root, keys[i]);
++        valid = cJSON_AddStringToObject(root, keys[i], values[i]) != NULL;
++    }
++    int ret = valid ? save_json(root) : ERROR;
+     cJSON_Delete(root);
+     pthread_mutex_unlock(&s_lock);
+     return ret;
+@@ -141,7 +159,7 @@
+     pthread_mutex_lock(&s_lock);
+     cJSON *root = load_json();
+     cJSON_DeleteItemFromObject(root, key);
+-    int ret = save_json(root);
++    int ret = root ? save_json(root) : ERROR;
+     cJSON_Delete(root);
+     pthread_mutex_unlock(&s_lock);
+     return ret;
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/infra/config_store.h b/src/infra/config_store.h
+--- a/src/infra/config_store.h	2026-06-30 23:15:19.614650175 +0800
++++ b/src/infra/config_store.h	2026-09-12 10:05:11.000000000 +0800
+@@ -42,6 +42,9 @@
+ 
+ /** Write (or overwrite) a string value and persist to disk. */
+ int claw_config_set(const char *key, const char *value);
++/* Persist a set of fields in one replace operation. */
++int claw_config_set_many(const char *const *keys, const char *const *values,
++                        size_t count);
+ 
+ /** Delete a key. Returns OK even if key was absent. */
+ int config_del(const char *key);
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/infra/http_proxy.c b/src/infra/http_proxy.c
+--- a/src/infra/http_proxy.c	2026-06-30 23:15:19.614650175 +0800
++++ b/src/infra/http_proxy.c	2026-09-12 09:34:49.000000000 +0800
+@@ -39,6 +39,7 @@
+ #include "mbedtls/net_sockets.h"
+ #include "mbedtls/ctr_drbg.h"
+ #include "mbedtls/error.h"
++#include "mbedtls/x509_crt.h"
+ 
+ #include <fcntl.h>
+ #include <time.h>
+@@ -130,6 +131,7 @@
+     mbedtls_ssl_config       cfg;
+     mbedtls_net_context      net;
+     mbedtls_ctr_drbg_context ctr_drbg;
++    mbedtls_x509_crt ca;
+ };
+ 
+ /* Read one line (CR-LF stripped) from raw socket. Returns len or -1. */
+@@ -255,6 +257,7 @@
+     mbedtls_ssl_config_init(&conn->cfg);
+     mbedtls_net_init(&conn->net);
+     mbedtls_ctr_drbg_init(&conn->ctr_drbg);
++    mbedtls_x509_crt_init(&conn->ca);
+ 
+     /* Seed RNG using portable entropy source (works on NuttX/QEMU) */
+     const char *pers = "proxy_tls";
+@@ -276,7 +279,13 @@
+                                        MBEDTLS_SSL_PRESET_DEFAULT);
+     if (ret != 0) { syslog(LOG_ERR, "[%s] ssl_config_defaults: 0x%x\n", TAG, -ret); goto fail; }
+ 
+-    mbedtls_ssl_conf_authmode(&conn->cfg, MBEDTLS_SSL_VERIFY_OPTIONAL);
++    ret = mbedtls_x509_crt_parse_file(&conn->ca, AGENT_DATA_DIR "/ca.pem");
++    if (ret != 0) {
++        syslog(LOG_ERR, "[%s] Trusted CA bundle unavailable\n", TAG);
++        goto fail;
++    }
++    mbedtls_ssl_conf_ca_chain(&conn->cfg, &conn->ca, NULL);
++    mbedtls_ssl_conf_authmode(&conn->cfg, MBEDTLS_SSL_VERIFY_REQUIRED);
+     mbedtls_ssl_conf_rng(&conn->cfg, mbedtls_ctr_drbg_random, &conn->ctr_drbg);
+ 
+     ret = mbedtls_ssl_setup(&conn->ssl, &conn->cfg);
+@@ -307,6 +316,7 @@
+     /* Don't call mbedtls_net_free — that would close sock again */
+     conn->net.fd = -1;
+     mbedtls_ctr_drbg_free(&conn->ctr_drbg);
++    mbedtls_x509_crt_free(&conn->ca);
+     close(sock);
+     free(conn);
+     return NULL;
+@@ -351,6 +361,7 @@
+         conn->net.fd = -1;
+     }
+     mbedtls_ctr_drbg_free(&conn->ctr_drbg);
++    mbedtls_x509_crt_free(&conn->ca);
+     free(conn);
+ }
+ 
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/infra/http_response.c b/src/infra/http_response.c
+--- a/src/infra/http_response.c	1970-01-01 08:00:00.000000000 +0800
++++ b/src/infra/http_response.c	2026-09-13 11:49:23.829509202 +0800
+@@ -0,0 +1,255 @@
++/****************************************************************************
++ * packages/ai_agent/src/infra/http_response.c
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements. See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to you under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ ****************************************************************************/
++
++#include "infra/http_response.h"
++#include "infra/vela_tls.h"
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++
++struct vela_http_input_s {
++    vela_http_reader_t read;
++    void *context;
++    unsigned char buffer[1024];
++    size_t position;
++    size_t length;
++};
++
++static int vela_http_byte(struct vela_http_input_s *input, unsigned char *byte);
++static int vela_http_line(struct vela_http_input_s *input, char *line,
++    size_t capacity, size_t *budget);
++static int vela_http_number(const char *text, unsigned int base, size_t *value);
++static int vela_http_append(struct vela_http_input_s *input, size_t count,
++    char *body, size_t capacity, struct vela_http_response_s *response,
++    vela_http_event_t event, void *event_context);
++
++static int vela_http_byte(struct vela_http_input_s *input, unsigned char *byte)
++{
++    if (input->position == input->length) {
++        int ret = input->read(input->context, input->buffer,
++            sizeof(input->buffer));
++        if (ret <= 0)
++            return VELA_TLS_ERR_READ;
++        if ((size_t)ret > sizeof(input->buffer))
++            return VELA_TLS_ERR_READ;
++        input->position = 0;
++        input->length = (size_t)ret;
++    }
++    *byte = input->buffer[input->position++];
++    return 0;
++}
++
++static int vela_http_line(struct vela_http_input_s *input, char *line,
++    size_t capacity, size_t *budget)
++{
++    size_t length = 0;
++    unsigned char byte;
++    while (*budget > 0) {
++        (*budget)--;
++        if (vela_http_byte(input, &byte) < 0)
++            return VELA_TLS_ERR_READ;
++        if (byte == '\r') {
++            if (*budget == 0)
++                return VELA_TLS_ERR_OVERFLOW;
++            (*budget)--;
++            if (vela_http_byte(input, &byte) < 0 || byte != '\n')
++                return VELA_TLS_ERR_READ;
++            line[length] = 0;
++            return 0;
++        }
++        if ((byte < 32 && byte != '\t') || byte == 127)
++            return VELA_TLS_ERR_READ;
++        if (length + 1 >= capacity)
++            return VELA_TLS_ERR_OVERFLOW;
++        line[length++] = (char)byte;
++    }
++    return VELA_TLS_ERR_OVERFLOW;
++}
++
++static int vela_http_number(const char *text, unsigned int base, size_t *value)
++{
++    size_t result = 0;
++    if (!*text)
++        return VELA_TLS_ERR_READ;
++    for (; *text; text++) {
++        unsigned int digit;
++        if (*text >= '0' && *text <= '9') digit = *text - '0';
++        else if (*text >= 'a' && *text <= 'f') digit = *text - 'a' + 10;
++        else if (*text >= 'A' && *text <= 'F') digit = *text - 'A' + 10;
++        else return VELA_TLS_ERR_READ;
++        if (digit >= base || result > (SIZE_MAX - digit) / base)
++            return VELA_TLS_ERR_READ;
++        result = result * base + digit;
++    }
++    *value = result;
++    return 0;
++}
++
++static int vela_http_append(struct vela_http_input_s *input, size_t count,
++    char *body, size_t capacity, struct vela_http_response_s *response,
++    vela_http_event_t event, void *event_context)
++{
++    if (count >= capacity - response->body_length)
++        return VELA_TLS_ERR_OVERFLOW;
++    while (count > 0) {
++        unsigned char byte;
++        if (vela_http_byte(input, &byte) < 0)
++            return VELA_TLS_ERR_READ;
++        body[response->body_length++] = (char)byte;
++        body[response->body_length] = 0;
++        count--;
++        if (event && byte == '\n') {
++            int ret = event(event_context, body, response->body_length);
++            if (ret != 0)
++                return ret > 0 ? 1 : VELA_TLS_ERR_READ;
++        }
++    }
++    return 0;
++}
++
++int vela_http_response_read(vela_http_reader_t reader, void *context,
++    char *body, size_t capacity, struct vela_http_response_s *response,
++    vela_http_event_t event, void *event_context)
++{
++    struct vela_http_input_s input = { .read = reader, .context = context };
++    char line[1024];
++    size_t budget = VELA_TLS_HDR_BUF;
++    size_t content_length = 0;
++    bool have_length = false;
++    bool chunked = false;
++    int ret;
++    int status;
++    if (!reader || !body || !capacity || !response)
++        return VELA_TLS_ERR_READ;
++    body[0] = 0;
++    memset(response, 0, sizeof(*response));
++    ret = vela_http_line(&input, line, sizeof(line), &budget);
++    if (ret < 0)
++        return ret;
++    if (strlen(line) < 12 ||
++        (strncmp(line, "HTTP/1.1 ", 9) && strncmp(line, "HTTP/1.0 ", 9)) ||
++        line[9] < '2' || line[9] > '5' ||
++        line[10] < '0' || line[10] > '9' ||
++        line[11] < '0' || line[11] > '9' ||
++        (line[12] && line[12] != ' '))
++        return VELA_TLS_ERR_READ;
++    status = (line[9] - '0') * 100 + (line[10] - '0') * 10 + line[11] - '0';
++    for (;;) {
++        ret = vela_http_line(&input, line, sizeof(line), &budget);
++        if (ret < 0)
++            return ret;
++        if (!line[0])
++            break;
++        char *colon = strchr(line, ':');
++        if (!colon || colon == line)
++            return VELA_TLS_ERR_READ;
++        *colon++ = 0;
++        for (char *p = line; *p; p++)
++            if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
++                  (*p >= '0' && *p <= '9') || strchr("!#$%&'*+-.^_`|~", *p)))
++                return VELA_TLS_ERR_READ;
++        while (*colon == ' ' || *colon == '\t') colon++;
++        size_t length = strlen(colon);
++        while (length && (colon[length - 1] == ' ' || colon[length - 1] == '\t'))
++            colon[--length] = 0;
++        if (!strcasecmp(line, "Content-Length")) {
++            if (have_length || vela_http_number(colon, 10, &content_length) < 0)
++                return VELA_TLS_ERR_READ;
++            have_length = true;
++        } else if (!strcasecmp(line, "Transfer-Encoding")) {
++            if (chunked || strcasecmp(colon, "chunked"))
++                return VELA_TLS_ERR_READ;
++            chunked = true;
++        } else if (!strcasecmp(line, "Content-Type")) {
++            if (response->content_type[0] || !length ||
++                length >= sizeof(response->content_type))
++                return VELA_TLS_ERR_READ;
++            memcpy(response->content_type, colon, length + 1);
++        } else if (!strcasecmp(line, "Mcp-Session-Id")) {
++            if (response->session_id[0] || !length ||
++                length >= sizeof(response->session_id))
++                return VELA_TLS_ERR_READ;
++            for (size_t i = 0; i < length; i++)
++                if ((unsigned char)colon[i] < 33 || (unsigned char)colon[i] > 126)
++                    return VELA_TLS_ERR_READ;
++            memcpy(response->session_id, colon, length + 1);
++        } else if (!strcasecmp(line, "Content-Encoding") &&
++                   strcasecmp(colon, "identity")) {
++            return VELA_TLS_ERR_READ;
++        }
++    }
++    if (chunked && have_length)
++        return VELA_TLS_ERR_READ;
++    if (status == 204 || status == 304)
++        return (chunked || (have_length && content_length)) ? VELA_TLS_ERR_READ : status;
++    if (strncasecmp(response->content_type, "text/event-stream", 17) ||
++        (response->content_type[17] && response->content_type[17] != ';'))
++        event = NULL;
++    if (chunked) {
++        for (;;) {
++            size_t chunk;
++            budget = sizeof(line);
++            ret = vela_http_line(&input, line, sizeof(line), &budget);
++            if (ret < 0)
++                return ret;
++            char *extension = strchr(line, ';');
++            if (extension) *extension = 0;
++            if (vela_http_number(line, 16, &chunk) < 0)
++                return VELA_TLS_ERR_READ;
++            if (!chunk) {
++                budget = VELA_TLS_HDR_BUF;
++                do {
++                    ret = vela_http_line(&input, line, sizeof(line), &budget);
++                    if (ret < 0) return ret;
++                    /* Trailers cannot change framing or authentication. */
++                } while (line[0]);
++                return status;
++            }
++            ret = vela_http_append(&input, chunk, body, capacity, response,
++                event, event_context);
++            if (ret != 0) return ret > 0 ? status : ret;
++            budget = 2;
++            ret = vela_http_line(&input, line, sizeof(line), &budget);
++            if (ret < 0 || line[0]) return VELA_TLS_ERR_READ;
++        }
++    }
++    if (have_length) {
++        ret = vela_http_append(&input, content_length, body, capacity, response,
++            event, event_context);
++        return ret < 0 ? ret : status;
++    }
++    /* Close-delimited responses need a clean EOF, never a timeout. */
++    for (;;) {
++        if (input.position == input.length) {
++            ret = reader(context, input.buffer, sizeof(input.buffer));
++            if (ret == 0) return status;
++            if (ret < 0 || (size_t)ret > sizeof(input.buffer))
++                return VELA_TLS_ERR_READ;
++            input.position = 0;
++            input.length = (size_t)ret;
++        }
++        ret = vela_http_append(&input, input.length - input.position,
++            body, capacity, response, event, event_context);
++        if (ret != 0) return ret > 0 ? status : ret;
++    }
++}
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/infra/http_response.h b/src/infra/http_response.h
+--- a/src/infra/http_response.h	1970-01-01 08:00:00.000000000 +0800
++++ b/src/infra/http_response.h	2026-09-13 11:49:24.193514288 +0800
+@@ -0,0 +1,45 @@
++/****************************************************************************
++ * packages/ai_agent/src/infra/http_response.h
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements. See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to you under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ ****************************************************************************/
++
++#ifndef AI_AGENT_HTTP_RESPONSE_H
++#define AI_AGENT_HTTP_RESPONSE_H
++
++#include <stddef.h>
++
++typedef int (*vela_http_reader_t)(void *context, void *buffer, size_t size);
++typedef int (*vela_http_event_t)(void *context, const char *body, size_t size);
++
++struct vela_http_response_s {
++    char content_type[96];
++    char session_id[129];
++    size_t body_length;
++};
++
++/* Read one bounded response. Never return a truncated success. The optional
++ * event callback may accept a complete SSE response before the stream closes.
++ * Reader returns bytes, zero for clean EOF, or a negative transport error.
++ */
++int vela_http_response_read(vela_http_reader_t reader, void *context,
++    char *body, size_t capacity, struct vela_http_response_s *response,
++    vela_http_event_t event, void *event_context);
++
++
++#endif
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/infra/vela_tls.c b/src/infra/vela_tls.c
+--- a/src/infra/vela_tls.c	2026-06-30 23:15:19.614650175 +0800
++++ b/src/infra/vela_tls.c	2026-09-13 11:49:23.093498919 +0800
+@@ -41,6 +41,7 @@
+ #include "mbedtls/error.h"
+ #include "mbedtls/net_sockets.h"
+ #include "mbedtls/ssl.h"
++#include "mbedtls/x509_crt.h"
+ 
+ #include <fcntl.h>
+ #include <pthread.h>
+@@ -119,6 +120,7 @@
+     mbedtls_ssl_config cfg;
+     mbedtls_net_context net;
+     mbedtls_ctr_drbg_context ctr_drbg;
++    mbedtls_x509_crt ca;
+ } tls_ctx_t;
+ 
+ static void tls_ctx_free(tls_ctx_t* ctx)
+@@ -128,6 +130,7 @@
+     mbedtls_ssl_free(&ctx->ssl);
+     mbedtls_ssl_config_free(&ctx->cfg);
+     mbedtls_ctr_drbg_free(&ctx->ctr_drbg);
++    mbedtls_x509_crt_free(&ctx->ca);
+ 
+ #ifdef CONFIG_AI_AGENT_NET_RPMSG
+     network_release_resource();
+@@ -237,6 +240,7 @@
+     mbedtls_ssl_config_init(&ctx->cfg);
+     mbedtls_net_init(&ctx->net);
+     mbedtls_ctr_drbg_init(&ctx->ctr_drbg);
++    mbedtls_x509_crt_init(&ctx->ca);
+ 
+     /* Seed RNG directly with our robust function */
+     const char* pers = "vela_tls";
+@@ -348,8 +352,14 @@
+     }
+ #endif
+ 
+-    /* Skip full chain verification — keeps portability without CA bundle */
+-    mbedtls_ssl_conf_authmode(&ctx->cfg, MBEDTLS_SSL_VERIFY_OPTIONAL);
++    /* Missing or invalid trust material is a hard failure, never a bypass. */
++    ret = mbedtls_x509_crt_parse_file(&ctx->ca, AGENT_DATA_DIR "/ca.pem");
++    if (ret != 0) {
++        syslog(LOG_ERR, "[%s] CA bundle unavailable or invalid: %d\n", TAG, ret);
++        return VELA_TLS_ERR_HANDSHAKE;
++    }
++    mbedtls_ssl_conf_ca_chain(&ctx->cfg, &ctx->ca, NULL);
++    mbedtls_ssl_conf_authmode(&ctx->cfg, MBEDTLS_SSL_VERIFY_REQUIRED);
+     mbedtls_ssl_conf_rng(&ctx->cfg, mbedtls_ctr_drbg_random, &ctx->ctr_drbg);
+ 
+     /* Read timeout is handled at the socket level via SO_RCVTIMEO,
+@@ -643,6 +653,232 @@
+ 
+ /* ── Public API ──────────────────────────────────────────────── */
+ 
++static int vela_tls_once_read(void *context, void *buffer, size_t size);
++static bool vela_tls_once_field(const char *value, bool token);
++
++static int vela_tls_once_read(void *context, void *buffer, size_t size)
++{
++    tls_ctx_t *ctx = context;
++    int ret = mbedtls_ssl_read(&ctx->ssl, buffer, size);
++    if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
++        return 0;
++    /* A socket timeout is a failed response, not an invitation to resend. */
++    return ret < 0 ? VELA_TLS_ERR_READ : ret;
++}
++
++static bool vela_tls_once_field(const char *value, bool token)
++{
++    if (!value || !*value)
++        return false;
++    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
++        if (*p < 32 || *p > 126 || (token && *p == ' '))
++            return false;
++    }
++    return true;
++}
++
++static int vela_https_method_once(const char *method, const char *host,
++    const char *port, const char *path, const vela_header_t *headers,
++    const char *body, char *response_body, size_t response_capacity,
++    struct vela_http_response_s *response, vela_http_event_t event,
++    void *event_context);
++
++int vela_https_request_once(const char *host, const char *port,
++    const char *path, const vela_header_t *headers, const char *body,
++    char *response_body, size_t response_capacity,
++    struct vela_http_response_s *response, vela_http_event_t event,
++    void *event_context)
++{
++    return vela_https_method_once("POST", host, port, path, headers, body,
++        response_body, response_capacity, response, event, event_context);
++}
++
++int vela_https_get_once(const char *host, const char *port,
++    const char *path, const vela_header_t *headers, char *response_body,
++    size_t response_capacity, struct vela_http_response_s *response)
++{
++    return vela_https_method_once("GET", host, port, path, headers, "",
++        response_body, response_capacity, response, NULL, NULL);
++}
++
++static int vela_https_method_once(const char *method, const char *host,
++    const char *port, const char *path, const vela_header_t *headers,
++    const char *body, char *response_body, size_t response_capacity,
++    struct vela_http_response_s *response, vela_http_event_t event,
++    void *event_context)
++{
++    int ret;
++    if (!response_body || !response_capacity || !response)
++        return VELA_TLS_ERR_READ;
++    response_body[0] = 0;
++    memset(response, 0, sizeof(*response));
++    if (!method || (strcmp(method, "POST") && strcmp(method, "GET")) ||
++        !vela_tls_once_field(host, true) ||
++        !vela_tls_once_field(port, true) ||
++        !vela_tls_once_field(path, true) || path[0] != '/' || !body ||
++        strlen(host) > 253 || strlen(port) > 5 || strlen(path) > 1024)
++        return VELA_TLS_ERR_WRITE;
++    for (const char *p = port; *p; p++)
++        if (*p < '0' || *p > '9') return VELA_TLS_ERR_WRITE;
++    if (atoi(port) < 1 || atoi(port) > 65535)
++        return VELA_TLS_ERR_WRITE;
++    if (headers) {
++        size_t count = 0;
++        for (const vela_header_t *h = headers; h->name; h++) {
++            if (++count > 24 || !vela_tls_once_field(h->name, true) ||
++                !vela_tls_once_field(h->value, false) ||
++                strlen(h->name) > 64 || strlen(h->value) > 1024 ||
++                !strcasecmp(h->name, "Host") ||
++                !strcasecmp(h->name, "Connection") ||
++                !strcasecmp(h->name, "Content-Length") ||
++                !strcasecmp(h->name, "Transfer-Encoding"))
++                return VELA_TLS_ERR_WRITE;
++            for (const char *p = h->name; *p; p++)
++                if (!((*p >= 'A' && *p <= 'Z') ||
++                      (*p >= 'a' && *p <= 'z') ||
++                      (*p >= '0' && *p <= '9') || *p == '-'))
++                    return VELA_TLS_ERR_WRITE;
++        }
++    }
++    /* Keep the TLS context off constrained agent thread stacks. */
++    tls_ctx_t *ctx = calloc(1, sizeof(*ctx));
++    if (!ctx)
++        return VELA_TLS_ERR_OVERFLOW;
++    ret = tls_ctx_connect(ctx, host, port);
++    if (ret == 0) {
++        char authority[261];
++        if (!strcmp(port, "443")) snprintf(authority, sizeof(authority), "%s", host);
++        else snprintf(authority, sizeof(authority), "%s:%s", host, port);
++        ret = tls_write_request(ctx, method, authority, path, headers,
++            body, strlen(body));
++        if (ret == 0)
++            ret = vela_http_response_read(vela_tls_once_read, ctx,
++                response_body, response_capacity, response, event,
++                event_context);
++    }
++    tls_ctx_free(ctx);
++    free(ctx);
++    return ret;
++}
++
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++static int vela_tls_fixture_read(void *context, void *buffer, size_t size);
++static int vela_tls_fixture_request(const char *method, const char *port,
++    const char *path, const vela_header_t *headers, const char *body,
++    char *response_body, size_t response_capacity,
++    struct vela_http_response_s *response, vela_http_event_t event,
++    void *event_context);
++static int vela_tls_fixture_read(void *context, void *buffer, size_t size)
++{
++    return recv(*(int *)context, buffer, size, 0);
++}
++
++int vela_http_loopback_post_once(const char *port, const char *path,
++    const vela_header_t *headers, const char *body, char *response_body,
++    size_t response_capacity, struct vela_http_response_s *response,
++    vela_http_event_t event, void *event_context)
++{
++    return vela_http_loopback_request_once("POST", port, path, headers, body,
++        response_body, response_capacity, response, event, event_context);
++}
++
++int vela_http_loopback_request_once(const char *method, const char *port,
++    const char *path, const vela_header_t *headers, const char *body,
++    char *response_body, size_t response_capacity,
++    struct vela_http_response_s *response, vela_http_event_t event,
++    void *event_context)
++{
++    return vela_tls_fixture_request(method, port, path, headers, body,
++        response_body, response_capacity, response, event, event_context);
++}
++
++int vela_http_loopback_get_once(const char *port, const char *path,
++    const vela_header_t *headers, char *response_body,
++    size_t response_capacity, struct vela_http_response_s *response)
++{
++    return vela_tls_fixture_request("GET", port, path, headers, "",
++        response_body, response_capacity, response, NULL, NULL);
++}
++
++static int vela_tls_fixture_request(const char *method, const char *port,
++    const char *path, const vela_header_t *headers, const char *body,
++    char *response_body, size_t response_capacity,
++    struct vela_http_response_s *response, vela_http_event_t event,
++    void *event_context)
++{
++    struct addrinfo hints = { .ai_family = AF_INET,
++        .ai_socktype = SOCK_STREAM, .ai_flags = AI_NUMERICHOST };
++    struct addrinfo *address = NULL;
++    char *request = NULL;
++    int fd = -1;
++    int ret = VELA_TLS_ERR_WRITE;
++    if (!method || (strcmp(method, "POST") && strcmp(method, "GET")) ||
++        !vela_tls_once_field(port, true) || !vela_tls_once_field(path, true) ||
++        path[0] != '/' || strlen(path) > 1024 || strlen(port) > 5 || !body ||
++        !response_body || !response_capacity || !response)
++        return ret;
++    response_body[0] = 0;
++    memset(response, 0, sizeof(*response));
++    for (const char *p = port; *p; p++)
++        if (*p < '0' || *p > '9') return ret;
++    if (atoi(port) < 1 || atoi(port) > 65535) return ret;
++    request = malloc(4096);
++    if (!request) return VELA_TLS_ERR_OVERFLOW;
++    int position = snprintf(request, 4096,
++        "%s %s HTTP/1.1\r\nHost: 127.0.0.1:%s\r\nConnection: close\r\n"
++        "Content-Length: %zu\r\n", method, path, port, strlen(body));
++    size_t count = 0;
++    if (headers) for (const vela_header_t *h = headers; h->name; h++) {
++        if (++count > 24 || !vela_tls_once_field(h->name, true) ||
++            !vela_tls_once_field(h->value, false) || strchr(h->name, ':') ||
++            !strcasecmp(h->name, "Content-Length") ||
++            !strcasecmp(h->name, "Transfer-Encoding") ||
++            !strcasecmp(h->name, "Host") || !strcasecmp(h->name, "Connection"))
++            goto done;
++        int added = snprintf(request + position, 4096 - position,
++            "%s: %s\r\n", h->name, h->value);
++        if (added < 0 || added >= 4096 - position) {
++            ret = VELA_TLS_ERR_OVERFLOW;
++            goto done;
++        }
++        position += added;
++    }
++    if (position > 4093) { ret = VELA_TLS_ERR_OVERFLOW; goto done; }
++    memcpy(request + position, "\r\n", 3);
++    position += 2;
++    if (getaddrinfo("127.0.0.1", port, &hints, &address) != 0 || !address) {
++        ret = VELA_TLS_ERR_CONNECT;
++        goto done;
++    }
++    fd = socket(AF_INET, SOCK_STREAM, 0);
++    if (fd < 0) { ret = VELA_TLS_ERR_CONNECT; goto done; }
++    struct timeval timeout = { .tv_sec = AGENT_LLM_SOCKET_TIMEOUT_SEC };
++    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
++    if (connect(fd, address->ai_addr, address->ai_addrlen) < 0) {
++        ret = VELA_TLS_ERR_CONNECT;
++        goto done;
++    }
++    const char *parts[2] = { request, body };
++    size_t lengths[2] = { (size_t)position, strlen(body) };
++    for (size_t i = 0; i < 2; i++) {
++        size_t sent = 0;
++        while (sent < lengths[i]) {
++            ssize_t n = send(fd, parts[i] + sent, lengths[i] - sent, 0);
++            if (n <= 0) { ret = VELA_TLS_ERR_WRITE; goto done; }
++            sent += (size_t)n;
++        }
++    }
++    ret = vela_http_response_read(vela_tls_fixture_read, &fd, response_body,
++        response_capacity, response, event, event_context);
++done:
++    if (fd >= 0) close(fd);
++    if (address) freeaddrinfo(address);
++    free(request);
++    return ret;
++}
++#endif
++
+ int vela_https_request(
+     const char* host,
+     const char* port,
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/infra/vela_tls.h b/src/infra/vela_tls.h
+--- a/src/infra/vela_tls.h	2026-06-30 23:15:19.614650175 +0800
++++ b/src/infra/vela_tls.h	2026-09-13 11:49:23.449503892 +0800
+@@ -18,6 +18,7 @@
+ 
+ #include <stdint.h>
+ #include <stddef.h>
++#include "infra/http_response.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -41,6 +42,37 @@
+     const char *value;
+ } vela_header_t;
+ 
++/* Dedicated verified TLS connection, exactly one write attempt, strict bounded
++ * response framing. A negative result after transmission does not establish
++ * that a remote side effect was absent. No redirects or automatic replay.
++ */
++int vela_https_request_once(const char *host, const char *port,
++    const char *path, const vela_header_t *headers, const char *body,
++    char *response_body, size_t response_capacity,
++    struct vela_http_response_s *response, vela_http_event_t event,
++    void *event_context);
++
++/* Verified, bounded GET; gzip is returned as binary, never truncated. */
++int vela_https_get_once(const char *host, const char *port,
++    const char *path, const vela_header_t *headers, char *response_body,
++    size_t response_capacity, struct vela_http_response_s *response);
++
++/* Test-only entry point. The implementation exists only in the explicit
++ * simulator fixture build and always connects to literal 127.0.0.1.
++ */
++int vela_http_loopback_post_once(const char *port, const char *path,
++    const vela_header_t *headers, const char *body, char *response_body,
++    size_t response_capacity, struct vela_http_response_s *response,
++    vela_http_event_t event, void *event_context);
++int vela_http_loopback_request_once(const char *method, const char *port,
++    const char *path, const vela_header_t *headers, const char *body,
++    char *response_body, size_t response_capacity,
++    struct vela_http_response_s *response, vela_http_event_t event,
++    void *event_context);
++int vela_http_loopback_get_once(const char *port, const char *path,
++    const vela_header_t *headers, char *response_body,
++    size_t response_capacity, struct vela_http_response_s *response);
++
+ /**
+  * Perform a complete HTTPS request and collect the response body.
+  *
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/llm/llm_proxy.c b/src/llm/llm_proxy.c
+--- a/src/llm/llm_proxy.c	2026-06-30 23:15:19.614650175 +0800
++++ b/src/llm/llm_proxy.c	2026-09-12 10:05:11.000000000 +0800
+@@ -44,7 +44,7 @@
+ static char s_model[64] = AGENT_LLM_DEFAULT_MODEL;
+ static char s_llm_host[128] = AGENT_LLM_API_HOST;
+ static char s_llm_path[128] = AGENT_LLM_API_PATH;
+-static char s_llm_port[8] = "443"; /* "443" for HTTPS, "80" etc for HTTP */
++static char s_llm_port[8] = "443"; /* TLS is independent of the port number. */
+ 
+ /* Independent vision model config — empty means fall back to main LLM */
+ static char s_vision_model[64] = { 0 };
+@@ -179,28 +179,40 @@
+ {
+     pthread_mutex_lock(&s_llm_lock);
+ 
++    const char *keys[5];
++    const char *values[5];
++    size_t count = 0;
++    const char *all_keys[] = {AGENT_CFG_KEY_LLM_HOST, AGENT_CFG_KEY_LLM_PATH,
++                             "llm_port", AGENT_CFG_KEY_API_KEY, AGENT_CFG_KEY_MODEL};
++    const char *all_values[] = {host, path, port, api_key, model};
++    for (size_t i = 0; i < 5; i++) {
++        if (all_values[i] && all_values[i][0]) {
++            keys[count] = all_keys[i];
++            values[count++] = all_values[i];
++        }
++    }
++    if (claw_config_set_many(keys, values, count) != OK) {
++        pthread_mutex_unlock(&s_llm_lock);
++        return ERROR;
++    }
++
+     if (host && host[0]) {
+-        claw_config_set(AGENT_CFG_KEY_LLM_HOST, host);
+         strncpy(s_llm_host, host, sizeof(s_llm_host) - 1);
+         s_llm_host[sizeof(s_llm_host) - 1] = '\0';
+     }
+     if (path && path[0]) {
+-        claw_config_set(AGENT_CFG_KEY_LLM_PATH, path);
+         strncpy(s_llm_path, path, sizeof(s_llm_path) - 1);
+         s_llm_path[sizeof(s_llm_path) - 1] = '\0';
+     }
+     if (port && port[0]) {
+-        claw_config_set("llm_port", port);
+         strncpy(s_llm_port, port, sizeof(s_llm_port) - 1);
+         s_llm_port[sizeof(s_llm_port) - 1] = '\0';
+     }
+     if (api_key && api_key[0]) {
+-        claw_config_set(AGENT_CFG_KEY_API_KEY, api_key);
+         strncpy(s_api_key, api_key, sizeof(s_api_key) - 1);
+         s_api_key[sizeof(s_api_key) - 1] = '\0';
+     }
+     if (model && model[0]) {
+-        claw_config_set(AGENT_CFG_KEY_MODEL, model);
+         strncpy(s_model, model, sizeof(s_model) - 1);
+         s_model[sizeof(s_model) - 1] = '\0';
+     }
+@@ -362,7 +374,10 @@
+         { NULL, NULL } };
+ 
+     int status;
+-    int use_tls = (strcmp(llm_port, "443") == 0);
++    int use_tls = 1;
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++    use_tls = strcmp(llm_host, "127.0.0.1") != 0;
++#endif
+ 
+     if (use_tls) {
+         status = vela_https_post_json(llm_host, llm_port, llm_path, hdrs, post_data,
+@@ -480,14 +495,13 @@
+ int llm_http_call(const char* post_data, resp_buf_t* rb,
+     int* out_status)
+ {
+-    /* For plain HTTP endpoints (port != 443), always use direct path.
+-     * The proxy does CONNECT + TLS which fails on non-TLS endpoints.
+-     * Non-TLS HTTP endpoints (port != 443) are reachable
+-     * directly without a proxy anyway. */
+-    int use_tls;
++    /* Only an explicitly enabled simulator loopback fixture uses HTTP. */
++    int use_tls = 1;
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
+     pthread_mutex_lock(&s_llm_lock);
+-    use_tls = (strcmp(s_llm_port, "443") == 0);
++    use_tls = strcmp(s_llm_host, "127.0.0.1") != 0;
+     pthread_mutex_unlock(&s_llm_lock);
++#endif
+ 
+ #ifdef CONFIG_AI_AGENT_NET_RPMSG
+     int retry_max = network_get_retry_max();
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/llm/llm_router.c b/src/llm/llm_router.c
+--- a/src/llm/llm_router.c	2026-06-30 23:15:19.614650175 +0800
++++ b/src/llm/llm_router.c	2026-09-12 13:14:49.109111802 +0800
+@@ -24,6 +24,7 @@
+  */
+ 
+ #include <inttypes.h>
++#include <limits.h>
+ 
+ #include "llm/llm_router.h"
+ #include "cJSON.h"
+@@ -107,6 +108,7 @@
+     }
+ 
+     /* Load backends from config */
++    memset(s_backends, 0, sizeof(s_backends));
+     s_backend_count = 0;
+     for (int i = 0; i < LLM_ROUTER_MAX_BACKENDS; i++) {
+         char key[64];
+@@ -148,7 +150,8 @@
+             b->cost_tier = item->valueint;
+         }
+ 
+-        b->enabled = true;
++        item = cJSON_GetObjectItem(obj, "enabled");
++        b->enabled = item ? cJSON_IsTrue(item) : true;
+         b->fail_count = 0;
+         s_backend_count++;
+ 
+@@ -173,9 +176,6 @@
+     }
+ 
+     pthread_mutex_lock(&s_router_lock);
+-    memcpy(&s_backends[index], backend, sizeof(llm_backend_t));
+-    s_backends[index].fail_count = 0;
+-
+     /* Save to config */
+     cJSON* obj = cJSON_CreateObject();
+     if (!obj) {
+@@ -189,19 +189,29 @@
+     cJSON_AddStringToObject(obj, "model", backend->model);
+     cJSON_AddNumberToObject(obj, "priority", backend->priority);
+     cJSON_AddNumberToObject(obj, "cost_tier", backend->cost_tier);
++    cJSON_AddBoolToObject(obj, "enabled", backend->enabled);
+ 
+     char* json = cJSON_PrintUnformatted(obj);
+     cJSON_Delete(obj);
+     obj = NULL;
+ 
++    int ret = -1;
+     if (json) {
+         char key[64];
+         snprintf(key, sizeof(key), "%s%d", CFG_KEY_BACKEND_PREFIX, index);
+-        claw_config_set(key, json);
++        ret = claw_config_set(key, json);
+         free(json);
+         json = NULL;
+     }
+ 
++    if (ret != 0) {
++        pthread_mutex_unlock(&s_router_lock);
++        return -1;
++    }
++    memcpy(&s_backends[index], backend, sizeof(llm_backend_t));
++    s_backends[index].fail_count = 0;
++    s_backends[index].backoff_until = 0;
++
+     if (index >= s_backend_count) {
+         s_backend_count = index + 1;
+     }
+@@ -219,7 +229,7 @@
+     }
+ 
+     pthread_mutex_lock(&s_router_lock);
+-    if (!s_backends[index].enabled || s_backends[index].host[0] == '\0') {
++    if (s_backends[index].host[0] == '\0') {
+         pthread_mutex_unlock(&s_router_lock);
+         return -1;
+     }
+@@ -231,10 +241,26 @@
+ 
+ /* ── Profile management ───────────────────────────────────── */
+ 
+-void llm_router_set_profile(llm_route_profile_t profile)
++int llm_router_remove_backend(int index)
+ {
++    if (index < 0 || index >= LLM_ROUTER_MAX_BACKENDS) return -1;
++    char key[64];
++    snprintf(key, sizeof(key), "%s%d", CFG_KEY_BACKEND_PREFIX, index);
++    pthread_mutex_lock(&s_router_lock);
++    int ret = config_del(key);
++    if (ret == 0) {
++        memset(&s_backends[index], 0, sizeof(s_backends[index]));
++        while (s_backend_count > 0 &&
++               !s_backends[s_backend_count - 1].host[0]) s_backend_count--;
++    }
++    pthread_mutex_unlock(&s_router_lock);
++    return ret;
++}
++
++int llm_router_set_profile(llm_route_profile_t profile)
++{
++    if (profile < LLM_ROUTE_AUTO || profile > LLM_ROUTE_PREMIUM) return -1;
+     pthread_mutex_lock(&s_router_lock);
+-    s_profile = profile;
+ 
+     const char* name = "auto";
+     if (profile == LLM_ROUTE_ECO) {
+@@ -242,10 +268,12 @@
+     } else if (profile == LLM_ROUTE_PREMIUM) {
+         name = "premium";
+     }
+-    claw_config_set(CFG_KEY_ROUTER_PROFILE, name);
++    int ret = claw_config_set(CFG_KEY_ROUTER_PROFILE, name);
++    if (ret == 0) s_profile = profile;
+ 
+     pthread_mutex_unlock(&s_router_lock);
+     syslog(LOG_INFO, "[%s] Profile set to: %s\n", TAG, name);
++    return ret;
+ }
+ 
+ llm_route_profile_t llm_router_get_profile(void)
+@@ -319,7 +347,7 @@
+     llm_route_profile_t profile)
+ {
+     int best_idx = -1;
+-    int best_score = -1;
++    int best_score = INT_MIN;
+     int fallback_idx = -1;          /* least-backed-off backend */
+     uint32_t fallback_until = UINT32_MAX;
+     uint32_t now = (uint32_t)time(NULL);
+@@ -519,9 +547,7 @@
+     }
+ 
+     /* Atomic update — single lock acquisition in llm_proxy */
+-    llm_set_all(b.host, b.path, b.port, b.api_key, b.model);
+-
+-    return 0;
++    return llm_set_all(b.host, b.path, b.port, b.api_key, b.model);
+ }
+ 
+ void llm_router_report_tokens(int index, int prompt_tokens,
+@@ -584,6 +610,9 @@
+         }
+         cJSON_AddNumberToObject(item, "index", i);
+         cJSON_AddStringToObject(item, "host", b->host);
++        cJSON_AddStringToObject(item, "path", b->path);
++        cJSON_AddStringToObject(item, "port", b->port);
++        cJSON_AddBoolToObject(item, "keySet", b->api_key[0] != '\0');
+         cJSON_AddStringToObject(item, "model", b->model);
+         cJSON_AddNumberToObject(item, "priority", b->priority);
+         cJSON_AddNumberToObject(item, "cost_tier", b->cost_tier);
+@@ -609,7 +638,7 @@
+         } else if (b->fail_count > 0) {
+             status = "degraded";
+         }
+-        cJSON_AddStringToObject(item, "status", status);
++        cJSON_AddStringToObject(item, "status", b->enabled ? status : "paused");
+ 
+         cJSON_AddItemToArray(backends, item);
+     }
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/llm/llm_router.h b/src/llm/llm_router.h
+--- a/src/llm/llm_router.h	2026-06-30 23:15:19.614650175 +0800
++++ b/src/llm/llm_router.h	2026-09-12 13:12:59.334826989 +0800
+@@ -94,12 +94,13 @@
+  * @return 0 on success, -1 if not configured
+  */
+ int llm_router_get_backend(int index, llm_backend_t* backend);
++int llm_router_remove_backend(int index);
+ 
+ /**
+  * Set the routing profile.
+  * @param profile Routing profile (eco/auto/premium)
+  */
+-void llm_router_set_profile(llm_route_profile_t profile);
++int llm_router_set_profile(llm_route_profile_t profile);
+ 
+ /**
+  * Get current routing profile.
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/node/node_client.c b/src/node/node_client.c
+--- a/src/node/node_client.c	2026-06-30 23:15:19.614650175 +0800
++++ b/src/node/node_client.c	2026-09-12 16:54:54.623475631 +0800
+@@ -28,6 +28,7 @@
+ #include <sys/socket.h>
+ #include <sys/types.h>
+ #include <unistd.h>
++#include <stdatomic.h>
+ 
+ #include "mbedtls/base64.h"
+ #include "mbedtls/ctr_drbg.h"
+@@ -42,6 +43,8 @@
+ #define NODE_CLIENT_PRIO 45
+ #define NODE_READ_BUF_SIZE 8192
+ #define NODE_TOOL_OUTPUT_SIZE (8 * 1024)
++#define NODE_READ_TIMEOUT_SEC 2
++#define NODE_RECV_IDLE (-3)
+ 
+ /* ── TLS + Socket state ────────────────────────────────────── */
+ 
+@@ -57,8 +60,16 @@
+     bool tls_init;
+ } node_ws_t;
+ 
+-static node_ws_t s_ws;
+-static volatile bool s_running = false;
++static node_ws_t s_ws = { .fd = -1, .net = { .fd = -1 } };
++static atomic_bool s_running;
++static atomic_bool s_exited = true;
++static atomic_bool s_authenticated;
++static atomic_int s_protocol;
++static char s_connect_id[32];
++static char s_connect_error[128];
++static node_client_connect_builder_t s_connect_builder;
++static node_client_executor_t s_executor;
++static node_client_observer_t s_observer;
+ static pthread_t s_thread;
+ static bool s_thread_valid = false;
+ static pthread_mutex_t s_mutex = PTHREAD_MUTEX_INITIALIZER;
+@@ -67,6 +78,8 @@
+ static char s_gateway_token[256];
+ static bool s_use_tls = false;
+ 
++static void node_client_wait(unsigned int seconds);
++
+ /* ── Entropy ───────────────────────────────────────────────── */
+ 
+ static int entropy_func(void* data, unsigned char* output, size_t len)
+@@ -84,10 +97,12 @@
+ static int raw_read(node_ws_t* ws, void* buf, size_t len)
+ {
+     if (ws->use_tls) {
+-        int n;
+-        do {
+-            n = mbedtls_ssl_read(&ws->ssl, buf, len);
+-        } while (n == MBEDTLS_ERR_SSL_WANT_READ);
++        int n = mbedtls_ssl_read(&ws->ssl, buf, len);
++        if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_TIMEOUT) {
++            errno = EAGAIN;
++            return -1;
++        }
++        if (n < 0) errno = EIO;
+         return n;
+     }
+     return (int)recv(ws->fd, buf, len, 0);
+@@ -116,8 +131,10 @@
+     size_t total = 0;
+     while (total < len) {
+         int n = raw_read(ws, (char*)buf + total, len - total);
+-        if (n <= 0)
++        if (n <= 0) {
++            if (n == 0) errno = ECONNRESET;
+             return -1;
++        }
+         total += (size_t)n;
+     }
+     return (int)total;
+@@ -199,6 +216,7 @@
+ {
+     char id[32];
+     gen_id(id, sizeof(id));
++    if (!strcmp(method, "connect")) snprintf(s_connect_id, sizeof(s_connect_id), "%s", id);
+ 
+     cJSON* frame = cJSON_CreateObject();
+     cJSON_AddStringToObject(frame, "type", "req");
+@@ -246,8 +264,22 @@
+ 
+ /* ── Send connect request ──────────────────────────────────── */
+ 
+-static void send_connect(void)
++static void send_connect(cJSON *challenge)
+ {
++    if (s_connect_builder) {
++        char *input = cJSON_PrintUnformatted(challenge);
++        char *encoded = input ? s_connect_builder(input, s_gateway_token) : NULL;
++        free(input);
++        cJSON *params = encoded ? cJSON_Parse(encoded) : NULL;
++        free(encoded);
++        if (params) send_json_request("connect", params);
++        else {
++            pthread_mutex_lock(&s_mutex);
++            snprintf(s_connect_error, sizeof(s_connect_error), "DEVICE_IDENTITY_ERROR");
++            pthread_mutex_unlock(&s_mutex);
++        }
++        return;
++    }
+     cJSON* params = cJSON_CreateObject();
+     cJSON_AddNumberToObject(params, "minProtocol", 3);
+     cJSON_AddNumberToObject(params, "maxProtocol", 3);
+@@ -288,28 +320,36 @@
+ 
+     cJSON* params_item = cJSON_GetObjectItem(payload, "paramsJSON");
+     const char* params_json = cJSON_GetStringValue(params_item);
++    char *owned_params = NULL;
+     if (!params_json) {
+         cJSON* fallback = params_item;
+         if (!fallback || !cJSON_IsObject(fallback))
+             fallback = cJSON_GetObjectItem(payload, "params");
+         if (fallback && cJSON_IsObject(fallback)) {
+-            params_json = cJSON_GetStringValue(fallback);
++            owned_params = cJSON_PrintUnformatted(fallback);
++            params_json = owned_params;
+         }
+     }
+ 
+-    if (!invoke_id || !command)
++    if (!invoke_id || !command) {
++        free(owned_params);
+         return;
++    }
+ 
+     syslog(LOG_DEBUG, "[%s] invoke: %s (id=%.8s)\n", TAG, command, invoke_id);
+ 
+     /* Execute via tool_registry */
+     char* output = malloc(NODE_TOOL_OUTPUT_SIZE);
+-    if (!output)
++    if (!output) {
++        free(owned_params);
+         return;
++    }
+ 
+     output[0] = '\0';
+-    int ret = tool_registry_execute(command, params_json ? params_json : "{}",
+-        output, NODE_TOOL_OUTPUT_SIZE);
++    int ret = s_executor
++        ? s_executor(command, params_json ? params_json : "{}", output, NODE_TOOL_OUTPUT_SIZE)
++        : tool_registry_execute(command, params_json ? params_json : "{}", output, NODE_TOOL_OUTPUT_SIZE);
++    free(owned_params);
+ 
+     syslog(LOG_DEBUG, "[%s] tool_registry_execute(%s) ret=%d\n", TAG,
+         command, ret);
+@@ -366,7 +406,7 @@
+         }
+ 
+         mbedtls_net_set_block(&s_ws.net);
+-        struct timeval tv = { .tv_sec = 30 };
++        struct timeval tv = { .tv_sec = NODE_READ_TIMEOUT_SEC };
+         setsockopt(s_ws.net.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+ 
+         mbedtls_ssl_config_defaults(&s_ws.conf, MBEDTLS_SSL_IS_CLIENT,
+@@ -409,7 +449,7 @@
+             freeaddrinfo(res);
+             return -1;
+         }
+-        struct timeval tv = { .tv_sec = 30 };
++        struct timeval tv = { .tv_sec = NODE_READ_TIMEOUT_SEC };
+         setsockopt(s_ws.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+         freeaddrinfo(res);
+     }
+@@ -472,6 +512,8 @@
+ static void do_shutdown_fd_locked(void)
+ {
+     s_ws.connected = false;
++    s_authenticated = false;
++    s_protocol = 0;
+     if (s_ws.tls_init) {
+         /* Shut down the transport fd; mbedtls_ssl_read will return error */
+         if (s_ws.net.fd >= 0) {
+@@ -517,16 +559,6 @@
+     pthread_mutex_unlock(&s_mutex);
+ }
+ 
+-/* Interrupt-only disconnect for external callers (stop/start).
+- * Closes the fd to unblock the worker, but does NOT free TLS objects.
+- * Caller must pthread_join the worker, then call do_free_tls. */
+-static void do_shutdown_fd(void)
+-{
+-    pthread_mutex_lock(&s_mutex);
+-    do_shutdown_fd_locked();
+-    pthread_mutex_unlock(&s_mutex);
+-}
+-
+ static void do_free_tls(void)
+ {
+     pthread_mutex_lock(&s_mutex);
+@@ -540,7 +572,7 @@
+ {
+     uint8_t b0, b1;
+     if (read_exact(ws, &b0, 1) < 0)
+-        return -1;
++        return errno == EAGAIN || errno == EWOULDBLOCK ? NODE_RECV_IDLE : -1;
+     if (read_exact(ws, &b1, 1) < 0)
+         return -1;
+ 
+@@ -633,13 +665,13 @@
+ 
+         if (strcmp(event, "connect.challenge") == 0) {
+             syslog(LOG_INFO, "[%s] Got challenge, sending connect\n", TAG);
+-            send_connect();
++            send_connect(cJSON_GetObjectItemCaseSensitive(root, "payload"));
+         } else if (strcmp(event, "chat.forward") == 0) {
+             /* Gateway forwarded a chat message (e.g. bot-to-bot @mention).
+              * Inject it into our local inbound message bus so the agent
+              * processes it as if it arrived via the normal channel. */
+             cJSON* pl = cJSON_GetObjectItem(root, "payload");
+-            if (pl) {
++            if (pl && !s_executor) {
+                 const char* ch = cJSON_GetStringValue(
+                     cJSON_GetObjectItem(pl, "channel"));
+                 const char* cid = cJSON_GetStringValue(
+@@ -663,30 +695,61 @@
+                 }
+             }
+         } else if (strcmp(event, "node.invoke.request") == 0) {
++            pthread_mutex_lock(&s_mutex);
++            bool admitted = !s_executor || s_authenticated;
++            pthread_mutex_unlock(&s_mutex);
+             cJSON* pl = cJSON_GetObjectItem(root, "payload");
+-            if (pl)
++            if (pl && admitted)
+                 handle_invoke(pl);
+             else
+                 syslog(LOG_WARNING, "[%s] invoke event but no payload\n", TAG);
+         }
+     } else if (strcmp(type, "res") == 0) {
++        const char *id = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(root, "id"));
++        bool connect_response = id && !strcmp(id, s_connect_id);
+         bool ok = cJSON_IsTrue(cJSON_GetObjectItem(root, "ok"));
+         if (ok) {
+             cJSON* pl = cJSON_GetObjectItem(root, "payload");
+             const char* res_type = cJSON_GetStringValue(cJSON_GetObjectItem(pl, "type"));
+-            if (res_type && strcmp(res_type, "hello-ok") == 0) {
+-                syslog(LOG_INFO, "[%s] Connected to Gateway as Node\n", TAG);
++            if (connect_response && res_type && strcmp(res_type, "hello-ok") == 0) {
++                cJSON *protocol = cJSON_GetObjectItemCaseSensitive(pl, "protocol");
++                cJSON *auth = cJSON_GetObjectItemCaseSensitive(pl, "auth");
++                const char *role = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(auth, "role"));
++                pthread_mutex_lock(&s_mutex);
++                s_protocol = cJSON_IsNumber(protocol) ? protocol->valueint : 0;
++                s_authenticated = (s_protocol == 3 || s_protocol == 4) &&
++                    ((role && !strcmp(role, "node")) || (!role && s_protocol == 3));
++                snprintf(s_connect_error, sizeof(s_connect_error), "%s",
++                         s_authenticated ? "" : "PROTOCOL_MISMATCH");
++                pthread_mutex_unlock(&s_mutex);
++                if (s_observer && s_authenticated) s_observer(data);
++                if (s_authenticated) syslog(LOG_INFO, "[%s] Connected to Gateway as Node\n", TAG);
+             }
+         } else {
+             cJSON* err = cJSON_GetObjectItem(root, "error");
+             const char* msg = cJSON_GetStringValue(cJSON_GetObjectItem(err, "message"));
++            if (connect_response) {
++                cJSON *details = cJSON_GetObjectItemCaseSensitive(err, "details");
++                const char *code = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(details, "code"));
++                if (!code) code = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(err, "code"));
++                pthread_mutex_lock(&s_mutex);
++                s_authenticated = false;
++                snprintf(s_connect_error, sizeof(s_connect_error), "%s", code ? code : "CONNECT_REJECTED");
++                pthread_mutex_unlock(&s_mutex);
++                if (s_observer) s_observer(data);
++                if (code && (!strcmp(code, "AUTH_TOKEN_MISMATCH") ||
++                             !strcmp(code, "DEVICE_AUTH_SIGNATURE_INVALID"))) s_running = false;
++            }
+             syslog(LOG_ERR, "[%s] Gateway error: %s\n", TAG, msg ? msg : "unknown");
+         }
+     } else if (strcmp(type, "req") == 0) {
+         const char* method = cJSON_GetStringValue(cJSON_GetObjectItem(root, "method"));
+         if (method && strcmp(method, "node.invoke") == 0) {
++            pthread_mutex_lock(&s_mutex);
++            bool admitted = !s_executor || s_authenticated;
++            pthread_mutex_unlock(&s_mutex);
+             cJSON* params = cJSON_GetObjectItem(root, "params");
+-            if (params)
++            if (params && admitted)
+                 handle_invoke(params);
+             else
+                 syslog(LOG_WARNING, "[%s] node.invoke req but no params\n", TAG);
+@@ -702,13 +765,15 @@
+ {
+     (void)arg;
+     char* buf = malloc(NODE_READ_BUF_SIZE);
+-    if (!buf)
++    if (!buf) {
++        s_exited = true;
+         return NULL;
++    }
+ 
+     while (s_running) {
+         /* Skip connection if gateway not configured */
+         if (s_gateway_host[0] == '\0' || s_gateway_port == 0) {
+-            sleep(30);
++            node_client_wait(30);
+             continue;
+         }
+ 
+@@ -716,8 +781,11 @@
+             s_gateway_host, s_gateway_port, s_use_tls);
+ 
+         if (do_connect() != 0) {
++            pthread_mutex_lock(&s_mutex);
++            if (!s_connect_error[0]) snprintf(s_connect_error, sizeof(s_connect_error), "CONNECTION_FAILED");
++            pthread_mutex_unlock(&s_mutex);
+             syslog(LOG_WARNING, "[%s] Connect failed, retry in 10s\n", TAG);
+-            sleep(10);
++            node_client_wait(10);
+             continue;
+         }
+ 
+@@ -725,10 +793,11 @@
+         time_t last_ping = time(NULL);
+         while (s_running && s_ws.connected) {
+             int n = ws_recv_frame(&s_ws, buf, NODE_READ_BUF_SIZE);
++            if (!s_running) break;
+             if (n == 0)
+                 break; /* close frame */
+-            if (n == -1) {
+-                /* Check if this is a recv timeout (not a real error) */
++            if (n == NODE_RECV_IDLE) {
++                /* No frame has started. A short idle wait is not a disconnect. */
+                 time_t now = time(NULL);
+                 if (now - last_ping >= 25) {
+                     /* Send a WebSocket ping to keep alive */
+@@ -742,8 +811,9 @@
+                     last_ping = now;
+                     continue;
+                 }
+-                break; /* real error or second timeout without pong */
++                continue;
+             }
++            if (n == -1) break;
+             if (n == -2)
+                 continue; /* ignored frame (ping/pong) */
+             on_message(buf, n);
+@@ -754,11 +824,12 @@
+         if (!s_running)
+             break;
+         syslog(LOG_INFO, "[%s] Disconnected, reconnecting in 5s\n", TAG);
+-        sleep(5);
++        node_client_wait(5);
+     }
+ 
+     free(buf);
+     syslog(LOG_INFO, "[%s] Node client thread exited\n", TAG);
++    s_exited = true;
+     return NULL;
+ }
+ 
+@@ -773,16 +844,9 @@
+ int node_client_start(void)
+ {
+     /* Stop previous instance if running */
+-    if (s_running) {
++    if (s_thread_valid) {
+         syslog(LOG_INFO, "[%s] Stopping previous client...\n", TAG);
+-        s_running = false;
+-        do_shutdown_fd();
+-        /* Wait for old thread to actually exit */
+-        if (s_thread_valid) {
+-            pthread_join(s_thread, NULL);
+-            s_thread_valid = false;
+-        }
+-        do_free_tls();
++        node_client_stop();
+     }
+ 
+     /* Read gateway config */
+@@ -792,6 +856,8 @@
+     claw_config_get(AGENT_CFG_KEY_GATEWAY_HOST, host_buf, sizeof(host_buf));
+     claw_config_get(AGENT_CFG_KEY_GATEWAY_PORT, port_buf, sizeof(port_buf));
+     claw_config_get(AGENT_CFG_KEY_GATEWAY_TOKEN, token_buf, sizeof(token_buf));
++    if (s_connect_builder && !token_buf[0])
++        claw_config_get("gateway_device_token", token_buf, sizeof(token_buf));
+ 
+     if (!host_buf[0]) {
+         syslog(LOG_INFO, "[%s] No gateway_host configured, node client disabled\n",
+@@ -806,8 +872,15 @@
+     if (token_buf[0])
+         strncpy(s_gateway_token, token_buf, sizeof(s_gateway_token) - 1);
+     s_use_tls = (s_gateway_port == 443);
++    char tls[8] = { 0 };
++    if (claw_config_get("gateway_tls", tls, sizeof(tls)) == 0 && tls[0])
++        s_use_tls = !strcmp(tls, "1");
+ 
+     s_running = true;
++    s_exited = false;
++    s_authenticated = false;
++    s_protocol = 0;
++    s_connect_error[0] = 0;
+ 
+     /* Create joinable thread (not detached) so we can synchronize on stop */
+     pthread_attr_t attr;
+@@ -825,6 +898,7 @@
+     if (ret != 0) {
+         syslog(LOG_ERR, "[%s] Failed to create node client thread: %d\n", TAG, ret);
+         s_running = false;
++        s_exited = true;
+         return ERROR;
+     }
+     s_thread_valid = true;
+@@ -837,9 +911,7 @@
+ void node_client_stop(void)
+ {
+     s_running = false;
+-    /* Phase 1: close fd to unblock any blocking recv in the worker */
+-    do_shutdown_fd();
+-    /* Wait for worker thread to fully exit */
++    /* The worker owns its task group's descriptors and closes them on exit. */
+     if (s_thread_valid) {
+         pthread_join(s_thread, NULL);
+         s_thread_valid = false;
+@@ -849,6 +921,39 @@
+     syslog(LOG_INFO, "[%s] Node client stopped\n", TAG);
+ }
+ 
++void node_client_set_adapter(node_client_connect_builder_t builder,
++                             node_client_executor_t executor,
++                             node_client_observer_t observer)
++{
++    if (s_thread_valid) return;
++    s_connect_builder = builder;
++    s_executor = executor;
++    s_observer = observer;
++}
++
++void node_client_request_stop(void)
++{
++    /* Caller may belong to the Web task group. Never close a foreign fd. */
++    s_running = false;
++}
++
++bool node_client_exited(void) { return s_exited; }
++
++int node_client_status(char *error, size_t capacity, int *protocol)
++{
++    pthread_mutex_lock(&s_mutex);
++    int status = !s_running ? 0 : s_authenticated ? 2 : s_ws.connected ? 1 : 0;
++    if (error && capacity) snprintf(error, capacity, "%s", s_connect_error);
++    if (protocol) *protocol = s_running ? s_protocol : 0;
++    pthread_mutex_unlock(&s_mutex);
++    return status;
++}
++
++static void node_client_wait(unsigned int seconds)
++{
++    for (unsigned int i = 0; i < seconds * 5 && s_running; i++) usleep(200000);
++}
++
+ int node_client_send_chat_message(const char* channel, const char* chat_id,
+     const char* content)
+ {
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/node/node_client.h b/src/node/node_client.h
+--- a/src/node/node_client.h	2026-06-30 23:15:19.614650175 +0800
++++ b/src/node/node_client.h	2026-09-12 16:29:56.635672297 +0800
+@@ -16,6 +16,15 @@
+ 
+ #pragma once
+ 
++#include <stdbool.h>
++#include <stddef.h>
++
++typedef char *(*node_client_connect_builder_t)(const char *challenge,
++                                               const char *token);
++typedef int (*node_client_executor_t)(const char *command, const char *input,
++                                      char *output, size_t capacity);
++typedef void (*node_client_observer_t)(const char *response);
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+@@ -37,6 +46,14 @@
+  * Stop the node client and disconnect from Gateway.
+  */
+ void node_client_stop(void);
++/* Set the embedding adapter only while stopped. Returned connect JSON is owned
++ * by the client. The observer receives borrowed hello/error response JSON. */
++void node_client_set_adapter(node_client_connect_builder_t builder,
++                             node_client_executor_t executor,
++                             node_client_observer_t observer);
++void node_client_request_stop(void);
++bool node_client_exited(void);
++int node_client_status(char *error, size_t capacity, int *protocol);
+ 
+ /**
+  * Forward a chat message to the gateway over the node WebSocket connection.
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/stubs.c b/src/stubs.c
+--- a/src/stubs.c	2026-06-30 23:15:19.618650255 +0800
++++ b/src/stubs.c	2026-09-12 08:41:04.000000000 +0800
+@@ -19,19 +19,7 @@
+ #include <stdint.h>
+ #include <sys/types.h>
+ 
+-/* Stubs to fix link errors in a broken defconfig */
+-
+-#ifdef CONFIG_EXAMPLES_OSTEST
+-/* These are normally in the kernel, but if missing we stub them to link */
+-void enter_critical_section(void) { }
+-void leave_critical_section(void) { }
+-#endif
+-
+-#ifdef CONFIG_GRAPHICS_LVGL
+-__attribute__((weak)) pid_t gettid(void) { return 0; }
+-#endif
+-
+-__attribute__((weak)) void arm_netinitialize(void) { }
++/* Kernel primitives must always resolve to their real implementation. */
+ 
+ /* Voice channel stubs for sim build */
+ #ifndef CONFIG_MEDIA
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/tools/skill_loader.c b/src/tools/skill_loader.c
+--- a/src/tools/skill_loader.c	2026-06-30 23:15:19.618650255 +0800
++++ b/src/tools/skill_loader.c	2026-09-12 11:03:23.000000000 +0800
+@@ -216,6 +216,14 @@
+ 
+ #define NUM_BUILTINS (sizeof(s_builtins) / sizeof(s_builtins[0]))
+ 
++bool skill_loader_builtin(size_t index, const char **name, const char **content)
++{
++    if (index >= NUM_BUILTINS || name == NULL || content == NULL) return false;
++    *name = s_builtins[index].filename;
++    *content = s_builtins[index].content;
++    return true;
++}
++
+ /* ── Install built-in skills if missing ──────────────────────── */
+ 
+ static void install_builtin(const builtin_skill_t *skill)
+@@ -320,6 +328,11 @@
+ 
+ size_t skill_loader_build_summary(char *buf, size_t size)
+ {
++    if (buf == NULL || size == 0) {
++        return 0;
++    }
++
++    buf[0] = '\0';
+     /*
+      * On Vela/NuttX we have real directories, so we can simply opendir
+      * on the skills directory and iterate over .md files.
+@@ -369,9 +382,21 @@
+         fclose(f);
+ 
+         /* Append to summary */
+-        off += snprintf(buf + off, size - off,
++        int written = snprintf(buf + off, size - off,
+             "- **%s**: %s (read with: read_file %s)\n",
+             title, desc, full_path);
++        if (written < 0) {
++            buf[off] = '\0';
++            break;
++        }
++
++        /* snprintf returns the required length, not the stored length. */
++        if ((size_t)written >= size - off) {
++            off = size - 1;
++            break;
++        }
++
++        off += (size_t)written;
+     }
+ 
+     closedir(dir);
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/tools/skill_loader.h b/src/tools/skill_loader.h
+--- a/src/tools/skill_loader.h	2026-06-30 23:15:19.618650255 +0800
++++ b/src/tools/skill_loader.h	2026-09-12 11:03:23.000000000 +0800
+@@ -35,6 +35,8 @@
+  * already exist.
+  */
+ int skill_loader_init(void);
++/* Borrowed built-in source; returns false beyond the catalog. */
++bool skill_loader_builtin(size_t index, const char **name, const char **content);
+ 
+ /**
+  * Build a summary of all available skills for the system prompt.
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/tools/tool_files.c b/src/tools/tool_files.c
+--- a/src/tools/tool_files.c	2026-06-30 23:15:19.618650255 +0800
++++ b/src/tools/tool_files.c	2026-09-12 14:30:06.143399432 +0800
+@@ -347,14 +347,20 @@
+         char full_path[512];
+         snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, ent->d_name);
+ 
+-        if (prefix && strncmp(full_path, prefix, strlen(prefix)) != 0) continue;
++        bool matches = !prefix || strncmp(full_path, prefix, strlen(prefix)) == 0;
++        size_t path_len = strlen(full_path);
++        bool ancestor = prefix && strlen(prefix) > path_len &&
++            strncmp(prefix, full_path, path_len) == 0 && prefix[path_len] == '/';
++        if (!matches && !ancestor) continue;
+ 
+         struct stat st;
+         if (stat(full_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+-            off += snprintf(output + off, output_size - off, "%s/\n", full_path);
+-            (*count)++;
++            if (matches) {
++                off += snprintf(output + off, output_size - off, "%s/\n", full_path);
++                (*count)++;
++            }
+             off = list_dir_recursive(full_path, prefix, output, output_size, off, count, depth + 1);
+-        } else {
++        } else if (matches) {
+             off += snprintf(output + off, output_size - off, "%s\n", full_path);
+             (*count)++;
+         }
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/tools/tool_registry.c b/src/tools/tool_registry.c
+--- a/src/tools/tool_registry.c	2026-06-30 23:15:19.618650255 +0800
++++ b/src/tools/tool_registry.c	2026-09-12 08:45:43.000000000 +0800
+@@ -502,6 +502,18 @@
+     return OK;
+ }
+ 
++int tool_registry_init_empty(void)
++{
++    pthread_mutex_lock(&s_tools_mtx);
++    free(s_tools_json);
++    s_tools_json = NULL;
++    s_tool_count = 0;
++    s_provider_count = 0;
++    s_tools_dirty = true;
++    pthread_mutex_unlock(&s_tools_mtx);
++    return OK;
++}
++
+ char* tool_registry_get_tools_json(void)
+ {
+     char* copy;
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/tools/tool_registry.h b/src/tools/tool_registry.h
+--- a/src/tools/tool_registry.h	2026-06-30 23:15:19.618650255 +0800
++++ b/src/tools/tool_registry.h	2026-09-12 08:45:43.000000000 +0800
+@@ -102,6 +102,8 @@
+                                      tool_executor_fn execute);
+ 
+ int   tool_registry_init(void);
++/* Initialize without standalone tools; the embedding owner registers providers. */
++int   tool_registry_init_empty(void);
+ char *tool_registry_get_tools_json(void);  /* caller must free() */
+ void  tool_registry_rebuild_json(void);    /* force rebuild tools JSON now */
+ void  tool_registry_invalidate(void);      /* mark tools dirty for rebuild */
+diff -ruN -x '*.o' -x '*.a' -x .depend -x Make.dep -x .built -x .git -x .github -x .gitee -x .gitignore -x defconfigs -x docs -x logs -x scripts -x '*.sh' -x README.md a/src/tools/tool_web_search.c b/src/tools/tool_web_search.c
+--- a/src/tools/tool_web_search.c	2026-06-30 23:15:19.618650255 +0800
++++ b/src/tools/tool_web_search.c	2026-09-12 14:24:10.404537772 +0800
+@@ -89,6 +89,10 @@
+ 
+ int tool_web_search_init(void)
+ {
++    memset(s_serp_key, 0, sizeof(s_serp_key));
++    memset(s_exa_key, 0, sizeof(s_exa_key));
++    memset(s_news_key, 0, sizeof(s_news_key));
++    memset(s_tavily_key, 0, sizeof(s_tavily_key));
+     /* Compile-time secrets */
+     if (AGENT_SECRET_SERP_KEY[0])   strncpy(s_serp_key,   AGENT_SECRET_SERP_KEY,   sizeof(s_serp_key)   - 1);
+     if (AGENT_SECRET_EXA_KEY[0])    strncpy(s_exa_key,    AGENT_SECRET_EXA_KEY,    sizeof(s_exa_key)    - 1);

@@ -42,6 +42,15 @@ config SV6621_BLUETOOTH
 		NuttX H4 pseudo-UART device.  Bluetooth HCI command/event, ACL and ISO
 		traffic uses SDIO virtual channels shared with the Wi-Fi transport.
 
+config SV6621_BT_SCO
+	bool "Route SCO/eSCO audio frames through the HCI driver"
+	default n
+	depends on SV6621_BLUETOOTH
+	---help---
+		Map H4 SCO frames to BT_SCO_IN/BT_SCO_OUT.  Requires a NuttX tree
+		whose bt_buf.h carries the SCO buffer types (openvela usb-audio
+		branch); the stock tree only has ACL/ISO/EVT.
+
 config SV6621_RXPRIO
 	int "SeekWave receive thread priority"
 	default 100

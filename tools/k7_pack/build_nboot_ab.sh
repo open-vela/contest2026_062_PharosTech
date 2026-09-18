@@ -214,13 +214,24 @@ bootctrl Image/bootctrl.img
 nuttx_a Image/nuttx_a.img
 nuttx_b Image/nuttx_b.img
 PACKAGE_FILE
+  if [ -n "${DATA_IMG:-}" ] && [ -f "$DATA_IMG" ]; then
+    cp "$DATA_IMG" "$IMAGE_DIR/data.img"
+    echo "data Image/data.img" >> "$PACKAGE/package-file"
+  fi
+  if [ -n "${AMP_ITB:-}" ] && [ -f "$AMP_ITB" ]; then
+    cp "$AMP_ITB" "$IMAGE_DIR/amp_a.img"; cp "$AMP_ITB" "$IMAGE_DIR/amp_b.img"
+    printf "amp_a Image/amp_a.img\namp_b Image/amp_b.img\n" >> "$PACKAGE/package-file"
+  fi
 
   cat > "$PACKAGE/README.txt" <<'README'
 KICKPI-K7 Nyabula eMMC partition package
 
 Use RKDevTool Download Image mode. Load Image/MiniLoaderAll.bin as Loader,
-then load Image/parameter.txt and the named partition images. amp_a, amp_b and
-data are created by parameter.txt but intentionally have no initial payload.
+then load Image/parameter.txt and the named partition images (or import
+package-file directly). Partitions listed in package-file carry payload; any
+of amp_a / amp_b / data missing there are created empty by parameter.txt.
+data.img (when present) seeds /data: agent/, nyabula/wifi.json (unprovisioned),
+models/ (TTS rknn + face onnx), music/.
 README
 
   (cd "$PACKAGE" && sha256sum package-file README.txt Image/* > SHA256SUMS)
