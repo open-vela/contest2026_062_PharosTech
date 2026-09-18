@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Build the initial /data FAT image for the Nyabula eMMC package.
 #   build_data_img.sh <template_dir> <web_dist_dir|-> <version> <out.img> [size_mib]
+#   env MODELS_DIR=<dir>  -> copied to /models (TTS rknn, face onnx ...)
 set -euo pipefail
 if [ $# -lt 4 ]; then
   echo "usage: build_data_img.sh <template_dir> <web_dist_dir|-> <version> <out.img> [size_mib]" >&2
@@ -15,7 +16,10 @@ cp -a "$TEMPLATE"/. "$stage"/
 if [ "$WEB" != "-" ] && [ -d "$WEB" ]; then
   mkdir -p "$stage/www"; cp -a "$WEB"/. "$stage/www"/
 fi
-mkdir -p "$stage/nyabula"
+if [ -n "${MODELS_DIR:-}" ] && [ -d "$MODELS_DIR" ]; then
+  mkdir -p "$stage/models"; cp -a "$MODELS_DIR"/. "$stage/models"/
+fi
+mkdir -p "$stage/nyabula" "$stage/music"
 printf '{"version":"%s","built":"%s"}\n' "$VER" "$(date -u +%FT%TZ)" > "$stage/nyabula/build.json"
 rm -f "$OUT"
 dd if=/dev/zero of="$OUT" bs=1M count="$SIZE" status=none
