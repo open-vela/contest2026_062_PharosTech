@@ -57,12 +57,12 @@ async function forget(): Promise<void> {
       </dl>
     </MdCard>
 
-    <MdCard title="电量">
+    <MdCard :title="battery.external ? '供电' : '电量'">
       <div class="stat">
-        <UiIcon :name="battery.charging ? 'bolt' : 'battery'" :size="28" />
+        <UiIcon :name="battery.charging || battery.external ? 'bolt' : 'battery'" :size="28" />
         <div>
-          <div class="stat-value">{{ battery.level !== null ? battery.level + '%' : '—' }}</div>
-          <div class="stat-sub">{{ battery.charging ? '充电中' : battery.level !== null ? '使用电池' : '无数据' }}</div>
+          <div class="stat-value">{{ battery.external ? '已连接电源' : battery.level !== null ? battery.level + '%' : '—' }}</div>
+          <div class="stat-sub">{{ battery.external ? '外接供电，无电池' : battery.charging ? '充电中' : battery.level !== null ? '使用电池' : '无数据' }}</div>
         </div>
       </div>
       <div v-if="battery.level !== null" class="bar"><span :style="{ width: battery.level + '%' }" :class="{ low: battery.level < 20 }" /></div>

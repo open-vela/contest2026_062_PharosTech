@@ -24,8 +24,12 @@ const { session, deviceName, coreVersion, stateLabel, stateTone, battery, wifi, 
     </div>
     <div class="facts">
       <div class="fact">
-        <UiIcon :name="battery.charging ? 'battery_charging' : battery.level !== null && battery.level <= 20 ? 'battery_low' : 'battery'" :size="20" />
-        <div>
+        <UiIcon :name="battery.external ? 'bolt' : battery.charging ? 'battery_charging' : battery.level !== null && battery.level <= 20 ? 'battery_low' : 'battery'" :size="20" />
+        <div v-if="battery.external">
+          <div class="fact-val">已连接电源</div>
+          <div class="fact-key">供电</div>
+        </div>
+        <div v-else>
           <div class="fact-val">{{ battery.level !== null ? battery.level + '%' : '—' }}</div>
           <div class="fact-key">{{ battery.charging ? '充电中' : '电量' }}</div>
         </div>
