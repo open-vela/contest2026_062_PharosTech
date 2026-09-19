@@ -1,20 +1,26 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
-# Build the initial /data FAT image for the Nyabula eMMC package.
+# Build a seed FAT image for a Nyabula partition.
 #   build_data_img.sh <template_dir> <web_dist_dir|-> <version> <out.img> [size_mib]
 #   env MODELS_DIR=<dir>  -> copied to /models (TTS rknn, face onnx ...)
+#   env VOLUME_LABEL=<label>  -> FAT volume label, defaults to DATA
+#
+# Used for both store partitions.  /config and /data are separate because
+# they have different lifetimes: data holds models, which an OTA can put
+# back, while config holds provisioning, which it cannot.  This script does
+# not care which it is building -- it packs whatever template it is given
+# into a filesystem of the right size and checks the result.
 #
 # The size is a floor, not a target.  When the payload does not fit in the
 # requested size the image grows to fit it, so adding a model cannot
-# silently produce a truncated image the way a fixed 128 MiB did.  A
-# caller that really wants a fixed size can pass one, but it will be
-# refused rather than honoured if the payload exceeds it.
+# silently produce a truncated image the way a fixed 128 MiB did.
 set -euo pipefail
 if [ $# -lt 4 ]; then
   echo "usage: build_data_img.sh <template_dir> <web_dist_dir|-> <version> <out.img> [size_mib]" >&2
   exit 1
 fi
 TEMPLATE=$1; WEB=$2; VER=$3; OUT=$4; FLOOR_MIB=${5:-64}
+LABEL=${VOLUME_LABEL:-DATA}
 command -v mkfs.fat >/dev/null || { echo "mkfs.fat missing" >&2; exit 1; }
 command -v mcopy   >/dev/null || { echo "mtools (mcopy) missing" >&2; exit 1; }
 stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
@@ -25,7 +31,7 @@ fi
 if [ -n "${MODELS_DIR:-}" ] && [ -d "$MODELS_DIR" ]; then
   mkdir -p "$stage/models"; cp -a "$MODELS_DIR"/. "$stage/models"/
 fi
-mkdir -p "$stage/nyabula" "$stage/music"
+mkdir -p "$stage/nyabula"
 printf '{"version":"%s","built":"%s"}\n' "$VER" "$(date -u +%FT%TZ)" > "$stage/nyabula/build.json"
 
 # Check the model files are structurally whole before packing them.
@@ -98,19 +104,22 @@ if [ "$need_mib" -gt "$SIZE" ]; then
   echo "data image grown to ${SIZE} MiB for a ${payload}-byte payload" >&2
 fi
 
-# The filesystem stays FAT32 regardless of size: this image seeds a
-# partition that the board later sees as ~30 GB, and the on-device mount
-# has to keep working.  Below about 64 MiB mkfs.fat warns that a FAT32
-# geometry that small is unusual, so hold the floor there rather than
-# switching variants -- the warning is about efficiency, not correctness,
-# and changing the variant would be a real compatibility risk.
-if [ "$SIZE" -lt 64 ]; then
-  SIZE=64
+# The filesystem stays FAT32 regardless of size: these images seed
+# partitions on a medium the board sees as tens of gigabytes, and the
+# on-device mount has to keep working.  mkfs.fat warns below about 64 MiB
+# that the FAT32 geometry is unusual, but the warning is about efficiency,
+# not correctness, and the image must not outgrow its partition -- config
+# is only 16 MiB, so a 64 MiB floor would not fit at all.  Callers that
+# know their partition size pass it; the warning is left visible rather
+# than suppressed so an unusually small image is noticed.
+MIN_MIB=${MIN_MIB:-16}
+if [ "$SIZE" -lt "$MIN_MIB" ]; then
+  SIZE=$MIN_MIB
 fi
 
 rm -f "$OUT"
 dd if=/dev/zero of="$OUT" bs=1M count="$SIZE" status=none
-mkfs.fat -F 32 -n DATA "$OUT" >/dev/null
+mkfs.fat -F 32 -n "$LABEL" "$OUT" >/dev/null
 ( cd "$stage" && find . -mindepth 1 -maxdepth 1 -print0 | xargs -0 -I{} mcopy -s -i "$OUT" {} :: )
 
 # Read every staged file back out of the image and compare, so a copy that
