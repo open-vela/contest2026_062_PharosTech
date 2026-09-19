@@ -25,7 +25,7 @@ AMP_DTB        ?= rk3576-kickpi-k7-nyabula-amp.dtb
 BUSYBOX        ?= $(abspath out/busybox-static)
 
 # Data partition inputs
-WEB_DIST       ?= app/nyabula_web/apps/nyabula/dist
+WEB_DIST       ?= app/nyabula_web/apps/nyabula/dist-device
 MODELS_DIR     ?= $(abspath product/models)
 DATA_MIB       ?= 128
 CONFIG_MIB     ?= 32
