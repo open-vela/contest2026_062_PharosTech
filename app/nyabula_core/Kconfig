@@ -94,6 +94,15 @@ config NYABULA_CORE_WEB_TOKEN_PATH
 		configuration rather than the bulk store: wiping /data must not
 		sign the owner out of their own device.
 
+config NYABULA_CORE_WEB_AUTH_PATH
+	string "Owner password record of the product Web service"
+	default "/config/nyabula/web.auth"
+	depends on NYABULA_CORE_WEB
+	---help---
+		Salted PBKDF2 hash of the password the owner signs in with.  It
+		is configuration for the same reason the token is: wiping /data
+		must not reset who may open the panel.
+
 config NYABULA_CORE_WEB_ROOT
 	string "Directory the product Web service serves pages from"
 	default "/data/www"

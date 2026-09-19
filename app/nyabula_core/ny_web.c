@@ -26,6 +26,7 @@
 
 #include "ny_web.h"
 #include "ny_product.h"
+#include "ny_web_auth.h"
 #include "ny_websocket.h"
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -53,7 +54,7 @@
 #define NYABULA_WS_LEASE_MS     5000
 #define NYABULA_WS_STATE_MS     50
 #define NYABULA_WS_IDLE_MS      20000
-#define NYABULA_WS_AUTH_MS      5000
+#define NYABULA_WS_AUTH_MS      30000
 #define NYABULA_WS_MAX_REQUESTS 40
 #define NY_WEB_MAX_CLIENTS      8
 #define NY_WEB_STORE_WAIT_MS    15000
@@ -83,6 +84,7 @@ struct nyabula_eye_ws_session_s
   unsigned char frame[NYABULA_WS_MESSAGE_MAX];
   char output[NYABULA_WS_MESSAGE_MAX + 1];
   bool authenticated;
+  bool pair_auth;
   bool fragmented;
   size_t used;
   uint64_t fragment_deadline;
@@ -225,14 +227,87 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
       goto out;
     }
 
+  /* What a browser may ask before it has proved anything: whether there is
+   * a password to enter, and to exchange one for a session token.  Neither
+   * closes the connection on failure -- a mistyped password is not an
+   * attack -- and guessing is slowed by the lock in ny_web_auth instead.
+   */
+
+  if (strcmp(topic, "sys.auth.state") == 0)
+    {
+      uint32_t retry = 0;
+      bool locked = ny_web_auth_locked(&retry);
+      result = cJSON_CreateObject();
+      cJSON_AddBoolToObject(result, "passwordSet", ny_web_auth_has_password());
+      cJSON_AddBoolToObject(result, "locked", locked);
+      cJSON_AddNumberToObject(result, "retryAfterMs", retry);
+      ret = nyabula_eye_ws_emit(fd, s, "res", id, topic, result);
+      goto out;
+    }
+
+  if (strcmp(topic, "sys.login") == 0)
+    {
+      char session[NY_WEB_AUTH_TOKEN_SIZE + 1];
+      uint32_t retry = 0;
+      int status =
+          ny_web_auth_check(nyabula_eye_ws_string(data, "password"), &retry);
+      if (status == 0)
+        {
+          status = ny_web_auth_session_token(token, session);
+        }
+
+      if (status == 0)
+        {
+          result = cJSON_CreateObject();
+          cJSON_AddStringToObject(result, "token", session);
+          memset(session, 0, sizeof(session));
+          ret = nyabula_eye_ws_emit(fd, s, "res", id, topic, result);
+          memset(s->output, 0, sizeof(s->output));
+        }
+      else
+        {
+          cJSON *failure = cJSON_CreateObject();
+          const char *code = status == -EAGAIN   ? "ELOCKED"
+                             : status == -ENOENT ? "ENOPASSWORD"
+                             : status == -EACCES ? "EAUTH"
+                                                 : "EIO";
+          cJSON_AddStringToObject(failure, "code", code);
+          cJSON_AddStringToObject(failure, "message", code);
+          if (retry > 0)
+            {
+              cJSON_AddNumberToObject(failure, "retryAfterMs", retry);
+            }
+
+          ret = nyabula_eye_ws_emit(fd, s, "err", id, topic, failure);
+        }
+
+      goto out;
+    }
+
   if (strcmp(topic, "sys.hello") == 0)
     {
-      if (!nyabula_eye_ws_auth(nyabula_eye_ws_string(data, "token"), token))
+      /* Either credential opens the panel.  Which one it was is kept,
+       * because it decides what changing the password requires.
+       */
+
+      const char *offered = nyabula_eye_ws_string(data, "token");
+      char session[NY_WEB_AUTH_TOKEN_SIZE + 1];
+      bool pair = nyabula_eye_ws_auth(offered, token);
+      bool valid = pair;
+      if (!valid && ny_web_auth_session_token(token, session) == 0)
+        {
+          valid = nyabula_eye_ws_auth(offered, session);
+          memset(session, 0, sizeof(session));
+        }
+
+      if (!valid)
         {
           nyabula_eye_ws_error(fd, s, id, topic, "EACCES");
           ret = -EACCES;
           goto out;
         }
+
+      s->pair_auth = pair;
 
       bool eye_ready = nyabula_eye_service_snapshot(&snapshot) == 0;
 #ifndef CONFIG_NYABULA_CORE_PRODUCT
@@ -255,6 +330,8 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
       cJSON_AddStringToObject(result, "role", "family");
 #endif
       cJSON_AddBoolToObject(result, "eyeReady", eye_ready);
+      cJSON_AddStringToObject(result, "auth", pair ? "pair" : "session");
+      cJSON_AddBoolToObject(result, "passwordSet", ny_web_auth_has_password());
       cJSON *capabilities = cJSON_AddArrayToObject(result, "capabilities");
       cJSON_AddItemToArray(capabilities, cJSON_CreateString("eyes.native-v1"));
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
@@ -288,6 +365,55 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
     {
       nyabula_eye_ws_error(fd, s, id, topic, "EACCES");
       ret = -EACCES;
+      goto out;
+    }
+
+  if (strcmp(topic, "sys.password.set") == 0)
+    {
+      /* Arriving with the pair token means having read it off the device,
+       * and that is allowed to set a password outright -- it is how the
+       * first one is chosen and how a forgotten one is replaced.  Arriving
+       * with a session token proves only that this browser knew the
+       * password once, so the current one is asked for again: a panel left
+       * open on someone's desk must not be enough to lock its owner out.
+       */
+
+      char session[NY_WEB_AUTH_TOKEN_SIZE + 1];
+      const char *code = NULL;
+      int status = 0;
+      if (!s->pair_auth && ny_web_auth_has_password())
+        {
+          uint32_t retry = 0;
+          status = ny_web_auth_check(nyabula_eye_ws_string(data, "current"),
+                                     &retry);
+          code = status == -EAGAIN ? "ELOCKED" : "EAUTH";
+        }
+
+      if (status == 0)
+        {
+          status = ny_web_auth_set(nyabula_eye_ws_string(data, "password"));
+          code = status == -EINVAL ? "EWEAK" : "EIO";
+        }
+
+      if (status == 0)
+        {
+          status = ny_web_auth_session_token(token, session);
+          code = "EIO";
+        }
+
+      if (status == 0)
+        {
+          result = cJSON_CreateObject();
+          cJSON_AddStringToObject(result, "token", session);
+          memset(session, 0, sizeof(session));
+          ret = nyabula_eye_ws_emit(fd, s, "res", id, topic, result);
+          memset(s->output, 0, sizeof(s->output));
+        }
+      else
+        {
+          ret = nyabula_eye_ws_error(fd, s, id, topic, code);
+        }
+
       goto out;
     }
 
@@ -369,6 +495,7 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
 
   cJSON *command = cJSON_CreateObject();
   cJSON *params = cJSON_Duplicate(data, true);
+
   if (command == NULL || params == NULL ||
       !cJSON_AddItemToObject(command, "params", params))
     {
@@ -928,6 +1055,7 @@ int ny_web_run(int argc, char **argv)
 
       ny_web_store_wait(CONFIG_NYABULA_CORE_STATE_DATABASE);
 #endif
+      ny_web_auth_load(CONFIG_NYABULA_CORE_WEB_AUTH_PATH);
     }
   else
     {
