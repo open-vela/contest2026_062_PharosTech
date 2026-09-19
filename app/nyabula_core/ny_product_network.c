@@ -694,6 +694,21 @@ static int ny_net_step(void)
       if (g_net.state == NY_NET_AP_PROVISION)
         ny_net_hw_ap_stop();
       error = ny_net_hw_sta_connect(ssid, psk);
+
+      /* The driver joins a network from what its last scan saw, and says
+       * -ENOENT for one it has not seen.  Right after boot it has seen
+       * nothing, so the stored network failed every time and the device
+       * came up as an access point although its network was there.  Look,
+       * then ask again.
+       */
+
+      if (error == -ENOENT)
+        {
+          int scan_error = 0;
+          cJSON_Delete(ny_net_hw_scan(&scan_error));
+          error = ny_net_hw_sta_connect(ssid, psk);
+        }
+
       next = error == 0 ? NY_NET_STA_CONNECTING : NY_NET_STA_FAILED;
     }
   else if (check_sta)
