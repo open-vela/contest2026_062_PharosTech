@@ -45,7 +45,6 @@ const ff = inject<ReturnType<typeof useFormFactor>>('formFactor')!;
   padding: 20px 24px 40px;
   min-height: 100%;
 }
-.stage-col { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
-.stage-col > :first-child { height: min(62vh, 640px); }
+.stage-col { display: flex; flex-direction: column; gap: 16px; min-height: 0; --eye-stage-max-height: min(62vh, 640px); }
 .controls-col { min-width: 0; }
 </style>

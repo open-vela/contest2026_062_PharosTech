@@ -1,7 +1,10 @@
 <script setup lang="ts">
-/* The eye canvas + pairing overlay + placeholder, shared by all variants. */
+/* The eye canvas + pairing overlay + placeholder, shared by all variants.
+ * The stage has no backdrop of its own: the canvas is transparent and only the
+ * two round eyes are painted, so they float over the page. Its height follows
+ * its width (see .stage) instead of a viewport share, which is what used to
+ * leave tall empty bands above and below the eyes. */
 import { EyeCanvas, PairOverlay, UiIcon } from '@nyabula/ui';
-import { ref, watch } from 'vue';
 import type { EyeEngine } from '@nyabula/eye-engine';
 import { useEyeStore } from '../../stores/eye';
 import { useSessionStore } from '../../stores/session';
@@ -11,7 +14,6 @@ defineProps<{
   showPair: boolean;
   pairing: boolean;
   pairError: string | null;
-  round?: boolean;
 }>();
 const emit = defineEmits<{
   (e: 'ready', engine: EyeEngine): void;
@@ -20,21 +22,14 @@ const emit = defineEmits<{
 }>();
 const eye = useEyeStore();
 const session = useSessionStore();
-const toyMode = ref(false);
-watch(() => session.canControl, allowed => { if (!allowed) toyMode.value = false; });
-function toggleToy() {
-  toyMode.value = !toyMode.value;
-  if (!toyMode.value) emit('look', { release: true });
-}
 </script>
 
 <template>
-  <div class="stage" :class="{ round }">
+  <div class="stage" :class="{ pairing: showPair }">
     <EyeCanvas
       v-if="ready"
       :eye-state="eye.lastState"
       :clock-offset-ms="eye.nativeCore ? 0 : session.clockOffsetMs()"
-      :toy-mode="toyMode && session.canControl"
       @ready="emit('ready', $event)"
       @look="emit('look', $event)"
     />
@@ -43,27 +38,27 @@ function toggleToy() {
       <p>{{ session.state === 'pairing-required' ? '输入设备屏幕上的配对码' : session.connected ? '眼睛服务未启动' : '等待连接…' }}</p>
     </div>
     <PairOverlay v-if="showPair" :busy="pairing" :error="pairError" @submit="emit('pair', $event)" />
-    <button v-if="ready" class="toy-toggle" :aria-pressed="toyMode" :disabled="!session.canControl" @click="toggleToy">逗猫棒 {{ toyMode ? '开启' : '关闭' }}</button>
-    <div v-if="ready" class="stage-hint">{{ toyMode ? '移动光标 / 手指点击拖动，让猫追着看' : '拖动画布 = 注视点' }}</div>
+    <div v-if="ready" class="stage-hint">拖动画布 = 注视点</div>
   </div>
 </template>
 
 <style scoped>
+/* The engine lays the eyes out as: panel radius P = min(0.16 W, 0.30 H), eye
+ * centres at 0.46 H. At W:H = 15:8 both limits meet, so the eyes are as large
+ * as the width allows with 0.16 H of air above and 0.24 H below (the lower
+ * band also carries the hint). max-height only bites on very wide columns,
+ * where the eyes then centre horizontally instead of growing further. */
 .stage {
   position: relative;
+  flex: none;
   width: 100%;
-  height: 100%;
-  min-height: 240px;
-  border-radius: var(--radius-l);
-  background: #000;
-  overflow: hidden;
-  box-shadow: inset 0 0 0 1px var(--md-outline-variant);
+  aspect-ratio: 15 / 8;
+  min-height: 170px;
+  max-height: var(--eye-stage-max-height, 560px);
+  background: transparent;
 }
-.stage.round { border-radius: 50%; aspect-ratio: 1; }
-.toy-toggle { position: absolute; top: 12px; right: 12px; padding: 7px 12px; border: 1px solid var(--md-outline-variant); border-radius: var(--radius-s); background: var(--md-surface-container-high); color: var(--md-on-surface); cursor: pointer; }
-.toy-toggle[aria-pressed="true"] { background: var(--md-primary-container); border-color: var(--md-primary); color: var(--md-on-primary-container); }
-.toy-toggle:disabled { opacity: .4; cursor: default; }
-.stage :deep(.eye-canvas) { width: 100%; height: 100%; border-radius: inherit; }
+.stage.pairing { min-height: 280px; }
+.stage :deep(.eye-canvas) { width: 100%; height: 100%; }
 .placeholder {
   position: absolute;
   inset: 0;
@@ -79,17 +74,12 @@ function toggleToy() {
 .stage-hint {
   position: absolute;
   left: 50%;
-  bottom: 10px;
+  bottom: 2px;
   transform: translateX(-50%);
   font-size: 11.5px;
-  color: var(--md-on-surface);
-  background: var(--md-surface-container-high);
+  color: var(--md-on-surface-variant);
   white-space: nowrap;
   max-width: calc(100% - 24px);
-  backdrop-filter: blur(8px);
-  padding: 3px 10px;
-  border-radius: 999px;
   pointer-events: none;
-  opacity: 0.8;
 }
 </style>

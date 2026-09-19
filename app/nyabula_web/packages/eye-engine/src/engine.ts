@@ -1,11 +1,16 @@
 /*
  * EyeEngine — Nyabula cat-eye vector animation engine.
- * Ported 1:1 from 工具/cat_eyes_demo.html; all module-level mutable state from
- * the demo now lives on the instance. Behavior (sleep snapshot, blink =
- * max(blink, sceneLid), lidSlant * (1 - blink), scene state machine, Zzz
- * particles, ...) is preserved intentionally — do not "optimize" visuals.
+ * Started as a port of 工具/cat_eyes_demo.html; all module-level mutable state
+ * from the demo lives on the instance.
+ *
+ * The expression eye (iris base, fibers, pupil, overlays, lids) mirrors the
+ * DEVICE renderer app/nyabula/src/nyabula_eye_renderer_lvgl.c, which is the
+ * source of truth because it is what the owner sees on the hardware. Where
+ * the demo and the device disagree the device wins; each such place names the
+ * C function it follows. Do not "optimize" visuals without checking the C.
  */
 import {
+  EYE_PARAMS,
   EyeParams,
   mkParams,
   SPEED,
@@ -19,7 +24,15 @@ import type { EyeState } from './types.js';
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
-const SCREEN_RADIUS_SCALE = 1.0;
+const GEOMETRY = EYE_PARAMS.geometry;
+/** Eye radius R as a fraction of the round panel radius (device: 178 / 180). */
+const EYE_RADIUS_RATIO = GEOMETRY.eyeRadiusPx / (GEOMETRY.panelSizePx / 2);
+/** One device pixel expressed in units of R. */
+const DEVICE_PX = 1 / GEOMETRY.eyeRadiusPx;
+/** The fixed iris globe, eye_globe_radius() = R - 2px, in units of R. */
+const GLOBE_RATIO = 1 - GEOMETRY.globeInsetPx * DEVICE_PX;
+/** The device bakes the iris disc in grey 0x80 and recolours it per frame. */
+const BAKE_GREY = 0x80;
 
 const FONT_TITLE_CN = '"NyabulaTitle","MiSans","Microsoft YaHei",sans-serif';
 const FONT_BODY_CN = '"NyabulaBody","MiSans","Microsoft YaHei",sans-serif';
@@ -49,6 +62,76 @@ function rgba(c: RGB | number[], a: number): string {
 }
 function shade(c: RGB | number[], f: number): number[] {
   return c.map((v) => clamp(v * f, 0, 255));
+}
+
+/* Iris disc gradient, bit-for-bit the device's: bake_base() rasterises the
+ * four stops in grey (shade(0x80, k), truncated like channel()), and
+ * bake_base_composite() recolours each pixel as min(255, grey * c / 0x80).
+ * The clamp therefore happens AFTER interpolation, which keeps a saturated
+ * channel at 255 for longer than interpolating between pre-clamped colours
+ * does; the extra "knee" stops reproduce that. */
+const IRIS_BAKE_STOPS: ReadonlyArray<readonly [number, number]> = (
+  [[0, 1.25], [140 / 255, 1], [217 / 255, 0.55], [1, 0.30]] as const
+).map(([at, k]) => [at, Math.floor(clamp(BAKE_GREY * k, 0, 255))] as const);
+
+function bakedGrey(t: number): number {
+  for (let i = 1; i < IRIS_BAKE_STOPS.length; i++) {
+    const [t0, g0] = IRIS_BAKE_STOPS[i - 1];
+    const [t1, g1] = IRIS_BAKE_STOPS[i];
+    if (t <= t1) return lerp(g0, g1, (t - t0) / (t1 - t0));
+  }
+  return IRIS_BAKE_STOPS[IRIS_BAKE_STOPS.length - 1][1];
+}
+
+const irisStopCache = new Map<string, Array<[number, string]>>();
+function irisStops(c: RGB): Array<[number, string]> {
+  const key = c.join(',');
+  let stops = irisStopCache.get(key);
+  if (!stops) {
+    const at = new Set(IRIS_BAKE_STOPS.map(([t]) => t));
+    const [t0, g0] = IRIS_BAKE_STOPS[0];
+    const [t1, g1] = IRIS_BAKE_STOPS[1];
+    for (const v of c) {
+      // Where this channel stops being clamped: grey * v / 0x80 == 255.
+      const knee = (255 * BAKE_GREY) / Math.max(v, 1);
+      if (knee < g0 && knee > g1) at.add(lerp(t0, t1, (g0 - knee) / (g0 - g1)));
+    }
+    stops = [...at].sort((a, b) => a - b).map((t) => {
+      const grey = bakedGrey(t);
+      return [t, rgba(c.map((v) => Math.min(255, (grey * v) / BAKE_GREY)), 1)] as [number, string];
+    });
+    if (irisStopCache.size > 16) irisStopCache.clear();
+    irisStopCache.set(key, stops);
+  }
+  return stops;
+}
+
+/* Heart outline, as nyabula_eye_renderer_create() samples it: 96 points of
+ * the curve (x^2 + y^2 - 1)^3 = x^2 y^3, found by bisection along each ray,
+ * scaled by 1 / 1.15 and flipped to screen coordinates. */
+const HEART_POINTS: ReadonlyArray<readonly [number, number]> = Array.from({ length: 96 }, (_, i) => {
+  const angle = (i * Math.PI * 2) / 96;
+  const dx = Math.cos(angle);
+  const dy = Math.sin(angle);
+  let low = 0;
+  let high = 3;
+  for (let n = 0; n < 12; n++) {
+    const mid = (low + high) / 2;
+    const x = dx * mid;
+    const y = dy * mid;
+    const q = x * x + y * y - 1;
+    if (q * q * q - x * x * y * y * y <= 0) low = mid;
+    else high = mid;
+  }
+  return [(dx * low) / 1.15, (-dy * low) / 1.15] as const;
+});
+
+/** clamp_to_eye_globe(): pull a point back inside a circle of radius `limit`. */
+function clampToGlobe(x: number, y: number, limit: number): [number, number] {
+  const max = Math.max(0, limit);
+  const len = Math.hypot(x, y);
+  if (len <= max || len === 0) return [x, y];
+  return [(x * max) / len, (y * max) / len];
 }
 
 const SCENE_CLOSE_TIME = TIMING.sceneCloseTime;
@@ -87,8 +170,6 @@ export interface EyeEngineOptions {
   attachPointer?: boolean;
   /** Also react locally to pointer (lookAt) in addition to onInteraction. */
   localLook?: boolean;
-  /** Toy mode follows a hovering mouse as well as a captured touch drag. */
-  toyMode?: boolean;
   /**
    * Canvas background. 'transparent' (default) clears the frame instead of
    * painting a full black backdrop, so the two eyes float over whatever the
@@ -143,6 +224,14 @@ export class EyeEngine {
   private scenePendingStyle: SceneStyle | null = null;
   private sceneFade = 1;
   private scenePayload: Record<string, unknown> = {};
+  /** Payload the outgoing scene of a minimal cross-fade keeps drawing with. */
+  private scenePrevPayload: Record<string, unknown> | null = null;
+  /* Content of a scene that is not on screen yet. It replaces the live
+   * payload / options only once the lids are shut (or at the minimal
+   * cross-fade swap), so the scene being left never redraws with the next
+   * scene's content -- the same rule as the device's pending_scene. */
+  private stagedPayload: Record<string, unknown> | null = null;
+  private stagedOptions: Record<string, unknown> | null = null;
   /** Cached pairing QR matrix, rebuilt only when the encoded text changes. */
   private pairingQrCache: PairingQr | null = null;
 
@@ -220,7 +309,10 @@ export class EyeEngine {
   }
 
   lookAt(x: number, y: number, hold: number = TIMING.lookHoldDefault): void {
-    this.lookTarget = { x: clamp(x, -1, 1) * 0.8, y: clamp(y, -1, 1) * 0.7 };
+    // nyabula_eye_engine_set_gaze(): the clamped target is used unscaled. The
+    // demo damped it by 0.8 / 0.7, which made the preview look less far than
+    // the device for the same eyes.gaze command.
+    this.lookTarget = { x: clamp(x, -1, 1), y: clamp(y, -1, 1) };
     this.lookHold = hold;
     this.saccade.x = 0;
     this.saccade.y = 0;
@@ -229,11 +321,6 @@ export class EyeEngine {
   releaseLook(): void {
     this.lookTarget = null;
     this.lookHold = 0;
-  }
-
-  setToyMode(enabled: boolean): void {
-    this.opts.toyMode = enabled;
-    if (!enabled) this.releaseLook();
   }
 
   setLight(v: number): void {
@@ -256,14 +343,15 @@ export class EyeEngine {
     options?: Record<string, unknown>,
     payload?: Record<string, unknown>,
   ): void {
-    if (options) this.applySceneOptions(options);
-    if (payload) this.scenePayload = { ...this.scenePayload, ...payload };
+    this.acceptSceneContent(type, options, payload);
     if (style && style !== this.sceneStyle) this.setSceneStyle(style);
     this.wakeForScene();
     if (this.sceneStyle === 'minimal' && this.sceneType && this.scenePhase === 'visible') {
       if (this.sceneType === type) return;
       this.scenePrevType = this.sceneType;
       this.scenePrevStartedAt = this.sceneStartedAt;
+      this.scenePrevPayload = this.scenePayload;
+      this.commitStagedSceneContent(true, false);
       this.sceneType = type;
       this.sceneStartedAt = this.sceneSinceAnchor ?? this.tNow;
       this.sceneSinceAnchor = null;
@@ -276,10 +364,15 @@ export class EyeEngine {
     this.scenePhaseT = this.sceneLid * SCENE_CLOSE_TIME;
   }
 
+  /** Leave the scene. Its payload and options stay untouched while the close
+   *  transition plays; updateScene() drops them once the scene is off screen. */
   hideScene(): void {
     this.scenePending = null;
     this.scenePendingStyle = null;
     this.scenePrevType = null;
+    this.scenePrevPayload = null;
+    this.stagedPayload = null;
+    this.stagedOptions = null;
     if (!this.sceneType && this.scenePhase === 'none') return;
     if (this.sceneStyle === 'minimal' && this.sceneType) {
       // Minimal scenes live on the closed eyelid surface; reveal the real
@@ -366,24 +459,27 @@ export class EyeEngine {
       }
     }
     const sc = state.scene;
-    if (sc !== undefined && sc !== null) {
-      if (sc.options) this.applySceneOptions(sc.options);
-      if (sc.payload) this.scenePayload = { ...this.scenePayload, ...sc.payload };
+    if (sc !== undefined && sc !== null && sc.type == null) {
+      // The device reports "no scene" together with a zeroed scene_payload (and
+      // the options derived from it). That content describes nothing; applying
+      // it would repaint the scene that is still closing with placeholders.
+      if (this.sceneType || this.scenePending) this.hideScene();
+    } else if (sc !== undefined && sc !== null && sc.type != null) {
+      const entering = sc.type !== this.sceneType && sc.type !== this.scenePending;
+      if (!entering) this.acceptSceneContent(sc.type, sc.options, sc.payload);
       // Anchor scene-relative animation time (timers, rings) to the sender's
       // scene.since so remote peers render identical progress.
       if (typeof sc.since === 'number' && sc.since > 0) {
         const anchor = this.tNow - (this.localEpochNow() - sc.since) / 1000;
-        if (sc.type != null && sc.type === this.sceneType && !this.scenePending) {
+        if (sc.type === this.sceneType && !this.scenePending) {
           this.sceneStartedAt = anchor;
         } else {
           this.sceneSinceAnchor = anchor;
         }
       }
       const style = sc.style === 'minimal' ? 'minimal' : 'full';
-      if (sc.type == null) {
-        if (this.sceneType || this.scenePending) this.hideScene();
-      } else if (sc.type !== this.sceneType && sc.type !== this.scenePending) {
-        this.showScene(sc.type, style);
+      if (entering) {
+        this.showScene(sc.type, style, sc.options, sc.payload);
       } else if (style !== this.sceneStyle) {
         this.setSceneStyle(style);
       }
@@ -493,6 +589,64 @@ export class EyeEngine {
     }
   }
 
+  /** Route incoming scene content: live when it belongs to the scene on screen
+   *  (or nothing is on screen), staged when it belongs to the scene that will
+   *  replace the visible one. */
+  private acceptSceneContent(
+    type: string,
+    options?: Record<string, unknown>,
+    payload?: Record<string, unknown>,
+  ): void {
+    if (this.sceneType !== null && this.sceneType !== type) {
+      if (options) this.stagedOptions = { ...this.stagedOptions, ...options };
+      if (payload) this.stagedPayload = { ...this.stagedPayload, ...payload };
+      return;
+    }
+    this.stagedOptions = null;
+    this.stagedPayload = null;
+    if (options) this.applySceneOptions(options);
+    if (payload) {
+      // Nothing on screen and a different scene was queued: start clean.
+      const fresh = this.sceneType === null && this.scenePending !== type;
+      this.scenePayload = fresh ? { ...payload } : { ...this.scenePayload, ...payload };
+    }
+  }
+
+  /** Make the staged content live. `replaced` = a different scene takes over,
+   *  so the old payload must not leak into it. `settle` snaps option
+   *  cross-fades, used when the swap happens behind closed lids. */
+  private commitStagedSceneContent(replaced: boolean, settle: boolean): void {
+    if (replaced) this.scenePayload = this.stagedPayload ?? {};
+    else if (this.stagedPayload) this.scenePayload = { ...this.scenePayload, ...this.stagedPayload };
+    if (this.stagedOptions) {
+      this.applySceneOptions(this.stagedOptions);
+      if (settle) this.settleSceneOptions();
+    }
+    this.stagedPayload = null;
+    this.stagedOptions = null;
+  }
+
+  private settleSceneOptions(): void {
+    this.optionFade = 1;
+    this.optionChangedAt = -Infinity;
+    this.weatherFade = 1;
+    this.musicViewFade = 1;
+    this.weatherPrevKind = null;
+    this.musicPrevView = null;
+    this.batteryPrevState = null;
+    this.networkPrevState = null;
+    this.audioPrevRoute = null;
+    this.taskPrevState = null;
+  }
+
+  /** The scene is off screen: only now may its state go. */
+  private dropSceneContent(): void {
+    this.sceneType = null;
+    this.scenePrevType = null;
+    this.scenePrevPayload = null;
+    this.scenePayload = {};
+  }
+
   private wakeForScene(): void {
     if (this.mode !== 'sleep') return;
     // Sleep is already visually closed; keep that closure instead of briefly
@@ -522,7 +676,7 @@ export class EyeEngine {
       this.opts.onInteraction?.(nx, ny, 'down');
     };
     const onMove = (e: PointerEvent) => {
-      if (pointerId !== e.pointerId && !(pointerId === null && this.opts.toyMode && e.pointerType === 'mouse')) return;
+      if (pointerId !== e.pointerId) return;
       const { nx, ny } = norm(e);
       if (this.opts.localLook !== false) this.lookAt(nx, ny);
       this.opts.onInteraction?.(nx, ny, 'move');
@@ -534,24 +688,17 @@ export class EyeEngine {
       const { nx, ny } = norm(e);
       this.opts.onInteraction?.(nx, ny, 'up');
     };
-    const onLeave = (e: PointerEvent) => {
-      if (pointerId === null && this.opts.toyMode && e.pointerType === 'mouse') {
-        this.opts.onInteraction?.(0, 0, 'up');
-      }
-    };
     cv.addEventListener('pointerdown', onDown);
     cv.addEventListener('pointermove', onMove);
     cv.addEventListener('pointerup', onUp);
     cv.addEventListener('pointercancel', onUp);
     cv.addEventListener('lostpointercapture', onUp);
-    cv.addEventListener('pointerleave', onLeave);
     this.detachFns.push(() => {
       cv.removeEventListener('pointerdown', onDown);
       cv.removeEventListener('pointermove', onMove);
       cv.removeEventListener('pointerup', onUp);
       cv.removeEventListener('pointercancel', onUp);
       cv.removeEventListener('lostpointercapture', onUp);
-      cv.removeEventListener('pointerleave', onLeave);
     });
   }
 
@@ -735,7 +882,10 @@ export class EyeEngine {
     }
     if (this.sceneFade < 1) {
       this.sceneFade = clamp(this.sceneFade + dt / SCENE_FADE_TIME, 0, 1);
-      if (this.sceneFade >= 1) this.scenePrevType = null;
+      if (this.sceneFade >= 1) {
+        this.scenePrevType = null;
+        this.scenePrevPayload = null;
+      }
     }
     if (this.musicViewFade < 1) {
       this.musicViewFade = clamp(this.musicViewFade + dt / SCENE_FADE_TIME, 0, 1);
@@ -748,10 +898,11 @@ export class EyeEngine {
       this.sceneLid = sceneEase(p);
       if (p >= 1) {
         if (this.scenePhase === 'closing-out') {
-          this.sceneType = null;
-          this.scenePrevType = null;
+          this.dropSceneContent();
           this.scenePhase = 'reopening-out';
         } else {
+          this.commitStagedSceneContent(
+            this.sceneType !== null && this.sceneType !== this.scenePending, true);
           this.sceneType = this.scenePending;
           this.sceneStartedAt = this.sceneSinceAnchor ?? this.tNow;
           this.sceneSinceAnchor = null;
@@ -771,8 +922,7 @@ export class EyeEngine {
       this.sceneLid = 1 - sceneEase(p);
       this.sceneFade = 1 - sceneEase(clamp(p / 0.86, 0, 1));
       if (p >= 1) {
-        this.sceneType = null;
-        this.scenePrevType = null;
+        this.dropSceneContent();
         this.sceneLid = 0;
         this.sceneFade = 1;
         this.scenePhase = 'none';
@@ -790,9 +940,15 @@ export class EyeEngine {
   }
 
   /* ---------- Zzz particles ---------- */
+  /** Round panel radius in CSS px; the eye radius R is a fixed share of it. */
+  private panelRadius(): number {
+    return Math.min(this.W * 0.16, this.H * 0.30);
+  }
+
   private updateZzz(dt: number): void {
-    const R = Math.min(this.W * 0.16, this.H * 0.30);
-    const CR = R * SCREEN_RADIUS_SCALE;
+    // update_z() sizes every particle quantity from R.
+    const R = this.panelRadius() * EYE_RADIUS_RATIO;
+    const CR = R;
     if (this.mode === 'sleep' && this.cur.lidTop + this.cur.lidBot > 0.92) {
       this.zNext -= dt;
       if (this.zNext <= 0) {
@@ -835,10 +991,13 @@ export class EyeEngine {
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, W, H);
     }
-    const R = Math.min(W * 0.16, H * 0.30);
-    const gap = R * 2.7;
+    // CR = the physical round panel (360 px across on the device); R = the
+    // renderer's eye radius inside it (178 px), so every R-relative size keeps
+    // the proportion it has on the hardware.
+    const CR = this.panelRadius();
+    const R = CR * EYE_RADIUS_RATIO;
+    const gap = CR * 2.7;
     const cy = H * 0.46;
-    const CR = R * SCREEN_RADIUS_SCALE;
     for (const side of [-1, 1]) {
       const ex = W / 2 + (side * gap) / 2;
       ctx.save();
@@ -849,7 +1008,7 @@ export class EyeEngine {
       ctx.fillStyle = '#000';
       ctx.fillRect(ex - CR, cy - CR, CR * 2, CR * 2);
       this.drawEye(ctx, ex, cy, R, side, this.blinkEyes & (side < 0 ? 1 : 2) ? blink : 0);
-      this.drawZzz(ctx, side, ex, cy, R, CR);
+      this.drawZzz(ctx, side, ex, cy, R, R);
       ctx.restore();
       // bezel ring
       ctx.strokeStyle = 'rgba(60,70,85,.45)';
@@ -905,7 +1064,11 @@ export class EyeEngine {
         ctx.arc(0, 0, R * 1.08, 0, 7);
         ctx.fill();
         if (this.scenePrevType) {
+          // The outgoing scene keeps its own payload during the cross-fade.
+          const live = this.scenePayload;
+          this.scenePayload = this.scenePrevPayload ?? live;
           this.drawScene(ctx, R * 1.08, IC, side, this.scenePrevType, 1 - this.sceneFade, true, this.scenePrevStartedAt);
+          this.scenePayload = live;
         }
         this.drawScene(ctx, R * 1.08, IC, side, this.sceneType, this.sceneFade, true, this.sceneStartedAt);
       } else {
@@ -917,55 +1080,59 @@ export class EyeEngine {
       return;
     }
 
+    // Base = outer glow + iris disc. The device bakes both once (bake_base)
+    // and only recolours them per frame (bake_base_composite), so they ignore
+    // squint, the dizzy wobble, irisScale and gaze: the globe never moves.
+    const G = R * GLOBE_RATIO;
+    let g = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
+    g.addColorStop(0, rgba(IC, clamp(S.glow, 0, 1) * 0.175));
+    g.addColorStop(1, rgba(IC, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, R, 0, 7);
+    ctx.fill();
+
+    g = ctx.createRadialGradient(0, 0, 0, 0, 0, G);
+    for (const [at, color] of irisStops(IC)) g.addColorStop(at, color);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, G, 0, 7);
+    ctx.fill();
+
+    // Features follow the eye transform (prepare(): squint + dizzy rotation).
     if (this.mode === 'dizzy') ctx.rotate(Math.sin(this.tNow * 3 + side) * 0.06);
     ctx.scale(1, squishY);
 
-    // Outer glow
-    const glowA = S.glow * 0.5;
-    let g = ctx.createRadialGradient(0, 0, R * 0.4, 0, 0, R * 1.9);
-    g.addColorStop(0, rgba(IC, glowA * 0.35));
-    g.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(0, 0, R * 1.9, 0, 7);
-    ctx.fill();
-
     const IR = R * S.irisScale;
+    const px1 = R * DEVICE_PX;
 
-    // Iris base
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(0, 0, IR, 0, 7);
-    ctx.clip();
-    g = ctx.createRadialGradient(gx * 0.5, gy * 0.5, IR * 0.1, 0, 0, IR);
-    g.addColorStop(0, rgba(shade(IC, 1.25), 1));
-    g.addColorStop(0.55, rgba(IC, 1));
-    g.addColorStop(0.85, rgba(shade(IC, 0.55), 1));
-    g.addColorStop(1, rgba(shade(IC, 0.30), 1));
-    ctx.fillStyle = g;
-    ctx.fillRect(-IR, -IR, IR * 2, IR * 2);
-
-    // Iris fiber texture: radial fine lines
+    // Iris fibers, iris(): 48 lines one DEVICE pixel wide, endpoints kept
+    // inside the globe. A fixed 1 CSS px stroke was ~3x too heavy on a phone
+    // preview and visibly brightened the iris.
     ctx.globalAlpha = 0.16;
     ctx.strokeStyle = rgba(shade(IC, 1.6), 1);
-    ctx.lineWidth = 1;
+    ctx.lineWidth = px1;
     for (let i = 0; i < 48; i++) {
       const a = (i / 48) * Math.PI * 2 + Math.sin(i * 7) * 0.1;
       const r1 = IR * (0.28 + (((i * 37) % 13) / 13) * 0.15);
       const r2 = IR * (0.82 + (((i * 53) % 7) / 7) * 0.14);
+      const from = clampToGlobe(gx + Math.cos(a) * r1, gy + Math.sin(a) * r1, G - px1);
+      const to = clampToGlobe(gx * 0.3 + Math.cos(a) * r2, gy * 0.3 + Math.sin(a) * r2, G - px1);
       ctx.beginPath();
-      ctx.moveTo(gx + Math.cos(a) * r1, gy + Math.sin(a) * r1);
-      ctx.lineTo(gx * 0.3 + Math.cos(a) * r2, gy * 0.3 + Math.sin(a) * r2);
+      ctx.moveTo(from[0], from[1]);
+      ctx.lineTo(to[0], to[1]);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
 
-    // Pupil (lens shape: slit <-> circle)
+    // Pupil (lens shape: slit <-> circle), pupil(): the centre is pulled back
+    // so the whole outline stays inside the globe.
     const pw = S.pupilW, ph = S.pupilH;
-    if (pw > 0.01 && ph > 0.01) {
-      const w = IR * pw * 0.80, h = IR * ph * 0.84;
+    const w = IR * pw * 0.80, h = IR * ph * 0.84;
+    if (w > 0.01 * px1 && h > 0.01 * px1) {
+      const [pcx, pcy] = clampToGlobe(gx, gy, G - (Math.max(w, h) + px1));
       ctx.save();
-      ctx.translate(gx, gy);
+      ctx.translate(pcx, pcy);
       g = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(w, h));
       g.addColorStop(0, '#101216');
       g.addColorStop(0.8, '#05070a');
@@ -993,18 +1160,19 @@ export class EyeEngine {
     ctx.arc(IR * 0.30 + gx * 0.6, IR * 0.24 + gy * 0.6, IR * 0.05, 0, 7);
     ctx.fill();
     ctx.globalAlpha = 1;
-    ctx.restore(); // iris clip
 
-    // Lids: blink composes with sceneLid; lidSlant flattens as blink closes.
-    blink = Math.max(blink, this.sceneLid);
+    // Lids. Blink first (nyabula_eye_engine_apply_blink), then the scene lid
+    // pulls whatever is left towards the closed pose (prepare_scene_lids).
     const blinkBotTarget = Math.max(0.14, S.lidBot);
     const blinkTopTarget = Math.max(S.lidTop, 1 - blinkBotTarget);
-    const lidT = clamp(lerp(S.lidTop, blinkTopTarget, blink), 0, 1);
-    const lidB = clamp(lerp(S.lidBot, blinkBotTarget, blink), 0, 1);
+    const lid = this.sceneLid;
+    const lidT = clamp(lerp(lerp(S.lidTop, blinkTopTarget, blink), 0.86, lid), 0, 1);
+    const lidB = clamp(lerp(lerp(S.lidBot, blinkBotTarget, blink), 0.14, lid), 0, 1);
+    const open = (1 - blink) * (1 - lid);
     ctx.fillStyle = '#000';
     const E = IR * 1.04;
-    const slant = S.lidSlant * side * -1 * (1 - blink);
-    const lidPath = this.makeLidPath(E, lidT, lidB, slant, S.botCurve * (1 - blink));
+    const slant = S.lidSlant * side * -1 * open;
+    const lidPath = this.makeLidPath(E, lidT, lidB, slant, S.botCurve * open);
     ctx.fill(lidPath);
     if (minimalSceneExit) {
       ctx.save();
@@ -1060,9 +1228,7 @@ export class EyeEngine {
     };
     const heart = (r: number) => {
       ctx.beginPath();
-      ctx.moveTo(0, r * 0.9);
-      ctx.bezierCurveTo(r * 1.1, r * 0.25, r * 0.95, -r * 0.75, 0, -r * 0.25);
-      ctx.bezierCurveTo(-r * 0.95, -r * 0.75, -r * 1.1, r * 0.25, 0, r * 0.9);
+      HEART_POINTS.forEach(([x, y], i) => (i ? ctx.lineTo(x * r, y * r) : ctx.moveTo(x * r, y * r)));
       ctx.closePath();
     };
     const tNow = this.tNow;
@@ -1082,13 +1248,12 @@ export class EyeEngine {
         ctx.arc(0, 0, IR * 0.46, a0 - seg, a0 + 0.02);
         ctx.stroke();
       }
+      // overlays(): flat fills only -- the device rasteriser has no blur, so
+      // none of the overlays carries a bloom.
       ctx.fillStyle = '#fff';
-      ctx.shadowColor = rgba(BC, 1);
-      ctx.shadowBlur = IR * 0.15;
       ctx.beginPath();
       ctx.arc(Math.cos(rot) * IR * 0.46, Math.sin(rot) * IR * 0.46, IR * 0.05, 0, 7);
       ctx.fill();
-      ctx.shadowBlur = 0;
       ctx.globalAlpha = alpha * 0.35;
       ctx.strokeStyle = rgba(BC, 1);
       ctx.lineWidth = IR * 0.02;
@@ -1117,11 +1282,8 @@ export class EyeEngine {
       const pulse = 1 + Math.sin(tNow * 5) * 0.12;
       const rot = Math.sin(tNow * 1.5) * 0.25;
       ctx.fillStyle = '#ffd94d';
-      ctx.shadowColor = '#ffd94d';
-      ctx.shadowBlur = IR * 0.35;
       star(IR * 0.5 * pulse, rot - Math.PI / 2);
       ctx.fill();
-      ctx.shadowBlur = 0;
       for (let i = 0; i < 2; i++) {
         const a = tNow * 2 + i * 3 + side;
         const r = IR * 0.75;
@@ -1136,19 +1298,12 @@ export class EyeEngine {
       }
     } else if (this.mode === 'heart') {
       const beat = (tNow * 1.6) % 1;
-      const pulse =
-        1 +
-        (beat < 0.15
-          ? Math.sin((beat / 0.15) * Math.PI) * 0.18
-          : beat < 0.3
-            ? Math.sin(((beat - 0.15) / 0.15) * Math.PI) * 0.10
-            : 0);
+      // overlays(): one beat per cycle; the demo's softer second beat is not
+      // on the device.
+      const pulse = 1 + (beat < 0.15 ? Math.sin((beat / 0.15) * Math.PI) * 0.18 : 0);
       ctx.fillStyle = '#ff4d79';
-      ctx.shadowColor = '#ff4d79';
-      ctx.shadowBlur = IR * 0.4;
       heart(IR * 0.5 * pulse);
       ctx.fill();
-      ctx.shadowBlur = 0;
     } else if (this.mode === 'dizzy') {
       const rot = tNow * 4 * (side < 0 ? 1 : -1);
       ctx.strokeStyle = '#0a0c10';

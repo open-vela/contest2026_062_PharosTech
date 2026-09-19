@@ -105,6 +105,42 @@ describe('EyeEngine', () => {
   });
 });
 
+describe('scene content lifetime', () => {
+  const peek = (e: EyeEngine) => e as unknown as { scenePayload: Record<string, unknown>; weatherKind: string };
+  const caption = (line: string): EyeState => ({
+    scene: { type: 'caption', style: 'full', since: Date.now(), payload: { current_line: line }, options: { weather: 'storm' } },
+  });
+
+  it('keeps the real payload while the close transition plays, then drops it', () => {
+    const e = new EyeEngine(stubCanvas());
+    e.applyRemoteState(caption('真实字幕'), 0);
+    for (let i = 0; i < 120; i++) e.step(1 / 60);
+    expect(e.sceneType).toBe('caption');
+    // What the device broadcasts on hide: scene none + a zeroed payload.
+    e.applyRemoteState({ scene: { type: null, style: 'full', payload: { current_line: '' }, options: { weather: 'sunny' } } }, 0);
+    e.step(1 / 60);
+    expect(e.sceneType).toBe('caption'); // still on screen, lids closing
+    expect(peek(e).scenePayload.current_line).toBe('真实字幕');
+    expect(peek(e).weatherKind).toBe('storm');
+    for (let i = 0; i < 120; i++) e.step(1 / 60);
+    expect(e.sceneType).toBeNull();
+    expect(peek(e).scenePayload).toEqual({});
+  });
+
+  it('holds the payload of the next scene back until the lids are shut', () => {
+    const e = new EyeEngine(stubCanvas());
+    e.applyRemoteState(caption('第一句'), 0);
+    for (let i = 0; i < 120; i++) e.step(1 / 60);
+    e.applyRemoteState({ scene: { type: 'timer', style: 'full', since: Date.now(), payload: { remaining_ms: 90_000 } } }, 0);
+    e.step(1 / 60);
+    expect(e.sceneType).toBe('caption');
+    expect(peek(e).scenePayload).toEqual({ current_line: '第一句' });
+    for (let i = 0; i < 120; i++) e.step(1 / 60);
+    expect(e.sceneType).toBe('timer');
+    expect(peek(e).scenePayload).toEqual({ remaining_ms: 90_000 }); // replaced, not merged
+  });
+});
+
 describe('canvas background', () => {
   /* Recording 2D-context stub: logs method names + args, absorbs everything
    * else (gradients, path chains) like the pairing render test's proxy. */
@@ -122,7 +158,10 @@ describe('canvas background', () => {
           if (typeof k !== 'string') return absorb;
           return (...args: unknown[]) => {
             calls.push({ fn: k, args });
-            return absorb;
+            // Gradients record their stops too; everything else is absorbed.
+            return k === 'createRadialGradient'
+              ? { addColorStop: (...stop: unknown[]) => calls.push({ fn: 'addColorStop', args: stop }) }
+              : absorb;
           };
         },
         set: () => true,
@@ -151,6 +190,24 @@ describe('canvas background', () => {
     // No full-canvas background fill; the only fillRects are eye-local.
     expect(calls.some((c) => c.fn === 'fillRect' && c.args[0] === 0 && c.args[1] === 0
       && c.args[2] === 800 && c.args[3] === 480)).toBe(false);
+  });
+
+  it('draws the iris with the device geometry and recolouring', () => {
+    const calls: Array<{ fn: string; args: unknown[] }> = [];
+    const e = new EyeEngine(recordingCanvas(calls));
+    tick(e);
+    // 800x480 -> panel radius 128 px; device R = 178/180 of it, globe = R - 2 device px.
+    const R = (128 * 178) / 180;
+    const G = (R * 176) / 178;
+    const gradients = calls.filter((c) => c.fn === 'createRadialGradient').map((c) => c.args as number[]);
+    expect(gradients.some((g) => g.slice(0, 5).every((v) => v === 0) && Math.abs(g[5] - G) < 1e-9)).toBe(true);
+    expect(gradients.some((g) => g.slice(0, 5).every((v) => v === 0) && Math.abs(g[5] - R) < 1e-9)).toBe(true);
+    // Default iris #38e06e: green saturates (0xa0 * 224 / 0x80 > 255) until the knee.
+    const stops = calls.filter((c) => c.fn === 'addColorStop').map((c) => c.args as [number, string]);
+    expect(stops).toContainEqual([0, 'rgba(70,255,137,1)']);
+    const knee = stops.find(([, color]) => color === 'rgba(63,255,125,1)');
+    expect(knee?.[0]).toBeCloseTo((140 / 255) * ((160 - (255 * 128) / 224) / 32), 9);
+    expect(stops).toContainEqual([1, 'rgba(16,66,32,1)']);
   });
 
   it('paints a solid backdrop when background is a color', () => {
