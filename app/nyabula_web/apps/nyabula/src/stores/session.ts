@@ -1,20 +1,23 @@
 /* Device session: one NyaLink connection at a time, addressed by a deviceKey.
  *   lan:<host>:<port>   direct LAN WebSocket
  *   cloud:<deviceId>    Cloud relay (identical NyaLink semantics)
+ *   self                the device that served this page (same host and port)
  * Pages never branch on the transport; only the URL builder does.
  * Also keeps the "known devices" list for the connect screen. */
 import { defineStore } from 'pinia';
 import { computed, ref, shallowRef } from 'vue';
-import { NyaLinkClient, type ConnState, type DeviceInfo } from '@nyabula/nyalink';
+import { NyaLinkClient, type ConnState, type DeviceInfo, type RequestOptions } from '@nyabula/nyalink';
 import { relayUrl } from '../api/cloud';
+import { parseDeviceKey, selfWsUrl, type Transport } from '../lib/deviceKey';
+import { isDeviceToken } from '../lib/deviceToken';
 
-export type Transport = 'lan' | 'cloud' | 'dev';
+export { SELF_KEY, cloudKey, lanKey, parseDeviceKey, type Transport } from '../lib/deviceKey';
 
 export interface KnownDevice {
   key: string;
   transport: Transport;
   label: string;
-  /** lan: host:port; cloud: deviceId */
+  /** lan: host:port; cloud: deviceId; self: host the page was served from */
   address: string;
   lastSeen: number;
   deviceId?: string;
@@ -25,27 +28,12 @@ const KNOWN_KEY = 'nyabula.devices';
 const LAST_KEY = 'nyabula.lastDevice';
 const TOKEN_PREFIX = 'nyalink.token:';
 
-export function parseDeviceKey(key: string): { transport: Transport; address: string } | null {
-  const i = key.indexOf(':');
-  if (i < 0) return null;
-  const transport = key.slice(0, i);
-  const address = key.slice(i + 1);
-  if ((transport !== 'lan' && transport !== 'cloud' && transport !== 'dev') || !address) return null;
-  return { transport, address };
-}
-
-export function lanKey(host: string, port = 7788): string {
-  return `lan:${host}:${port}`;
-}
-export function cloudKey(deviceId: string): string {
-  return `cloud:${deviceId}`;
-}
-
 function wsUrlFor(key: string): string | null {
   const parsed = parseDeviceKey(key);
   if (!parsed) return null;
   if (parsed.transport === 'dev') return null;
   if (parsed.transport === 'cloud') return relayUrl(parsed.address);
+  if (parsed.transport === 'self') return selfWsUrl(location);
   // lan: allow "host:port" or a full ws:// URL
   if (/^wss?:\/\//.test(parsed.address)) return parsed.address;
   return `ws://${parsed.address}/nyalink`;
@@ -86,11 +74,12 @@ export const useSessionStore = defineStore('session', () => {
     const parsed = parseDeviceKey(key);
     if (!parsed) return;
     const existing = known.value.find((d) => d.key === key);
+    const address = parsed.transport === 'self' ? location.host : parsed.address;
     const entry: KnownDevice = existing ?? {
       key,
       transport: parsed.transport,
-      address: parsed.address,
-      label: parsed.address,
+      address,
+      label: address,
       lastSeen: Date.now(),
     };
     Object.assign(entry, patch, { lastSeen: Date.now() });
@@ -111,6 +100,23 @@ export const useSessionStore = defineStore('session', () => {
     return parsed?.transport === 'cloud' ? `cloud:${parsed.address}` : url;
   }
 
+  /** Persist a token obtained out of band (the provisioning QR code) exactly
+   *  where a paired token lives, so reloads and reconnects keep working.
+   *  Returns false when the value is not a well-formed device token. */
+  function adoptToken(key: string, token: string): boolean {
+    const url = wsUrlFor(key);
+    if (!url || !isDeviceToken(token)) return false;
+    localStorage.setItem(TOKEN_PREFIX + tokenScope(key, url), token);
+    // A live client keeps answering hello with the token it started with.
+    if (deviceKey.value === key && state.value !== 'connected') disconnect();
+    return true;
+  }
+
+  function hasToken(key: string): boolean {
+    const url = wsUrlFor(key);
+    return !!url && !!localStorage.getItem(TOKEN_PREFIX + tokenScope(key, url));
+  }
+
   function connect(key: string, accessToken?: string): boolean {
     const url = wsUrlFor(key);
     if (!url) return false;
@@ -129,7 +135,7 @@ export const useSessionStore = defineStore('session', () => {
     });
     c.onStateChange((s) => {
       state.value = s;
-      if (s === 'closed' && c.authError) lastError.value = '认证失败，请重新输入设备令牌';
+      if (s === 'closed' && c.authError) lastError.value = __NYA_DEVICE__ ? '认证失败，请重新扫描设备上的二维码' : '认证失败，请重新输入设备令牌';
       if (s === 'connected') {
         device.value = c.device;
         role.value = (c.role as typeof role.value) ?? null;
@@ -176,13 +182,13 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /** Request that surfaces errors. Rejects immediately while offline. */
-  function request(topic: string, data: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  function request(topic: string, data: Record<string, unknown> = {}, options?: RequestOptions): Promise<Record<string, unknown>> {
     const c = client.value;
     if (!c || state.value !== 'connected') {
       const preview = deviceKey.value?.startsWith('dev:');
       return Promise.reject(Object.assign(new Error(preview ? '开发预览：未连接设备' : '设备未连接'), { code: preview ? 'EPREVIEW' : 'EOFFLINE' }));
     }
-    return c.request(topic, data);
+    return c.request(topic, data, options);
   }
 
   function onEvent(topic: string, cb: (data: Record<string, unknown>) => void): () => void {
@@ -209,6 +215,8 @@ export const useSessionStore = defineStore('session', () => {
     authRequired,
     canControl,
     connect,
+    adoptToken,
+    hasToken,
     pair,
     disconnect,
     enterPreview,

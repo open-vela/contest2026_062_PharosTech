@@ -1,13 +1,23 @@
-/* Routes: /connect, /d/:key/* device workspace, /account/*, /settings.
- * Guards: device routes require a session (auto-connect from the key). */
-import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
+/* Routes: /connect, /provision, /d/:key/* device workspace, /account/*, /settings.
+ * Guards: device routes require a session (auto-connect from the key).
+ * Device build (__NYA_DEVICE__): hash history, because the device's static
+ * server only serves files; `connect` is a boot view instead of the address
+ * form, and a `?token=` from the provisioning QR code is adopted and stripped. */
+import { createRouter, createWebHashHistory, createWebHistory, type RouteRecordRaw } from 'vue-router';
 import { useLoadingStore } from '@nyabula/ui';
-import { useSessionStore } from '../stores/session';
+import { SELF_KEY, useSessionStore } from '../stores/session';
 import { isPreviewKey, useDevStore } from '../stores/dev';
+import { takeTokenFromQuery } from '../lib/deviceToken';
+
+/* A compile-time constant, so the unused branch (and its chunk) is dropped. */
+const connectRoute: RouteRecordRaw = __NYA_DEVICE__
+  ? { path: '/connect', name: 'connect', component: () => import('../views/provision/DeviceBootView.vue'), meta: { title: '正在连接' } }
+  : { path: '/connect', name: 'connect', component: () => import('../views/connect/ConnectView.vue'), meta: { title: '连接设备' } };
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: () => ({ name: 'connect' }) },
-  { path: '/connect', name: 'connect', component: () => import('../views/connect/ConnectView.vue'), meta: { title: '连接设备' } },
+  connectRoute,
+  { path: '/provision', name: 'provision', component: () => import('../views/provision/ProvisionView.vue'), meta: { title: '配置 WiFi', quietLink: true } },
   {
     path: '/d/:key',
     component: () => import('../views/DeviceWorkspace.vue'),
@@ -32,7 +42,7 @@ const routes: RouteRecordRaw[] = [
 ];
 
 export const router = createRouter({
-  history: createWebHistory(),
+  history: __NYA_DEVICE__ ? createWebHashHistory() : createWebHistory(),
   routes,
   scrollBehavior: () => ({ top: 0 }),
 });
@@ -44,6 +54,14 @@ export function routeDepth(meta: Record<string, unknown>): number {
 
 router.beforeEach(async (to) => {
   const session = useSessionStore();
+  if (__NYA_DEVICE__) {
+    // Adopt the QR-code token, then drop it from the address bar and history.
+    const { token, present, rest } = takeTokenFromQuery(to.query);
+    if (present) {
+      if (token) session.adoptToken(SELF_KEY, token);
+      return { path: to.path, query: rest, hash: to.hash, replace: true };
+    }
+  }
   const key = typeof to.params.key === 'string' ? to.params.key : null;
   if (key && isPreviewKey(key)) {
     // Developer preview: pages render with their offline/empty states.

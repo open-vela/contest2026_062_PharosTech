@@ -34,7 +34,9 @@ app.mount('#app');
   loading.setBootProgress(70);
   const session = useSessionStore();
   await router.isReady();
-  if (router.currentRoute.value.name === 'connect' && session.lastDeviceKey && !location.search.includes('stay')) {
+  // Read the flag from the router: under hash history the query lives after "#".
+  // The device build skips this; its boot view decides where to go.
+  if (!__NYA_DEVICE__ && router.currentRoute.value.name === 'connect' && session.lastDeviceKey && !('stay' in router.currentRoute.value.query)) {
     loading.setBootLabel('连接上次的设备');
     // Try the last device briefly; ConnectView shows progress and falls back.
     await router.replace({ name: 'home', params: { key: session.lastDeviceKey } }).catch(() => undefined);

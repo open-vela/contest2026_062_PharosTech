@@ -27,7 +27,7 @@ const connected = computed(() => session.connected && wifi.value.ssid !== null);
 const active = computed(() => eye.activeScene === props.type);
 const quality = computed(() => wifi.value.rssi === null ? '信号强度未提供' : ['无信号', '较弱', '一般', '良好', '极佳'][bars.value]);
 const subtitle = computed(() => (wifi.value.ssid ? `${wifi.value.ssid} · ${quality.value}` : session.connected ? '未提供 WiFi 关联状态' : '设备离线'));
-const TRANSPORT_LABEL: Record<string, string> = { lan: '局域网', cloud: '云端', dev: '演示' };
+const TRANSPORT_LABEL: Record<string, string> = { lan: '局域网', cloud: '云端', dev: '演示', self: '设备直连' };
 
 const kv = computed(() => [
   { key: '网络名称', value: wifi.value.ssid ?? '—' },

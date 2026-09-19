@@ -21,7 +21,7 @@ const docs = [
         <div><dt>Core 版本</dt><dd class="mono">{{ session.device?.coreVersion ?? '—' }}</dd></div>
         <div><dt>Web 客户端</dt><dd class="mono">{{ WEB_VERSION }}</dd></div>
         <div><dt>NyaLink 协议</dt><dd class="mono">v1</dd></div>
-        <div><dt>连接方式</dt><dd>{{ session.transport === 'cloud' ? '云中继' : session.transport === 'lan' ? '局域网' : '—' }}</dd></div>
+        <div><dt>连接方式</dt><dd>{{ session.transport === 'cloud' ? '云中继' : session.transport === 'lan' ? '局域网' : session.transport === 'self' ? '设备直连' : '—' }}</dd></div>
       </dl>
     </MdCard>
     <MdCard title="契约文件">

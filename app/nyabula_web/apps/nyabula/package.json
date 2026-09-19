@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite --host",
     "build": "vite build",
+    "build:device": "vite build --mode device && node scripts/gzip-dist.mjs dist-device",
     "preview": "vite preview",
-    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "test": "node --test test/deviceKey.test.mjs test/deviceToken.test.mjs test/wifi.test.mjs"
   },
   "dependencies": {
     "@nyabula/eye-engine": "workspace:*",

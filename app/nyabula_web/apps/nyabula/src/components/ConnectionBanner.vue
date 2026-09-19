@@ -1,15 +1,18 @@
 <script setup lang="ts">
 /* Sticky reconnect / offline banner shown inside the device workspace. */
 import { computed } from 'vue';
+import { useRoute } from 'vue-router';
 import { UiIcon } from '@nyabula/ui';
 import { useSessionStore } from '../stores/session';
 import { isPreviewKey } from '../stores/dev';
 
 const session = useSessionStore();
+const route = useRoute();
 const preview = computed(() => isPreviewKey(session.deviceKey));
-const show = computed(() => preview.value || (session.deviceKey && (session.state === 'reconnecting' || session.state === 'closed' || session.state === 'connecting')));
+/* Routes flagged `quietLink` (WiFi provisioning) expect the link to drop and explain it themselves. */
+const show = computed(() => !route.meta.quietLink && (preview.value || (session.deviceKey && (session.state === 'reconnecting' || session.state === 'closed' || session.state === 'connecting'))));
 const text = computed(() =>
-  preview.value ? '开发预览：未连接设备，页面以离线/空态展示' : session.authRequired ? '认证失败，请重新输入设备令牌' : session.state === 'reconnecting' ? '连接丢失，正在重连… 设备任务可能仍在执行' : session.state === 'connecting' ? '正在连接设备…' : '连接已断开',
+  preview.value ? '开发预览：未连接设备，页面以离线/空态展示' : session.authRequired ? (session.lastError ?? '认证失败，请重新输入设备令牌') : session.state === 'reconnecting' ? '连接丢失，正在重连… 设备任务可能仍在执行' : session.state === 'connecting' ? '正在连接设备…' : '连接已断开',
 );
 </script>
 
