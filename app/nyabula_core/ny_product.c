@@ -112,8 +112,12 @@ static int ny_product_system(const struct ny_product_caller_s *caller,
       struct mallinfo heap = mallinfo();
       cJSON *device = cJSON_AddObjectToObject(root, "device");
       cJSON *memory = cJSON_AddObjectToObject(root, "memory");
+      char name[33] = "Nyabula";
+#ifdef CONFIG_NYABULA_CORE_NETWORK
+      ny_product_network_name(name, sizeof(name));
+#endif
       if (uname(&system) < 0 || device == NULL || memory == NULL ||
-          !cJSON_AddStringToObject(device, "name", "Nyabula") ||
+          !cJSON_AddStringToObject(device, "name", name) ||
           !cJSON_AddStringToObject(device, "coreVersion", "product-v1") ||
           !cJSON_AddStringToObject(device, "os", system.sysname) ||
           !cJSON_AddStringToObject(device, "arch", system.machine) ||

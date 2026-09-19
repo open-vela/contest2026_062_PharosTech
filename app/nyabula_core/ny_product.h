@@ -97,6 +97,7 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
                                cJSON **result);
 int ny_product_network_tick(void);
 int ny_product_network_link(char *ssid, size_t size, int *rssi);
+int ny_product_network_name(char *out, size_t size);
 void ny_product_network_shutdown(void);
 #endif
 int ny_product_eyes_request(const struct ny_product_caller_s *caller,
