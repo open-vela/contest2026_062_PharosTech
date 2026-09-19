@@ -39,3 +39,11 @@ copies one verified slot to the other without activating it. Boot-control
 mutations update the older redundant copy first, verify it, and then update the
 other copy. `update-nboot` replaces the N-Boot FIT on the current medium and
 verifies it from media; reboot is left to the caller.
+
+`nbootctl_bootctrl.c` is also a small library. `nbootctl_handoff_read()` and
+`nbootctl_bootctrl_snapshot()` return the handoff and both domains as a struct
+and print nothing, so other code (Nyabula Core's `update.status`) can report
+slot state without parsing this tool's output. `tries_remaining` is not part of
+that struct: N-Boot selects by priority alone. The file must be linked once per
+image: a build that enables this command reuses its object, and only a build
+without it compiles the source into the caller.

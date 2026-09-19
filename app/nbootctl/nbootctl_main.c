@@ -22,19 +22,13 @@
 
 #include <nuttx/config.h>
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/boardctl.h>
 
 #include "nbootctl_bootctrl.h"
-
-#define NBOOTCTL_HANDOFF_REG        0x26026234ul
-#define NBOOTCTL_GENERATION_LO_REG  0x26026238ul
-#define NBOOTCTL_GENERATION_HI_REG  0x2602623cul
-#define NBOOTCTL_HANDOFF_MAGIC      0x4e480000u
-#define NBOOTCTL_HANDOFF_MAGIC_MASK 0xffff0000u
-#define NBOOTCTL_HANDOFF_VERSION    2u
 
 enum nbootctl_target_e
 {
@@ -46,7 +40,6 @@ enum nbootctl_target_e
 
 /* Private Function Prototypes */
 
-static uint32_t nbootctl_read(uintptr_t address);
 static const char *nbootctl_medium_name(unsigned int medium);
 static const char *nbootctl_reason_name(unsigned int reason);
 static int nbootctl_handoff(unsigned int *medium_out, unsigned int *slot_out);
@@ -54,15 +47,6 @@ static int nbootctl_status(void);
 static int nbootctl_parse_slot(const char *value, unsigned int *slot);
 static int nbootctl_reboot(enum nbootctl_target_e target);
 static void nbootctl_usage(void);
-
-/****************************************************************************
- * Name: nbootctl_read
- ****************************************************************************/
-
-static uint32_t nbootctl_read(uintptr_t address)
-{
-  return *(volatile uint32_t *)address;
-}
 
 /****************************************************************************
  * Name: nbootctl_medium_name
@@ -91,34 +75,22 @@ static const char *nbootctl_reason_name(unsigned int reason)
 
 static int nbootctl_handoff(unsigned int *medium_out, unsigned int *slot_out)
 {
-  uint32_t header;
-  uint32_t confirm;
   uint64_t generation;
-  unsigned int version;
   unsigned int medium;
   unsigned int reason;
   unsigned int slot;
+  int ret;
 
-  header = nbootctl_read(NBOOTCTL_HANDOFF_REG);
-  generation = nbootctl_read(NBOOTCTL_GENERATION_LO_REG);
-  generation |= (uint64_t)nbootctl_read(NBOOTCTL_GENERATION_HI_REG) << 32;
-  confirm = nbootctl_read(NBOOTCTL_HANDOFF_REG);
+  /* The register read is shared with code that reports slot state without
+   * a console; only the wording of a failure is this tool's own.
+   */
 
-  version = (header >> 12) & 0xf;
-  if (header != confirm ||
-      (header & NBOOTCTL_HANDOFF_MAGIC_MASK) != NBOOTCTL_HANDOFF_MAGIC ||
-      version != NBOOTCTL_HANDOFF_VERSION)
+  ret = nbootctl_handoff_read(&medium, &slot, &reason, &generation);
+  if (ret < 0)
     {
-      fprintf(stderr, "nbootctl: no valid N-Boot handoff\n");
-      return 1;
-    }
-
-  reason = (header >> 8) & 0xf;
-  medium = (header >> 4) & 0xf;
-  slot = header & 0xf;
-  if (medium < 1 || medium > 2 || reason > 2 || slot > 1)
-    {
-      fprintf(stderr, "nbootctl: invalid N-Boot handoff fields\n");
+      fprintf(stderr, "nbootctl: %s\n",
+              ret == -EBADMSG ? "invalid N-Boot handoff fields"
+                              : "no valid N-Boot handoff");
       return 1;
     }
 
