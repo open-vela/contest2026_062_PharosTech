@@ -29,7 +29,8 @@ all: product
 
 # ---------------------------------------------------------------- main domain
 fonts: ## Generate Eye Engine glyph tables (Noto fallback)
-	$(PY) app/nyabula/tools/generate_fonts.py --download-fallback
+	$(PY) app/nyabula/tools/generate_fonts.py --download-fallback \
+	    --html app/nyabula/tools/extra_glyphs.txt
 
 nuttx: fonts $(OUT) ## Build main-domain openvela (configs/product)
 	cd $(VELA_ROOT) && ./build.sh $(REPO_NAME)/configs/$(PRODUCT_CONFIG) -j$(JOBS)
