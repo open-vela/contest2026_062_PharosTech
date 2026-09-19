@@ -334,7 +334,20 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
       result = cJSON_CreateObject();
       cJSON *device = cJSON_AddObjectToObject(result, "device");
       cJSON_AddStringToObject(device, "id", "nyabula-native-eye");
+#if defined(CONFIG_NYABULA_CORE_PRODUCT) && \
+    defined(CONFIG_NYABULA_CORE_NETWORK)
+      {
+        /* The name the owner gave it, which is also what its access point
+         * and the router call it.
+         */
+
+        char name[33] = "Nyabula";
+        ny_product_network_name(name, sizeof(name));
+        cJSON_AddStringToObject(device, "name", name);
+      }
+#else
       cJSON_AddStringToObject(device, "name", "Nyabula Core");
+#endif
       cJSON_AddStringToObject(device, "coreVersion", "native-eye-v1");
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
       cJSON_AddStringToObject(result, "role", "owner");

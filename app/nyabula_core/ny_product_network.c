@@ -15,6 +15,7 @@
  *   network.provision.start   {ssid?, psk?, channel?} -> start SoftAP
  *   network.provision.stop    tear down SoftAP, back to IDLE
  *   network.wifi.scan         STA scan (list of {ssid, rssi, freq, encode})
+ *   network.name.set          {"name": "..."}; "" goes back to the default
  *   network.wifi.set          {ssid, psk} -> persist + connect as station
  *   network.wifi.forget       clear stored credentials
  *
@@ -38,6 +39,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <limits.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <stdbool.h>
@@ -124,6 +126,7 @@ enum ny_net_state_e
 struct ny_net_s
 {
   enum ny_net_state_e state;
+  char name[NY_NET_SSID_MAX + 1]; /* what the owner calls it; "" = default */
   char ap_ssid[NY_NET_SSID_MAX + 1];
   char ap_psk[NY_NET_PSK_MAX + 1];
   int ap_channel;
@@ -177,6 +180,97 @@ static bool ny_net_copy(char *dst, size_t size, const char *src)
   return true;
 }
 
+/* Derive a per-device AP SSID from the MAC address. */
+
+static void ny_net_default_ap_ssid(char *out, size_t size)
+{
+  uint8_t mac[6] = { 0 };
+#ifdef CONFIG_NETUTILS_NETLIB
+  netlib_getmacaddr(NY_NET_IFNAME, mac);
+#endif
+  snprintf(out, size, NY_NET_AP_SSID_FMT, mac[4], mac[5]);
+}
+
+/* The device has one name.  It is what the panel shows, what the access
+ * point is called and what the router lists the device under.  Until the
+ * owner chooses one it is the name derived from the MAC address, so the
+ * thing on the desk, the network it offers and the entry in the router all
+ * read the same (lock held).
+ */
+
+static void ny_net_name(char *out, size_t size)
+{
+  if (g_net.name[0] != 0)
+    strlcpy(out, g_net.name, size);
+  else
+    ny_net_default_ap_ssid(out, size);
+}
+
+/* A name can be anything a person would type, within the 32 bytes an SSID
+ * allows.  Control characters have no business in it.
+ */
+
+static bool ny_net_name_valid(const char *name)
+{
+  size_t length = strlen(name);
+  if (length > NY_NET_SSID_MAX)
+    return false;
+  for (size_t i = 0; i < length; i++)
+    if ((unsigned char)name[i] < 0x20 || name[i] == 0x7f)
+      return false;
+  return true;
+}
+
+/* An SSID may hold any bytes, but this one also travels inside a WIFI: code
+ * on the eyes, where ; , : " and \ are syntax, and phones disagree about
+ * names that are not plain ASCII.  A name outside that set is still the
+ * device's name; the access point then keeps the default one.
+ */
+
+static bool ny_net_name_is_ssid(const char *name)
+{
+  if (name[0] == 0 || name[0] == ' ')
+    return false;
+  for (const char *c = name; *c != 0; c++)
+    if (*c < 0x20 || *c > 0x7e || strchr(";,:\"\\", *c) != NULL)
+      return false;
+  return true;
+}
+
+/* What DHCP tells the router: letters, digits and hyphens only, so
+ * everything else becomes a hyphen and runs of them collapse.  A name with
+ * nothing usable in it falls back to the default, which always qualifies
+ * (lock held).
+ */
+
+static void ny_net_apply_hostname(void)
+{
+  char name[NY_NET_SSID_MAX + 1];
+  char host[HOST_NAME_MAX + 1];
+  size_t used = 0;
+  ny_net_name(name, sizeof(name));
+  for (int pass = 0; pass < 2 && used == 0; pass++)
+    {
+      for (const char *c = name; *c != 0 && used < HOST_NAME_MAX; c++)
+        {
+          bool plain = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+                       (*c >= '0' && *c <= '9');
+          if (plain)
+            host[used++] = *c;
+          else if (used > 0 && host[used - 1] != '-')
+            host[used++] = '-';
+        }
+
+      while (used > 0 && host[used - 1] == '-')
+        used--;
+      if (used == 0)
+        ny_net_default_ap_ssid(name, sizeof(name));
+    }
+
+  if (used > 0)
+    sethostname(host, used);
+}
+
 /* Load persisted STA credentials into g_net (lock held). */
 
 static void ny_net_load(void)
@@ -198,7 +292,15 @@ static void ny_net_load(void)
     return;
   g_net_loaded = true;
   if (ret < 0 || value == NULL)
-    return;
+    {
+      ny_net_apply_hostname();
+      return;
+    }
+
+  const char *name = ny_net_text(value, "name");
+  if (name != NULL && ny_net_name_valid(name))
+    strlcpy(g_net.name, name, sizeof(g_net.name));
+  ny_net_apply_hostname();
   ny_net_copy(g_net.sta_ssid, sizeof(g_net.sta_ssid),
               ny_net_text(value, "ssid"));
   ny_net_copy(g_net.sta_psk, sizeof(g_net.sta_psk), ny_net_text(value, "psk"));
@@ -217,21 +319,12 @@ static int ny_net_save(void)
   cJSON_AddStringToObject(value, "ssid", g_net.sta_ssid);
   cJSON_AddStringToObject(value, "psk", g_net.sta_psk);
   cJSON_AddBoolToObject(value, "auto", true);
+  if (g_net.name[0] != 0)
+    cJSON_AddStringToObject(value, "name", g_net.name);
   int ret = ny_product_store_write(NY_NET_STORE_DOMAIN, value, g_net.revision,
                                    &g_net.revision);
   cJSON_Delete(value);
   return ret;
-}
-
-/* Derive a per-device AP SSID from the MAC address. */
-
-static void ny_net_default_ap_ssid(char *out, size_t size)
-{
-  uint8_t mac[6] = { 0 };
-#ifdef CONFIG_NETUTILS_NETLIB
-  netlib_getmacaddr(NY_NET_IFNAME, mac);
-#endif
-  snprintf(out, size, NY_NET_AP_SSID_FMT, mac[4], mac[5]);
 }
 
 /* Request the provisioning AP, filling in the identity nobody supplied
@@ -244,7 +337,13 @@ static void ny_net_default_ap_ssid(char *out, size_t size)
 static void ny_net_arm_ap(void)
 {
   if (g_net.ap_ssid[0] == '\0')
-    ny_net_default_ap_ssid(g_net.ap_ssid, sizeof(g_net.ap_ssid));
+    {
+      if (ny_net_name_is_ssid(g_net.name))
+        strlcpy(g_net.ap_ssid, g_net.name, sizeof(g_net.ap_ssid));
+      else
+        ny_net_default_ap_ssid(g_net.ap_ssid, sizeof(g_net.ap_ssid));
+    }
+
   if (g_net.ap_psk[0] == '\0')
     ny_net_copy(g_net.ap_psk, sizeof(g_net.ap_psk), NY_NET_AP_PSK);
   if (g_net.ap_channel == 0)
@@ -566,6 +665,18 @@ static cJSON *ny_net_status_json(bool owner)
   cJSON *root = cJSON_CreateObject();
   if (root == NULL)
     return NULL;
+  char name[NY_NET_SSID_MAX + 1];
+  ny_net_name(name, sizeof(name));
+  cJSON_AddStringToObject(root, "name", name);
+  cJSON_AddBoolToObject(root, "named", g_net.name[0] != 0);
+
+  /* What the router is told, which can differ from the name: host names
+   * are letters, digits and hyphens.
+   */
+
+  char host[HOST_NAME_MAX + 1];
+  if (gethostname(host, sizeof(host)) == 0 && host[0] != 0)
+    cJSON_AddStringToObject(root, "hostname", host);
   cJSON_AddStringToObject(root, "state", g_net_state_names[g_net.state]);
   cJSON_AddStringToObject(root, "ifname", NY_NET_IFNAME);
   cJSON_AddBoolToObject(root, "configured", g_net.sta_ssid[0] != '\0');
@@ -638,7 +749,13 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
       const cJSON *channel = cJSON_GetObjectItemCaseSensitive(data, "channel");
       if (ssid == NULL ||
           !ny_net_copy(g_net.ap_ssid, sizeof(g_net.ap_ssid), ssid))
-        ny_net_default_ap_ssid(g_net.ap_ssid, sizeof(g_net.ap_ssid));
+        {
+          if (ny_net_name_is_ssid(g_net.name))
+            strlcpy(g_net.ap_ssid, g_net.name, sizeof(g_net.ap_ssid));
+          else
+            ny_net_default_ap_ssid(g_net.ap_ssid, sizeof(g_net.ap_ssid));
+        }
+
       if (psk == NULL || !ny_net_copy(g_net.ap_psk, sizeof(g_net.ap_psk), psk))
         ny_net_copy(g_net.ap_psk, sizeof(g_net.ap_psk), NY_NET_AP_PSK);
       g_net.ap_channel = cJSON_IsNumber(channel) ? (int)channel->valuedouble
@@ -675,6 +792,41 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
       g_net.rejoin_at = 0;
       g_net.rejoin_step = 0;
       g_net.pending_sta = true;
+      *result = ny_net_status_json(true);
+      ret = *result ? 0 : -ENOMEM;
+    }
+  else if (strcmp(topic, "network.name.set") == 0)
+    {
+      const char *name = ny_net_text(data, "name");
+      char previous[NY_NET_SSID_MAX + 1];
+      if (name == NULL || !ny_net_name_valid(name))
+        {
+          ret = -EINVAL;
+          goto out;
+        }
+
+      while (*name == ' ')
+        name++;
+      strlcpy(previous, g_net.name, sizeof(previous));
+      strlcpy(g_net.name, name, sizeof(g_net.name));
+      for (size_t end = strlen(g_net.name);
+           end > 0 && g_net.name[end - 1] == ' '; end--)
+        g_net.name[end - 1] = 0;
+      ret = ny_net_save();
+      if (ret < 0)
+        {
+          strlcpy(g_net.name, previous, sizeof(g_net.name));
+          goto out;
+        }
+
+      /* The router learns the new name with the next lease; an access point
+       * that is already up keeps the name people are connected to, and the
+       * next one takes the new one.
+       */
+
+      ny_net_apply_hostname();
+      if (g_net.state != NY_NET_AP_PROVISION)
+        g_net.ap_ssid[0] = 0;
       *result = ny_net_status_json(true);
       ret = *result ? 0 : -ENOMEM;
     }
@@ -1176,6 +1328,25 @@ int ny_product_network_tick(void)
   ny_net_eye_sync();
 #endif
   return ret;
+}
+
+/****************************************************************************
+ * Name: ny_product_network_name
+ *
+ * Description:
+ *   The device's name, for whoever introduces the device to a client.
+ *
+ ****************************************************************************/
+
+int ny_product_network_name(char *out, size_t size)
+{
+  int ret = nxmutex_lock(&g_net_lock);
+  if (ret < 0)
+    return ret;
+  ny_net_load();
+  ny_net_name(out, size);
+  nxmutex_unlock(&g_net_lock);
+  return 0;
 }
 
 /****************************************************************************
