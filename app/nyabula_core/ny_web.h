@@ -32,6 +32,10 @@ int ny_web_stop(void);
 
 int ny_web_product_token(char *out, size_t size);
 
+/* Number of panels currently open and authenticated. */
+
+int ny_web_panel_count(void);
+
 /* Answer one plain HTTP request from the static site root and return.  head
  * is the request head as received; the connection is not kept alive.
  */
