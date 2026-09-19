@@ -7,6 +7,10 @@
   --shell-context: 340px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  /* Distance of floating corner buttons from BOTH viewport edges. */
+  --fab-gap: 16px;
 }
 
 .page {
