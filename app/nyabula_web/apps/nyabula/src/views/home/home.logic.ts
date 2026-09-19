@@ -8,6 +8,7 @@ import { usePluginsStore } from '../../stores/plugins';
 import { useAccountStore } from '../../stores/account';
 import { useAsyncTask } from '../../composables/useRequest';
 import { batteryOf, fmtUptime, wifiOf, rssiBars, type SysInfo } from '../device/sections/sysinfo';
+import { parseCloudStatus, type CloudStatus } from '../../lib/deviceMaint';
 
 export interface ActivityItem {
   id: number;
@@ -41,11 +42,11 @@ export function useHomePage() {
 
   /* ---- sys.info + cloud.status ---- */
   const info = ref<SysInfo | null>(null);
-  const cloud = ref<{ enabled?: boolean; connected?: boolean; url?: string } | null>(null);
+  const cloud = ref<CloudStatus | null>(null);
   const infoTask = useAsyncTask(async () => {
     const [i, c] = await Promise.allSettled([session.request('sys.info'), session.request('cloud.status')]);
     if (i.status === 'fulfilled') info.value = i.value as SysInfo;
-    if (c.status === 'fulfilled') cloud.value = c.value as typeof cloud.value;
+    if (c.status === 'fulfilled') cloud.value = parseCloudStatus(c.value);
     return true;
   }, { holdRoute: true });
   watch(
@@ -98,10 +99,12 @@ export function useHomePage() {
     if (session.state === 'pairing-required') {
       items.push({ id: 'pair', icon: 'key', title: '设备等待配对', sub: '输入设备屏幕上的 6 位配对码', tone: 'warn', run: () => go('eye') });
     }
-    if (session.connected && cloud.value && cloud.value.enabled && !cloud.value.connected) {
-      items.push({ id: 'cloud', icon: 'cloud_off', title: '云中继未连通', sub: cloud.value.url ?? '检查 Cloud 地址与网络', tone: 'warn', run: () => go('device', { section: 'cloud' }) });
+    /* `connecting` is transient and `unsupported` (no relay client in this
+     * firmware) is nothing the user can act on: neither raises an item. */
+    if (session.connected && cloud.value?.state === 'offline') {
+      items.push({ id: 'cloud', icon: 'cloud_off', title: '云中继未连通', sub: cloud.value.url || '检查 Cloud 地址与网络', tone: 'warn', run: () => go('device', { section: 'cloud' }) });
     }
-    if (session.connected && cloud.value && !cloud.value.enabled) {
+    if (session.connected && cloud.value?.state === 'disabled') {
       items.push({ id: 'cloud-off', icon: 'cloud', title: '未启用云中继', sub: '开启后可在外网远程访问', tone: 'info', run: () => go('device', { section: 'cloud' }) });
     }
     for (const m of missingPerms.value.slice(0, 3)) {
