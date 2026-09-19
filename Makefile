@@ -20,7 +20,7 @@ include product/product.mk
 
 .DEFAULT_GOAL := help
 .PHONY: help all setup product nuttx amp-nuttx linux nyampd initramfs amp nboot rkbin \
-        data web fonts sd emmc flash-ota flash-amp check clean distclean
+        config data web fonts sd emmc flash-ota flash-amp check clean distclean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*##"}{printf "  %-12s %s\n",$$1,$$2}'
@@ -74,8 +74,12 @@ nboot: nuttx rkbin ## Build N-Boot A/B images (uses pinned boards/.../nboot rele
 web: ## Build the browser control panel
 	cd app/nyabula_web && $(PNPM) install --frozen-lockfile && $(PNPM) build
 
-data: $(OUT) ## Initial /data image (config template + web dist + build.json)
-	MODELS_DIR=$(MODELS_DIR) tools/k7_pack/build_data_img.sh product/data $(WEB_DIST) $(VER) $(OUT)/data.img $(DATA_MIB)
+config: $(OUT) ## Initial /config image (provisioning, identity, persona)
+	VOLUME_LABEL=NYACONF tools/k7_pack/build_data_img.sh product/config - $(VER) $(OUT)/config.img $(CONFIG_MIB)
+
+data: config $(OUT) ## Initial /data image (models, web dist, build.json)
+	MODELS_DIR=$(MODELS_DIR) VOLUME_LABEL=NYABULA \
+	    tools/k7_pack/build_data_img.sh product/data $(WEB_DIST) $(VER) $(OUT)/data.img $(DATA_MIB)
 
 # ---------------------------------------------------------------- disk images
 sd: nuttx rkbin ## Whole-disk SD image
@@ -83,7 +87,7 @@ sd: nuttx rkbin ## Whole-disk SD image
 	@ls -l $(OUT)/sd/*.img
 
 emmc: nuttx rkbin ## RKDevTool eMMC package (Loader + parameter + partition images)
-	DATA_IMG=$(OUT)/data.img AMP_ITB=$(OUT)/amp.itb tools/k7_pack/build_emmc.sh $(OUT)/nuttx.bin $(NBOOT_DIR) $(RKBIN) $(OUT)/emmc
+	DATA_IMG=$(OUT)/data.img CONFIG_IMG=$(OUT)/config.img AMP_ITB=$(OUT)/amp.itb tools/k7_pack/build_emmc.sh $(OUT)/nuttx.bin $(NBOOT_DIR) $(RKBIN) $(OUT)/emmc
 	cd $(OUT)/emmc/$(EMMC_PKG) && sha256sum package-file README.txt Image/* > SHA256SUMS
 
 product: emmc sd ## Final aggregate: emmc package + sd image, zipped with version

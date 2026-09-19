@@ -52,7 +52,13 @@ NUTTX_SECTORS=131072
 AMP_A_START=299008
 AMP_B_START=1347584
 AMP_SECTORS=1048576
-DATA_START=2396160
+# Configuration lives in its own partition, ahead of data, so that wiping
+# the bulk store does not also wipe provisioning.  Losing data costs the
+# models, which an OTA can put back; losing wifi.json sends the device
+# back to AP mode and needs a human.  The two deserve different lifetimes.
+CONFIG_START=2396160
+CONFIG_SECTORS=65536
+DATA_START=2461696
 
 for tool in dd dtc fdtget python3 sha256sum truncate; do
   command -v "$tool" >/dev/null 2>&1 || die "missing host tool: $tool"
@@ -201,6 +207,8 @@ PARAMETER
     "$AMP_SECTORS" "$AMP_A_START" >> "$IMAGE_DIR/parameter.txt"
   printf '0x%08x@0x%08x(amp_b),' \
     "$AMP_SECTORS" "$AMP_B_START" >> "$IMAGE_DIR/parameter.txt"
+  printf '0x%08x@0x%08x(config),' \
+    "$CONFIG_SECTORS" "$CONFIG_START" >> "$IMAGE_DIR/parameter.txt"
   printf '%s@0x%08x(data:grow)\n' - "$DATA_START" \
     >> "$IMAGE_DIR/parameter.txt"
 
@@ -218,6 +226,10 @@ PACKAGE_FILE
     cp "$DATA_IMG" "$IMAGE_DIR/data.img"
     echo "data Image/data.img" >> "$PACKAGE/package-file"
   fi
+  if [ -n "${CONFIG_IMG:-}" ] && [ -f "$CONFIG_IMG" ]; then
+    cp "$CONFIG_IMG" "$IMAGE_DIR/config.img"
+    echo "config Image/config.img" >> "$PACKAGE/package-file"
+  fi
   if [ -n "${AMP_ITB:-}" ] && [ -f "$AMP_ITB" ]; then
     cp "$AMP_ITB" "$IMAGE_DIR/amp_a.img"; cp "$AMP_ITB" "$IMAGE_DIR/amp_b.img"
     printf "amp_a Image/amp_a.img\namp_b Image/amp_b.img\n" >> "$PACKAGE/package-file"
@@ -229,9 +241,15 @@ KICKPI-K7 Nyabula eMMC partition package
 Use RKDevTool Download Image mode. Load Image/MiniLoaderAll.bin as Loader,
 then load Image/parameter.txt and the named partition images (or import
 package-file directly). Partitions listed in package-file carry payload; any
-of amp_a / amp_b / data missing there are created empty by parameter.txt.
-data.img (when present) seeds /data: agent/, nyabula/wifi.json (unprovisioned),
-models/ (TTS rknn + face onnx), music/.
+of amp_a / amp_b / config / data missing there are created empty by
+parameter.txt.
+
+config.img seeds /config: provisioning state, device identity and persona.
+It is deliberately separate from data.img so that wiping the bulk store
+(models, music) cannot also wipe provisioning -- losing the models costs an
+OTA, losing the wifi settings needs a human on site.
+
+data.img seals /data: models/ (TTS rknn + face onnx), music/.
 README
 
   (cd "$PACKAGE" && sha256sum package-file README.txt Image/* > SHA256SUMS)
@@ -265,8 +283,11 @@ sgdisk -n 6:"$AMP_A_START":$((AMP_A_START + AMP_SECTORS - 1)) \
 sgdisk -n 7:"$AMP_B_START":$((AMP_B_START + AMP_SECTORS - 1)) \
   -c 7:amp_b -t 7:8300 \
   -u 7:4b374142-0007-4000-8000-000000000002 "$IMAGE" >/dev/null
-sgdisk -n 8:"$DATA_START":"$DATA_END" -c 8:data -t 8:0700 \
+sgdisk -n 8:"$CONFIG_START":$((CONFIG_START + CONFIG_SECTORS - 1)) \
+  -c 8:config -t 8:0700 \
   -u 8:4b374142-0008-4000-8000-000000000002 "$IMAGE" >/dev/null
+sgdisk -n 9:"$DATA_START":"$DATA_END" -c 9:data -t 9:0700 \
+  -u 9:4b374142-0009-4000-8000-000000000002 "$IMAGE" >/dev/null
 
 dd if="$WORK/idbloader.img" of="$IMAGE" bs=512 seek=64 \
   conv=notrunc status=none
@@ -285,9 +306,40 @@ dd if="$NUTTX" of="$IMAGE" bs=512 seek="$NUTTX_A_START" \
 dd if="$NUTTX" of="$IMAGE" bs=512 seek="$NUTTX_B_START" \
   conv=notrunc status=none
 
+# Both store partitions get a filesystem.  When a seed image was supplied
+# it is written as-is, so a disk built here carries the same content the
+# eMMC package does; otherwise an empty filesystem is created so the board
+# can mount the partition on first boot without formatting it itself.
+#
+# Both are checked for size before they go in.  A seed larger than its
+# partition would be truncated by dd -- silently, since dd does not report
+# a short write -- and the resulting filesystem would be corrupt.
+CONFIG_BYTES=$((CONFIG_SECTORS * 512))
+if [ -n "${CONFIG_IMG:-}" ] && [ -f "$CONFIG_IMG" ]; then
+  seed=$(stat -c %s "$CONFIG_IMG")
+  [ "$seed" -le "$CONFIG_BYTES" ] || die \
+    "config seed is ${seed} bytes, partition holds ${CONFIG_BYTES}"
+  cp "$CONFIG_IMG" "$WORK/config.fat"
+  truncate -s "$CONFIG_BYTES" "$WORK/config.fat"
+else
+  truncate -s "$CONFIG_BYTES" "$WORK/config.fat"
+  mkfs.fat --invariant -F 32 -S 512 -n NYACONF "$WORK/config.fat" >/dev/null
+fi
+dd if="$WORK/config.fat" of="$IMAGE" bs=512 seek="$CONFIG_START" \
+  conv=notrunc,sparse status=none
+
 DATA_SECTORS=$((DATA_END - DATA_START + 1))
-truncate -s $((DATA_SECTORS * 512)) "$WORK/data.fat"
-mkfs.fat --invariant -F 32 -S 512 -n NYABULA "$WORK/data.fat" >/dev/null
+DATA_BYTES=$((DATA_SECTORS * 512))
+if [ -n "${DATA_IMG:-}" ] && [ -f "$DATA_IMG" ]; then
+  seed=$(stat -c %s "$DATA_IMG")
+  [ "$seed" -le "$DATA_BYTES" ] || die \
+    "data seed is ${seed} bytes, partition holds ${DATA_BYTES}"
+  cp "$DATA_IMG" "$WORK/data.fat"
+  truncate -s "$DATA_BYTES" "$WORK/data.fat"
+else
+  truncate -s "$DATA_BYTES" "$WORK/data.fat"
+  mkfs.fat --invariant -F 32 -S 512 -n NYABULA "$WORK/data.fat" >/dev/null
+fi
 dd if="$WORK/data.fat" of="$IMAGE" bs=512 seek="$DATA_START" \
   conv=notrunc,sparse status=none
 sgdisk -v "$IMAGE"
