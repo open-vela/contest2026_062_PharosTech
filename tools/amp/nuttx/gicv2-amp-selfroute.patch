@@ -1,0 +1,33 @@
+--- a/arch/arm64/src/common/arm64_gicv2.c
++++ b/arch/arm64/src/common/arm64_gicv2.c
+@@ -96,6 +96,8 @@
+ /* 32x1 bit field per register */
+ 
+ #define GIC_INDEX32(n)             (n >> 5)                  /* 32 fields per word */
++#define GIC_ICDIPR_PRIORITY_AMP    0x80
++#define gic_putreg8(v, a)          (*(volatile uint8_t *)(uintptr_t)(a) = (uint8_t)(v))
+ #define GIC_OFFSET32(n)            (GIC_INDEX32(n) << 2)     /* 32-bit word offset */
+ #define GIC_SHIFT32(n)             ((n) & 31)                /* Shift 1-bit per field */
+ #define GIC_MASK32(n)              (1 << GIC_SHIFT32(n))     /* 1-bit mask */
+@@ -1124,6 +1136,21 @@
+        * Set-Enable Register (ICDISER)
+        */
+ 
++#ifdef CONFIG_ARM64_GICV2_STATIC_SPI
++      /* The peer OS set the distributor up and routed every SPI it does
++       * not know about to itself.  An SPI this OS attaches a handler to is
++       * one it owns, so point it here first.  Priority and target fields
++       * are byte addressable: writing the one byte cannot race with the
++       * peer updating its neighbours in the same word.
++       */
++
++      if (irq >= GIC_IRQ_SPI)
++        {
++          gic_putreg8(GIC_ICDIPR_PRIORITY_AMP, GIC_ICDIPR(irq) + (irq & 3));
++          gic_putreg8(1 << this_cpu(), GIC_ICDIPTR(irq) + (irq & 3));
++        }
++#endif
++
+       regaddr = GIC_ICDISER(irq);
+       putreg32(GIC_ICDISER_INT(irq), regaddr);
+     }
