@@ -190,10 +190,12 @@ static bool nyabula_eye_ws_has_token(const char *value, const char *token)
  ****************************************************************************/
 
 int nyabula_eye_ws_upgrade(int fd, const char *origin, char *scratch,
-                           size_t capacity)
+                           size_t capacity, size_t *body)
 {
   size_t length = 0;
   size_t decoded = 0;
+  size_t extra;
+  char *end = NULL;
   uint64_t deadline = nyabula_eye_ws_now() + NYABULA_WS_IO_MS;
   unsigned char digest[SHA1_DIGEST_LENGTH];
   unsigned char keybytes[32];
@@ -243,40 +245,65 @@ int nyabula_eye_ws_upgrade(int fd, const char *origin, char *scratch,
           return count == 0 ? -ECONNRESET : -errno;
         }
 
-      if (memchr(scratch + length, '\0', count) != NULL)
+      length += count;
+      scratch[length] = '\0';
+      end = strstr(scratch, "\r\n\r\n");
+      if (end != NULL)
+        {
+          break;
+        }
+
+      /* A head is text.  The search above stops at a NUL, so one anywhere
+       * in what has arrived means the head either contains it or never
+       * ends.  Once the end has been found the head is known to be clean,
+       * and what follows it is a body, which may be any bytes at all.
+       */
+
+      if (memchr(scratch + length - count, '\0', count) != NULL)
         {
           return -EPROTO;
         }
-
-      length += count;
-      scratch[length] = '\0';
-      char *end = strstr(scratch, "\r\n\r\n");
-      if (end != NULL)
-        {
-          /* A client must await the upgrade response before sending data. */
-
-          if (end + 4 != scratch + length)
-            {
-              return -EPROTO;
-            }
-
-          break;
-        }
     }
 
-  if (length < 4 || memcmp(scratch + length - 4, "\r\n\r\n", 4) != 0)
+  if (end == NULL)
     {
       return -EPROTO;
     }
 
+  /* One recv can return the head together with the first bytes of a request
+   * body: nothing makes a client send them in separate segments.
+   */
+
+  extra = length - (size_t)(end + 4 - scratch);
+
   /* A well-formed request for anything else is not an error, just not
    * ours.  The head is handed back untouched so the caller can serve it as
-   * plain HTTP on the same port.
+   * plain HTTP on the same port.  Body bytes that came with it are moved up
+   * by one so the head can keep its terminator without losing the first of
+   * them; they are the only copy there is.
    */
 
   if (strncmp(scratch, "GET /nyalink HTTP/1.1\r\n", 23) != 0)
     {
+      if (extra > 0)
+        {
+          memmove(end + 5, end + 4, extra);
+          end[4] = '\0';
+        }
+
+      if (body != NULL)
+        {
+          *body = extra;
+        }
+
       return NYABULA_WS_NOT_UPGRADE;
+    }
+
+  /* A client must await the upgrade response before sending data. */
+
+  if (extra > 0)
+    {
+      return -EPROTO;
     }
 
   /* Replace CRLF with one NUL each, preserving a double-NUL terminator. */

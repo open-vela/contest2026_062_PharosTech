@@ -30,13 +30,19 @@
 /* Returned by nyabula_eye_ws_upgrade() for a complete, well-formed request
  * that is not for the WebSocket endpoint.  The request head is left in the
  * scratch buffer exactly as received, NUL-terminated.
+ *
+ * The read that completed the head may also have taken the start of a
+ * request body off the socket.  Those bytes are not lost: *body is how many
+ * there are, and they sit immediately after the head's terminator, at
+ * scratch + strlen(scratch) + 1.  The rest of the body is still unread on
+ * the socket.  body may be NULL when the caller serves no method with one.
  */
 
 #define NYABULA_WS_NOT_UPGRADE (-ENOTSUP)
 
 uint64_t nyabula_eye_ws_now(void);
 int nyabula_eye_ws_upgrade(int fd, const char *origin, char *scratch,
-                           size_t capacity);
+                           size_t capacity, size_t *body);
 int nyabula_eye_ws_send(int fd, uint8_t opcode, const void *data,
                         size_t length);
 int nyabula_eye_ws_receive(int fd, unsigned char *data, size_t capacity,
