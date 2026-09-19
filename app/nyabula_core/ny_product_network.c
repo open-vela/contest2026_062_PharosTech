@@ -402,6 +402,33 @@ static int ny_net_hw_dhcp(char *ipv4, size_t size)
   if (ds.dnsaddr.s_addr != 0)
     netlib_set_ipv4dnsaddr(&ds.dnsaddr);
   inet_ntop(AF_INET, &ds.ipaddr, ipv4, size);
+
+  /* Say something.  The Wi-Fi firmware answers and filters ARP from the
+   * addresses the driver last gave it, and the driver only passes them on
+   * when it is about to transmit.  The last time it did was at link-up,
+   * before this lease existed, so the firmware is still holding whatever
+   * address the interface had then.  A device with a new lease and nothing
+   * to send would stay that way: requests for its real address never reach
+   * the host, and nobody can open a connection to it until it happens to
+   * transmit on its own.  One datagram to the router's discard port is
+   * enough -- resolving the router is itself a transmission.
+   */
+
+  if (ds.default_router.s_addr != 0)
+    {
+      int sock = socket(AF_INET, SOCK_DGRAM, 0);
+      if (sock >= 0)
+        {
+          struct sockaddr_in router = { 0 };
+          router.sin_family = AF_INET;
+          router.sin_port = htons(9);
+          router.sin_addr = ds.default_router;
+          sendto(sock, "", 1, MSG_DONTWAIT, (struct sockaddr *)&router,
+                 sizeof(router));
+          close(sock);
+        }
+    }
+
   return 0;
 #else
   return ny_net_query_ipv4(ipv4, size);
