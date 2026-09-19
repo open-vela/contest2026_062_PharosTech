@@ -390,6 +390,8 @@ nyabula_eye_json_parse_payload(cJSON *object,
   NYABULA_PAYLOAD_TEXT(next_line);
   NYABULA_PAYLOAD_TEXT(qr_left);
   NYABULA_PAYLOAD_TEXT(qr_right);
+  NYABULA_PAYLOAD_TEXT(qr_left_label);
+  NYABULA_PAYLOAD_TEXT(qr_right_label);
 #undef NYABULA_PAYLOAD_TEXT
 
   bands = nyabula_eye_json_object_item(object, "eq_bands");

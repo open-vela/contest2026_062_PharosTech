@@ -53,16 +53,23 @@
 
 #define SCENE_QR_VERSION_MAX 6
 #define SCENE_QR_QUIET       3
-#define CY                   180.0f
-#define PI                   3.14159265358979323846f
-#define FIBERS               48
-#define ZCOUNT               16
-#define FONT_CACHE_COUNT     32
-#define TEXT_CACHE_COUNT     32
-#define TEXT_CACHE_BYTES     96
-#define HEART_SAMPLES        96
-#define LID_SAMPLES          400
-#define LID_OFFSET           200
+
+/* Text in this scene is plain white rather than the iris tint the other
+ * scenes use.  It is there to be read at a glance by someone holding a
+ * phone up to the device, and the tinted greys are dim on these panels.
+ */
+
+#define SCENE_QR_INK     0xffffff
+#define CY               180.0f
+#define PI               3.14159265358979323846f
+#define FIBERS           48
+#define ZCOUNT           16
+#define FONT_CACHE_COUNT 32
+#define TEXT_CACHE_COUNT 32
+#define TEXT_CACHE_BYTES 96
+#define HEART_SAMPLES    96
+#define LID_SAMPLES      400
+#define LID_OFFSET       200
 
 /* Base-baking: bake the iris glow & disc once (in white/tinted) at init and
  * tint per-frame via multiply. 0x80 keeps shade(1.25f) from saturating. */
@@ -3198,22 +3205,23 @@ static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
   uint8_t symbol[qrcodegen_BUFFER_LEN_FOR_VERSION(SCENE_QR_VERSION_MAX)];
   uint8_t scratch[qrcodegen_BUFFER_LEN_FOR_VERSION(SCENE_QR_VERSION_MAX)];
   bool any = false;
+  const char *label;
   float module;
   float origin;
   float plate;
+  float shift;
   int size;
 
   if (text[0] == '\0')
     {
       /* An eye with no code of its own says what the other one is for. */
 
-      uint32_t color = scene_color(e);
       if (payload->title[0] != '\0')
         {
           text_center(
               r, e,
               scene_font(r, FONT_FAMILY_TITLE, 39, &nyabula_font_title_42),
-              payload->title, -R * 0.13f, color, opacity * 0.98f);
+              payload->title, -R * 0.13f, SCENE_QR_INK, opacity);
         }
 
       /* The detail line is for an address, so it is set in the Latin face:
@@ -3226,7 +3234,7 @@ static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
           text_center(
               r, e,
               scene_font(r, FONT_FAMILY_ENGLISH, 18, &nyabula_font_english_18),
-              payload->detail, R * 0.16f, color, opacity * 0.72f);
+              payload->detail, R * 0.16f, SCENE_QR_INK, opacity * 0.86f);
         }
 
       return;
@@ -3243,8 +3251,15 @@ static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
    * shared between the symbol and its quiet zone.
    */
 
+  /* With a caption the code gives up some of its room and moves down, so
+   * that the words saying what it is sit above it inside the circle.
+   */
+
+  label = e->id == NYABULA_EYE_LEFT ? payload->qr_left_label
+                                    : payload->qr_right_label;
   size = qrcodegen_getSize(symbol);
-  module = floorf(R * 1.36f / (size + 2 * SCENE_QR_QUIET));
+  module = floorf(R * (label[0] != '\0' ? 1.12f : 1.36f) /
+                  (size + 2 * SCENE_QR_QUIET));
   if (module < 2.0f)
     {
       return;
@@ -3252,7 +3267,16 @@ static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
 
   plate = module * (size + 2 * SCENE_QR_QUIET) * 0.5f;
   origin = -module * size * 0.5f;
-  filled_rect(r, e, -plate, -plate, plate, plate, 0xffffff, opacity);
+  shift = label[0] != '\0' ? R * 0.13f : 0.0f;
+  if (label[0] != '\0')
+    {
+      text_center(r, e,
+                  scene_font(r, FONT_FAMILY_TITLE, 19, &nyabula_font_title_20),
+                  label, shift - plate - R * 0.12f, SCENE_QR_INK, opacity);
+    }
+
+  filled_rect(r, e, -plate, shift - plate, plate, shift + plate, 0xffffff,
+              opacity);
 
   lv_vector_path_clear(r->path);
   for (int y = 0; y < size; y++)
@@ -3273,7 +3297,7 @@ static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
               x++;
             }
 
-          top = origin + y * module;
+          top = shift + origin + y * module;
           point = (lv_fpoint_t){ origin + start * module, top };
           lv_vector_path_move_to(r->path, &point);
           point.x = origin + (x + 1) * module;
