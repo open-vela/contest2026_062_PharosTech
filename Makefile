@@ -74,8 +74,11 @@ nboot: nuttx rkbin ## Build N-Boot A/B images (uses pinned boards/.../nboot rele
 web: ## Build the browser control panel
 	cd app/nyabula_web && $(PNPM) install --frozen-lockfile && $(PNPM) build
 
+# MODELS_DIR is cleared on purpose: make exports a variable given on its
+# command line to every recipe, so `make data MODELS_DIR=...` would
+# otherwise seed the models into the configuration image as well.
 config: $(OUT) ## Initial /config image (provisioning, identity, persona)
-	VOLUME_LABEL=NYACONF tools/k7_pack/build_data_img.sh product/config - $(VER) $(OUT)/config.img $(CONFIG_MIB)
+	MODELS_DIR= VOLUME_LABEL=NYACONF tools/k7_pack/build_data_img.sh product/config - $(VER) $(OUT)/config.img $(CONFIG_MIB)
 
 data: config $(OUT) ## Initial /data image (models, web dist, build.json)
 	MODELS_DIR=$(MODELS_DIR) VOLUME_LABEL=NYABULA \
