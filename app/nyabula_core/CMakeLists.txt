@@ -57,6 +57,18 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     if(CONFIG_NYABULA_CORE_NETWORK)
       list(APPEND NYABULA_CORE_SRCS ny_product_network.c)
     endif()
+    if(CONFIG_NYABULA_CORE_OTA)
+      # nbootctl lives where the manifest links it, not beside this directory:
+      # "../nbootctl" is only true in the team repository checkout.
+      set(NYCORE_NBOOTCTL_DIR ${NUTTX_APPS_DIR}/system/nbootctl)
+      list(APPEND NYABULA_CORE_SRCS ny_web_ota.c)
+      # A flat build links every built-in application into one image, so when
+      # the nbootctl command is built in, its bootctrl object already provides
+      # these symbols.  Compiling it again here would define them twice.
+      if(NOT "${CONFIG_SYSTEM_NBOOTCTL}" STREQUAL "y")
+        list(APPEND NYABULA_CORE_SRCS ${NYCORE_NBOOTCTL_DIR}/nbootctl_bootctrl.c)
+      endif()
+    endif()
   endif()
   if(CONFIG_NYABULA_CORE_EYE)
     list(APPEND NYABULA_CORE_DEPENDS nyabula_eye)
@@ -113,6 +125,7 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     INCLUDE_DIRECTORIES
     ${NYABULA_AGENT_INCLUDES}
     ${NYCORE_SQLITE_DIR}
+    ${NYCORE_NBOOTCTL_DIR}
     ${NUTTX_APPS_DIR}/crypto/libsodium/libsodium/src/libsodium/include
     ${NUTTX_APPS_DIR}/interpreters/wamr/wamr/core/iwasm/include
     DEPENDS

@@ -269,6 +269,21 @@ config NYABULA_CORE_PRODUCT
 		Enable Core-owned product state and services shared by WebUI,
 		plugins and the AI Agent. No state is owned by a browser session.
 
+config NYABULA_CORE_OTA
+	bool "Firmware update from the control panel"
+	default n
+	depends on NYABULA_CORE_PRODUCT && NYABULA_CORE_WEB
+	depends on BOARDCTL_RESET && !DISABLE_MOUNTPOINT
+	select CRYPTO
+	---help---
+		Accept a NuttX image over HTTP (POST /ota/upload), stage it into
+		the inactive N-Boot A/B slot and report slot state in
+		update.status.  This drives the KICKPI-K7 bootctrl record through
+		the nbootctl sources: the partition layout and the handoff
+		register are that board's, so enable it only there.  When
+		SYSTEM_NBOOTCTL is built in, its object is reused; otherwise the
+		bootctrl source is compiled into Core.
+
 config NYABULA_CORE_MEDIA
 	bool "Native local media playback"
 	default n

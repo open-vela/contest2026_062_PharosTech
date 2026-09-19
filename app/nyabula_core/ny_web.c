@@ -613,20 +613,26 @@ static int nyabula_eye_ws_client(int fd, const char *token, const char *origin)
   uint64_t started = nyabula_eye_ws_now();
   uint64_t last_input = started;
   uint64_t next_state = started;
+  size_t body = 0;
   int ret;
   if (s == NULL)
     {
       return -ENOMEM;
     }
 
-  ret = nyabula_eye_ws_upgrade(fd, origin, s->message, sizeof(s->message));
+  ret = nyabula_eye_ws_upgrade(fd, origin, s->message, sizeof(s->message),
+                               &body);
   if (ret == NYABULA_WS_NOT_UPGRADE)
     {
       /* An ordinary page request.  It is served and the connection ends; a
        * peer that went away half way through is not worth a log line.
+       *
+       * Whatever part of a request body arrived with the head is in the
+       * same buffer, just past the head's terminator.
        */
 
-      ny_web_http_serve(fd, s->message);
+      ny_web_http_serve(fd, s->message, s->message + strlen(s->message) + 1,
+                        body, token);
       free(s);
       return -ECONNRESET;
     }

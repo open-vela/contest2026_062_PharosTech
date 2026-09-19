@@ -90,6 +90,22 @@ endif
 ifeq ($(CONFIG_NYABULA_CORE_WEATHER),y)
 CSRCS += ny_product_weather.c
 endif
+ifeq ($(CONFIG_NYABULA_CORE_OTA),y)
+# nbootctl lives where the manifest links it, not beside this directory:
+# "../nbootctl" is only true in the team repository checkout.
+NYCORE_NBOOTCTL_DIR = $(APPDIR)/system/nbootctl
+CSRCS += ny_web_ota.c
+CFLAGS += ${INCDIR_PREFIX}$(NYCORE_NBOOTCTL_DIR)
+# A flat build links every built-in application into one image, so when the
+# nbootctl command is built in its bootctrl object already provides these
+# symbols.  Compiling it a second time here would put two definitions of
+# every nbootctl_* function into the same link.
+ifneq ($(CONFIG_SYSTEM_NBOOTCTL),y)
+CSRCS += nbootctl_bootctrl.c
+VPATH += :$(NYCORE_NBOOTCTL_DIR)
+DEPPATH += --dep-path $(NYCORE_NBOOTCTL_DIR)
+endif
+endif
 endif
 
 ifeq ($(CONFIG_NYABULA_CORE_HTTP),y)

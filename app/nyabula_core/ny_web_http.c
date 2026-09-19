@@ -27,9 +27,14 @@
  * This is a file server and nothing more.  It reads files under one root,
  * answers GET and HEAD, and closes the connection.  Nothing here acts on
  * the device; everything that does goes through the authenticated socket.
+ *
+ * The one exception is handed on before any of that: a firmware image is
+ * too large for a socket that carries 32 KiB text messages, so requests
+ * under /ota/ go to ny_web_ota.c, which checks the same credentials itself.
  */
 
 #include "ny_web.h"
+#include "ny_web_ota.h"
 #include "ny_websocket.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -67,13 +72,10 @@ struct ny_http_type_s
  * Private Function Prototypes
  ****************************************************************************/
 
-static int ny_http_write(int fd, const void *data, size_t length);
 static int ny_http_status(int fd, int code, const char *reason,
                           const char *extra);
 static const char *ny_http_type(const char *path);
 static bool ny_http_path_ok(const char *path);
-static const char *ny_http_header(const char *head, const char *name,
-                                  size_t *length);
 static bool ny_http_accepts_gzip(const char *head);
 static bool ny_http_is_probe(const char *path);
 
@@ -110,64 +112,6 @@ static const char *const g_http_probes[] = {
  ****************************************************************************/
 
 /****************************************************************************
- * Name: ny_http_write
- *
- * Description:
- *   Send a whole buffer, giving up if the peer stops reading.  A phone that
- *   walks out of range mid-transfer must not hold one of the few client
- *   slots for ever.
- *
- ****************************************************************************/
-
-static int ny_http_write(int fd, const void *data, size_t length)
-{
-  const char *cursor = data;
-  uint64_t deadline = nyabula_eye_ws_now() + NY_HTTP_SEND_MS;
-  while (length > 0)
-    {
-      uint64_t now = nyabula_eye_ws_now();
-      struct pollfd pfd = { fd, POLLOUT, 0 };
-      if (now >= deadline)
-        {
-          return -ETIMEDOUT;
-        }
-
-      int ready = poll(&pfd, 1, (int)(deadline - now));
-      if (ready < 0 && errno == EINTR)
-        {
-          continue;
-        }
-
-      if (ready <= 0)
-        {
-          return ready == 0 ? -ETIMEDOUT : -errno;
-        }
-
-      ssize_t count = send(fd, cursor, length, MSG_DONTWAIT);
-      if (count < 0 && (errno == EAGAIN || errno == EINTR))
-        {
-          continue;
-        }
-
-      if (count <= 0)
-        {
-          return count == 0 ? -ECONNRESET : -errno;
-        }
-
-      cursor += count;
-      length -= count;
-
-      /* Progress buys more time: the limit is on a stalled peer, not on a
-       * large file over a slow link.
-       */
-
-      deadline = nyabula_eye_ws_now() + NY_HTTP_SEND_MS;
-    }
-
-  return 0;
-}
-
-/****************************************************************************
  * Name: ny_http_status
  ****************************************************************************/
 
@@ -187,7 +131,7 @@ static int ny_http_status(int fd, int code, const char *reason,
       return -ENOBUFS;
     }
 
-  return ny_http_write(fd, buffer, count);
+  return ny_web_http_write(fd, buffer, count);
 }
 
 /****************************************************************************
@@ -263,50 +207,13 @@ static bool ny_http_path_ok(const char *path)
 }
 
 /****************************************************************************
- * Name: ny_http_header
- *
- * Description:
- *   Find a header in a raw request head.  Returns a pointer to its value
- *   and the value's length, or NULL.
- *
- ****************************************************************************/
-
-static const char *ny_http_header(const char *head, const char *name,
-                                  size_t *length)
-{
-  size_t name_length = strlen(name);
-  const char *line = strstr(head, "\r\n");
-  while (line != NULL && line[2] != '\r' && line[2] != '\0')
-    {
-      line += 2;
-      if (strncasecmp(line, name, name_length) == 0 &&
-          line[name_length] == ':')
-        {
-          const char *value = line + name_length + 1;
-          const char *end = strstr(value, "\r\n");
-          while (*value == ' ' || *value == '\t')
-            {
-              value++;
-            }
-
-          *length = end != NULL ? (size_t)(end - value) : strlen(value);
-          return value;
-        }
-
-      line = strstr(line, "\r\n");
-    }
-
-  return NULL;
-}
-
-/****************************************************************************
  * Name: ny_http_accepts_gzip
  ****************************************************************************/
 
 static bool ny_http_accepts_gzip(const char *head)
 {
   size_t length;
-  const char *value = ny_http_header(head, "Accept-Encoding", &length);
+  const char *value = ny_web_http_header(head, "Accept-Encoding", &length);
   for (size_t i = 0; value != NULL && i + 4 <= length; i++)
     {
       if (strncasecmp(value + i, "gzip", 4) == 0)
@@ -340,10 +247,106 @@ static bool ny_http_is_probe(const char *path)
  ****************************************************************************/
 
 /****************************************************************************
+ * Name: ny_web_http_write
+ *
+ * Description:
+ *   Send a whole buffer, giving up if the peer stops reading.  A phone that
+ *   walks out of range mid-transfer must not hold one of the few client
+ *   slots for ever.
+ *
+ ****************************************************************************/
+
+int ny_web_http_write(int fd, const void *data, size_t length)
+{
+  const char *cursor = data;
+  uint64_t deadline = nyabula_eye_ws_now() + NY_HTTP_SEND_MS;
+  while (length > 0)
+    {
+      uint64_t now = nyabula_eye_ws_now();
+      struct pollfd pfd = { fd, POLLOUT, 0 };
+      if (now >= deadline)
+        {
+          return -ETIMEDOUT;
+        }
+
+      int ready = poll(&pfd, 1, (int)(deadline - now));
+      if (ready < 0 && errno == EINTR)
+        {
+          continue;
+        }
+
+      if (ready <= 0)
+        {
+          return ready == 0 ? -ETIMEDOUT : -errno;
+        }
+
+      ssize_t count = send(fd, cursor, length, MSG_DONTWAIT);
+      if (count < 0 && (errno == EAGAIN || errno == EINTR))
+        {
+          continue;
+        }
+
+      if (count <= 0)
+        {
+          return count == 0 ? -ECONNRESET : -errno;
+        }
+
+      cursor += count;
+      length -= count;
+
+      /* Progress buys more time: the limit is on a stalled peer, not on a
+       * large file over a slow link.
+       */
+
+      deadline = nyabula_eye_ws_now() + NY_HTTP_SEND_MS;
+    }
+
+  return 0;
+}
+
+/****************************************************************************
+ * Name: ny_web_http_header
+ *
+ * Description:
+ *   Find a header in a raw request head.  Returns a pointer to its value
+ *   and the value's length, or NULL.
+ *
+ ****************************************************************************/
+
+const char *ny_web_http_header(const char *head, const char *name,
+                               size_t *length)
+{
+  size_t name_length = strlen(name);
+  const char *line = strstr(head, "\r\n");
+  while (line != NULL && line[2] != '\r' && line[2] != '\0')
+    {
+      line += 2;
+      if (strncasecmp(line, name, name_length) == 0 &&
+          line[name_length] == ':')
+        {
+          const char *value = line + name_length + 1;
+          const char *end = strstr(value, "\r\n");
+          while (*value == ' ' || *value == '\t')
+            {
+              value++;
+            }
+
+          *length = end != NULL ? (size_t)(end - value) : strlen(value);
+          return value;
+        }
+
+      line = strstr(line, "\r\n");
+    }
+
+  return NULL;
+}
+
+/****************************************************************************
  * Name: ny_web_http_serve
  ****************************************************************************/
 
-int ny_web_http_serve(int fd, const char *head)
+int ny_web_http_serve(int fd, const char *head, const void *body,
+                      size_t body_length, const char *pair_token)
 {
   char target[NY_HTTP_PATH_MAX];
   char path[sizeof(NY_HTTP_ROOT) + NY_HTTP_PATH_MAX + 16];
@@ -355,6 +358,26 @@ int ny_web_http_serve(int fd, const char *head)
   bool gzip = false;
   int file;
   int ret;
+
+#ifdef CONFIG_NYABULA_CORE_OTA
+  /* The firmware upload is the one request here that takes a body and acts
+   * on the device, so it is decided before anything below can treat its
+   * path as a file name or as a route of the page.
+   */
+
+  if (ny_web_ota_claims(head))
+    {
+      return ny_web_ota_serve(fd, head, body, body_length, pair_token);
+    }
+#else
+  /* Nothing else reads a body: what came with the head is dropped, and the
+   * rest goes with the connection.
+   */
+
+  (void)body;
+  (void)body_length;
+  (void)pair_token;
+#endif
 
   if (strncmp(head, "GET ", 4) == 0)
     {
@@ -486,7 +509,7 @@ int ny_web_http_serve(int fd, const char *head)
       return -ENOBUFS;
     }
 
-  ret = ny_http_write(fd, header, ret);
+  ret = ny_web_http_write(fd, header, ret);
   if (ret == 0 && !head_only)
     {
       char *chunk = malloc(NY_HTTP_CHUNK);
@@ -509,7 +532,7 @@ int ny_web_http_serve(int fd, const char *head)
               break;
             }
 
-          ret = ny_http_write(fd, chunk, count);
+          ret = ny_web_http_write(fd, chunk, count);
         }
 
       free(chunk);

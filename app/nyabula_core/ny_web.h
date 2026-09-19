@@ -36,9 +36,27 @@ int ny_web_product_token(char *out, size_t size);
 
 int ny_web_panel_count(void);
 
-/* Answer one plain HTTP request from the static site root and return.  head
- * is the request head as received; the connection is not kept alive.
+/* Answer one plain HTTP request and return.  head is the request head as
+ * received; the connection is not kept alive.
+ *
+ * body points at the body_length bytes of a request body that were read
+ * off the socket together with the head; the remainder is still unread.
+ * pair_token is the credential of the running service, which the one
+ * request that acts on the device (the firmware upload) is checked against.
  */
 
-int ny_web_http_serve(int fd, const char *head);
+int ny_web_http_serve(int fd, const char *head, const void *body,
+                      size_t body_length, const char *pair_token);
+
+/* Send a whole buffer, giving up when the peer stops reading. */
+
+int ny_web_http_write(int fd, const void *data, size_t length);
+
+/* Find a header in a raw request head.  Returns a pointer to its value and
+ * sets *length to the value's length, or returns NULL.  The value is not
+ * NUL-terminated.
+ */
+
+const char *ny_web_http_header(const char *head, const char *name,
+                               size_t *length);
 #endif
