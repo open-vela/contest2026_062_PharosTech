@@ -233,6 +233,8 @@ struct nyabula_eye_scene_payload_s
   char next_line[NYABULA_EYE_TEXT_MEDIUM];
   char qr_left[NYABULA_EYE_TEXT_QR];
   char qr_right[NYABULA_EYE_TEXT_QR];
+  char qr_left_label[NYABULA_EYE_TEXT_MEDIUM];
+  char qr_right_label[NYABULA_EYE_TEXT_MEDIUM];
 };
 
 struct nyabula_eye_scene_request_s
