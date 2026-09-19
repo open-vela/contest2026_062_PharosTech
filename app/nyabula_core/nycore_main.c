@@ -38,6 +38,12 @@
 #include "ny_runtime.h"
 #include "ny_scheduler.h"
 #include "ny_wasm.h"
+#ifdef CONFIG_NYABULA_CORE_WEB
+#include "ny_web.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_PRODUCT
+#include "ny_product.h"
+#endif
 #ifdef CONFIG_NYABULA_CORE_EYE
 #include <nyabula_eye_service.h>
 #endif
@@ -89,6 +95,12 @@ static void nycore_usage(void)
                   "  nycore packages\n"
                   "  nycore isolation\n"
                   "  nycore list\n");
+#ifdef CONFIG_NYABULA_CORE_PRODUCT
+  fprintf(stderr, "  nycore product <topic> <request.json>\n");
+#endif
+#ifdef CONFIG_NYABULA_CORE_WEB
+  fprintf(stderr, "  nycore web-stop\n");
+#endif
 #ifdef CONFIG_NYABULA_CORE_EYE
   fprintf(stderr, "  nycore eye <command.json>\n"
                   "  nycore eye-status\n");
@@ -277,8 +289,22 @@ int main(int argc, char *argv[])
       return EXIT_FAILURE;
     }
 
+#ifdef CONFIG_NYABULA_CORE_PRODUCT
+  if (strcmp(argv[1], "product") == 0 && argc == 4)
+    {
+      ret = ny_product_cli(argv[2], argv[3]);
+    }
+  else
+#endif
+#ifdef CONFIG_NYABULA_CORE_WEB
+      if (strcmp(argv[1], "web-stop") == 0 && argc == 2)
+    {
+      ret = ny_web_stop();
+    }
+  else
+#endif
 #ifdef CONFIG_NYABULA_CORE_EYE
-  if (strcmp(argv[1], "eye-status") == 0 && argc == 2)
+      if (strcmp(argv[1], "eye-status") == 0 && argc == 2)
     {
       ret = nycore_eye_status();
     }
