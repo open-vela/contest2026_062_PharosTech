@@ -126,6 +126,34 @@ static int ny_product_system(const struct ny_product_caller_s *caller,
           cJSON_Delete(root);
           return -ENOMEM;
         }
+
+      /* The board has no battery and no gauge: it runs for as long as it is
+       * plugged in, which is what a panel should say instead of an empty
+       * charge level.
+       */
+
+      cJSON *power = cJSON_AddObjectToObject(root, "power");
+      if (power == NULL ||
+          !cJSON_AddStringToObject(power, "source", "external"))
+        {
+          cJSON_Delete(root);
+          return -ENOMEM;
+        }
+
+#ifdef CONFIG_NYABULA_CORE_NETWORK
+      char ssid[33];
+      int rssi = 0;
+      if (ny_product_network_link(ssid, sizeof(ssid), &rssi) == 0)
+        {
+          cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
+          if (wifi == NULL || !cJSON_AddStringToObject(wifi, "ssid", ssid) ||
+              (rssi != 0 && !cJSON_AddNumberToObject(wifi, "rssi", rssi)))
+            {
+              cJSON_Delete(root);
+              return -ENOMEM;
+            }
+        }
+#endif
     }
 
   *result = root;

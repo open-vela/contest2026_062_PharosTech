@@ -24,6 +24,7 @@
 #include <netutils/cJSON.h>
 #include <nuttx/config.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 enum ny_product_role_e
@@ -92,6 +93,7 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
                                const char *topic, const cJSON *data,
                                cJSON **result);
 int ny_product_network_tick(void);
+int ny_product_network_link(char *ssid, size_t size, int *rssi);
 void ny_product_network_shutdown(void);
 #endif
 int ny_product_eyes_request(const struct ny_product_caller_s *caller,
