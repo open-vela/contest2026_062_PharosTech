@@ -71,8 +71,14 @@ nboot: nuttx rkbin ## Build N-Boot A/B images (uses pinned boards/.../nboot rele
 	tools/k7_pack/build_nboot_ab.sh $(OUT)/nuttx.bin $(NBOOT_DIR) $(RKBIN) $(OUT)/nboot emmc
 
 # ---------------------------------------------------------------- data partition
-web: ## Build the browser control panel
-	cd app/nyabula_web && $(PNPM) install --frozen-lockfile && $(PNPM) build
+# The panel the device serves is its own build: one script and one style
+# sheet under short names, relative URLs and hash routing, each text asset
+# with a gzip twin.  The general build is a hundred-odd files and assumes a
+# server that rewrites routes, neither of which suits a desk pet.
+web: ## Build the control panel the device serves (needs node + pnpm)
+	cd app/nyabula_web && $(PNPM) install --frozen-lockfile
+	cd app/nyabula_web && $(PNPM) --filter "@nyabula/app..." build
+	cd app/nyabula_web && $(PNPM) --filter @nyabula/app build:device
 
 # MODELS_DIR is cleared on purpose: make exports a variable given on its
 # command line to every recipe, so `make data MODELS_DIR=...` would
