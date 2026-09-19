@@ -10,6 +10,9 @@ import NetworkSection from './sections/NetworkSection.vue';
 import AccessSection from './sections/AccessSection.vue';
 import CloudSection from './sections/CloudSection.vue';
 import PermissionsSection from './sections/PermissionsSection.vue';
+import StorageSection from './sections/StorageSection.vue';
+import UpdateSection from './sections/UpdateSection.vue';
+import LogsSection from './sections/LogsSection.vue';
 import ReservedSection from './sections/ReservedSection.vue';
 import AboutSection from './sections/AboutSection.vue';
 
@@ -29,9 +32,9 @@ const BUILTIN: Record<string, Component> = {
   ...(__NYA_DEVICE__ ? { access: AccessSection } : {}),
   cloud: CloudSection,
   permissions: PermissionsSection,
-  storage: ReservedSection,
-  update: ReservedSection,
-  logs: ReservedSection,
+  storage: StorageSection,
+  update: UpdateSection,
+  logs: LogsSection,
   about: AboutSection,
 };
 
