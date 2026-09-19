@@ -98,6 +98,16 @@
 #define NY_NET_EYE_RENEW_S   5
 #define NY_NET_EYE_ONLINE_MS 60000
 
+/* What each code is for, shown above it.  The two on the access point are
+ * numbered because they have to be used in that order.  Any text added
+ * here must also be listed in app/nyabula/tools/extra_glyphs.txt: the eye
+ * fonts are subsets, built from the characters the generator is shown.
+ */
+
+#define NY_NET_EYE_STEP_JOIN  "1 扫码连接热点"
+#define NY_NET_EYE_STEP_SETUP "2 扫码开始设置"
+#define NY_NET_EYE_OPEN_PANEL "扫码打开控制面板"
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -945,8 +955,8 @@ static int ny_net_eye_submit(const char *action, cJSON *params,
 }
 
 /* Build the payload for the pairing scene: the address of the setup page on
- * one eye, the access point's own join code on the other.  A phone scans
- * the second to get onto the device's network and the first to open the
+ * right eye, the access point's own join code on the left.  A phone scans
+ * the left to get onto the device's network and the right to open the
  * page, and the page is given the token so that holding the device is all
  * the owner has to prove.
  */
@@ -987,13 +997,18 @@ static cJSON *ny_net_eye_pairing(const char *ssid, const char *psk)
 
   if (snprintf(text, sizeof(text), "WIFI:T:WPA;S:%s;P:%s;;", name, pass) <
       (int)sizeof(text))
-    cJSON_AddStringToObject(payload, "qr_right", text);
+    {
+      cJSON_AddStringToObject(payload, "qr_left", text);
+      cJSON_AddStringToObject(payload, "qr_left_label", NY_NET_EYE_STEP_JOIN);
+    }
   memset(pass, 0, sizeof(pass));
   if (ny_web_product_token(token, sizeof(token)) == 0)
     {
       snprintf(text, sizeof(text),
                "http://" NY_NET_AP_ADDR "/#/provision?token=%s", token);
-      cJSON_AddStringToObject(payload, "qr_left", text);
+      cJSON_AddStringToObject(payload, "qr_right", text);
+      cJSON_AddStringToObject(payload, "qr_right_label",
+                              NY_NET_EYE_STEP_SETUP);
       memset(token, 0, sizeof(token));
     }
   memset(text, 0, sizeof(text));
@@ -1118,14 +1133,16 @@ static void ny_net_eye_sync(void)
         if (ny_web_product_token(token, sizeof(token)) == 0 &&
             snprintf(text, sizeof(text), "http://%s/#/?token=%s", ipv4,
                      token) < (int)sizeof(text))
-          cJSON_AddStringToObject(payload, "qr_left", text);
+          cJSON_AddStringToObject(payload, "qr_right", text);
         else if (snprintf(text, sizeof(text), "http://%s/", ipv4) <
                  (int)sizeof(text))
-          cJSON_AddStringToObject(payload, "qr_left", text);
+          cJSON_AddStringToObject(payload, "qr_right", text);
         memset(token, 0, sizeof(token));
         memset(text, 0, sizeof(text));
       }
 
+      cJSON_AddStringToObject(payload, "qr_right_label",
+                              NY_NET_EYE_OPEN_PANEL);
       cJSON_AddStringToObject(payload, "title", "网络已连接");
       cJSON_AddStringToObject(payload, "detail", ipv4);
       cJSON_AddStringToObject(params, "scene", "qr");
