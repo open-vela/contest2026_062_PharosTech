@@ -1,20 +1,20 @@
 <script setup lang="ts">
-/* Pairing feature. Shows how pairing works and lets the user put the pairing
- * code on the device eye (full style) or hide it. The code itself is only
- * ever rendered on the device screen, never here. Status comes from the
- * session (role / state). */
+/* Pairing feature: an explanation plus the live connection status. The device
+ * decides by itself when to put the pairing QR on its eyes (scene `qr`); the
+ * panel never sees or relays the access token, so there is nothing to push
+ * from here. The page only reflects that the QR is up. */
 import { computed } from 'vue';
-import { NkActionBar, NkBanner, NkKeyValue, NkListSection, NkRow, UiIcon } from '@nyabula/ui';
+import { NkBanner, NkKeyValue, NkListSection, NkRow, UiIcon } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
 import { useEyeStore } from '../../../stores/eye';
 import { useSessionStore } from '../../../stores/session';
 import type { FormFactor } from '../../../composables/useFormFactor';
 
-const props = defineProps<{ type: string; ff: FormFactor }>();
+defineProps<{ type: string; ff: FormFactor }>();
 const eye = useEyeStore();
 const session = useSessionStore();
 
-const showing = computed(() => eye.activeScene === props.type);
+const showing = computed(() => eye.activeScene === 'qr');
 const ROLE_LABEL: Record<string, string> = { owner: '主人', family: '家人', guest: '访客' };
 const STATE_LABEL: Record<string, string> = {
   idle: '未连接',
@@ -27,7 +27,7 @@ const STATE_LABEL: Record<string, string> = {
 const stateLabel = computed(() => STATE_LABEL[session.state] ?? session.state);
 const roleLabel = computed(() => (session.role ? ROLE_LABEL[session.role] ?? session.role : '未配对'));
 const needsPairing = computed(() => session.state === 'pairing-required');
-const subtitle = computed(() => (showing.value ? '配对码正在眼睛上显示' : `${stateLabel.value} · ${roleLabel.value}`));
+const subtitle = computed(() => (showing.value ? '设备正在眼睛上显示二维码' : `${stateLabel.value} · ${roleLabel.value}`));
 
 const kv = computed(() => [
   { key: '连接状态', value: stateLabel.value, tone: session.connected ? ('ok' as const) : needsPairing.value ? ('warn' as const) : ('default' as const) },
@@ -36,17 +36,10 @@ const kv = computed(() => [
 ]);
 
 const STEPS = [
-  { icon: 'qr_code', title: '在眼睛上显示配对码', sub: '点击下方按钮，设备屏幕会显示一组配对码' },
-  { icon: 'smartphone', title: '在新设备输入配对码', sub: '用手机或电脑打开 Nyabula，输入屏幕上的配对码' },
-  { icon: 'check_circle', title: '完成配对', sub: '主人可以为新成员分配家人或访客身份' },
+  { icon: 'qr_code', title: '设备自己显示二维码', sub: '首次开机或需要接入新成员时，猫眼会显示二维码，无需在这里操作' },
+  { icon: 'smartphone', title: '用新设备扫码', sub: '手机或平板扫描猫眼上的二维码，即可打开并接入 Nyabula' },
+  { icon: 'check_circle', title: '完成接入', sub: '主人可以在「访问与成员」里为新成员分配家人或访客身份' },
 ];
-
-function show(): void {
-  void eye.setScene(props.type, 'full');
-}
-function hide(): void {
-  void eye.setScene(null);
-}
 </script>
 
 <template>
@@ -56,20 +49,10 @@ function hide(): void {
       <section class="card center">
         <div class="stage" :class="{ on: showing }">
           <UiIcon name="qr_code" :size="64" />
-          <div class="stage-text">{{ showing ? '配对码显示中' : '配对码只在设备屏幕显示' }}</div>
-          <div class="muted small">出于安全考虑，此处不会显示配对码，请查看设备眼睛。</div>
+          <div class="stage-text">{{ showing ? '二维码显示中，请查看猫眼' : '二维码只在设备屏幕显示' }}</div>
+          <div class="muted small">二维码里含访问凭据，出于安全考虑由设备自己生成和显示，控制台不经手、也无法代为显示。</div>
         </div>
-        <NkBanner v-if="needsPairing" tone="warn" text="当前连接需要配对，请在设备上显示配对码后输入。" />
-        <NkActionBar
-          :primary-text="showing ? '已在眼睛上显示' : '在眼睛上显示配对码'"
-          primary-icon="visibility"
-          secondary-text="隐藏"
-          secondary-icon="close"
-          :disabled="showing || !session.canControl"
-          @primary="show"
-          @secondary="hide"
-        />
-        <p v-if="!session.canControl" class="muted small">只有主人或家人可以显示配对码。</p>
+        <NkBanner v-if="needsPairing" tone="warn" text="当前连接需要配对，请扫描猫眼上的二维码。" />
       </section>
       <section class="card">
         <NkKeyValue :items="kv" />

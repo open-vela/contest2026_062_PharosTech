@@ -5,9 +5,12 @@ import { NkActionBar, NkChipSelect, NkDial, NkProgressRing, MdButton, MdTextFiel
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
 import { useCoreTimer } from '../../../composables/useCoreTimer';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import EyeShowButton from './EyeShowButton.vue';
 
 defineProps<{type:string;ff:FormFactor}>();
 const timer=useCoreTimer('countdown');
+const scene=timer.scene;
+const onEyes=computed(()=>scene.shown.value||scene.held.value);
 const seconds=ref(300);
 const label=ref('倒计时');
 const PRESETS=[1,3,5,10,25].map(m=>({label:`${m} 分钟`,seconds:m*60}));
@@ -52,6 +55,8 @@ async function reset(){await timer.action('delete');}
           @secondary="reset"
         />
         <MdButton v-if="finished || timer.waitingClock.value" variant="outlined" :disabled="timer.core.busy.value" @click="reset">清除此计时器</MdButton>
+        <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
+        <p class="muted hint">{{ onEyes ? '猫眼上的读数每秒同步一次；离开「功能」页后停止同步。' : armed ? '计时由设备运行，可随时显示到猫眼。' : '开始计时后可显示到猫眼。' }}</p>
       </section>
       <section class="card">
         <h3 class="section-title">设定时长</h3>
@@ -73,5 +78,6 @@ async function reset(){await timer.action('delete');}
 }
 .ring-card { align-items: center; }
 .ring-inner { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.hint { font-size: 12.5px; text-align: center; margin: 0; }
 .big { font-size: 44px; font-weight: 700; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
 </style>

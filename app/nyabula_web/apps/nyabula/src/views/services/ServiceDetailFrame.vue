@@ -11,7 +11,7 @@ import type { FormFactor } from '../../composables/useFormFactor';
 import type { useServiceDetail } from './serviceDetail.logic';
 
 const props = defineProps<{ detail: ReturnType<typeof useServiceDetail>; type: string; ff: FormFactor }>();
-const { def, component } = props.detail;
+const { def, component, planned } = props.detail;
 const header = shallowRef<(() => VNode) | null>(null);
 provide(featureHeaderKey, (render) => {
   header.value = render;
@@ -21,7 +21,9 @@ provide(featureHeaderKey, (render) => {
 
 <template>
   <div class="frame">
-    <template v-if="def">
+    <EmptyState v-if="def && planned" :icon="def.icon" :title="def.label + ' · 规划中'"
+      :hint="(def.needs ?? '等待硬件与驱动接入') + '。接入前这里不会向设备发送任何内容。'" action-text="返回功能列表" @action="detail.back()" />
+    <template v-else-if="def">
       <component :is="header" v-if="header" />
       <NkHeader v-else :icon="def.icon" :title="def.label" :subtitle="def.blurb" />
       <Suspense>

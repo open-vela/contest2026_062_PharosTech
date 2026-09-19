@@ -5,9 +5,13 @@ import { MdButton, NkListSection, NkSliderRow, NkStatTile, NkToggleRow } from '@
 import { useNativeMedia } from '../../../composables/useNativeMedia';
 import { useDeviceRuntime } from '../../../composables/useDeviceRuntime';
 import type { FormFactor } from '../../../composables/useFormFactor';
-defineProps<{ type: string; ff: FormFactor }>();
+import { useAudioScene } from './sceneLinks';
+import EyeShowButton from './EyeShowButton.vue';
+const props = defineProps<{ type: string; ff: FormFactor }>();
 const media = useNativeMedia();
 const device = useDeviceRuntime();
+const scene = useAudioScene(props.type, media);
+const onEyes = computed(() => scene.shown.value || scene.held.value);
 const selected = ref('');
 const volume = ref(40);
 const muted = ref(false);
@@ -46,6 +50,7 @@ async function setMuted(value: boolean): Promise<void> { muted.value = value; aw
           <p v-else class="muted">空闲时保存下次播放音量；播放中应用到设备。设置由 Core 保存。</p>
           <p v-if="media.state && !media.state.settingsSaved" class="error">设备可能已应用，但设置保存失败，请重新读取状态。</p>
           <MdButton variant="text" :disabled="media.busy || !media.available" @click="media.refresh()">重新读取音频状态</MdButton>
+          <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
         </NkListSection>
       </section>
     </div>

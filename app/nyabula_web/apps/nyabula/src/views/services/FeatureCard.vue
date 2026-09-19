@@ -1,7 +1,9 @@
 <script setup lang="ts">
 /* Medium feature card: header (icon, name, live status, open) + the
  * feature's own compact control (<Name>Mini.vue) so common actions happen
- * right here; the full page is one tap away. */
+ * right here; the full page is one tap away. A planned feature is drawn
+ * dimmed with a tag and what it waits for; its control is never mounted, so
+ * it cannot reach the device. */
 import { defineAsyncComponent, type Component } from 'vue';
 import { Skeleton, UiIcon } from '@nyabula/ui';
 import type { FeatureDef } from './features/contract';
@@ -16,26 +18,29 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ (e: 'open'): void }>();
 
-const Mini: Component | null = props.def.mini
+const planned = props.def.stage === 'planned';
+const Mini: Component | null = props.def.mini && !planned
   ? defineAsyncComponent({ loader: props.def.mini, loadingComponent: Skeleton, delay: 120 })
   : null;
 </script>
 
 <template>
-  <section class="fc" :class="{ active }">
+  <section class="fc" :class="{ active, planned }" :aria-disabled="planned || undefined">
     <header class="fc-head">
-      <button class="fc-id" @click="emit('open')">
+      <button class="fc-id" :disabled="planned" @click="emit('open')">
         <span class="fc-icon"><UiIcon :name="def.icon" :size="20" /></span>
         <span class="fc-text">
           <span class="fc-title">{{ def.label }}</span>
           <span class="fc-sub" :class="{ live: active }">{{ sub }}</span>
         </span>
       </button>
-      <span v-if="active" class="fc-live"><span class="dot" />显示中</span>
-      <button class="fc-more" aria-label="详情" title="打开详情" @click="emit('open')"><UiIcon name="fullscreen" :size="18" /></button>
+      <span v-if="planned" class="fc-tag">规划中</span>
+      <span v-else-if="active" class="fc-live"><span class="dot" />显示中</span>
+      <button v-if="!planned" class="fc-more" aria-label="详情" title="打开详情" @click="emit('open')"><UiIcon name="fullscreen" :size="18" /></button>
     </header>
     <div class="fc-body">
-      <component :is="Mini" v-if="Mini" :type="def.type" :ff="ff" :active="active" :payload="payload" />
+      <p v-if="planned" class="fc-needs">{{ def.needs ?? '等待硬件与驱动接入' }}</p>
+      <component :is="Mini" v-else-if="Mini" :type="def.type" :ff="ff" :active="active" :payload="payload" />
       <button v-else class="fc-fallback" @click="emit('open')">打开设置 <UiIcon name="chevron_right" :size="16" /></button>
     </div>
   </section>
@@ -54,6 +59,16 @@ const Mini: Component | null = props.def.mini
   min-height: 150px;
 }
 .fc.active { border-color: rgba(var(--md-primary-rgb), 0.45); }
+/* Planned: present but clearly not usable. */
+.fc.planned { min-height: 0; background: transparent; border: 1px dashed var(--md-outline-variant); }
+.fc.planned .fc-head, .fc.planned .fc-body { opacity: 0.58; }
+.fc.planned .fc-id { cursor: default; }
+.fc.planned .fc-body { min-height: 0; }
+.fc-tag {
+  flex: none; font: 600 11px var(--font-body); padding: 2px 8px; border-radius: 999px;
+  background: var(--md-surface-container-highest); color: var(--md-on-surface-variant);
+}
+.fc-needs { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--md-on-surface-variant); }
 .fc-head { display: flex; align-items: center; gap: 8px; }
 .fc-id {
   flex: 1;

@@ -2,16 +2,16 @@
 /* Network mini: SSID + signal bars + dBm + "show". Reads sys.info like
  * NetworkFeature and pushes { ssid, rssi, connected }. */
 import { computed } from 'vue';
-import { MdButton, UiIcon } from '@nyabula/ui';
-import { useEyeStore } from '../../../stores/eye';
+import { UiIcon } from '@nyabula/ui';
 import { useSessionStore } from '../../../stores/session';
 import { useDeviceRuntime } from '../../../composables/useDeviceRuntime';
 import { useAsyncTask } from '../../../composables/useRequest';
 import { rssiBars, wifiOf, type SysInfo } from '../../device/sections/sysinfo';
+import { useNetworkScene } from './sceneLinks';
 import type { FeatureMiniProps } from './contract';
+import EyeShowButton from './EyeShowButton.vue';
 
 const props = defineProps<FeatureMiniProps>();
-const eye = useEyeStore();
 const session = useSessionStore();
 const device = useDeviceRuntime();
 
@@ -21,18 +21,13 @@ const wifi = computed(() => {
   return wireless ? { ssid: wireless.ssid ?? null, rssi: null } : wifiOf(task.data.value);
 });
 
-const ssid = computed<string | null>(() => (props.active && typeof props.payload?.ssid === 'string' && props.payload.ssid ? props.payload.ssid : wifi.value.ssid));
-const rssi = computed<number | null>(() => (props.active && typeof props.payload?.rssi === 'number' && props.payload.rssi !== 0 ? props.payload.rssi : wifi.value.rssi));
+const ssid = computed<string | null>(() => wifi.value.ssid);
+const rssi = computed<number | null>(() => wifi.value.rssi);
 const bars = computed(() => rssiBars(rssi.value));
 const connected = computed(() => session.connected && wifi.value.ssid !== null);
 const label = computed(() => ssid.value ?? (session.connected ? 'WiFi 状态未提供' : '设备离线'));
 
-function push(): void {
-  void eye.setScene(props.type, eye.sceneStyle, { ssid: wifi.value.ssid ?? '', rssi: wifi.value.rssi ?? 0, connected: connected.value });
-}
-function hide(): void {
-  void eye.setScene(null);
-}
+const scene = useNetworkScene(props.type, () => (session.connected ? { ssid: wifi.value.ssid, rssi: wifi.value.rssi, connected: connected.value } : null));
 </script>
 
 <template>
@@ -45,8 +40,7 @@ function hide(): void {
         <span class="nm-dbm">{{ rssi !== null ? `${rssi} dBm` : '—' }}</span>
       </span>
     </div>
-    <MdButton v-if="!active" variant="tonal" class="nm-btn" @click="push">显示</MdButton>
-    <MdButton v-else variant="text" class="nm-btn" @click="hide">隐藏</MdButton>
+    <EyeShowButton :shown="active || scene.held.value" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
   </div>
 </template>
 

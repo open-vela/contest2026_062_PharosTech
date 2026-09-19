@@ -1,18 +1,27 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, watch } from 'vue';
+import { computed, reactive, watch } from 'vue';
 import { NkActionBar, NkListSection, NkProgressRing, NkSegmentRow, NkToggleRow } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
 import { useBriefingStore } from '../../../stores/briefing';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import { useVisiblePoll } from '../../../composables/usePageVisible';
+import { briefingSource as source, useBriefingScene } from './sceneLinks';
+import EyeShowButton from './EyeShowButton.vue';
 
-defineProps<{ type:string; ff:FormFactor }>();
+const props = defineProps<{ type:string; ff:FormFactor }>();
 const briefing = useBriefingStore();
 const schedule = reactive({ schedule_enabled:false, morning_minute:480, evening_minute:1200,
   utc_offset_minutes:-new Date().getTimezoneOffset() });
 let syncing = false;
-let poll: ReturnType<typeof setInterval> | undefined;
-onMounted(() => { void briefing.refresh(); poll = setInterval(() => void briefing.refresh(), 2000); });
-onUnmounted(() => clearInterval(poll));
+/* The index only moves while the device plays the briefing: poll fast then,
+ * slowly otherwise, and never while the tab is hidden. */
+let skipped = 0;
+useVisiblePoll(() => {
+  if (briefing.state && !briefing.state.playing && ++skipped % 5) return;
+  void briefing.refresh();
+}, 2000);
+const scene = useBriefingScene(props.type);
+const onEyes = computed(() => scene.shown.value || scene.held.value);
 watch(() => briefing.state, state => { if (state && !syncing) Object.assign(schedule, state); });
 let saveTimer:ReturnType<typeof setTimeout>|undefined;
 watch(schedule, () => {
@@ -24,9 +33,6 @@ const items = computed(() => briefing.state?.items ?? []);
 const current = computed(() => items.value[briefing.state?.index ?? 0] ?? null);
 const subtitle = computed(() => !briefing.available ? '请连接支持简报的 Core 设备'
   : briefing.state?.generated_at ? `生成于 ${new Date(briefing.state.generated_at).toLocaleString()}` : '尚未生成');
-function source(value:string): string {
-  return ({ QWeather:'和风天气', calendar:'设备日程', tasks:'设备待办', memory:'用户保存的记忆', device:'设备' } as Record<string,string>)[value] ?? value;
-}
 const morningModel = computed({ get:() => String(schedule.morning_minute), set:(value:string) => { schedule.morning_minute=Number(value); } });
 const eveningModel = computed({ get:() => String(schedule.evening_minute), set:(value:string) => { schedule.evening_minute=Number(value); } });
 </script>
@@ -46,6 +52,8 @@ const eveningModel = computed({ get:() => String(schedule.evening_minute), set:(
         <NkActionBar :primary-text="briefing.state?.playing ? '停止显示' : '逐条显示到猫眼'"
           :primary-icon="briefing.state?.playing ? 'stop' : 'play_arrow'" secondary-text="下一条" secondary-icon="skip_next"
           :disabled="!items.length || briefing.busy" @primary="briefing.act(briefing.state?.playing ? 'stop' : 'start')" @secondary="briefing.act('next')" />
+        <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
+        <p class="muted">「逐条显示」由设备依次播报各条标题；「在设备上显示」把简报进度卡留在猫眼上，并随当前条目更新。</p>
       </section>
       <section class="card">
         <NkListSection title="简报条目" :card="false">

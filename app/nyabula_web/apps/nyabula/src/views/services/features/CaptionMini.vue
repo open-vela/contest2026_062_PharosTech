@@ -1,32 +1,37 @@
 <script setup lang="ts">
-/* Caption mini: single-line input + "show" button; while active the text
- * currently on the device is shown with a hide button. History and font
- * size live in nyabula.feature.caption (shared with CaptionFeature). */
+/* Caption mini: single-line input + "show"; while the caption is on the eyes
+ * the line the device reports is shown with a hide button. History lives in
+ * nyabula.feature.caption (per browser, shared with CaptionFeature). */
 import { computed, ref } from 'vue';
 import { MdButton, UiIcon } from '@nyabula/ui';
-import { useEyeStore } from '../../../stores/eye';
+import { useEyeScene } from '../../../composables/useEyeScene';
+import { captionScene } from '../../../composables/eyeScenePayload';
+import { useSessionStore } from '../../../stores/session';
 import { useFeatureMemory, saveFeatureMemory } from './contract';
 import type { FormFactor } from '../../../composables/useFormFactor';
 
 const props = defineProps<{ type: string; ff: FormFactor; active: boolean; payload: Record<string, unknown> | null }>();
-const eye = useEyeStore();
+const session = useSessionStore();
 
 const HISTORY_MAX = 20;
-const mem = useFeatureMemory(props.type, { size: 'medium', history: [] as string[] });
+const mem = useFeatureMemory(props.type, { history: [] as string[] });
 const text = ref('');
-const liveText = computed(() => (props.active && typeof props.payload?.text === 'string' ? (props.payload.text as string).trim() : ''));
+const lastShown = ref('');
+const previous = ref('');
+const scene = useEyeScene(props.type, () => (lastShown.value ? captionScene(lastShown.value, previous.value) : null));
+const line = (key: string): string => (typeof props.payload?.[key] === 'string' ? (props.payload[key] as string) : '');
+const liveText = computed(() => (props.active ? (line('current_line') + line('next_line')).trim() : lastShown.value));
 
 function show(): void {
   const v = text.value.trim();
   if (!v) return;
   const history = Array.isArray(mem.history) ? mem.history : [];
   mem.history = [v, ...history.filter((h) => h !== v)].slice(0, HISTORY_MAX);
-  saveFeatureMemory(props.type, { size: mem.size, history: mem.history });
-  void eye.setScene(props.type, eye.sceneStyle, { text: v, size: mem.size });
+  saveFeatureMemory(props.type, { history: mem.history });
+  previous.value = lastShown.value || liveText.value;
+  lastShown.value = v;
   text.value = '';
-}
-function hide(): void {
-  void eye.setScene(null);
+  void scene.show();
 }
 </script>
 
@@ -34,12 +39,12 @@ function hide(): void {
   <div class="cm">
     <div class="row">
       <input v-model="text" class="in" type="text" placeholder="输入一句话" aria-label="字幕" @keydown.enter.prevent="show" />
-      <MdButton class="btn" :disabled="!text.trim()" @click="show">显示</MdButton>
+      <MdButton class="btn" :disabled="!text.trim() || !session.canControl" @click="show">显示</MdButton>
     </div>
-    <div v-if="active" class="live">
+    <div v-if="active || scene.held.value" class="live">
       <UiIcon name="article" :size="16" />
       <span class="live-text">{{ liveText || '（空）' }}</span>
-      <button type="button" class="x" aria-label="隐藏字幕" @click="hide"><UiIcon name="close" :size="16" /></button>
+      <button type="button" class="x" aria-label="隐藏字幕" @click="scene.hide()"><UiIcon name="close" :size="16" /></button>
     </div>
   </div>
 </template>

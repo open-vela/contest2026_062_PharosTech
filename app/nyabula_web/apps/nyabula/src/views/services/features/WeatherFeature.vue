@@ -3,12 +3,14 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { MdButton, MdSwitch, MdTextField, NkWeatherCard } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
 import { useWeatherStore, weatherKind } from '../../../stores/weather';
-import { useEyeStore } from '../../../stores/eye';
+import { useWeatherScene } from './sceneLinks';
+import EyeShowButton from './EyeShowButton.vue';
 import type { FormFactor } from '../../../composables/useFormFactor';
 
-defineProps<{ type: string; ff: FormFactor }>();
+const props = defineProps<{ type: string; ff: FormFactor }>();
 const weather = useWeatherStore();
-const eye = useEyeStore();
+const scene = useWeatherScene(props.type);
+const onEyes = computed(() => scene.shown.value || scene.held.value);
 const form = reactive({ host:'', city:'', province:'', key:'', enabled:true, revision:0 });
 const editing = ref(false);
 let poll: ReturnType<typeof setInterval> | undefined;
@@ -16,7 +18,7 @@ let mounted = true;
 onMounted(async () => {
   await weather.refresh();
   if (!mounted) return;
-  loadForm(); poll = setInterval(() => void weather.refresh(), 10000);
+  loadForm(); poll = setInterval(() => { if (document.visibilityState !== 'hidden') void weather.refresh(); }, 10000);
 });
 onUnmounted(() => { mounted = false; clearInterval(poll); form.key = ''; });
 function loadForm(): void {
@@ -27,11 +29,6 @@ function openConfig(): void { loadForm(); editing.value = true; }
 async function save(): Promise<void> {
   const { key, ...data } = form;
   if (await weather.configure({ ...data, ...(key ? { key } : {}) })) { form.key = ''; editing.value = false; }
-}
-function show(): void {
-  if (!weather.now.temperature) return;
-  void eye.setScene('weather', eye.sceneStyle, { city:weather.now.location?.name,
-    temp:Math.round(weather.now.temperature.value), condition:weatherKind(weather.now.condition?.code) });
 }
 const stale = computed(() => !weather.now.fetched_at || Date.now() - weather.now.fetched_at > 1200000 || !!weather.now.last_error);
 const place = computed(() => weather.now.location?.name ?? weather.status?.city ?? '未配置城市');
@@ -77,7 +74,7 @@ const attribution = computed(() => Array.from(new Set([weather.now, weather.dail
           <div><dt>紫外线</dt><dd>{{ weather.now.uvIndex ?? '—' }}</dd></div>
         </dl>
         <div class="row wrap"><MdButton :disabled="!weather.status?.enabled || weather.status?.refreshing" @click="weather.fetchNow">{{ weather.status?.refreshing ? '正在获取' : '立即获取' }}</MdButton>
-          <MdButton variant="tonal" :disabled="!weather.now.temperature" @click="show">简要显示到猫眼</MdButton></div>
+          <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" /></div>
       </section>
       <section class="card">
         <h3>天气预警</h3>

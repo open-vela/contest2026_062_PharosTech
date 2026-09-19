@@ -4,9 +4,11 @@ import { computed } from 'vue';
 import { UiIcon } from '@nyabula/ui';
 import { useCoreTimer } from '../../../composables/useCoreTimer';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import EyeShowButton from './EyeShowButton.vue';
 defineProps<{ type: string; ff: FormFactor; active: boolean; payload: Record<string, unknown> | null }>();
 const timer = useCoreTimer('stopwatch');
 const running = timer.running;
+const scene = timer.scene;
 const armed = computed(() => timer.current.value !== null);
 const disabled = computed(() => timer.core.busy.value || !timer.core.available.value);
 const elapsed = timer.elapsed;
@@ -29,6 +31,7 @@ async function reset() { await timer.action('delete'); }
       <UiIcon :name="running ? 'stop' : 'play_arrow'" :size="22" />
     </button>
     <button type="button" class="rb" aria-label="重置" :disabled="disabled || running || !armed" @click="reset"><UiIcon name="refresh" :size="20" /></button>
+    <EyeShowButton kind="round" :shown="active || scene.held.value" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
   </div>
   <p v-if="timer.core.error.value" role="alert">{{ timer.core.error.value }}</p>
 </template>

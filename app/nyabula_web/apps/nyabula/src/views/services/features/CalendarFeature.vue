@@ -3,13 +3,14 @@
 import { computed, ref } from 'vue';
 import { BottomSheet, MdButton, MdTextField, NkActionBar, NkListSection, NkRow, UiIcon } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
-import { useEyeStore } from '../../../stores/eye';
+import { useEyeScene } from '../../../composables/useEyeScene';
+import { calendarScene } from '../../../composables/eyeScenePayload';
 import { useProductRecords } from '../../../composables/useProductRecords';
 import type { ProductRecord } from '../../../stores/product';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import EyeShowButton from './EyeShowButton.vue';
 
 const props = defineProps<{ type: string; ff: FormFactor }>();
-const eye = useEyeStore();
 
 interface CalRecord extends ProductRecord { id:string; title:string; start_at:number }
 interface CalEvent { id: string; title: string; date: string /* YYYY-MM-DD */ }
@@ -62,16 +63,13 @@ const selectedText = computed(() => {
 const countdownText = (n: number): string => (n === 0 ? '就是今天' : `还有 ${n} 天`);
 const subtitle = computed(() => (upcoming.value[0] ? `${upcoming.value[0].title} ${countdownText(daysLeft(upcoming.value[0].date))}` : '暂无即将到来的日程'));
 
-function pushNext(): void {
+/* Eye link: the nearest upcoming event; edits reach the eyes by themselves. */
+const scene = useEyeScene(props.type, () => {
   const n = upcoming.value[0];
-  if (!n) { void eye.setScene(null); return; }
-  void eye.setScene(props.type, eye.sceneStyle, {
-    title: n.title,
-    date: n.date,
-    days_left: daysLeft(n.date),
-    events: upcoming.value.slice(0, 5).map((e) => ({ title: e.title, date: e.date, days_left: daysLeft(e.date) })),
-  });
-}
+  const record = n ? core.items.value.find((r) => r.id === n.id) : undefined;
+  return record ? calendarScene({ title: record.title, startAt: record.start_at }) : null;
+}, { hideWhenEmpty: true });
+const onEyes = computed(() => scene.shown.value || scene.held.value);
 
 /* Add-event editor. */
 const editing = ref(false);
@@ -102,11 +100,10 @@ async function save(): Promise<void> {
   if (saved) {
     selected.value = eDate.value;
     editing.value = false;
-    if (eye.activeScene === props.type) pushNext();
   }
 }
 async function remove(id: string): Promise<void> {
-  if (await core.mutate('delete', {id}) && eye.activeScene === props.type) pushNext();
+  await core.mutate('delete', {id});
 }
 </script>
 
@@ -158,6 +155,10 @@ async function remove(id: string): Promise<void> {
         <section class="card">
           <h3 class="section-title">倒数日</h3>
           <p v-if="!upcoming.length" class="muted empty">添加一个值得期待的日子</p>
+          <div class="eye-row">
+            <span class="muted">{{ onEyes ? '猫眼正在显示最近的日程' : '把最近的日程显示到猫眼' }}</span>
+            <EyeShowButton :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
+          </div>
           <div class="count-grid">
             <div v-for="e in upcoming.slice(0, 4)" :key="e.id" class="count-card" :class="{ soon: daysLeft(e.date) <= 3 }" @click="selected = e.date">
               <span class="count-title">{{ e.title }}</span>
@@ -192,6 +193,7 @@ async function remove(id: string): Promise<void> {
 .feature.desktop .grid { grid-template-columns: 1.2fr 1fr; }
 .feature.desktop .grid > .editor { grid-column: 1 / -1; }
 .stack-col { display: flex; flex-direction: column; gap: 16px; }
+.eye-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .card {
   display: flex; flex-direction: column; gap: 12px;
   padding: 16px; border-radius: var(--radius-l);

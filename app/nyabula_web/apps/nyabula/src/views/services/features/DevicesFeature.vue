@@ -1,92 +1,61 @@
 <script setup lang="ts">
-/* Nearby devices feature. A tile grid of demo peripherals (phone / speaker /
- * earbuds / sensor) with online state; discovery is reserved by contract.
- * Pushes { devices:[{name,type,online}], count } to the eye. */
-import { computed, reactive, ref, watch } from 'vue';
-import { NkActionBar, NkStatTile, NkTile, MdButton, UiIcon, useToastStore } from '@nyabula/ui';
+/* Hardware attached to the device, as Core enumerates it in device.status:
+ * audio devices, storage volumes and network interfaces. Nothing is invented
+ * and nothing is kept in the browser; discovery of nearby gadgets (Bluetooth,
+ * home devices) has no device topic yet and is not offered. */
+import { computed } from 'vue';
+import { NkListSection, NkRow, NkStatTile, MdButton, UiIcon } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
-import { useEyeStore } from '../../../stores/eye';
-import { useFeatureMemory, saveFeatureMemory } from './contract';
+import { formatDeviceBytes, useDeviceRuntime } from '../../../composables/useDeviceRuntime';
+import { hardwareCounts } from '../../../composables/eyeScenePayload';
+import { useDevicesScene } from './sceneLinks';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import EyeShowButton from './EyeShowButton.vue';
 
 const props = defineProps<{ type: string; ff: FormFactor }>();
-const eye = useEyeStore();
-const toast = useToastStore();
+const device = useDeviceRuntime();
+const scene = useDevicesScene(props.type, device);
+const active = computed(() => scene.shown.value || scene.held.value);
 
-interface Dev { id: string; name: string; type: 'phone' | 'speaker' | 'earbuds' | 'sensor' | 'tablet'; online: boolean }
-const TYPE_META: Record<Dev['type'], { icon: string; label: string }> = {
-  phone: { icon: 'smartphone', label: '手机' },
-  tablet: { icon: 'tablet', label: '平板' },
-  speaker: { icon: 'volume_up', label: '音箱' },
-  earbuds: { icon: 'bluetooth', label: '耳机' },
-  sensor: { icon: 'bolt', label: '传感器' },
-};
-
-const mem = useFeatureMemory(props.type, {
-  devices: [
-    { id: 'd1', name: '我的手机', type: 'phone', online: true },
-    { id: 'd2', name: '客厅音箱', type: 'speaker', online: true },
-    { id: 'd3', name: '蓝牙耳机', type: 'earbuds', online: false },
-    { id: 'd4', name: '温湿度传感器', type: 'sensor', online: true },
-  ] as Dev[],
+interface Row { id: string; icon: string; name: string; sub: string; online: boolean }
+const rows = computed<Row[]>(() => {
+  const s = device.snapshot;
+  if (!s) return [];
+  return [
+    ...s.audioDevices.map((a) => ({ id: 'a' + a.path, icon: a.input && !a.output ? 'mic' : 'volume_up', name: a.path, online: a.available,
+      sub: a.available ? [a.output ? '输出' : '', a.input ? '输入' : ''].filter(Boolean).join(' / ') || '音频设备' : '音频设备 · 不可用' })),
+    ...s.storage.map((v) => ({ id: 's' + v.path, icon: 'storage', name: v.path, online: v.available,
+      sub: v.available ? `存储 · 可用 ${formatDeviceBytes(v.freeBytes)}` : '存储 · 未挂载' })),
+    ...s.network.interfaces.filter((i) => !i.loopback).map((i) => ({ id: 'n' + i.index, icon: i.ssid ? 'wifi' : 'link', name: i.name, online: i.up === true,
+      sub: i.up === true ? `网络 · ${i.ssid ?? i.ipv4 ?? '已启用'}` : '网络 · 未启用' })),
+  ];
 });
-const state = reactive(mem);
-watch(state, () => saveFeatureMemory(props.type, state), { deep: true });
-
-const discovering = ref(false);
-const onlineCount = computed(() => state.devices.filter((d) => d.online).length);
-const active = computed(() => eye.activeScene === props.type);
-const subtitle = computed(() => `${onlineCount.value} 在线 · 共 ${state.devices.length} 台`);
-
-function toggle(d: Dev): void {
-  d.online = !d.online;
-}
-function discover(): void {
-  if (discovering.value) return;
-  discovering.value = true;
-  setTimeout(() => {
-    discovering.value = false;
-    toast.warn('设备发现为契约预留，当前展示演示列表');
-  }, 1200);
-}
-function push(): void {
-  void eye.setScene(props.type, eye.sceneStyle, {
-    devices: state.devices.map((d) => ({ name: d.name, type: d.type, online: d.online })),
-    count: onlineCount.value,
-  });
-}
-function hide(): void {
-  void eye.setScene(null);
-}
+const counts = computed(() => hardwareCounts(device.snapshot));
+const subtitle = computed(() => !device.available ? '需要以主人身份连接支持诊断的 Core'
+  : device.snapshot ? `${counts.value.total} 在线 · 共 ${rows.value.length} 个` : '读取中');
 </script>
 
 <template>
   <div class="feature" :class="ff">
     <NkHeader icon="devices" title="设备" :subtitle="subtitle" :tone="active ? 'ok' : 'default'">
-      <MdButton variant="tonal" :disabled="discovering" @click="discover"><UiIcon :name="discovering ? 'sync' : 'search'" :size="20" />{{ discovering ? '搜索中…' : '发现设备' }}</MdButton>
+      <MdButton variant="tonal" :disabled="device.busy || !device.available" @click="device.refresh()"><UiIcon name="refresh" :size="20" />刷新</MdButton>
     </NkHeader>
+    <p v-if="device.error" role="alert">{{ device.error }}</p>
+    <p v-if="device.snapshot?.simulator" class="muted small">当前为模拟器枚举结果，不代表 K7 板上硬件。</p>
     <div class="stats">
-      <NkStatTile :value="onlineCount" unit="台" label="在线" icon="check_circle" />
-      <NkStatTile :value="state.devices.length - onlineCount" unit="台" label="离线" icon="cloud_off" />
+      <NkStatTile :value="counts.audio" unit="个" label="音频" icon="volume_up" />
+      <NkStatTile :value="counts.storage" unit="个" label="存储" icon="storage" />
+      <NkStatTile :value="counts.network" unit="个" label="网络" icon="wifi" />
     </div>
     <section class="card">
-      <div class="row between">
-        <h3 class="section-title">周边设备</h3>
-        <span class="contract-only">发现为契约预留</span>
-      </div>
-      <div class="tiles">
-        <NkTile
-          v-for="d in state.devices"
-          :key="d.id"
-          :icon="TYPE_META[d.type].icon"
-          :title="d.name"
-          :sub="TYPE_META[d.type].label + (d.online ? ' · 在线' : ' · 离线')"
-          :active="d.online"
-          @tap="toggle(d)"
-        />
-      </div>
-      <p class="muted small">点击磁贴可切换演示在线态。</p>
-      <NkActionBar primary-text="显示到眼睛" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" @primary="push" @secondary="hide" />
+      <NkListSection title="已接入硬件" :card="false">
+        <NkRow v-for="d in rows" :key="d.id" :icon="d.icon" :title="d.name" :sub="d.sub">
+          <span class="state" :class="{ on: d.online }">{{ d.online ? '在线' : '离线' }}</span>
+        </NkRow>
+      </NkListSection>
+      <p v-if="!rows.length" class="muted small">{{ device.available ? '设备尚未返回硬件列表' : '未连接' }}</p>
+      <p class="muted small">列表来自设备实时枚举。周边蓝牙 / 家居设备的发现尚无设备接口，暂不提供。</p>
+      <EyeShowButton kind="wide" :shown="active" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
     </section>
   </div>
 </template>
@@ -103,4 +72,6 @@ function hide(): void {
 .feature.tablet .tiles { grid-template-columns: repeat(3, 1fr); }
 .feature.desktop .tiles { grid-template-columns: repeat(4, 1fr); }
 .small { font-size: 12px; margin: 0; }
+.state { font-size: 12.5px; color: var(--md-on-surface-variant); }
+.state.on { color: var(--md-primary); font-weight: 600; }
 </style>

@@ -1,11 +1,11 @@
 <script setup lang="ts">
-/* Tablet: "now showing" bar + grouped tile grid, 3 columns landscape and
- * 2 columns portrait. */
+/* Tablet: "now showing" bar + the two stages (已实现 / 规划中), tiles in 2
+ * columns landscape and 1 column portrait. */
 import { computed, inject } from 'vue';
-import { MdButton, NkListSection, UiIcon } from '@nyabula/ui';
+import { MdButton, UiIcon } from '@nyabula/ui';
 import type { useFormFactor } from '../../composables/useFormFactor';
 import { useServicesPage } from './services.logic';
-import FeatureCard from './FeatureCard.vue';
+import FeatureSections from './FeatureSections.vue';
 
 defineProps<{ key?: string }>();
 const page = useServicesPage();
@@ -23,20 +23,7 @@ const portrait = computed(() => ff.orientation.value === 'portrait');
       <MdButton v-if="activeDef" variant="tonal" class="exit" :disabled="!session.canControl" @click="page.exit()">退出</MdButton>
     </div>
 
-    <NkListSection v-for="g in page.groups" :key="g.group" :title="g.group" :card="false">
-      <div class="tiles">
-        <FeatureCard
-          v-for="f in g.items"
-          :key="f.type"
-          :def="f"
-          :active="page.isActive(f)"
-          :sub="page.subFor(f)"
-          :ff="ff.formFactor.value"
-          :payload="page.isActive(f) ? page.livePayload.value : null"
-          @open="page.open(f)"
-        />
-      </div>
-    </NkListSection>
+    <FeatureSections :page="page" :ff="ff.formFactor.value" :columns="portrait ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))'" />
   </div>
 </template>
 
@@ -55,6 +42,4 @@ const portrait = computed(() => ff.orientation.value === 'portrait');
 .now.none { background: var(--md-surface-container); color: var(--md-on-surface-variant); }
 .now-text { flex: 1; font-weight: 600; font-size: 14px; }
 .exit { padding: 8px 14px; font-size: 13px; }
-.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
-.portrait .tiles { grid-template-columns: 1fr; }
 </style>

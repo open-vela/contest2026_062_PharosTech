@@ -3,15 +3,14 @@
 import { computed } from 'vue';
 import { NkActionBar, NkKeyValue, NkListSection, NkRow, Skeleton, MdButton, UiIcon } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
-import { useEyeStore } from '../../../stores/eye';
 import { useSessionStore } from '../../../stores/session';
 import { useAsyncTask } from '../../../composables/useRequest';
 import { useDeviceRuntime } from '../../../composables/useDeviceRuntime';
 import { rssiBars, wifiOf, type SysInfo } from '../../device/sections/sysinfo';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import { useNetworkScene } from './sceneLinks';
 
 const props = defineProps<{ type: string; ff: FormFactor }>();
-const eye = useEyeStore();
 const session = useSessionStore();
 const device = useDeviceRuntime();
 
@@ -24,7 +23,8 @@ const wifi = computed(() => {
 const bars = computed(() => rssiBars(wifi.value.rssi));
 const connected = computed(() => session.connected && wifi.value.ssid !== null);
 
-const active = computed(() => eye.activeScene === props.type);
+const scene = useNetworkScene(props.type, () => (session.connected ? { ssid: wifi.value.ssid, rssi: wifi.value.rssi, connected: connected.value } : null));
+const active = computed(() => scene.shown.value || scene.held.value);
 const quality = computed(() => wifi.value.rssi === null ? '信号强度未提供' : ['无信号', '较弱', '一般', '良好', '极佳'][bars.value]);
 const subtitle = computed(() => (wifi.value.ssid ? `${wifi.value.ssid} · ${quality.value}` : session.connected ? '未提供 WiFi 关联状态' : '设备离线'));
 const TRANSPORT_LABEL: Record<string, string> = { lan: '局域网', cloud: '云端', dev: '演示', self: '设备直连' };
@@ -36,12 +36,8 @@ const kv = computed(() => [
   { key: '连接方式', value: session.transport ? TRANSPORT_LABEL[session.transport] ?? session.transport : '—' },
 ]);
 
-function push(): void {
-  void eye.setScene(props.type, eye.sceneStyle, { ssid: wifi.value.ssid ?? '', rssi: wifi.value.rssi ?? 0, connected: connected.value });
-}
-function hide(): void {
-  void eye.setScene(null);
-}
+const push = () => scene.show();
+const hide = () => scene.hide();
 </script>
 
 <template>
@@ -65,7 +61,7 @@ function hide(): void {
           </div>
           <NkKeyValue :items="kv" :columns="ff === 'phone' ? 1 : 2" />
         </template>
-        <NkActionBar primary-text="显示网络" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" @primary="push" @secondary="hide" />
+        <NkActionBar primary-text="显示网络" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" :disabled="!scene.canShow.value" @primary="push" @secondary="hide" />
       </section>
       <section class="card">
         <NkListSection title="真实网络接口">

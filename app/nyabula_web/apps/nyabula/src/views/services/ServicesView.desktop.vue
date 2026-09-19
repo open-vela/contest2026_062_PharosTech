@@ -1,11 +1,11 @@
 <script setup lang="ts">
-/* Desktop: "now showing" bar, then each group as NkListSection with a
- * 4-column tile grid. Tiles open the feature page. */
-import { MdButton, NkListSection, UiIcon } from '@nyabula/ui';
+/* Desktop: "now showing" bar, then the two stages (已实现 / 规划中), each
+ * group as an auto-filling tile grid. Tiles open the feature page. */
+import { MdButton, UiIcon } from '@nyabula/ui';
 import { inject } from 'vue';
 import type { useFormFactor } from '../../composables/useFormFactor';
 import { useServicesPage } from './services.logic';
-import FeatureCard from './FeatureCard.vue';
+import FeatureSections from './FeatureSections.vue';
 
 defineProps<{ key?: string }>();
 const page = useServicesPage();
@@ -27,20 +27,7 @@ const { session, activeDef } = page;
       </div>
     </div>
 
-    <NkListSection v-for="g in page.groups" :key="g.group" :title="g.group" :card="false" v-reveal>
-      <div class="tiles">
-        <FeatureCard
-          v-for="f in g.items"
-          :key="f.type"
-          :def="f"
-          :active="page.isActive(f)"
-          :sub="page.subFor(f)"
-          :ff="ff.formFactor.value"
-          :payload="page.isActive(f) ? page.livePayload.value : null"
-          @open="page.open(f)"
-        />
-      </div>
-    </NkListSection>
+    <FeatureSections :page="page" :ff="ff.formFactor.value" columns="repeat(auto-fill, minmax(300px, 1fr))" />
   </div>
 </template>
 
@@ -61,5 +48,4 @@ const { session, activeDef } = page;
 .now.none { background: var(--md-surface-container); color: var(--md-on-surface-variant); }
 .now-text { font-weight: 600; font-size: 14px; }
 .exit { padding: 6px 12px; font-size: 12.5px; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; align-items: start; }
 </style>

@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, watch } from 'vue';
+import { computed, onMounted, reactive, watch } from 'vue';
 import { MdButton, NkChipSelect, NkListSection, NkSegmentRow, NkSliderRow, NkToggleRow, UiIcon } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
 import { useCompanionStore } from '../../../stores/companion';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import { useVisiblePoll } from '../../../composables/usePageVisible';
+import { useCompanionScene } from './sceneLinks';
+import EyeShowButton from './EyeShowButton.vue';
 
-defineProps<{ type:string; ff:FormFactor }>();
+const props = defineProps<{ type:string; ff:FormFactor }>();
 const companion = useCompanionStore();
 const form = reactive({ enabled:false, mode:'quiet' as 'quiet'|'interactive'|'story', quiet_start:1320,
   quiet_end:480, utc_offset_minutes:-new Date().getTimezoneOffset(), minimum_interval_minutes:180, daily_limit:3 });
@@ -14,10 +17,11 @@ const MODES = [
   { id:'interactive', label:'适度互动', icon:'auto_awesome', blurb:'结合可靠的日程、天气或已保存记忆' },
   { id:'story', label:'睡前陪伴', icon:'article', blurb:'只发一段简短、温和的文字' },
 ];
-let poll:ReturnType<typeof setInterval>|undefined;
 let syncing = false;
-onMounted(async () => { await companion.refresh(); sync(); poll=setInterval(() => void companion.refresh(), 5000); });
-onUnmounted(() => clearInterval(poll));
+onMounted(async () => { await companion.refresh(); sync(); });
+useVisiblePoll(() => void companion.refresh(), 5000);
+const scene = useCompanionScene(props.type);
+const onEyes = computed(() => scene.shown.value || scene.held.value);
 watch(() => companion.state, sync);
 function sync():void {
   if (!companion.state || syncing) return;
@@ -49,6 +53,7 @@ const quietEndModel=computed({ get:()=>String(form.quiet_end), set:(value:string
         <h2>{{ modeDef.label }}</h2><p>{{ modeDef.blurb }}</p>
         <NkToggleRow v-model="form.enabled" title="允许主动陪伴" sub="默认关闭；打开后规则保存在设备端" />
         <MdButton variant="tonal" :disabled="!form.enabled || companion.state?.quiet_now || companion.busy" @click="companion.act('run', {})">现在问候一次</MdButton>
+        <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
       </section>
       <section class="card">
         <NkListSection title="怎么陪" :card="false">

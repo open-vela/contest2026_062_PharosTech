@@ -1,11 +1,11 @@
 <script setup lang="ts">
-/* Phone: "now showing" strip on top, then each group as a 2-column tile
- * grid. Tiles open the feature page; exit via the strip button. */
-import { MdButton, NkListSection, UiIcon } from '@nyabula/ui';
+/* Phone: "now showing" strip on top, then the two stages (已实现 / 规划中),
+ * each group as a single-column card list. Exit via the strip button. */
+import { MdButton, UiIcon } from '@nyabula/ui';
 import { inject } from 'vue';
 import type { useFormFactor } from '../../composables/useFormFactor';
 import { useServicesPage } from './services.logic';
-import FeatureCard from './FeatureCard.vue';
+import FeatureSections from './FeatureSections.vue';
 
 defineProps<{ key?: string }>();
 const page = useServicesPage();
@@ -25,20 +25,7 @@ const { session, activeDef } = page;
       <MdButton v-if="activeDef" variant="tonal" class="exit" :disabled="!session.canControl" @click="page.exit()">退出</MdButton>
     </div>
 
-    <NkListSection v-for="g in page.groups" :key="g.group" :title="g.group" :card="false">
-      <div class="tiles">
-        <FeatureCard
-          v-for="f in g.items"
-          :key="f.type"
-          :def="f"
-          :active="page.isActive(f)"
-          :sub="page.subFor(f)"
-          :ff="ff.formFactor.value"
-          :payload="page.isActive(f) ? page.livePayload.value : null"
-          @open="page.open(f)"
-        />
-      </div>
-    </NkListSection>
+    <FeatureSections :page="page" :ff="ff.formFactor.value" columns="minmax(0, 1fr)" />
   </div>
 </template>
 
@@ -60,5 +47,4 @@ const { session, activeDef } = page;
 .now-title { font-weight: 600; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .now-sub { font-size: 12px; opacity: 0.75; }
 .exit { min-height: 44px; padding: 8px 14px; font-size: 13px; flex: none; }
-.tiles { display: grid; grid-template-columns: 1fr; gap: 12px; align-items: start; }
 </style>
