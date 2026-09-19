@@ -30,6 +30,7 @@
 #include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
@@ -37,7 +38,13 @@
 
 #define NYABULA_WS_IO_MS      2000
 #define NYABULA_WS_HEADER_MAX 4096
-#define NYABULA_WS_GUID       "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+/* Frames up to this size are assembled on the stack; client threads run on
+ * 32 KiB, and most replies fit.
+ */
+
+#define NYABULA_WS_COALESCE_MAX 1024
+#define NYABULA_WS_GUID         "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 static int nyabula_eye_ws_io(int fd, void *data, size_t length, bool writing,
                              uint64_t deadline);
@@ -376,9 +383,37 @@ int nyabula_eye_ws_send(int fd, uint8_t opcode, const void *data,
       hlen = 4;
     }
 
-  ret = nyabula_eye_ws_io(fd, header, hlen, true, deadline);
-  return ret < 0 ? ret
-                 : nyabula_eye_ws_io(fd, (void *)data, length, true, deadline);
+  /* The header travels with the payload.  Sent on its own it is a two byte
+   * segment that the peer acknowledges only after its delayed ACK timer
+   * (200 ms on Windows), and a stack without write buffering does not send
+   * the payload before that acknowledgement: every frame then costs a fifth
+   * of a second, and a page that asks for a dozen things at once runs its
+   * requests into their timeout.
+   */
+
+  if (length <= NYABULA_WS_COALESCE_MAX)
+    {
+      unsigned char frame[4 + NYABULA_WS_COALESCE_MAX];
+      memcpy(frame, header, hlen);
+      if (length > 0)
+        {
+          memcpy(frame + hlen, data, length);
+        }
+
+      return nyabula_eye_ws_io(fd, frame, hlen + length, true, deadline);
+    }
+
+  unsigned char *frame = malloc(hlen + length);
+  if (frame == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  memcpy(frame, header, hlen);
+  memcpy(frame + hlen, data, length);
+  ret = nyabula_eye_ws_io(fd, frame, hlen + length, true, deadline);
+  free(frame);
+  return ret;
 }
 
 /****************************************************************************
