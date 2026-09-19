@@ -79,6 +79,7 @@
 #define NY_NET_AP_POOL_START "192.168.4.100"
 #define NY_NET_STA_TIMEOUT_S 25
 #define NY_NET_STA_RETRIES   3
+#define NY_NET_LOAD_RETRIES  150 /* worker ticks, about 15 s */
 #define NY_NET_SSID_MAX      32
 #define NY_NET_PSK_MAX       64
 #define NY_NET_SCAN_MAX      24
@@ -121,6 +122,8 @@ struct ny_net_s
 static mutex_t g_net_lock = NXMUTEX_INITIALIZER;
 static struct ny_net_s g_net;
 static bool g_net_loaded;
+static bool g_net_boot_decided;
+static int g_net_load_attempts;
 
 static const char *g_net_state_names[] = { "idle", "ap_provision",
                                            "sta_connecting", "sta_online",
@@ -152,10 +155,20 @@ static void ny_net_load(void)
   cJSON *value = NULL;
   if (g_net_loaded)
     return;
+
+  /* The store reports "no such entry" as success with no value, so a
+   * failure here means the store itself is not there -- at boot, usually
+   * because the partition holding it has not been mounted yet.  That must
+   * not be read as "this device has no network": ask again on later ticks,
+   * and only after a bounded wait settle for what can be had.
+   */
+
+  int ret =
+      ny_product_store_read(NY_NET_STORE_DOMAIN, &value, &g_net.revision);
+  if (ret < 0 && g_net_load_attempts++ < NY_NET_LOAD_RETRIES)
+    return;
   g_net_loaded = true;
-  if (ny_product_store_read(NY_NET_STORE_DOMAIN, &value, &g_net.revision) <
-          0 ||
-      value == NULL)
+  if (ret < 0 || value == NULL)
     return;
   ny_net_copy(g_net.sta_ssid, sizeof(g_net.sta_ssid),
               ny_net_text(value, "ssid"));
@@ -190,6 +203,24 @@ static void ny_net_default_ap_ssid(char *out, size_t size)
   netlib_getmacaddr(NY_NET_IFNAME, mac);
 #endif
   snprintf(out, size, NY_NET_AP_SSID_FMT, mac[4], mac[5]);
+}
+
+/* Request the provisioning AP, filling in the identity nobody supplied
+ * (lock held).  Two callers reach this without a provision.start request
+ * ever having run -- a device with no stored network, and a stored network
+ * that stopped answering -- and both would otherwise bring up an access
+ * point with an empty name.
+ */
+
+static void ny_net_arm_ap(void)
+{
+  if (g_net.ap_ssid[0] == '\0')
+    ny_net_default_ap_ssid(g_net.ap_ssid, sizeof(g_net.ap_ssid));
+  if (g_net.ap_psk[0] == '\0')
+    ny_net_copy(g_net.ap_psk, sizeof(g_net.ap_psk), NY_NET_AP_PSK);
+  if (g_net.ap_channel == 0)
+    g_net.ap_channel = NY_NET_AP_CHANNEL;
+  g_net.pending_ap = true;
 }
 
 static int __attribute__((unused)) ny_net_query_ipv4(char *out, size_t size)
@@ -590,6 +621,20 @@ int ny_product_network_tick(void)
     return ret;
   ny_net_load();
 
+  /* A device that has never been told about a network has exactly one
+   * useful thing to do, which is to let someone tell it.  Decided once, as
+   * soon as the store has answered: after that an idle radio is a choice
+   * the owner made with provision.stop or wifi.forget, and is left alone.
+   */
+
+  if (g_net_loaded && !g_net_boot_decided)
+    {
+      g_net_boot_decided = true;
+      if (g_net.sta_ssid[0] == '\0' && g_net.state == NY_NET_IDLE &&
+          !g_net.pending_ap && !g_net.pending_sta)
+        ny_net_arm_ap();
+    }
+
   /* Snapshot the requested action, then act without holding the lock. */
 
   bool do_stop = g_net.pending_stop;
@@ -669,7 +714,7 @@ int ny_product_network_tick(void)
           if (g_net.sta_attempt < NY_NET_STA_RETRIES)
             g_net.pending_sta = true;
           else
-            g_net.pending_ap = true;
+            ny_net_arm_ap();
         }
       g_net.state = next;
     }
