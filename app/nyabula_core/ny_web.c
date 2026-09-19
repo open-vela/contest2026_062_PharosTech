@@ -63,6 +63,12 @@ static bool g_web_running;
 static bool g_web_stopping;
 static int g_web_clients[NY_WEB_MAX_CLIENTS];
 
+/* Held only while the product service runs, for the one other party that
+ * legitimately needs it: the code that draws the pairing QR on the eyes.
+ */
+
+static char g_web_product_token[NYABULA_WS_TOKEN_SIZE + 1];
+
 struct ny_web_client_args_s
 {
   int slot;
@@ -669,6 +675,42 @@ int ny_web_stop(void)
 }
 
 /****************************************************************************
+ * Name: ny_web_product_token
+ *
+ * Description:
+ *   Copy out the token of the running product service, or fail with
+ *   -ENOENT if there is none.
+ *
+ *   It exists for the pairing QR and must not be passed on to anything a
+ *   client can read.  Showing it on the eyes is sound because seeing the
+ *   eyes means standing in front of the device, which is the whole of the
+ *   ownership test a device without a keyboard can make; putting it in a
+ *   status reply would hand it to whoever asks.
+ *
+ ****************************************************************************/
+
+int ny_web_product_token(char *out, size_t size)
+{
+  int ret = nxmutex_lock(&g_web_lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (size <= NYABULA_WS_TOKEN_SIZE || g_web_product_token[0] == '\0')
+    {
+      ret = size <= NYABULA_WS_TOKEN_SIZE ? -ENOBUFS : -ENOENT;
+    }
+  else
+    {
+      memcpy(out, g_web_product_token, NYABULA_WS_TOKEN_SIZE + 1);
+    }
+
+  nxmutex_unlock(&g_web_lock);
+  return ret;
+}
+
+/****************************************************************************
  * Name: ny_web_store_wait
  *
  * Description:
@@ -958,6 +1000,11 @@ int ny_web_run(int argc, char **argv)
 
   g_web_running = true;
   g_web_stopping = false;
+  if (product)
+    {
+      memcpy(g_web_product_token, token, sizeof(g_web_product_token));
+    }
+
   for (int i = 0; i < NY_WEB_MAX_CLIENTS; i++)
     {
       g_web_clients[i] = -1;
@@ -1079,6 +1126,9 @@ int ny_web_run(int argc, char **argv)
     }
 
   memset(token, 0, sizeof(token));
+  nxmutex_lock(&g_web_lock);
+  memset(g_web_product_token, 0, sizeof(g_web_product_token));
+  nxmutex_unlock(&g_web_lock);
   close(server);
   for (;;)
     {

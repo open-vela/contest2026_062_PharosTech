@@ -21,8 +21,16 @@
 
 #ifndef __NYABULA_CORE_NY_WEB_H
 #define __NYABULA_CORE_NY_WEB_H
+#include <stddef.h>
+
 int ny_web_run(int argc, char **argv);
 int ny_web_stop(void);
+
+/* Token of the running product service, for the pairing QR only: never to
+ * be forwarded to a client.  size must exceed 64.  -ENOENT if not running.
+ */
+
+int ny_web_product_token(char *out, size_t size);
 
 /* Answer one plain HTTP request from the static site root and return.  head
  * is the request head as received; the connection is not kept alive.
