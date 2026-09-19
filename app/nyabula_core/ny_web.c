@@ -55,7 +55,7 @@
 #define NYABULA_WS_IDLE_MS      20000
 #define NYABULA_WS_AUTH_MS      5000
 #define NYABULA_WS_MAX_REQUESTS 40
-#define NY_WEB_MAX_CLIENTS      4
+#define NY_WEB_MAX_CLIENTS      8
 #define NY_WEB_STORE_WAIT_MS    15000
 
 static mutex_t g_web_lock = NXMUTEX_INITIALIZER;
@@ -423,6 +423,17 @@ static int nyabula_eye_ws_client(int fd, const char *token, const char *origin)
     }
 
   ret = nyabula_eye_ws_upgrade(fd, origin, s->message, sizeof(s->message));
+  if (ret == NYABULA_WS_NOT_UPGRADE)
+    {
+      /* An ordinary page request.  It is served and the connection ends; a
+       * peer that went away half way through is not worth a log line.
+       */
+
+      ny_web_http_serve(fd, s->message);
+      free(s);
+      return -ECONNRESET;
+    }
+
   while (ret == 0)
     {
       uint64_t now = nyabula_eye_ws_now();

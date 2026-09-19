@@ -257,10 +257,19 @@ int nyabula_eye_ws_upgrade(int fd, const char *origin, char *scratch,
         }
     }
 
-  if (length < 4 || memcmp(scratch + length - 4, "\r\n\r\n", 4) != 0 ||
-      strncmp(scratch, "GET /nyalink HTTP/1.1\r\n", 23) != 0)
+  if (length < 4 || memcmp(scratch + length - 4, "\r\n\r\n", 4) != 0)
     {
       return -EPROTO;
+    }
+
+  /* A well-formed request for anything else is not an error, just not
+   * ours.  The head is handed back untouched so the caller can serve it as
+   * plain HTTP on the same port.
+   */
+
+  if (strncmp(scratch, "GET /nyalink HTTP/1.1\r\n", 23) != 0)
+    {
+      return NYABULA_WS_NOT_UPGRADE;
     }
 
   /* Replace CRLF with one NUL each, preserving a double-NUL terminator. */

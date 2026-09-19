@@ -21,10 +21,19 @@
 
 #ifndef __APP_NYABULA_CORE_NY_WEBSOCKET_H
 #define __APP_NYABULA_CORE_NY_WEBSOCKET_H
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #define NYABULA_WS_MESSAGE_MAX 32768
+
+/* Returned by nyabula_eye_ws_upgrade() for a complete, well-formed request
+ * that is not for the WebSocket endpoint.  The request head is left in the
+ * scratch buffer exactly as received, NUL-terminated.
+ */
+
+#define NYABULA_WS_NOT_UPGRADE (-ENOTSUP)
+
 uint64_t nyabula_eye_ws_now(void);
 int nyabula_eye_ws_upgrade(int fd, const char *origin, char *scratch,
                            size_t capacity);
