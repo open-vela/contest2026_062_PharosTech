@@ -33,6 +33,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <netinet/tcp.h>
 #include <nuttx/config.h>
 #include <nuttx/mutex.h>
 #include <nyabula_eye_service.h>
@@ -45,19 +46,25 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
-#define NYABULA_WS_TOKEN_SIZE   64
-#define NYABULA_WS_SOURCE       "webui"
-#define NYABULA_WS_PRIORITY     40
-#define NYABULA_WS_LEASE_MS     5000
-#define NYABULA_WS_STATE_MS     50
-#define NYABULA_WS_IDLE_MS      20000
-#define NYABULA_WS_AUTH_MS      30000
-#define NYABULA_WS_MAX_REQUESTS 40
-#define NY_WEB_MAX_CLIENTS      8
-#define NY_WEB_STORE_WAIT_MS    15000
+#define NYABULA_WS_TOKEN_SIZE       64
+#define NYABULA_WS_SOURCE           "webui"
+#define NYABULA_WS_PRIORITY         40
+#define NYABULA_WS_LEASE_MS         5000
+#define NYABULA_WS_STATE_MS         50
+#define NYABULA_WS_IDLE_MS          20000
+#define NYABULA_WS_AUTH_MS          30000
+#define NYABULA_WS_MAX_REQUESTS     40
+
+#define NY_WEB_SEND_TIMEOUT_S       5
+#define NY_WEB_KEEPALIVE_IDLE_S     10
+#define NY_WEB_KEEPALIVE_INTERVAL_S 5
+#define NY_WEB_KEEPALIVE_PROBES     3
+#define NY_WEB_MAX_CLIENTS          8
+#define NY_WEB_STORE_WAIT_MS        15000
 
 static mutex_t g_web_lock = NXMUTEX_INITIALIZER;
 static bool g_web_running;
@@ -111,6 +118,7 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
 static int nyabula_eye_ws_client(int fd, const char *token,
                                  const char *origin);
 static void *ny_web_client_worker(void *argument);
+static void ny_web_client_limits(int fd);
 static void ny_web_store_wait(const char *path);
 static int ny_web_token_load(const char *path, char *token);
 static int ny_web_token_create(const char *path, char *token);
@@ -926,6 +934,36 @@ int ny_web_panel_count(void)
 }
 
 /****************************************************************************
+ * Name: ny_web_client_limits
+ *
+ * Description:
+ *   Bound how long a peer that went away can hold a client thread.  A phone
+ *   that leaves the network mid reply never resets the connection, and a
+ *   send with no timeout would keep its thread, and one of the few client
+ *   slots, until the next restart.  Every option is best effort: a build
+ *   without keepalive still gets the send timeout.
+ *
+ ****************************************************************************/
+
+static void ny_web_client_limits(int fd)
+{
+  struct timeval timeout = { NY_WEB_SEND_TIMEOUT_S, 0 };
+  int value = 1;
+
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &value, sizeof(value));
+#ifdef CONFIG_NET_TCP_KEEPALIVE
+  setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &value, sizeof(value));
+  value = NY_WEB_KEEPALIVE_IDLE_S;
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &value, sizeof(value));
+  value = NY_WEB_KEEPALIVE_INTERVAL_S;
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &value, sizeof(value));
+  value = NY_WEB_KEEPALIVE_PROBES;
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &value, sizeof(value));
+#endif
+}
+
+/****************************************************************************
  * Name: ny_web_store_wait
  *
  * Description:
@@ -1290,6 +1328,7 @@ int ny_web_run(int argc, char **argv)
           continue;
         }
 
+      ny_web_client_limits(client);
       struct ny_web_client_args_s *args = calloc(1, sizeof(*args));
       if (args == NULL)
         {
