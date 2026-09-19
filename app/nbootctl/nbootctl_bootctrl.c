@@ -52,6 +52,17 @@
 #define NBOOTCTL_FIT_MAGIC      0xd00dfeedu
 #define NBOOTCTL_REBOOT_MAGIC   0x4e425200u
 
+/* N-Boot publishes this boot's medium and slot in PMU1 GRF scratch
+ * registers immediately before it enters NuttX.
+ */
+
+#define NBOOTCTL_HANDOFF_REG        0x26026234ul
+#define NBOOTCTL_GENERATION_LO_REG  0x26026238ul
+#define NBOOTCTL_GENERATION_HI_REG  0x2602623cul
+#define NBOOTCTL_HANDOFF_MAGIC      0x4e480000u
+#define NBOOTCTL_HANDOFF_MAGIC_MASK 0xffff0000u
+#define NBOOTCTL_HANDOFF_VERSION    2u
+
 struct nbootctl_slot_s
 {
   uint8_t priority;
@@ -99,6 +110,9 @@ _Static_assert(offsetof(struct nbootctl_record_s, padding) == 236,
 
 /* Private Function Prototypes */
 
+static uint32_t nbootctl_reg_read(uintptr_t address);
+static void nbootctl_slot_export(const struct nbootctl_slot_s *from,
+                                 struct nbootctl_slot_state_s *to);
 static const char *nbootctl_bootctrl_path(unsigned int medium);
 static const char *nbootctl_disk_path(unsigned int medium);
 static uint32_t nbootctl_be32(const uint8_t *value);
@@ -115,6 +129,28 @@ static int nbootctl_write_records(struct inode *inode,
                                   int selected);
 static int nbootctl_bootctrl_update(unsigned int medium, const char *domain,
                                     unsigned int slot, bool mark_successful);
+
+/****************************************************************************
+ * Name: nbootctl_reg_read
+ ****************************************************************************/
+
+static uint32_t nbootctl_reg_read(uintptr_t address)
+{
+  return *(volatile uint32_t *)address;
+}
+
+/****************************************************************************
+ * Name: nbootctl_slot_export
+ ****************************************************************************/
+
+static void nbootctl_slot_export(const struct nbootctl_slot_s *from,
+                                 struct nbootctl_slot_state_s *to)
+{
+  to->priority = from->priority;
+  to->successful = from->successful != 0;
+  to->image_size = from->image_size;
+  to->image_version = from->image_version;
+}
 
 /****************************************************************************
  * Name: nbootctl_bootctrl_path
@@ -300,6 +336,123 @@ static int nbootctl_write_records(struct inode *inode,
         }
     }
 
+  return 0;
+}
+
+/****************************************************************************
+ * Name: nbootctl_handoff_read
+ ****************************************************************************/
+
+int nbootctl_handoff_read(unsigned int *medium, unsigned int *slot,
+                          unsigned int *reason, uint64_t *generation)
+{
+  uint32_t header;
+  uint32_t confirm;
+  uint64_t value;
+  unsigned int boot_reason;
+  unsigned int boot_medium;
+  unsigned int boot_slot;
+
+  /* N-Boot writes the generation words first and the header last.  Reading
+   * the header on both sides of them rejects a handoff caught mid-update.
+   */
+
+  header = nbootctl_reg_read(NBOOTCTL_HANDOFF_REG);
+  value = nbootctl_reg_read(NBOOTCTL_GENERATION_LO_REG);
+  value |= (uint64_t)nbootctl_reg_read(NBOOTCTL_GENERATION_HI_REG) << 32;
+  confirm = nbootctl_reg_read(NBOOTCTL_HANDOFF_REG);
+
+  if (header != confirm ||
+      (header & NBOOTCTL_HANDOFF_MAGIC_MASK) != NBOOTCTL_HANDOFF_MAGIC ||
+      ((header >> 12) & 0xf) != NBOOTCTL_HANDOFF_VERSION)
+    {
+      return -ENODEV;
+    }
+
+  boot_reason = (header >> 8) & 0xf;
+  boot_medium = (header >> 4) & 0xf;
+  boot_slot = header & 0xf;
+  if (boot_medium < 1 || boot_medium > 2 || boot_reason > 2 || boot_slot > 1)
+    {
+      return -EBADMSG;
+    }
+
+  if (reason != NULL)
+    {
+      *reason = boot_reason;
+    }
+
+  if (medium != NULL)
+    {
+      *medium = boot_medium;
+    }
+
+  if (slot != NULL)
+    {
+      *slot = boot_slot;
+    }
+
+  if (generation != NULL)
+    {
+      *generation = value;
+    }
+
+  return 0;
+}
+
+/****************************************************************************
+ * Name: nbootctl_bootctrl_snapshot
+ ****************************************************************************/
+
+int nbootctl_bootctrl_snapshot(struct nbootctl_state_s *state)
+{
+  struct nbootctl_record_s *records;
+  const struct nbootctl_record_s *record;
+  struct inode *inode = NULL;
+  int selected;
+  int slot;
+  int ret;
+
+  memset(state, 0, sizeof(*state));
+  if (nbootctl_handoff_read(&state->medium, &state->running_slot, NULL, NULL) <
+      0)
+    {
+      /* Not an error: an image started without N-Boot has no handoff, and
+       * then there is no telling which medium holds bootctrl.
+       */
+
+      return 0;
+    }
+
+  /* A record fills a 4 KiB task stack on its own; both live on the heap. */
+
+  records = memalign(64, sizeof(*records) * NBOOTCTL_COPY_COUNT);
+  if (records == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  ret = nbootctl_read_records(state->medium, &inode, records, &selected);
+  if (ret < 0)
+    {
+      free(records);
+      return ret;
+    }
+
+  record = &records[selected];
+  state->handoff_valid = true;
+  state->bootctrl_generation = record->generation;
+  state->nuttx_active = record->domains[0].active_slot ? 1 : 0;
+  state->amp_active = record->domains[1].active_slot ? 1 : 0;
+  for (slot = 0; slot < 2; slot++)
+    {
+      nbootctl_slot_export(&record->domains[0].slots[slot],
+                           &state->nuttx[slot]);
+      nbootctl_slot_export(&record->domains[1].slots[slot], &state->amp[slot]);
+    }
+
+  close_blockdriver(inode);
+  free(records);
   return 0;
 }
 
