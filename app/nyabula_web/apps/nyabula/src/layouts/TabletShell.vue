@@ -31,7 +31,7 @@ const portrait = computed(() => ff.orientation.value === 'portrait');
         </button>
       </nav>
       <RouterLink class="rail-item" :class="{ active: shell.route.name === 'settings' }" to="/settings">
-        <span class="rail-pill"><UiIcon name="settings" :size="22" /></span>
+        <span class="rail-pill"><UiIcon name="computer" :size="22" /></span>
         <span class="rail-label">客户端</span>
       </RouterLink>
     </aside>
@@ -43,7 +43,7 @@ const portrait = computed(() => ff.orientation.value === 'portrait');
         <DeviceSwitcher compact class="bar-switcher" />
         <StatusPill :tone="shell.connTone.value" :label="shell.connLabel.value" />
         <ThemeSwitcher compact />
-        <RouterLink v-if="portrait" class="bar-icon" to="/settings"><UiIcon name="settings" :size="22" /></RouterLink>
+        <RouterLink v-if="portrait" class="bar-icon" to="/settings" title="客户端设置"><UiIcon name="computer" :size="22" /></RouterLink>
       </header>
       <ConnectionBanner />
       <main class="main">

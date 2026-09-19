@@ -29,7 +29,7 @@ const commands = computed<Cmd[]>(() => {
   for (const n of PRIMARY_NAV) {
     out.push({ id: `nav:${n.id}`, group: '页面', label: n.label, icon: n.icon, run: () => (n.to.startsWith('/') ? router.push(n.to) : key && router.push({ name: n.to, params: { key } })) });
   }
-  out.push({ id: 'nav:settings', group: '页面', label: '设置', icon: 'settings', run: () => router.push('/settings') });
+  out.push({ id: 'nav:settings', group: '页面', label: '客户端设置', icon: 'computer', run: () => router.push('/settings') });
   out.push({ id: 'nav:connect', group: '页面', label: '连接设备', icon: 'link', run: () => router.push({ name: 'connect', query: { stay: '1' } }) });
   if (session.connected) {
     for (const m of MODES) out.push({ id: `mode:${m}`, group: '表情', label: MODE_LABELS[m] ?? m, icon: 'face', hint: m, run: () => eye.setMode(m) });
