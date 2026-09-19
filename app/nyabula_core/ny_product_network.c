@@ -122,8 +122,10 @@ struct ny_net_s
   char sta_ipv4[INET_ADDRSTRLEN];
   time_t sta_started;
   time_t sta_retry_at; /* no station attempt before this */
+  time_t rejoin_at;    /* when to try the stored network again; 0 = never */
   time_t rssi_at;      /* when the signal level is read next */
   int sta_rssi;        /* dBm, 0 = not known */
+  unsigned int rejoin_step;
   int sta_attempt;
   int last_error;
   bool pending_sta;  /* wifi.set arrived, worker must (re)connect */
@@ -660,6 +662,8 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
         goto out;
       g_net.sta_attempt = 0;
       g_net.sta_retry_at = 0;
+      g_net.rejoin_at = 0;
+      g_net.rejoin_step = 0;
       g_net.pending_sta = true;
       *result = ny_net_status_json(true);
       ret = *result ? 0 : -ENOMEM;
@@ -734,6 +738,27 @@ static int ny_net_step(void)
       if (g_net.sta_ssid[0] == '\0' && g_net.state == NY_NET_IDLE &&
           !g_net.pending_ap && !g_net.pending_sta)
         ny_net_arm_ap();
+    }
+
+  /* Time to try the stored network again?  Not while somebody has the
+   * panel open: taking the access point down would cut them off in the
+   * middle of whatever they came to do, which is most likely to give the
+   * device a different network.
+   */
+
+  if (g_net.state == NY_NET_AP_PROVISION && g_net.rejoin_at != 0 &&
+      g_net.sta_ssid[0] != '\0' && !g_net.pending_ap && !g_net.pending_sta &&
+      !g_net.pending_stop && time(NULL) >= g_net.rejoin_at)
+    {
+#ifdef CONFIG_NYABULA_CORE_WEB
+      if (ny_web_panel_count() > 0)
+        g_net.rejoin_at = time(NULL) + 60;
+      else
+#endif
+        {
+          g_net.rejoin_at = 0;
+          g_net.pending_sta = true;
+        }
     }
 
   /* Snapshot the requested action, then act without holding the lock. */
@@ -830,6 +855,8 @@ static int ny_net_step(void)
       else if (next == NY_NET_STA_ONLINE)
         {
           strcpy(g_net.sta_ipv4, ipv4);
+          g_net.rejoin_at = 0;
+          g_net.rejoin_step = 0;
         }
       else if (next == NY_NET_STA_FAILED)
         {
@@ -844,6 +871,18 @@ static int ny_net_step(void)
             }
           else
             {
+              /* Fall back, but not for good.  A network that did not answer
+               * is more often late than gone -- after a power cut the
+               * router takes longer to come up than this does -- so it is
+               * tried again at growing intervals.
+               */
+
+              static const unsigned int delays[] = { 60, 120, 300, 600 };
+              unsigned int last = sizeof(delays) / sizeof(delays[0]) - 1;
+              unsigned int step =
+                  g_net.rejoin_step < last ? g_net.rejoin_step : last;
+              g_net.rejoin_at = time(NULL) + delays[step];
+              g_net.rejoin_step++;
               g_net.sta_attempt = 0;
               ny_net_arm_ap();
             }
