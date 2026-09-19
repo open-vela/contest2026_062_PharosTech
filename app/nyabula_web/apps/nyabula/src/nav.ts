@@ -20,6 +20,8 @@ export const PRIMARY_NAV: NavItem[] = [
 export const DEVICE_SECTIONS = [
   { id: 'overview', label: '概览', icon: 'dashboard' },
   { id: 'network', label: '网络', icon: 'wifi' },
+  // Device build only: the password that lets a browser in without the QR code.
+  ...(__NYA_DEVICE__ ? [{ id: 'access', label: '访问密码', icon: 'key' }] : []),
   { id: 'cloud', label: '云中继', icon: 'cloud' },
   { id: 'permissions', label: '权限总览', icon: 'shield' },
   { id: 'storage', label: '存储', icon: 'storage' },

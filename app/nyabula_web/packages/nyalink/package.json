@@ -15,7 +15,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/auth.test.mjs test/timeout.test.mjs"
+    "test": "node --test test/auth.test.mjs test/timeout.test.mjs test/manual-hello.test.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.3"

@@ -7,6 +7,7 @@ import { hostRegistry } from '../../host/registry';
 import { useSessionStore } from '../../stores/session';
 import OverviewSection from './sections/OverviewSection.vue';
 import NetworkSection from './sections/NetworkSection.vue';
+import AccessSection from './sections/AccessSection.vue';
 import CloudSection from './sections/CloudSection.vue';
 import PermissionsSection from './sections/PermissionsSection.vue';
 import ReservedSection from './sections/ReservedSection.vue';
@@ -24,6 +25,8 @@ export interface DeviceSection {
 const BUILTIN: Record<string, Component> = {
   overview: OverviewSection,
   network: NetworkSection,
+  // Listed by DEVICE_SECTIONS in the device build only.
+  ...(__NYA_DEVICE__ ? { access: AccessSection } : {}),
   cloud: CloudSection,
   permissions: PermissionsSection,
   storage: ReservedSection,
