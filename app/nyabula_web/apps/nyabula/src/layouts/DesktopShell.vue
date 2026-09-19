@@ -66,7 +66,7 @@ const showContext = computed(() => shell.inDevice.value && contextOpen.value && 
       </nav>
       <div class="rail-foot">
         <RouterLink class="rail-item" :class="{ active: shell.route.name === 'settings' }" to="/settings" title="客户端设置">
-          <span class="rail-pill"><UiIcon name="settings" :size="26" /></span>
+          <span class="rail-pill"><UiIcon name="computer" :size="26" /></span>
           <span class="rail-label">客户端</span>
         </RouterLink>
         <button class="rail-item" title="展开 / 收起" @click="toggleRail">
