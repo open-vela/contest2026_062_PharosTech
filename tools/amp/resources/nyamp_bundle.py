@@ -49,7 +49,8 @@ INSTALL_KINDS = ("firmware", "boot")
 # has been transferred -- cheap to prevent, annoying to discover.
 NBOOTCTL_PARTITIONS = (
     "uboot", "trust", "bootctrl",
-    "nuttx_a", "nuttx_b", "amp_a", "amp_b", "data",
+    "nuttx_a", "nuttx_b", "amp_a", "amp_b",
+    "config", "data",
 )
 
 

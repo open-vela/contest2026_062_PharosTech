@@ -9,7 +9,8 @@ import tarfile
 import tempfile
 import unittest
 
-from nyamp_bundle import nyamp_compatible, nyamp_manifest, nyamp_pack
+from nyamp_bundle import (NBOOTCTL_PARTITIONS, nyamp_compatible,
+                             nyamp_manifest, nyamp_pack)
 
 
 class NyampBundleTest(unittest.TestCase):
@@ -230,3 +231,35 @@ class NyampBundleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NyampPartitionTableTest(unittest.TestCase):
+    """The partition names must match what nbootctl will accept.
+
+    A name that passes packing but not the write costs a full transfer
+    before it fails, so the two tables are compared directly rather than
+    trusted to stay in step by hand.
+    """
+
+    def test_matches_nbootctl_table(self):
+        # tools/amp/resources/test_nyamp_bundle.py -> repo root is three up
+        repo = Path(__file__).resolve().parents[3]
+        source = repo / "app/nbootctl/nbootctl_part.c"
+        if not source.is_file():
+            self.skipTest("nbootctl source is not alongside this tree")
+        import re
+        text = source.read_text(encoding="utf-8")
+        body = text[text.index("nbootctl_partitions[] ="):]
+        body = body[:body.index("};")]
+        found = re.findall(r'\{\s*"([a-z0-9_]+)"\s*,\s*(\d+)\s*,', body)
+        names = tuple(name for name, _ in found)
+
+        self.assertEqual(names, NBOOTCTL_PARTITIONS,
+                         "nbootctl's partition names drifted from the packer's")
+
+        # Indices are how the node name is derived, so a gap or a swap
+        # would point the write at the wrong partition entirely.
+        for name, index in found:
+            self.assertEqual(int(index), names.index(name) + 1,
+                             f"{name} is at index {index}, expected "
+                             f"{names.index(name) + 1}")
