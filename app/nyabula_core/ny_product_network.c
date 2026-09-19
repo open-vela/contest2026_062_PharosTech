@@ -31,6 +31,7 @@
 
 #include "ny_product.h"
 #include "ny_product_store.h"
+#include "ny_web.h"
 
 #include <nuttx/config.h>
 #include <nuttx/mutex.h>
@@ -47,6 +48,11 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+
+#if defined(CONFIG_NYABULA_CORE_EYE) && defined(CONFIG_NYABULA_CORE_WEB)
+#include <nyabula_eye_engine.h>
+#include <nyabula_eye_service.h>
+#endif
 
 #ifdef CONFIG_WIRELESS_WAPI
 #include <wireless/wapi.h>
@@ -84,6 +90,12 @@
 #define NY_NET_SSID_MAX      32
 #define NY_NET_PSK_MAX       64
 #define NY_NET_SCAN_MAX      24
+
+#define NY_NET_EYE_SOURCE    "network"
+#define NY_NET_EYE_PRIORITY  70
+#define NY_NET_EYE_LEASE_MS  15000
+#define NY_NET_EYE_RENEW_S   5
+#define NY_NET_EYE_ONLINE_MS 60000
 
 /****************************************************************************
  * Private Types
@@ -617,14 +629,14 @@ out:
 }
 
 /****************************************************************************
- * Name: ny_product_network_tick
+ * Name: ny_net_step
  *
  *   Runs from the nyproduct worker (~10 Hz). Executes at most one hardware
  *   transition per call so the worker never stalls other services for
  *   longer than a single wapi/dhcp operation.
  ****************************************************************************/
 
-int ny_product_network_tick(void)
+static int ny_net_step(void)
 {
   int ret = nxmutex_lock(&g_net_lock);
   if (ret < 0)
@@ -747,6 +759,232 @@ int ny_product_network_tick(void)
   g_net.last_error = error;
   nxmutex_unlock(&g_net_lock);
   return 0;
+}
+
+#if defined(CONFIG_NYABULA_CORE_EYE) && defined(CONFIG_NYABULA_CORE_WEB)
+
+/* Put one command to the Eye Engine under this module's own source, so its
+ * scene competes with, and is released independently of, anyone else's.
+ */
+
+static int ny_net_eye_submit(const char *action, cJSON *params,
+                             uint32_t lease_ms)
+{
+  cJSON *command = cJSON_CreateObject();
+  char *json = NULL;
+  int ret = -ENOMEM;
+  if (command != NULL &&
+      cJSON_AddStringToObject(command, "action", action) != NULL &&
+      cJSON_AddStringToObject(command, "id", "network") != NULL &&
+      cJSON_AddStringToObject(command, "source", NY_NET_EYE_SOURCE) != NULL &&
+      cJSON_AddNumberToObject(command, "priority", NY_NET_EYE_PRIORITY) !=
+          NULL &&
+      cJSON_AddNumberToObject(command, "lease_ms", lease_ms) != NULL)
+    {
+      if (params != NULL)
+        {
+          cJSON_AddItemToObject(command, "params", params);
+          params = NULL;
+        }
+      json = cJSON_PrintUnformatted(command);
+    }
+  if (json != NULL)
+    {
+      ret = nyabula_eye_service_submit(NY_NET_EYE_SOURCE, json, strlen(json));
+
+      /* The pairing command carries the access token. */
+
+      memset(json, 0, strlen(json));
+      free(json);
+    }
+  cJSON_Delete(params);
+  cJSON_Delete(command);
+  return ret;
+}
+
+/* Build the payload for the pairing scene: the address of the setup page on
+ * one eye, the access point's own join code on the other.  A phone scans
+ * the second to get onto the device's network and the first to open the
+ * page, and the page is given the token so that holding the device is all
+ * the owner has to prove.
+ */
+
+/* The join-code format gives backslash, semicolon, comma, colon and the
+ * double quote a meaning, so they are escaped where they occur in a name or
+ * a passphrase.  The default identity has none; one chosen through
+ * provision.start may.
+ */
+
+static void ny_net_qr_escape(char *out, size_t size, const char *in)
+{
+  size_t used = 0;
+  for (; *in != '\0' && used + 2 < size; in++)
+    {
+      if (strchr("\\;,:\"", *in) != NULL)
+        out[used++] = '\\';
+      out[used++] = *in;
+    }
+  out[used] = '\0';
+}
+
+static cJSON *ny_net_eye_pairing(const char *ssid, const char *psk)
+{
+  char token[80];
+  char text[NYABULA_EYE_TEXT_QR];
+  char name[NY_NET_SSID_MAX * 2 + 2];
+  char pass[NY_NET_PSK_MAX * 2 + 2];
+  cJSON *payload = cJSON_CreateObject();
+  if (payload == NULL)
+    return NULL;
+  ny_net_qr_escape(name, sizeof(name), ssid);
+  ny_net_qr_escape(pass, sizeof(pass), psk);
+
+  /* A code that does not fit is left out rather than cut short: the engine
+   * refuses an over-long text, and a shortened one would be a wrong one.
+   */
+
+  if (snprintf(text, sizeof(text), "WIFI:T:WPA;S:%s;P:%s;;", name, pass) <
+      (int)sizeof(text))
+    cJSON_AddStringToObject(payload, "qr_right", text);
+  memset(pass, 0, sizeof(pass));
+  if (ny_web_product_token(token, sizeof(token)) == 0)
+    {
+      snprintf(text, sizeof(text),
+               "http://" NY_NET_AP_ADDR "/#/provision?token=%s", token);
+      cJSON_AddStringToObject(payload, "qr_left", text);
+      memset(token, 0, sizeof(token));
+    }
+  memset(text, 0, sizeof(text));
+  return payload;
+}
+
+/* Keep the eyes saying what the network is doing.
+ *
+ * The pairing scene is shown on a short lease and renewed from here rather
+ * than shown once for good: if this worker ever stops, the code disappears
+ * by itself instead of being burnt into the face of a device that is no
+ * longer listening.
+ */
+
+static void ny_net_eye_sync(void)
+{
+  static enum ny_net_state_e shown = NY_NET_IDLE;
+  static time_t renew_at;
+  char ssid[NY_NET_SSID_MAX + 1];
+  char psk[NY_NET_PSK_MAX + 1];
+  char ipv4[INET_ADDRSTRLEN];
+  enum ny_net_state_e state;
+  time_t now = time(NULL);
+  cJSON *params;
+  cJSON *payload;
+
+  if (nxmutex_lock(&g_net_lock) < 0)
+    return;
+  state = g_net.state;
+  strcpy(ssid, g_net.ap_ssid);
+  strcpy(psk, g_net.ap_psk);
+  strcpy(ipv4, g_net.sta_ipv4);
+  nxmutex_unlock(&g_net_lock);
+
+  if (state == NY_NET_AP_PROVISION)
+    {
+      bool renew = shown == NY_NET_AP_PROVISION;
+      if (renew && now < renew_at)
+        return;
+      payload = ny_net_eye_pairing(ssid, psk);
+      params = cJSON_CreateObject();
+      if (payload == NULL || params == NULL)
+        {
+          cJSON_Delete(payload);
+          cJSON_Delete(params);
+          return;
+        }
+      if (!renew)
+        {
+          cJSON_AddStringToObject(params, "scene", "qr");
+          cJSON_AddStringToObject(params, "style", "full");
+        }
+      cJSON_AddItemToObject(params, "payload", payload);
+
+      /* A renewal that finds no scene to renew -- the engine was not up
+       * yet, or the lease ran out under load -- falls back to showing it
+       * again on the next pass.
+       */
+
+      if (ny_net_eye_submit(renew ? "eyes.scene.update" : "eyes.scene.show",
+                            params, NY_NET_EYE_LEASE_MS) == 0)
+        shown = NY_NET_AP_PROVISION;
+      else
+        shown = NY_NET_IDLE;
+      renew_at = now + NY_NET_EYE_RENEW_S;
+    }
+  else if (state == NY_NET_STA_ONLINE)
+    {
+      if (shown == NY_NET_STA_ONLINE)
+        return;
+
+      /* Once, for long enough to read: this is how the owner learns the
+       * address to open now that the access point is gone.
+       */
+
+      payload = cJSON_CreateObject();
+      params = cJSON_CreateObject();
+      if (payload == NULL || params == NULL)
+        {
+          cJSON_Delete(payload);
+          cJSON_Delete(params);
+          return;
+        }
+      /* The address alone is not enough.  The page keeps the token in the
+       * browser's storage for the origin it was opened from, and that was
+       * the access point's address; at the new one the phone knows nothing.
+       * So the new address goes out the way the first one did, as a code
+       * that carries the token, with the plain text beside it for anyone
+       * typing it into a computer.
+       */
+
+      {
+        char token[80];
+        char text[NYABULA_EYE_TEXT_QR];
+        if (ny_web_product_token(token, sizeof(token)) == 0 &&
+            snprintf(text, sizeof(text), "http://%s/#/?token=%s", ipv4,
+                     token) < (int)sizeof(text))
+          cJSON_AddStringToObject(payload, "qr_left", text);
+        else if (snprintf(text, sizeof(text), "http://%s/", ipv4) <
+                 (int)sizeof(text))
+          cJSON_AddStringToObject(payload, "qr_left", text);
+        memset(token, 0, sizeof(token));
+        memset(text, 0, sizeof(text));
+      }
+
+      cJSON_AddStringToObject(payload, "title", "网络已连接");
+      cJSON_AddStringToObject(payload, "detail", ipv4);
+      cJSON_AddStringToObject(params, "scene", "qr");
+      cJSON_AddStringToObject(params, "style", "full");
+      cJSON_AddItemToObject(params, "payload", payload);
+      if (ny_net_eye_submit("eyes.scene.show", params, NY_NET_EYE_ONLINE_MS) ==
+          0)
+        shown = NY_NET_STA_ONLINE;
+    }
+  else if (shown != NY_NET_IDLE)
+    {
+      ny_net_eye_submit("eyes.scene.hide", NULL, NY_NET_EYE_LEASE_MS);
+      shown = NY_NET_IDLE;
+    }
+}
+#endif
+
+/****************************************************************************
+ * Name: ny_product_network_tick
+ ****************************************************************************/
+
+int ny_product_network_tick(void)
+{
+  int ret = ny_net_step();
+#if defined(CONFIG_NYABULA_CORE_EYE) && defined(CONFIG_NYABULA_CORE_WEB)
+  ny_net_eye_sync();
+#endif
+  return ret;
 }
 
 /****************************************************************************
