@@ -1093,8 +1093,11 @@ static int screen_display_on(nyabula_screen_t *scr)
   int ret;
 
   /* Allocate a temporary full-frame black buffer.  It is plain malloc'd
-   * memory: st77916_putarea() stages it into its own DMA-safe buffer, so
-   * no special alignment is required here. */
+   * memory: st77916_putarea() passes the buffer through to the QSPI
+   * lower-half without staging, and rk3576_fspi.c handles an unaligned or
+   * out-of-range buffer by bouncing it through a DMA-safe allocation (and
+   * running its own cache clean for the write direction), so no special
+   * alignment is required here. */
   black = lv_malloc(scr->buf_size);
   if (black == NULL)
     {

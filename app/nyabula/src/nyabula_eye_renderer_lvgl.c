@@ -1054,6 +1054,65 @@ static void bake_base(struct nyabula_eye_renderer_s *r)
   lv_canvas_set_draw_buf(r->mask_canvas, r->mask_buffer);
 }
 
+/* Fill a whole ARGB8888 page with opaque black.  Used by the Scene path,
+ * which -- unlike the eye path -- has no per-pixel writer covering the frame,
+ * so it must clear the page itself before drawing its centre backdrop.
+ *
+ * This restores the frame clear the original renderer did in its
+ * `base_buffer == NULL` branch (removed when the base cache was dropped);
+ * without it the ring outside the backdrop disc keeps the iris/glow pixels
+ * the previous eye-path frame left there and shows up as a faint, slowly
+ * brightening dithered ring.
+ *
+ * Alpha must be 0xFF: lv_draw_buf_create() memory is not zeroed, and a
+ * transparent page would let stale pixels show through the renderer's later
+ * read-modify-write passes (iris SDF lines, scene vector blending), even
+ * though the panel itself never displays alpha.
+ *
+ * No cache maintenance here: this page is only ever touched by the CPU
+ * (LVGL blits it into the display draw buffer, which is what actually reaches
+ * the panel), and render_scene() immediately reads these pixels back for its
+ * vector blending, so flushing would only throw away the lines we just wrote.
+ *
+ * NEON path stores 8 pixels at a time with a BGRA interleaved store; W (360)
+ * is a multiple of 8, so no scalar tail is needed.  Both paths rely only on
+ * `stride` (never on `stride == W * 4`), so they stay correct if LVGL ever
+ * pads the scan line. */
+static void clear_frame(lv_draw_buf_t *target)
+{
+  uint32_t stride = target->header.stride;
+  uint8_t *dst = (uint8_t *)target->data;
+  uint32_t y;
+
+#if defined(__ARM_NEON)
+  /* val[0]=blue, val[1]=green, val[2]=red, val[3]=alpha (BGRA). */
+  const uint8x8x4_t black = { { vdup_n_u8(0), vdup_n_u8(0), vdup_n_u8(0),
+                                vdup_n_u8(255) } };
+#endif
+
+  for (y = 0; y < H; y++)
+    {
+#if defined(__ARM_NEON)
+      uint32_t x;
+
+      for (x = 0; x < W; x += 8)
+        {
+          vst4_u8(dst + x * 4u, black);
+        }
+#else
+      uint32_t *row = (uint32_t *)dst;
+      uint32_t x;
+
+      for (x = 0; x < W; x++)
+        {
+          row[x] = 0xff000000u;
+        }
+#endif
+
+      dst += stride;
+    }
+}
+
 /* Composite the baked base (glow + iris) for the current frame. The baked
  * textures hold a tinted (0x808080) premultiplied base baked with glow == 1;
  * recolouring to the live iris_rgb and scaling the glow alpha is done by a
@@ -1262,7 +1321,6 @@ static lv_draw_buf_t *bake_base_composite(struct nyabula_eye_renderer_s *r,
   }
 #endif
 
-  lv_draw_buf_flush_cache(target, NULL);
   return target;
 }
 
@@ -4188,7 +4246,6 @@ static void apply_scene_lid_mask(lv_draw_buf_t *buffer, struct eye_s *eye)
   int y;
 
   prepare_lid_clip(eye);
-  lv_draw_buf_invalidate_cache(buffer, NULL);
   for (y = 0; y < H; y++)
     {
       lv_color32_t *pixels = (lv_color32_t *)(buffer->data + y * stride);
@@ -4221,8 +4278,6 @@ static void apply_scene_lid_mask(lv_draw_buf_t *buffer, struct eye_s *eye)
               (uint8_t)((pixels[x].alpha * mask + 127u) / LV_OPA_COVER);
         }
     }
-
-  lv_draw_buf_flush_cache(buffer, NULL);
 }
 
 static void render_scene_lid_mask(struct nyabula_eye_renderer_s *r,
@@ -4836,6 +4891,16 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
 
   if (frame->scene.scene != NYABULA_EYE_SCENE_NONE && !minimal_exit)
     {
+      /* A Scene only paints its own centre backdrop disc (R * 0.93) plus
+       * decorations, so the ring outside that disc would otherwise keep the
+       * pixels the previous eye-path frame left there (iris disc + glow rim).
+       * The eye path gets a full-frame write for free from
+       * bake_base_composite(); the Scene path has no such writer, so clear
+       * the whole page first.  Without this, boot shows a faint, slowly
+       * brightening dithered ring hugging the backdrop disc edge. */
+      graphics_trace_beginex("scene_clear");
+      clear_frame(r->draw);
+      graphics_trace_endex("scene_clear");
       graphics_trace_beginex("scene_draw");
       render_scene(r, frame, id);
       graphics_trace_endex("scene_draw");
@@ -4891,7 +4956,6 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
   graphics_trace_endex("raster");
   r->raster_total += lv_tick_elaps(stage_start);
   stage_start = lv_tick_get();
-  lv_draw_buf_flush_cache(r->draw, NULL);
   lv_obj_invalidate(r->canvas[id]);
   r->flush_total += lv_tick_elaps(stage_start);
   graphics_trace_endex(id == NYABULA_EYE_LEFT ? "eye_left" : "eye_right");
