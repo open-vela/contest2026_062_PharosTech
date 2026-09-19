@@ -1,9 +1,14 @@
 <script setup lang="ts">
-/* Network: WiFi status from sys.info; scan / switch are contract-reserved. */
-import { computed } from 'vue';
-import { EmptyState, MdButton, MdCard, MdTextField, Skeleton, UiIcon } from '@nyabula/ui';
+/* Network: WiFi status from sys.info + network.status; scan / switch share
+ * useWifiSetup() with the provisioning page. */
+import { computed, watch } from 'vue';
+import { EmptyState, MdButton, MdCard, Skeleton, UiIcon, useDialogStore } from '@nyabula/ui';
 import { rssiBars, useSysInfo, wifiOf } from './sysinfo';
 import { useDeviceRuntime } from '../../../composables/useDeviceRuntime';
+import { useWifiSetup } from '../../../composables/useWifiSetup';
+import { NETWORK_STATE_LABEL } from '../../../lib/wifi';
+import WifiSetupForm from '../../../components/WifiSetupForm.vue';
+import WifiJoinNotice from '../../../components/WifiJoinNotice.vue';
 
 const { task, info } = useSysInfo();
 const device = useDeviceRuntime();
@@ -11,6 +16,17 @@ const wifi = computed(() => {
   const wireless = device.snapshot?.network.interfaces.find(item => item.ssid);
   return wireless ? { ssid: wireless.ssid ?? null, rssi: null } : wifiOf(info.value);
 });
+
+const setup = useWifiSetup();
+const dialog = useDialogStore();
+const net = computed(() => setup.status.value);
+watch(() => setup.session.connected, (c) => { if (c) void setup.refreshStatus(); }, { immediate: true });
+
+async function forgetWifi(): Promise<void> {
+  if (await dialog.confirm('设备会断开当前 WiFi 并回到配网热点，需要重新扫描设备上的二维码来配置。', { title: '清除保存的 WiFi？', danger: true, confirmText: '清除' })) {
+    await setup.forget();
+  }
+}
 const quality = computed(() => ['无信号', '弱', '一般', '良好', '优秀'][rssiBars(wifi.value.rssi)]);
 </script>
 
@@ -39,24 +55,34 @@ const quality = computed(() => ['无信号', '弱', '一般', '良好', '优秀'
       <MdButton :disabled="!device.available || device.busy" @click="device.refresh()">刷新接口</MdButton>
     </MdCard>
 
-    <MdCard title="扫描网络">
-      <div class="row between" style="margin-bottom: 10px">
-        <span class="muted" style="font-size: 13px">列出设备附近的 WiFi 热点</span>
-        <span class="contract-only">契约预留</span>
-      </div>
-      <MdButton variant="tonal" disabled><UiIcon name="refresh" :size="16" /> 扫描</MdButton>
+    <MdCard title="WiFi 配置">
+      <Skeleton v-if="setup.statusBusy.value && !net" :lines="2" />
+      <EmptyState v-else-if="!net" tone="error" compact title="读取网络状态失败" :hint="setup.statusError.value ?? undefined" action-text="重试" @action="setup.refreshStatus()" />
+      <template v-else>
+        <dl class="kv">
+          <div><dt>状态</dt><dd>{{ net.state ? NETWORK_STATE_LABEL[net.state] : '未知' }}</dd></div>
+          <div><dt>已保存的 WiFi</dt><dd>{{ net.ssid ?? '无' }}</dd></div>
+          <div v-if="net.ipv4"><dt>地址</dt><dd class="mono">{{ net.ipv4 }}</dd></div>
+          <div v-if="net.error"><dt>最近的错误</dt><dd>{{ net.error }}</dd></div>
+        </dl>
+        <div class="row" style="justify-content: flex-end; margin-top: 12px">
+          <MdButton variant="text" :disabled="setup.statusBusy.value" @click="setup.refreshStatus()">刷新</MdButton>
+          <MdButton variant="outlined" :disabled="!net.configured || !setup.session.isOwner" @click="forgetWifi()">清除保存的 WiFi</MdButton>
+        </div>
+      </template>
     </MdCard>
 
     <MdCard title="切换网络">
-      <div class="row between" style="margin-bottom: 10px">
-        <span class="muted" style="font-size: 13px">为设备配置新的 WiFi 凭据</span>
-        <span class="contract-only">契约预留</span>
-      </div>
-      <div class="stack">
-        <MdTextField model-value="" label="SSID" placeholder="网络名称" icon="wifi" disabled />
-        <MdTextField model-value="" label="密码" type="password" placeholder="••••••••" icon="key" disabled />
-        <div class="row" style="justify-content: flex-end"><MdButton disabled>连接</MdButton></div>
-      </div>
+      <template v-if="setup.phase.value === 'joining'">
+        <WifiJoinNotice :ssid="setup.joinSsid.value" :via-hotspot="setup.viaHotspot.value" :link-dropped="setup.linkDropped.value" />
+        <div class="row" style="justify-content: flex-end; margin-top: 8px"><MdButton variant="text" :disabled="!setup.session.connected" @click="setup.retry()">重新填写</MdButton></div>
+      </template>
+      <EmptyState v-else-if="setup.phase.value === 'joined'" icon="check_circle" compact title="设备已连上 WiFi" :hint="`已加入「${setup.joinSsid.value}」`" action-text="好的" @action="setup.retry()" />
+      <template v-else>
+        <p class="muted" style="font-size: 13px; margin: 0 0 12px">为设备配置新的 WiFi。切换后设备的地址可能变化，新地址会显示在它的眼睛屏幕上。</p>
+        <p v-if="setup.joinError.value" class="join-error" role="alert">{{ setup.joinError.value }}</p>
+        <WifiSetupForm :setup="setup" />
+      </template>
     </MdCard>
   </div>
 </template>
@@ -76,5 +102,6 @@ const quality = computed(() => ['无信号', '弱', '一般', '良好', '优秀'
 .wifi-body { flex: 1; min-width: 0; }
 .ssid { font: 600 16px var(--font-title); color: var(--md-on-surface); }
 .sub { font-size: 12.5px; margin-top: 2px; }
+.join-error { margin: 0 0 12px; font-size: 13px; color: var(--md-error); }
 .md-btn :deep(.ui-icon) { vertical-align: -3px; margin-right: 4px; }
 </style>
