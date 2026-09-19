@@ -36,12 +36,18 @@ export interface HelloResult {
   device?: DeviceInfo;
   role?: 'owner' | 'family' | 'guest';
   pairingRequired?: boolean;
+  /** Which credential the device accepted (password-capable devices only). */
+  auth?: 'pair' | 'session';
+  /** Whether an access password has been set on the device. */
+  passwordSet?: boolean;
 }
 
 export class NyaLinkError extends Error {
   constructor(
     public code: string,
     message: string,
+    /** Extra fields of the err frame (e.g. retryAfterMs on ELOCKED). */
+    public data: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = 'NyaLinkError';
@@ -55,6 +61,12 @@ export interface NyaLinkClientOptions {
   loadToken?: (url: string) => string | null | Promise<string | null>;
   /** Persist a freshly issued token. */
   saveToken?: (url: string, token: string) => void | Promise<void>;
+  /** Do not send sys.hello when the socket opens unless a token was supplied
+   *  through setToken()/authenticate(). The socket then waits (`awaitingAuth`)
+   *  so the host can issue pre-auth requests (sys.auth.state, sys.login) with
+   *  request() and call authenticate() itself. A socket that closes while
+   *  waiting is NOT reopened: devices drop idle pre-auth sockets by design. */
+  manualHello?: boolean;
   pingIntervalMs?: number; // default 5000
   pongTimeoutMs?: number; // default 15000
   reconnectBaseMs?: number; // default 500
@@ -93,12 +105,20 @@ export class NyaLinkClient {
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private manuallyClosed = false;
+  /** Token supplied by the host; `undefined` = none, fall back to loadToken. */
+  private suppliedToken: string | null | undefined = undefined;
 
   state: ConnState = 'idle';
   device: DeviceInfo | null = null;
   role: string | null = null;
   capabilities: string[] = [];
   authError: NyaLinkError | null = null;
+  /** Credential kind reported by the last successful hello (null if absent). */
+  auth: 'pair' | 'session' | null = null;
+  /** `passwordSet` reported by the last successful hello (null if absent). */
+  passwordSet: boolean | null = null;
+  /** manualHello only: the socket is open and no hello has been sent on it. */
+  awaitingAuth = false;
   /** Estimated server clock offset (server epoch - local epoch) in ms. */
   clockOffsetMs = 0;
 
@@ -125,8 +145,25 @@ export class NyaLinkClient {
     this.openSocket();
   }
 
+  /** Token used by the next hello (and by every reconnect after it). Does not
+   *  send anything by itself. `undefined` restores the loadToken fallback. */
+  setToken(token: string | null | undefined): void {
+    this.suppliedToken = token;
+  }
+
+  /** Say hello with `token` on the open socket. Resolves with the hello
+   *  result; rejects with the NyaLinkError otherwise (after the usual
+   *  handling: an auth rejection closes the client, anything else drops the
+   *  socket). The token is kept for later reconnects. */
+  async authenticate(token: string | null): Promise<HelloResult> {
+    this.suppliedToken = token;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new NyaLinkError('ENOTCONN', 'socket not open');
+    return this.hello(true);
+  }
+
   close(): void {
     this.manuallyClosed = true;
+    this.awaitingAuth = false;
     this.clearTimers();
     this.rejectAllPending(new NyaLinkError('ECLOSED', 'client closed'));
     this.ws?.close();
@@ -180,7 +217,7 @@ export class NyaLinkClient {
     // Re-hello with the fresh token so the session is fully established:
     // device info + role come back and the server pushes a state snapshot.
     // Without this the client sat in a half-authorized limbo after pairing.
-    await this.hello();
+    await this.hello(false);
     if (this.state !== 'connected') {
       throw new NyaLinkError('EAUTH', 'post-pair hello did not connect');
     }
@@ -212,13 +249,28 @@ export class NyaLinkClient {
       // device restart (new seq starts below the stale watermark), which
       // froze the eye canvas even though the link looked healthy.
       this.lastSeq.clear();
-      void this.hello();
+      if (this.opts.manualHello && this.suppliedToken === undefined) {
+        // Wait for the host: pre-auth requests first, then authenticate().
+        this.awaitingAuth = true;
+        this.setState('authenticating');
+        return;
+      }
+      void this.hello(false);
     };
     ws.onmessage = (ev) => { if (this.ws === ws) this.onMessage(String(ev.data)); };
     ws.onclose = () => {
       if (this.ws !== ws) return;
       this.clearTimers();
       this.rejectAllPending(new NyaLinkError('ECONNRESET', 'socket closed'));
+      if (this.awaitingAuth) {
+        // An idle pre-auth socket timing out is normal; the host reopens
+        // one when it needs it, so never hold or churn sockets here.
+        this.awaitingAuth = false;
+        this.manuallyClosed = true;
+        this.ws = null;
+        this.setState('closed');
+        return;
+      }
       if (!this.manuallyClosed) this.scheduleReconnect();
     };
     ws.onerror = () => {
@@ -226,10 +278,13 @@ export class NyaLinkClient {
     };
   }
 
-  private async hello(): Promise<void> {
+  private async hello(rethrow: true): Promise<HelloResult>;
+  private async hello(rethrow: false): Promise<HelloResult | null>;
+  private async hello(rethrow: boolean): Promise<HelloResult | null> {
+    this.awaitingAuth = false;
     this.setState('authenticating');
     try {
-      const token = (await this.opts.loadToken?.(this.url)) ?? null;
+      const token = this.suppliedToken !== undefined ? this.suppliedToken : ((await this.opts.loadToken?.(this.url)) ?? null);
       const res = (await this.request('sys.hello', {
         client: this.opts.clientKind,
         version: this.opts.version,
@@ -237,23 +292,28 @@ export class NyaLinkClient {
       })) as HelloResult;
       if (res.pairingRequired) {
         this.setState('pairing-required');
-        return;
+        return res;
       }
       this.device = res.device ?? null;
       this.role = res.role ?? null;
       this.capabilities = Array.isArray(res.capabilities) ? res.capabilities.filter(v => typeof v === 'string') : [];
+      this.auth = res.auth === 'pair' || res.auth === 'session' ? res.auth : null;
+      this.passwordSet = typeof res.passwordSet === 'boolean' ? res.passwordSet : null;
       this.authError = null;
       this.reconnectAttempt = 0;
       this.setState('connected');
       this.startPing();
+      return res;
     } catch (e) {
       if (e instanceof NyaLinkError && ['EACCES', 'EPERM', 'EAUTH'].includes(e.code)) {
         this.authError = e;
         this.close();
-        return;
+      } else {
+        // hello failed — drop and let reconnect handle it
+        this.ws?.close();
       }
-      // hello failed — drop and let reconnect handle it
-      this.ws?.close();
+      if (rethrow) throw e;
+      return null;
     }
   }
 
@@ -335,7 +395,7 @@ export class NyaLinkClient {
       if (env.type === 'res') p.resolve(env.data ?? {});
       else {
         const d = env.data ?? {};
-        p.reject(new NyaLinkError(String(d.code ?? 'EUNKNOWN'), String(d.message ?? 'error')));
+        p.reject(new NyaLinkError(String(d.code ?? 'EUNKNOWN'), String(d.message ?? 'error'), d));
       }
       return;
     }
