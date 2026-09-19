@@ -1,6 +1,8 @@
 /* WiFi provisioning page. Opened from the QR code the device shows on first
- * boot (http://192.168.4.1/#/provision?token=...); the router has already
- * adopted and stripped the token by the time this runs. */
+ * boot (http://192.168.4.1/#/provision?token=...). Device build: by the time
+ * this runs the router has stripped the pair token and the access gate
+ * (boot view -> /setup-password or /login) has authenticated the session;
+ * the page is sealed (no shell, no way out) until the device is online. */
 import { computed, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { SELF_KEY, useSessionStore } from '../../stores/session';

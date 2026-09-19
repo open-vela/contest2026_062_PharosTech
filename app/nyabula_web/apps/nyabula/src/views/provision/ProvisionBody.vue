@@ -11,12 +11,8 @@ const props = defineProps<{ page: ProvisionPage }>();
 
 const gate = computed(() => props.page.link.gate.value);
 const status = computed(() => props.page.wifi.status.value);
-const authHint = computed(() => {
-  if (!props.page.deviceBuild) return '当前会话没有修改 WiFi 的权限，请回到连接页重新认证。';
-  return gate.value === 'auth'
-    ? '这个链接里的访问凭证已经失效。请用手机相机重新扫描设备眼睛屏幕上的二维码，再从扫出来的链接进入。'
-    : '没有找到访问凭证。请用手机相机扫描设备眼睛屏幕上的二维码，从扫出来的链接进入这个页面。';
-});
+/* Device build: a refused credential is redirected to /login by App.vue, so this is only seen in passing. */
+const authHint = computed(() => (props.page.deviceBuild ? '登录已经失效，正在转到登录页…' : '当前会话没有修改 WiFi 的权限，请回到连接页重新认证。'));
 const joinedHint = computed(() => `已加入「${props.page.wifi.joinSsid.value}」${status.value?.ipv4 ? `，地址 ${status.value.ipv4}` : ''}`);
 </script>
 
@@ -24,7 +20,7 @@ const joinedHint = computed(() => `已加入「${props.page.wifi.joinSsid.value}
   <div class="stack body">
     <!-- No usable token: never fall back to an address form here. -->
     <MdCard v-if="gate === 'auth' || gate === 'pairing'">
-      <EmptyState icon="qr_code" :title="page.deviceBuild ? '请重新扫描设备上的二维码' : '需要重新认证'" :hint="authHint" action-text="再试一次" @action="page.link.retry()" />
+      <EmptyState :icon="page.deviceBuild ? 'lock' : 'qr_code'" :title="page.deviceBuild ? '需要重新登录' : '需要重新认证'" :hint="authHint" action-text="再试一次" @action="page.link.retry()" />
     </MdCard>
 
     <MdCard v-else-if="gate === 'unreachable'">

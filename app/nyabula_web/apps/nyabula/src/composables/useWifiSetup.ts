@@ -4,6 +4,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useToastStore } from '@nyabula/ui';
 import { useSessionStore } from '../stores/session';
+import { useDeviceAccessStore } from '../stores/deviceAccess';
 import { isLinkDropError, joinFailed, normalizeScan, parseNetworkStatus, validateWifiInput, type NetworkStatus, type WifiNetwork } from '../lib/wifi';
 
 /** A WiFi scan takes up to ~6 s on the device; the client default is 8 s. */
@@ -19,6 +20,9 @@ export type WifiPhase = 'form' | 'joining' | 'joined';
 export function useWifiSetup() {
   const session = useSessionStore();
   const toast = useToastStore();
+  /* Device build: every status read here also feeds the cache the route
+   * guard uses to keep the app sealed on /provision while offline. */
+  const access = __NYA_DEVICE__ ? useDeviceAccessStore() : null;
 
   const status = ref<NetworkStatus | null>(null);
   const statusBusy = ref(false);
@@ -57,6 +61,7 @@ export function useWifiSetup() {
     statusError.value = null;
     try {
       status.value = parseNetworkStatus(await session.request('network.status'));
+      access?.noteNetwork(status.value);
       return status.value;
     } catch (e) {
       statusError.value = message(e);
@@ -100,6 +105,7 @@ export function useWifiSetup() {
     try {
       const res = await session.request('network.wifi.set', { ssid: name, psk: pass }, { timeoutMs: SET_TIMEOUT_MS });
       status.value = parseNetworkStatus(res);
+      access?.noteNetwork(status.value);
     } catch (e) {
       // The hotspot may go down before the answer arrives; that still means
       // the device took the credentials. Anything else is a real failure.
@@ -154,6 +160,7 @@ export function useWifiSetup() {
   async function forget(): Promise<void> {
     try {
       status.value = parseNetworkStatus(await session.request('network.wifi.forget'));
+      access?.noteNetwork(status.value);
       toast.ok('已清除保存的 WiFi');
     } catch (e) {
       if (!isLinkDropError(e)) toast.error(e, '清除 WiFi 失败');
