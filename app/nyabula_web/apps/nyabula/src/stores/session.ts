@@ -290,6 +290,16 @@ export const useSessionStore = defineStore('session', () => {
     return c.authenticate(token);
   }
 
+  /** The device was renamed (network.name.set): refresh every place that
+   *  shows the name without waiting for the next hello. */
+  function setDeviceName(name: string): void {
+    if (!name || !device.value) return;
+    device.value = { ...device.value, name };
+    // Keep the client copy in step: it is what a later state change reads.
+    if (client.value?.device) client.value.device = { ...client.value.device, name };
+    if (deviceKey.value) remember(deviceKey.value, { label: name });
+  }
+
   function markPasswordSet(): void {
     passwordSet.value = true;
   }
@@ -374,6 +384,7 @@ export const useSessionStore = defineStore('session', () => {
     releasePreAuth,
     authenticate,
     markPasswordSet,
+    setDeviceName,
     pair,
     disconnect,
     enterPreview,
