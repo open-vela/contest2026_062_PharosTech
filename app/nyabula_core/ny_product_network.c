@@ -86,6 +86,7 @@
 #define NY_NET_STA_TIMEOUT_S 25
 #define NY_NET_STA_RETRIES   3
 #define NY_NET_STA_RETRY_S   5
+#define NY_NET_RSSI_PERIOD_S 10
 #define NY_NET_LOAD_RETRIES  150 /* worker ticks, about 15 s */
 #define NY_NET_SSID_MAX      32
 #define NY_NET_PSK_MAX       64
@@ -121,6 +122,8 @@ struct ny_net_s
   char sta_ipv4[INET_ADDRSTRLEN];
   time_t sta_started;
   time_t sta_retry_at; /* no station attempt before this */
+  time_t rssi_at;      /* when the signal level is read next */
+  int sta_rssi;        /* dBm, 0 = not known */
   int sta_attempt;
   int last_error;
   bool pending_sta;  /* wifi.set arrived, worker must (re)connect */
@@ -497,6 +500,53 @@ static cJSON *ny_net_hw_scan(int *error)
   return list;
 }
 
+/* The signal level costs a firmware query, so it is read from the product
+ * worker every few seconds and handed out from here.  Panels ask for it on
+ * every page, from their own threads, and must not queue up behind the
+ * radio.
+ */
+
+static void ny_net_rssi_poll(void)
+{
+  time_t now = time(NULL);
+  int rssi = 0;
+  bool online;
+
+  if (nxmutex_lock(&g_net_lock) < 0)
+    return;
+  online = g_net.state == NY_NET_STA_ONLINE;
+  if (!online)
+    g_net.sta_rssi = 0;
+  if (!online || now < g_net.rssi_at)
+    {
+      nxmutex_unlock(&g_net_lock);
+      return;
+    }
+
+  g_net.rssi_at = now + NY_NET_RSSI_PERIOD_S;
+  nxmutex_unlock(&g_net_lock);
+
+#ifdef CONFIG_WIRELESS_WAPI
+  int sock = wapi_make_socket();
+  if (sock >= 0)
+    {
+      struct iwreq request;
+      memset(&request, 0, sizeof(request));
+      strlcpy(request.ifr_name, NY_NET_IFNAME, IFNAMSIZ);
+      if (ioctl(sock, SIOCGIWSENS, (unsigned long)&request) >= 0 &&
+          request.u.sens.value < 0)
+        rssi = request.u.sens.value;
+      close(sock);
+    }
+#endif
+
+  if (nxmutex_lock(&g_net_lock) < 0)
+    return;
+  if (g_net.state == NY_NET_STA_ONLINE)
+    g_net.sta_rssi = rssi;
+  nxmutex_unlock(&g_net_lock);
+}
+
 /* --- Result builders (lock held) --- */
 
 static cJSON *ny_net_status_json(bool owner)
@@ -513,6 +563,8 @@ static cJSON *ny_net_status_json(bool owner)
     cJSON_AddStringToObject(root, "ssid", g_net.sta_ssid);
   if (g_net.sta_ipv4[0] != '\0')
     cJSON_AddStringToObject(root, "ipv4", g_net.sta_ipv4);
+  if (g_net.state == NY_NET_STA_ONLINE && g_net.sta_rssi != 0)
+    cJSON_AddNumberToObject(root, "rssi", g_net.sta_rssi);
   if (g_net.state == NY_NET_AP_PROVISION)
     {
       char qr[160];
@@ -1023,9 +1075,37 @@ static void ny_net_eye_sync(void)
 int ny_product_network_tick(void)
 {
   int ret = ny_net_step();
+  ny_net_rssi_poll();
 #if defined(CONFIG_NYABULA_CORE_EYE) && defined(CONFIG_NYABULA_CORE_WEB)
   ny_net_eye_sync();
 #endif
+  return ret;
+}
+
+/****************************************************************************
+ * Name: ny_product_network_link
+ *
+ * Description:
+ *   The network the device is on, for the system summary: its name and the
+ *   last signal level read.  Returns -ENOTCONN while not on a network;
+ *   *rssi is 0 while the level is not known yet.
+ *
+ ****************************************************************************/
+
+int ny_product_network_link(char *ssid, size_t size, int *rssi)
+{
+  int ret = nxmutex_lock(&g_net_lock);
+  if (ret < 0)
+    return ret;
+  if (g_net.state != NY_NET_STA_ONLINE)
+    ret = -ENOTCONN;
+  else
+    {
+      strlcpy(ssid, g_net.sta_ssid, size);
+      *rssi = g_net.sta_rssi;
+    }
+
+  nxmutex_unlock(&g_net_lock);
   return ret;
 }
 
