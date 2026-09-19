@@ -79,6 +79,7 @@
 #define NY_NET_AP_POOL_START "192.168.4.100"
 #define NY_NET_STA_TIMEOUT_S 25
 #define NY_NET_STA_RETRIES   3
+#define NY_NET_STA_RETRY_S   5
 #define NY_NET_LOAD_RETRIES  150 /* worker ticks, about 15 s */
 #define NY_NET_SSID_MAX      32
 #define NY_NET_PSK_MAX       64
@@ -107,6 +108,7 @@ struct ny_net_s
   char sta_psk[NY_NET_PSK_MAX + 1];
   char sta_ipv4[INET_ADDRSTRLEN];
   time_t sta_started;
+  time_t sta_retry_at; /* no station attempt before this */
   int sta_attempt;
   int last_error;
   bool pending_sta;  /* wifi.set arrived, worker must (re)connect */
@@ -559,6 +561,7 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
       if (ret < 0)
         goto out;
       g_net.sta_attempt = 0;
+      g_net.sta_retry_at = 0;
       g_net.pending_sta = true;
       *result = ny_net_status_json(true);
       ret = *result ? 0 : -ENOMEM;
@@ -639,7 +642,8 @@ int ny_product_network_tick(void)
 
   bool do_stop = g_net.pending_stop;
   bool do_ap = !do_stop && g_net.pending_ap;
-  bool do_sta = !do_stop && !do_ap && g_net.pending_sta;
+  bool do_sta = !do_stop && !do_ap && g_net.pending_sta &&
+                time(NULL) >= g_net.sta_retry_at;
   bool check_sta = g_net.state == NY_NET_STA_CONNECTING;
   char ssid[NY_NET_SSID_MAX + 1];
   char psk[NY_NET_PSK_MAX + 1];
@@ -693,12 +697,21 @@ int ny_product_network_tick(void)
   ret = nxmutex_lock(&g_net_lock);
   if (ret < 0)
     return ret;
+  /* An attempt is an attempt whichever way it ends.  The driver refuses a
+   * network it cannot see at once, without ever reaching CONNECTING, and
+   * counting only the attempts that got that far left such a failure at
+   * zero for ever: retried on every tick, never reaching the fallback, and
+   * the device unreachable because the AP had already been taken down.
+   */
+
+  if (do_sta)
+    g_net.sta_attempt++;
+
   if (next != (enum ny_net_state_e) - 1)
     {
       if (next == NY_NET_STA_CONNECTING)
         {
           g_net.sta_started = time(NULL);
-          g_net.sta_attempt++;
           g_net.sta_ipv4[0] = '\0';
         }
       else if (next == NY_NET_STA_ONLINE)
@@ -712,9 +725,15 @@ int ny_product_network_tick(void)
            */
 
           if (g_net.sta_attempt < NY_NET_STA_RETRIES)
-            g_net.pending_sta = true;
+            {
+              g_net.pending_sta = true;
+              g_net.sta_retry_at = time(NULL) + NY_NET_STA_RETRY_S;
+            }
           else
-            ny_net_arm_ap();
+            {
+              g_net.sta_attempt = 0;
+              ny_net_arm_ap();
+            }
         }
       g_net.state = next;
     }
