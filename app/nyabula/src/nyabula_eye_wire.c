@@ -80,6 +80,7 @@ static const struct nyabula_eye_wire_name_s g_nyabula_scenes[] = {
   { "companion", NYABULA_EYE_SCENE_COMPANION },
   { "home", NYABULA_EYE_SCENE_HOME },
   { "subwoofer", NYABULA_EYE_SCENE_SUBWOOFER },
+  { "qr", NYABULA_EYE_SCENE_QR },
 };
 
 static const struct nyabula_eye_wire_name_s g_nyabula_styles[] = {

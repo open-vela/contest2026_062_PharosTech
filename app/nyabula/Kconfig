@@ -7,6 +7,7 @@ config NYABULA_EYE_ENGINE
 	select LV_USE_VECTOR_GRAPHIC
 	select LV_USE_THORVG
 	select LV_USE_CANVAS
+	select LV_USE_QRCODE
 	select NETUTILS_CJSON
 	---help---
 		Build the existing expression/scene engine as a library. A display
