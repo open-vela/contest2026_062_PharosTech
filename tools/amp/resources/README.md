@@ -1,5 +1,8 @@
 # 计算资源清单与资源包 v1
 
+**分发格式、安装流程与许可边界的完整约定见
+[../DISTRIBUTION.md](../DISTRIBUTION.md)。** 本文只讲资源包这一层。
+
 `dependencies.json` 是2026-09-14已测文件的依赖清单，不是已经获准公开分发的release。
 模型、vendor runtime与基础动态库各自保留来源、版本、SHA256、许可状态和发布缺口。
 `source_revision: null`表示历史转换记录未固定到准确上游revision，不用当前HEAD冒充原版本。
