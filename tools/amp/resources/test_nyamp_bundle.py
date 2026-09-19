@@ -130,6 +130,103 @@ class NyampBundleTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             nyamp_pack(self.root, Path(self.directory.name) / "model.tar.gz")
 
+    # --- firmware and boot bundles ---------------------------------------
+
+    def as_firmware(self, install):
+        """Turn the fixture into a firmware bundle installing one file."""
+        self.manifest["kind"] = "firmware"
+        self.manifest["files"] = [self.manifest["files"][0]]
+        self.manifest["files"][0]["install"] = install
+        self.manifest["license_files"] = ["licenses/fixture.txt"]
+        self.manifest["files"].append(dict(
+            path="licenses/fixture.txt",
+            bytes=len(b"Test fixture, no third-party data.\n"),
+            sha256=hashlib.sha256(b"Test fixture, no third-party data.\n").hexdigest()))
+        self.save()
+
+    def test_firmware_needs_no_profile(self):
+        # A partition payload has no model interface to be compatible with,
+        # so packing it must not demand a dependencies.json.
+        self.as_firmware(dict(partition="nuttx_a"))
+        output = Path(self.directory.name) / "fw.tar.gz"
+        nyamp_pack(self.root, output)
+        self.assertTrue(output.exists())
+
+    def test_firmware_requires_install(self):
+        self.manifest["kind"] = "firmware"
+        self.save()
+        with self.assertRaises(ValueError):
+            nyamp_manifest(self.root)
+
+    def test_install_rejects_both_forms(self):
+        # partition and lba together would force the board to choose, and
+        # choosing wrong writes over something else.
+        self.as_firmware(dict(partition="nuttx_a", lba=36864, sectors=16384))
+        with self.assertRaises(ValueError):
+            nyamp_manifest(self.root)
+
+    def test_install_rejects_neither_form(self):
+        self.as_firmware({})
+        with self.assertRaises(ValueError):
+            nyamp_manifest(self.root)
+
+    def test_install_rejects_unknown_partition(self):
+        # A name nbootctl does not know would fail on the board, after the
+        # whole file had already been transferred.
+        self.as_firmware(dict(partition="rootfs"))
+        with self.assertRaises(ValueError):
+            nyamp_manifest(self.root)
+
+    def test_install_accepts_raw_window(self):
+        self.as_firmware(dict(lba=64, sectors=4096))
+        manifest, _ = nyamp_manifest(self.root)
+        self.assertEqual(manifest["files"][0]["install"]["lba"], 64)
+
+    def test_install_raw_window_must_fit(self):
+        # 12 bytes cannot fit in one sector alongside... it can, so use a
+        # window smaller than the payload needs.
+        self.as_firmware(dict(lba=64, sectors=1))
+        (self.root / "models/fixture.bin").write_bytes(b"x" * 4096)
+        self.manifest["files"][0]["bytes"] = 4096
+        self.manifest["files"][0]["sha256"] = hashlib.sha256(b"x" * 4096).hexdigest()
+        self.save()
+        with self.assertRaises(ValueError):
+            nyamp_manifest(self.root)
+
+    def test_install_only_for_partition_kinds(self):
+        self.manifest["files"][0]["install"] = dict(partition="nuttx_a")
+        self.save()
+        with self.assertRaises(ValueError):
+            nyamp_manifest(self.root)
+
+    def test_boot_kind(self):
+        self.as_firmware(dict(partition="uboot"))
+        self.manifest["kind"] = "boot"
+        self.save()
+        manifest, _ = nyamp_manifest(self.root)
+        self.assertEqual(manifest["kind"], "boot")
+
+    # --- licence gate -----------------------------------------------------
+
+    def test_unapproved_requires_explicit_flag(self):
+        self.manifest["redistribution"] = "review-required"
+        self.save()
+        with self.assertRaises(ValueError):
+            nyamp_manifest(self.root)
+        # The flag has to be passed deliberately; it is the only way past.
+        manifest, _ = nyamp_manifest(self.root, allow_review_required=True)
+        self.assertEqual(manifest["redistribution"], "review-required")
+
+    def test_unapproved_pack_requires_explicit_flag(self):
+        self.manifest["redistribution"] = "review-required"
+        self.save()
+        output = Path(self.directory.name) / "unapproved.tar.gz"
+        with self.assertRaises(ValueError):
+            nyamp_pack(self.root, output)
+        self.assertFalse(output.exists())
+        nyamp_pack(self.root, output, allow_review_required=True)
+        self.assertTrue(output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
