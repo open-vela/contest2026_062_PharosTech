@@ -298,13 +298,20 @@ static int ny_net_hw_ap_start(const char *ssid, const char *psk, int channel)
   if (ret == 0)
     {
       struct in_addr addr;
+
+      /* dhcpd keeps its addresses in host order -- it counts leases by
+       * adding to the start address -- while inet_pton produces network
+       * order.  Passed through unconverted, the pool started at
+       * 100.4.168.192 with a netmask of 0.255.255.255.
+       */
+
       inet_pton(AF_INET, NY_NET_AP_POOL_START, &addr);
-      dhcpd_set_startip(addr.s_addr);
+      dhcpd_set_startip(ntohl(addr.s_addr));
       inet_pton(AF_INET, NY_NET_AP_ADDR, &addr);
-      dhcpd_set_routerip(addr.s_addr);
-      dhcpd_set_dnsip(addr.s_addr);
+      dhcpd_set_routerip(ntohl(addr.s_addr));
+      dhcpd_set_dnsip(ntohl(addr.s_addr));
       inet_pton(AF_INET, NY_NET_AP_MASK, &addr);
-      dhcpd_set_netmask(addr.s_addr);
+      dhcpd_set_netmask(ntohl(addr.s_addr));
       ret = dhcpd_start(NY_NET_IFNAME);
     }
 #endif
