@@ -88,6 +88,9 @@ void ny_product_media_shutdown(void);
 int ny_product_device_request(const struct ny_product_caller_s *caller,
                               const char *topic, const cJSON *data,
                               cJSON **result);
+int ny_product_maintenance_request(const struct ny_product_caller_s *caller,
+                                   const char *topic, const cJSON *data,
+                                   cJSON **result);
 #ifdef CONFIG_NYABULA_CORE_NETWORK
 int ny_product_network_request(const struct ny_product_caller_s *caller,
                                const char *topic, const cJSON *data,

@@ -217,6 +217,10 @@ int ny_product_request(const struct ny_product_caller_s *caller,
   if (ret != -ENOSYS)
     return ret;
 
+  ret = ny_product_maintenance_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+
 #ifdef CONFIG_NYABULA_CORE_NETWORK
   ret = ny_product_network_request(caller, topic, data, result);
   if (ret != -ENOSYS)
