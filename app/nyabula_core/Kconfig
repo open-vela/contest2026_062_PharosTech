@@ -73,6 +73,26 @@ config NYABULA_CORE_WEB
 	select NETUTILS_CODECS
 	select CODECS_BASE64
 
+config NYABULA_CORE_WEB_PORT
+	int "Port of the product Web service"
+	default 80
+	range 1 65535
+	depends on NYABULA_CORE_WEB
+	---help---
+		Port used when nyabula_web is started without arguments, which is
+		how the system starts it.  The default is the one a browser assumes,
+		so that the address printed on a QR code needs no port.
+
+config NYABULA_CORE_WEB_TOKEN_PATH
+	string "Access token of the product Web service"
+	default "/config/nyabula/web.token"
+	depends on NYABULA_CORE_WEB
+	---help---
+		Read when nyabula_web is started without arguments, and created
+		from the system entropy source if absent.  It belongs with the
+		configuration rather than the bulk store: wiping /data must not
+		sign the owner out of their own device.
+
 config NYABULA_CORE_HTTP
 	bool "Enable Core non-blocking HTTP transport"
 	default n
