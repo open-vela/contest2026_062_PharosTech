@@ -28,6 +28,7 @@ BUSYBOX        ?= $(abspath out/busybox-static)
 WEB_DIST       ?= app/nyabula_web/apps/nyabula/dist
 MODELS_DIR     ?= $(abspath product/models)
 DATA_MIB       ?= 128
+CONFIG_MIB     ?= 32
 
 # Serial port for flash-ota
 PORT           ?= COM12
