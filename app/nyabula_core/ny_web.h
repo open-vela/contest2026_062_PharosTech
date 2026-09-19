@@ -23,4 +23,10 @@
 #define __NYABULA_CORE_NY_WEB_H
 int ny_web_run(int argc, char **argv);
 int ny_web_stop(void);
+
+/* Answer one plain HTTP request from the static site root and return.  head
+ * is the request head as received; the connection is not kept alive.
+ */
+
+int ny_web_http_serve(int fd, const char *head);
 #endif

@@ -94,6 +94,16 @@ config NYABULA_CORE_WEB_TOKEN_PATH
 		configuration rather than the bulk store: wiping /data must not
 		sign the owner out of their own device.
 
+config NYABULA_CORE_WEB_ROOT
+	string "Directory the product Web service serves pages from"
+	default "/data/www"
+	depends on NYABULA_CORE_WEB
+	---help---
+		Root of the built control panel.  Any request that is not for
+		the WebSocket endpoint is answered from here, read-only.  It
+		lives with the bulk data because it is replaced wholesale by an
+		update and can be restored by one.
+
 config NYABULA_CORE_HTTP
 	bool "Enable Core non-blocking HTTP transport"
 	default n

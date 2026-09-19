@@ -74,7 +74,7 @@ CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/../packages/ai_agent/src
 CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/netutils/cjson/cJSON
 endif
 ifeq ($(CONFIG_NYABULA_CORE_WEB),y)
-CSRCS += ny_web.c ny_websocket.c
+CSRCS += ny_web.c ny_web_http.c ny_websocket.c
 endif
 
 ifeq ($(CONFIG_NYABULA_CORE_PRODUCT),y)
