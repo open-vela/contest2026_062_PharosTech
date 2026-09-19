@@ -13,6 +13,10 @@ export interface NetworkStatus {
   ssid: string | null;
   /** Station address (present when online). */
   ipv4: string | null;
+  /** Station signal in dBm (negative; only while online and known). */
+  rssi: number | null;
+  /** Name the device announces to the router (DHCP hostname). */
+  hostname: string | null;
   ap: { ssid: string | null; ipv4: string | null } | null;
 }
 
@@ -55,6 +59,8 @@ export function parseNetworkStatus(raw: unknown): NetworkStatus {
     attempt: num(d.attempt) ?? 0,
     ssid: str(d.ssid),
     ipv4: str(d.ipv4),
+    rssi: num(d.rssi),
+    hostname: str(d.hostname),
     ap: ap ? { ssid: str(ap.ssid), ipv4: str(ap.ipv4) } : null,
   };
 }
