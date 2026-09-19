@@ -593,6 +593,18 @@ nyabula_core_create(struct nyabula_eye_engine_s *eye_engine)
   core->snapshot.ambient_light = 1.0f;
   core->snapshot.iris_rgb[NYABULA_EYE_LEFT] = 0x56ffb2;
   core->snapshot.iris_rgb[NYABULA_EYE_RIGHT] = 0x56ffb2;
+
+  /* The snapshot is what every client is told the eyes look like, so make
+   * it true.  The engine has defaults of its own -- a dimmer light and a
+   * darker iris -- and until something sent an explicit command the panels
+   * showed those while the snapshot reported these: a pupil four times as
+   * wide on the device as in any preview of it.
+   */
+
+  nyabula_eye_engine_set_ambient_light(eye_engine,
+                                       core->snapshot.ambient_light);
+  nyabula_eye_engine_set_iris_color(eye_engine, NYABULA_EYE_MASK_BOTH,
+                                    core->snapshot.iris_rgb[NYABULA_EYE_LEFT]);
   return core;
 }
 
