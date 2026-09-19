@@ -169,10 +169,26 @@ static cJSON *ny_product_device_network(void)
       char ssid[IW_ESSID_MAX_SIZE + 1] = { 0 };
       snprintf(wireless.ifr_name, sizeof(wireless.ifr_name), "%s",
                names[i].if_name);
-      wireless.u.essid.pointer = ssid;
-      wireless.u.essid.length = sizeof(ssid) - 1;
-      if (ioctl(fd, SIOCGIWESSID, (unsigned long)(uintptr_t)&wireless) == 0)
-        cJSON_AddStringToObject(item, "ssid", ssid);
+
+      /* Ask whether the interface is wireless before asking it anything
+       * wireless.  The kernel forwards every other wireless ioctl straight
+       * to the driver's handler without checking that there is one, and
+       * the loopback device has none: asking "lo" for its ESSID is a call
+       * through a null pointer, and took the whole device down the first
+       * time a browser opened the panel.  SIOCGIWNAME is answered by the
+       * kernel itself from the link type.
+       */
+
+      struct iwreq probe = { 0 };
+      snprintf(probe.ifr_name, sizeof(probe.ifr_name), "%s", names[i].if_name);
+      if (ioctl(fd, SIOCGIWNAME, (unsigned long)(uintptr_t)&probe) == 0)
+        {
+          wireless.u.essid.pointer = ssid;
+          wireless.u.essid.length = sizeof(ssid) - 1;
+          if (ioctl(fd, SIOCGIWESSID, (unsigned long)(uintptr_t)&wireless) ==
+              0)
+            cJSON_AddStringToObject(item, "ssid", ssid);
+        }
       cJSON_AddItemToArray(items, item);
     }
   cJSON_AddBoolToObject(network, "truncated", names[i].if_name != NULL);
