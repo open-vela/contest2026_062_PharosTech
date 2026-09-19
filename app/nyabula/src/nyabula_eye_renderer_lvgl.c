@@ -33,23 +33,36 @@
 
 #include <nuttx/trace.h>
 
+#ifdef CONFIG_LV_USE_QRCODE
+#include <lvgl/src/libs/qrcode/qrcodegen.h>
+#endif
+
 #include "generated/fonts/nyabula_eye_fonts.h"
 #include "generated/nyabula_eye_icons.h"
 #include "nyabula_eye_internal.h"
 
-#define W                360
-#define H                360
-#define R                178.0f
-#define CY               180.0f
-#define PI               3.14159265358979323846f
-#define FIBERS           48
-#define ZCOUNT           16
-#define FONT_CACHE_COUNT 32
-#define TEXT_CACHE_COUNT 32
-#define TEXT_CACHE_BYTES 96
-#define HEART_SAMPLES    96
-#define LID_SAMPLES      400
-#define LID_OFFSET       200
+#define W 360
+#define H 360
+#define R 178.0f
+
+/* A version 6 symbol is 41 modules; with the quiet zone that is a little
+ * over five pixels a module on this panel, which a phone still reads at
+ * arm's length.  The standard asks for four modules of margin; the white
+ * plate is surrounded by a dark backdrop, and three have proved enough.
+ */
+
+#define SCENE_QR_VERSION_MAX 6
+#define SCENE_QR_QUIET       3
+#define CY                   180.0f
+#define PI                   3.14159265358979323846f
+#define FIBERS               48
+#define ZCOUNT               16
+#define FONT_CACHE_COUNT     32
+#define TEXT_CACHE_COUNT     32
+#define TEXT_CACHE_BYTES     96
+#define HEART_SAMPLES        96
+#define LID_SAMPLES          400
+#define LID_OFFSET           200
 
 /* Base-baking: bake the iris glow & disc once (in white/tinted) at init and
  * tint per-frame via multiply. 0x80 keeps shade(1.25f) from saturating. */
@@ -406,6 +419,9 @@ static void scene_call(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
 static void scene_task(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
                        const struct nyabula_eye_scene_payload_s *payload,
                        float seconds, float opacity, float reveal);
+static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
+                     const struct nyabula_eye_scene_payload_s *payload,
+                     float opacity);
 static void
 scene_draw_content(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
                    enum nyabula_eye_scene_e scene,
@@ -3153,6 +3169,137 @@ static void scene_task(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
     }
 }
 
+/****************************************************************************
+ * Name: scene_qr
+ *
+ * Description:
+ *   Show one QR code per eye.
+ *
+ *   This is the one scene that ignores the iris colour: a code is read by a
+ *   camera, not admired, and what a camera needs is black on white with a
+ *   clear margin.  Modules are a whole number of pixels, because a module
+ *   edge that lands between pixels is drawn grey and costs exactly the
+ *   contrast the code depends on.
+ *
+ *   The dark modules go into one path, as one rectangle per horizontal
+ *   run, and are filled once.  A symbol has several hundred of them and the
+ *   rasteriser is software on a single core; filling each separately takes
+ *   long enough to see.
+ *
+ ****************************************************************************/
+
+static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
+                     const struct nyabula_eye_scene_payload_s *payload,
+                     float opacity)
+{
+#ifdef CONFIG_LV_USE_QRCODE
+  const char *text =
+      e->id == NYABULA_EYE_LEFT ? payload->qr_left : payload->qr_right;
+  uint8_t symbol[qrcodegen_BUFFER_LEN_FOR_VERSION(SCENE_QR_VERSION_MAX)];
+  uint8_t scratch[qrcodegen_BUFFER_LEN_FOR_VERSION(SCENE_QR_VERSION_MAX)];
+  bool any = false;
+  float module;
+  float origin;
+  float plate;
+  int size;
+
+  if (text[0] == '\0')
+    {
+      /* An eye with no code of its own says what the other one is for. */
+
+      uint32_t color = scene_color(e);
+      if (payload->title[0] != '\0')
+        {
+          text_center(
+              r, e,
+              scene_font(r, FONT_FAMILY_TITLE, 39, &nyabula_font_title_42),
+              payload->title, -R * 0.13f, color, opacity * 0.98f);
+        }
+
+      /* The detail line is for an address, so it is set in the Latin face:
+       * the CJK faces are subsets built from the text in this source, and
+       * need not hold every digit.
+       */
+
+      if (payload->detail[0] != '\0')
+        {
+          text_center(
+              r, e,
+              scene_font(r, FONT_FAMILY_ENGLISH, 18, &nyabula_font_english_18),
+              payload->detail, R * 0.16f, color, opacity * 0.72f);
+        }
+
+      return;
+    }
+
+  if (!qrcodegen_encodeText(text, scratch, symbol, qrcodegen_Ecc_LOW,
+                            qrcodegen_VERSION_MIN, SCENE_QR_VERSION_MAX,
+                            qrcodegen_Mask_AUTO, true))
+    {
+      return;
+    }
+
+  /* The largest square inside the round panel, less a little for the bezel,
+   * shared between the symbol and its quiet zone.
+   */
+
+  size = qrcodegen_getSize(symbol);
+  module = floorf(R * 1.36f / (size + 2 * SCENE_QR_QUIET));
+  if (module < 2.0f)
+    {
+      return;
+    }
+
+  plate = module * (size + 2 * SCENE_QR_QUIET) * 0.5f;
+  origin = -module * size * 0.5f;
+  filled_rect(r, e, -plate, -plate, plate, plate, 0xffffff, opacity);
+
+  lv_vector_path_clear(r->path);
+  for (int y = 0; y < size; y++)
+    {
+      for (int x = 0; x < size; x++)
+        {
+          int start = x;
+          lv_fpoint_t point;
+          float top;
+
+          if (!qrcodegen_getModule(symbol, x, y))
+            {
+              continue;
+            }
+
+          while (x + 1 < size && qrcodegen_getModule(symbol, x + 1, y))
+            {
+              x++;
+            }
+
+          top = origin + y * module;
+          point = (lv_fpoint_t){ origin + start * module, top };
+          lv_vector_path_move_to(r->path, &point);
+          point.x = origin + (x + 1) * module;
+          lv_vector_path_line_to(r->path, &point);
+          point.y = top + module;
+          lv_vector_path_line_to(r->path, &point);
+          point.x = origin + start * module;
+          lv_vector_path_line_to(r->path, &point);
+          lv_vector_path_close(r->path);
+          any = true;
+        }
+    }
+
+  if (any)
+    {
+      vector_eye_transform(r, e);
+      vector_fill(r, 0x000000, opacity);
+    }
+#else
+  UNUSED(r);
+  UNUSED(e);
+  UNUSED(payload);
+  UNUSED(opacity);
+#endif
+}
+
 static void
 scene_draw_content(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
                    enum nyabula_eye_scene_e scene,
@@ -3177,6 +3324,9 @@ scene_draw_content(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
         break;
       case NYABULA_EYE_SCENE_BATTERY:
         scene_battery(r, e, payload, opacity, reveal);
+        break;
+      case NYABULA_EYE_SCENE_QR:
+        scene_qr(r, e, payload, opacity);
         break;
       case NYABULA_EYE_SCENE_ALARM:
         scene_alarm(r, e, payload, seconds, opacity);
@@ -4400,6 +4550,7 @@ scene_eye_is_time_independent(const struct nyabula_eye_scene_frame_s *scene,
       case NYABULA_EYE_SCENE_DEVICES:
       case NYABULA_EYE_SCENE_SYSTEM:
       case NYABULA_EYE_SCENE_PRESENCE:
+      case NYABULA_EYE_SCENE_QR:
         return true;
       case NYABULA_EYE_SCENE_MUSIC:
         return id == NYABULA_EYE_LEFT
