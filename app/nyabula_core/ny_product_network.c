@@ -875,12 +875,21 @@ static int ny_net_eye_submit(const char *action, cJSON *params,
           NULL &&
       cJSON_AddNumberToObject(command, "lease_ms", lease_ms) != NULL)
     {
+      /* The service refuses a command without a params object, also one
+       * that has nothing to say, such as hiding a scene.
+       */
+
+      if (params == NULL)
+        {
+          params = cJSON_CreateObject();
+        }
+
       if (params != NULL)
         {
           cJSON_AddItemToObject(command, "params", params);
           params = NULL;
+          json = cJSON_PrintUnformatted(command);
         }
-      json = cJSON_PrintUnformatted(command);
     }
   if (json != NULL)
     {
@@ -964,6 +973,7 @@ static void ny_net_eye_sync(void)
 {
   static enum ny_net_state_e shown = NY_NET_IDLE;
   static time_t renew_at;
+  static bool visible;
   char ssid[NY_NET_SSID_MAX + 1];
   char psk[NY_NET_PSK_MAX + 1];
   char ipv4[INET_ADDRSTRLEN];
@@ -979,6 +989,26 @@ static void ny_net_eye_sync(void)
   strcpy(psk, g_net.ap_psk);
   strcpy(ipv4, g_net.sta_ipv4);
   nxmutex_unlock(&g_net_lock);
+
+  /* The codes are an invitation, and once somebody has a panel open the
+   * invitation has been taken up: the eyes go back to being eyes.  On the
+   * access point they return if that panel goes away, since the device is
+   * still waiting to be set up.  Once online the address has served its
+   * purpose the first time anyone gets in, and is not shown again.
+   */
+
+  if (ny_web_panel_count() > 0 &&
+      (state == NY_NET_AP_PROVISION || state == NY_NET_STA_ONLINE))
+    {
+      if (visible &&
+          ny_net_eye_submit("eyes.scene.hide", NULL, NY_NET_EYE_LEASE_MS) == 0)
+        {
+          visible = false;
+        }
+
+      shown = state == NY_NET_STA_ONLINE ? NY_NET_STA_ONLINE : NY_NET_IDLE;
+      return;
+    }
 
   if (state == NY_NET_AP_PROVISION)
     {
@@ -1007,9 +1037,15 @@ static void ny_net_eye_sync(void)
 
       if (ny_net_eye_submit(renew ? "eyes.scene.update" : "eyes.scene.show",
                             params, NY_NET_EYE_LEASE_MS) == 0)
-        shown = NY_NET_AP_PROVISION;
+        {
+          shown = NY_NET_AP_PROVISION;
+          visible = true;
+        }
       else
-        shown = NY_NET_IDLE;
+        {
+          shown = NY_NET_IDLE;
+          visible = false;
+        }
       renew_at = now + NY_NET_EYE_RENEW_S;
     }
   else if (state == NY_NET_STA_ONLINE)
@@ -1058,12 +1094,16 @@ static void ny_net_eye_sync(void)
       cJSON_AddItemToObject(params, "payload", payload);
       if (ny_net_eye_submit("eyes.scene.show", params, NY_NET_EYE_ONLINE_MS) ==
           0)
-        shown = NY_NET_STA_ONLINE;
+        {
+          shown = NY_NET_STA_ONLINE;
+          visible = true;
+        }
     }
   else if (shown != NY_NET_IDLE)
     {
       ny_net_eye_submit("eyes.scene.hide", NULL, NY_NET_EYE_LEASE_MS);
       shown = NY_NET_IDLE;
+      visible = false;
     }
 }
 #endif
