@@ -62,6 +62,11 @@ export interface NyaLinkClientOptions {
   requestTimeoutMs?: number; // default 8000
 }
 
+export interface RequestOptions {
+  /** Per-request timeout; defaults to the client's requestTimeoutMs. */
+  timeoutMs?: number;
+}
+
 type EventCb = (data: Record<string, unknown>, env: Envelope) => void;
 type StateCb = (state: ConnState) => void;
 
@@ -130,7 +135,8 @@ export class NyaLinkClient {
   }
 
   /** Send a req and await its res. Rejects with NyaLinkError on err frames. */
-  request(topic: string, data: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  request(topic: string, data: Record<string, unknown> = {}, options: RequestOptions = {}): Promise<Record<string, unknown>> {
+    const timeoutMs = typeof options.timeoutMs === 'number' && options.timeoutMs > 0 ? options.timeoutMs : this.opts.requestTimeoutMs;
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         reject(new NyaLinkError('ENOTCONN', 'socket not open'));
@@ -140,7 +146,7 @@ export class NyaLinkClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new NyaLinkError('ETIMEDOUT', `request ${topic} timed out`));
-      }, this.opts.requestTimeoutMs);
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.send({ v: PROTO_V, id, type: 'req', topic, data });
     });
