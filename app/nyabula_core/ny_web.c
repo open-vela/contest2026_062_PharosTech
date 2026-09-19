@@ -42,6 +42,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/statfs.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -54,6 +56,7 @@
 #define NYABULA_WS_AUTH_MS      5000
 #define NYABULA_WS_MAX_REQUESTS 40
 #define NY_WEB_MAX_CLIENTS      4
+#define NY_WEB_STORE_WAIT_MS    15000
 
 static mutex_t g_web_lock = NXMUTEX_INITIALIZER;
 static bool g_web_running;
@@ -96,6 +99,9 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
 static int nyabula_eye_ws_client(int fd, const char *token,
                                  const char *origin);
 static void *ny_web_client_worker(void *argument);
+static void ny_web_store_wait(const char *path);
+static int ny_web_token_load(const char *path, char *token);
+static int ny_web_token_create(const char *path, char *token);
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
 static const char *ny_web_error_name(int status);
 #endif
@@ -612,7 +618,10 @@ static const char *ny_web_error_name(int status)
 static void *ny_web_client_worker(void *argument)
 {
   struct ny_web_client_args_s *args = argument;
-  int status = nyabula_eye_ws_client(args->fd, args->token, args->origin);
+  /* An empty origin is the product start's "same host" policy. */
+
+  int status = nyabula_eye_ws_client(
+      args->fd, args->token, args->origin[0] != '\0' ? args->origin : NULL);
   if (status < 0 && status != -ECONNRESET)
     {
       fprintf(stderr, "nyabula_web: client closed (%d)\n", status);
@@ -649,41 +658,76 @@ int ny_web_stop(void)
 }
 
 /****************************************************************************
- * Name: ny_web_run
+ * Name: ny_web_store_wait
+ *
+ * Description:
+ *   Wait, within reason, for the filesystem that holds the token.
+ *
+ *   The board mounts its stores from a work queue, and the init script that
+ *   starts this service does not wait for it.  Looking for the token before
+ *   the mount has happened finds nothing, and "nothing" is what a first
+ *   boot looks like: the service would mint a token it cannot store, and
+ *   every restart would sign the owner out.
+ *
+ *   The wait is bounded because a device whose store never appears still
+ *   has to come up.  The first path component names the mount point.
+ *
  ****************************************************************************/
 
-int ny_web_run(int argc, char **argv)
+static void ny_web_store_wait(const char *path)
 {
-  char token[NYABULA_WS_TOKEN_SIZE + 3];
-  char *end;
-  struct sockaddr_in address;
-  long port;
-  FILE *file;
-  int server;
-  int one = 1;
-  if (argc != 4 && argc != 5)
+  char root[32];
+  struct statfs info;
+  const char *slash = path[0] == '/' ? strchr(path + 1, '/') : NULL;
+  if (slash == NULL || (size_t)(slash - path) >= sizeof(root))
     {
-      fprintf(
-          stderr,
-          "Usage: nyabula_eye_ws <port> <token-file> <origin> [bind-ip]\n");
-      return EXIT_FAILURE;
+      return;
     }
 
-  port = strtol(argv[1], &end, 10);
-  if (*end != '\0' || port < 1 || port > 65535 || strlen(argv[3]) > 255 ||
-      (strncmp(argv[3], "http://", 7) != 0 &&
-       strncmp(argv[3], "https://", 8) != 0))
+  memcpy(root, path, slash - path);
+  root[slash - path] = '\0';
+  for (int i = 0; i < NY_WEB_STORE_WAIT_MS / 100; i++)
     {
-      return EXIT_FAILURE;
+      if (statfs(root, &info) == 0 && info.f_type == MSDOS_SUPER_MAGIC)
+        {
+          return;
+        }
+
+      usleep(100 * 1000);
     }
 
-  file = fopen(argv[2], "r");
+  fprintf(stderr, "nyabula_web: %s did not appear; continuing without it\n",
+          root);
+}
+
+/****************************************************************************
+ * Name: ny_web_token_load
+ *
+ * Description:
+ *   Read the access token: exactly NYABULA_WS_TOKEN_SIZE hex digits, with
+ *   an optional trailing newline.  token must hold NYABULA_WS_TOKEN_SIZE + 3
+ *   bytes.
+ *
+ *   -ENOENT means only that the file is not there.  A file that exists and
+ *   does not parse is -EINVAL, and the caller must not treat that as an
+ *   invitation to mint a new one: replacing a token that someone wrote,
+ *   however badly, locks out whoever is holding the original.
+ *
+ ****************************************************************************/
+
+static int ny_web_token_load(const char *path, char *token)
+{
+  FILE *file = fopen(path, "r");
   if (file == NULL)
     {
-      return EXIT_FAILURE;
+      /* A missing directory on the way reports ENOTDIR, and means the same
+       * thing as a missing file: nothing has been written here yet.
+       */
+
+      return errno == ENOENT || errno == ENOTDIR ? -ENOENT : -EIO;
     }
 
-  size_t length = fread(token, 1, sizeof(token), file);
+  size_t length = fread(token, 1, NYABULA_WS_TOKEN_SIZE + 3, file);
   bool read_failed = ferror(file) != 0;
   fclose(file);
   while (length > 0 &&
@@ -694,23 +738,182 @@ int ny_web_run(int argc, char **argv)
 
   if (read_failed || length != NYABULA_WS_TOKEN_SIZE)
     {
-      return EXIT_FAILURE;
+      return read_failed ? -EIO : -EINVAL;
     }
 
   for (size_t i = 0; i < length; i++)
     {
       if (!isxdigit((unsigned char)token[i]))
         {
-          return EXIT_FAILURE;
+          return -EINVAL;
         }
     }
 
   token[length] = '\0';
+  return 0;
+}
+
+/****************************************************************************
+ * Name: ny_web_token_create
+ *
+ * Description:
+ *   Mint a token from the system entropy source and store it.
+ *
+ *   A token that could not be stored is still returned and the service
+ *   still starts: it is good until the next boot, which keeps a device with
+ *   an unwritable config store reachable instead of silent.  The cost is a
+ *   new token after every restart, and the warning says so.
+ *
+ ****************************************************************************/
+
+static int ny_web_token_create(const char *path, char *token)
+{
+  static const char digits[] = "0123456789abcdef";
+  unsigned char raw[NYABULA_WS_TOKEN_SIZE / 2];
+  char directory[128];
+  const char *slash;
+  int fd = open("/dev/urandom", O_RDONLY);
+  if (fd < 0)
+    {
+      return -errno;
+    }
+
+  ssize_t count = read(fd, raw, sizeof(raw));
+  close(fd);
+  if (count != (ssize_t)sizeof(raw))
+    {
+      return -EIO;
+    }
+
+  for (size_t i = 0; i < sizeof(raw); i++)
+    {
+      token[i * 2] = digits[raw[i] >> 4];
+      token[i * 2 + 1] = digits[raw[i] & 0x0f];
+    }
+
+  token[NYABULA_WS_TOKEN_SIZE] = '\0';
+
+  /* One level is enough: the store partition is the parent and either
+   * exists or is the reason this will fail.
+   */
+
+  slash = strrchr(path, '/');
+  if (slash != NULL && slash != path &&
+      (size_t)(slash - path) < sizeof(directory))
+    {
+      memcpy(directory, path, slash - path);
+      directory[slash - path] = '\0';
+      mkdir(directory, 0700);
+    }
+
+  bool stored = false;
+  FILE *file = fopen(path, "w");
+  if (file != NULL)
+    {
+      stored = fprintf(file, "%s\n", token) > 0;
+      stored = fclose(file) == 0 && stored;
+    }
+
+  if (!stored)
+    {
+      fprintf(stderr,
+              "nyabula_web: token not stored at %s (%d); it will change on "
+              "the next start\n",
+              path, errno);
+      return 0;
+    }
+
+  return 0;
+}
+
+/****************************************************************************
+ * Name: ny_web_run
+ ****************************************************************************/
+
+int ny_web_run(int argc, char **argv)
+{
+  char token[NYABULA_WS_TOKEN_SIZE + 3];
+  const char *token_path;
+  const char *origin;
+  const char *bind_ip;
+  char *end;
+  struct sockaddr_in address;
+  long port;
+  int server;
+  int one = 1;
+  int ret;
+  bool product = argc == 1;
+  if (!product && argc != 4 && argc != 5)
+    {
+      fprintf(stderr,
+              "Usage: nyabula_web\n"
+              "       nyabula_web <port> <token-file> <origin> [bind-ip]\n");
+      return EXIT_FAILURE;
+    }
+
+  if (product)
+    {
+      /* Started by the system with nothing to tell it.  Every address is
+       * served because the device cannot know which one it will have --
+       * the provisioning AP's today, a DHCP lease tomorrow -- and the
+       * origin is left unset, which the handshake reads as "the page must
+       * have come from the host it is now calling".
+       */
+
+      port = CONFIG_NYABULA_CORE_WEB_PORT;
+      token_path = CONFIG_NYABULA_CORE_WEB_TOKEN_PATH;
+      origin = NULL;
+      bind_ip = "0.0.0.0";
+      ny_web_store_wait(token_path);
+
+#ifdef CONFIG_NYABULA_CORE_STATE_SQLITE
+      /* The state database matters more than the token.  Opening it creates
+       * its directory, and doing that before the partition is mounted plants
+       * the directory in the pseudo filesystem instead -- right where the
+       * mount point has to go.
+       */
+
+      ny_web_store_wait(CONFIG_NYABULA_CORE_STATE_DATABASE);
+#endif
+    }
+  else
+    {
+      port = strtol(argv[1], &end, 10);
+      if (*end != '\0' || port < 1 || port > 65535 || strlen(argv[3]) > 255 ||
+          (strncmp(argv[3], "http://", 7) != 0 &&
+           strncmp(argv[3], "https://", 8) != 0))
+        {
+          return EXIT_FAILURE;
+        }
+
+      token_path = argv[2];
+      origin = argv[3];
+      bind_ip = argc == 5 ? argv[4] : NULL;
+    }
+
+  /* Only the product start mints a token.  An operator who names a file is
+   * saying which secret to use, and quietly replacing a missing one would
+   * leave them holding a token the service no longer accepts.
+   */
+
+  ret = ny_web_token_load(token_path, token);
+  if (ret == -ENOENT && product)
+    {
+      ret = ny_web_token_create(token_path, token);
+    }
+
+  if (ret < 0)
+    {
+      fprintf(stderr, "nyabula_web: no usable token at %s: %d\n", token_path,
+              ret);
+      return EXIT_FAILURE;
+    }
+
   memset(&address, 0, sizeof(address));
   address.sin_family = AF_INET;
   address.sin_port = htons(port);
   address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (argc == 5 && inet_pton(AF_INET, argv[4], &address.sin_addr) != 1)
+  if (bind_ip != NULL && inet_pton(AF_INET, bind_ip, &address.sin_addr) != 1)
     {
       return EXIT_FAILURE;
     }
@@ -761,8 +964,9 @@ int ny_web_run(int argc, char **argv)
     }
 #endif
 
-  printf("Nyabula Eye WS: %s:%ld, explicit token and Origin\n",
-         argc == 5 ? argv[4] : "127.0.0.1", port);
+  printf("nyabula_web: %s:%ld, %s origin\n",
+         bind_ip != NULL ? bind_ip : "127.0.0.1", port,
+         origin != NULL ? origin : "same-host");
   for (;;)
     {
       nxmutex_lock(&g_web_lock);
@@ -821,7 +1025,10 @@ int ny_web_run(int argc, char **argv)
 
       args->fd = client;
       strlcpy(args->token, token, sizeof(args->token));
-      strlcpy(args->origin, argv[3], sizeof(args->origin));
+      if (origin != NULL)
+        {
+          strlcpy(args->origin, origin, sizeof(args->origin));
+        }
       nxmutex_lock(&g_web_lock);
       int slot;
       for (slot = 0; slot < NY_WEB_MAX_CLIENTS; slot++)

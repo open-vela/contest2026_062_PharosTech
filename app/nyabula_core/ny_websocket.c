@@ -194,6 +194,8 @@ int nyabula_eye_ws_upgrade(int fd, const char *origin, char *scratch,
   char *key;
   char *version;
   char *actual_origin;
+  char *host;
+  bool same_host = false;
   SHA1_CTX sha;
   if (capacity < NYABULA_WS_HEADER_MAX)
     {
@@ -287,10 +289,26 @@ int nyabula_eye_ws_upgrade(int fd, const char *origin, char *scratch,
   key = nyabula_eye_ws_header(scratch, "Sec-WebSocket-Key");
   version = nyabula_eye_ws_header(scratch, "Sec-WebSocket-Version");
   actual_origin = nyabula_eye_ws_header(scratch, "Origin");
+  host = nyabula_eye_ws_header(scratch, "Host");
+
+  /* With no origin configured the rule is that the page came from this
+   * device: its Origin, less the scheme, is the very Host it is calling.
+   * That holds on whichever address the device happens to have, and still
+   * refuses a page from anywhere else -- which is the whole point of the
+   * check, since the token alone would let any site the owner visits drive
+   * the socket from their browser.
+   */
+
+  if (origin == NULL && actual_origin != NULL && host != NULL)
+    {
+      same_host = strncmp(actual_origin, "http://", 7) == 0 &&
+                  strcmp(actual_origin + 7, host) == 0;
+    }
+
   if (key == NULL || strlen(key) != 24 || version == NULL ||
       strcmp(version, "13") != 0 || actual_origin == NULL ||
-      strcmp(actual_origin, origin) != 0 ||
-      nyabula_eye_ws_header(scratch, "Host") == NULL ||
+      (origin != NULL ? strcmp(actual_origin, origin) != 0 : !same_host) ||
+      host == NULL ||
       !nyabula_eye_ws_has_token(nyabula_eye_ws_header(scratch, "Upgrade"),
                                 "websocket") ||
       !nyabula_eye_ws_has_token(nyabula_eye_ws_header(scratch, "Connection"),
