@@ -104,22 +104,39 @@ if [ "$need_mib" -gt "$SIZE" ]; then
   echo "data image grown to ${SIZE} MiB for a ${payload}-byte payload" >&2
 fi
 
-# The filesystem stays FAT32 regardless of size: these images seed
-# partitions on a medium the board sees as tens of gigabytes, and the
-# on-device mount has to keep working.  mkfs.fat warns below about 64 MiB
-# that the FAT32 geometry is unusual, but the warning is about efficiency,
-# not correctness, and the image must not outgrow its partition -- config
-# is only 16 MiB, so a 64 MiB floor would not fit at all.  Callers that
-# know their partition size pass it; the warning is left visible rather
-# than suppressed so an unusually small image is noticed.
 MIN_MIB=${MIN_MIB:-16}
 if [ "$SIZE" -lt "$MIN_MIB" ]; then
   SIZE=$MIN_MIB
 fi
 
+# The FAT width is not a free choice.  A reader tells the three variants
+# apart by counting clusters -- under 65525 is FAT16 whatever the header
+# claims -- and NuttX follows that rule to the letter.  Forcing FAT32 onto
+# a small image produces a volume the board parses as FAT16 and cannot
+# mount; at the smallest cluster size that is anything under about 33 MiB,
+# which a 32 MiB config image falls just short of (64496 clusters).
+#
+# So small images are FAT16, which is also what the board's own formatter
+# picks for a partition of that size.  The check after mkfs makes the rule
+# hold even if the geometry defaults change under us.
+if [ "$SIZE" -lt 64 ]; then
+  FAT_BITS=16
+else
+  FAT_BITS=32
+fi
+
 rm -f "$OUT"
 dd if=/dev/zero of="$OUT" bs=1M count="$SIZE" status=none
-mkfs.fat -F 32 -n "$LABEL" "$OUT" >/dev/null
+mkfs.fat -F "$FAT_BITS" -n "$LABEL" "$OUT" >/dev/null
+
+clusters=$(fsck.fat -vn "$OUT" 2>/dev/null | sed -n 's/^ *\([0-9]\+\) data clusters.*/\1/p' | head -1)
+case "$FAT_BITS:${clusters:-0}" in
+  16:*) [ "${clusters:-0}" -ge 4085 ] && [ "${clusters:-0}" -lt 65525 ] ;;
+  32:*) [ "${clusters:-0}" -ge 65525 ] ;;
+esac || {
+  echo "FAT$FAT_BITS image has ${clusters:-?} clusters; the board would read it as a different FAT width" >&2
+  exit 1
+}
 ( cd "$stage" && find . -mindepth 1 -maxdepth 1 -print0 | xargs -0 -I{} mcopy -s -i "$OUT" {} :: )
 
 # Read every staged file back out of the image and compare, so a copy that
