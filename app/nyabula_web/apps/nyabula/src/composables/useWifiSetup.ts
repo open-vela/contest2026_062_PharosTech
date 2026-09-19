@@ -56,8 +56,9 @@ export function useWifiSetup() {
     return e instanceof Error ? e.message : String(e);
   }
 
-  async function refreshStatus(): Promise<NetworkStatus | null> {
-    statusBusy.value = true;
+  /** `quiet`: background poll; leaves the busy flag (and its spinners) alone. */
+  async function refreshStatus(quiet = false): Promise<NetworkStatus | null> {
+    if (!quiet) statusBusy.value = true;
     statusError.value = null;
     try {
       status.value = parseNetworkStatus(await session.request('network.status'));
@@ -67,7 +68,7 @@ export function useWifiSetup() {
       statusError.value = message(e);
       return null;
     } finally {
-      statusBusy.value = false;
+      if (!quiet) statusBusy.value = false;
     }
   }
 

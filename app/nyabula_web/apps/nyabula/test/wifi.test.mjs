@@ -54,9 +54,12 @@ test('credentials: 8-63 chars when protected, empty allowed when open or unknown
 });
 
 test('network.status parsing is defensive', () => {
-  assert.deepEqual(parseNetworkStatus(null), { state: null, ifname: null, configured: false, error: null, attempt: 0, ssid: null, ipv4: null, ap: null });
+  assert.deepEqual(parseNetworkStatus(null), { state: null, ifname: null, configured: false, error: null, attempt: 0, ssid: null, ipv4: null, rssi: null, hostname: null, ap: null });
   const s = parseNetworkStatus({ state: 'ap_provision', ifname: 'wlan0', configured: true, error: '', attempt: 2, ssid: 'Home', ap: { ssid: 'Nyabula-1', psk: 'x', ipv4: '192.168.4.1' } });
-  assert.deepEqual(s, { state: 'ap_provision', ifname: 'wlan0', configured: true, error: null, attempt: 2, ssid: 'Home', ipv4: null, ap: { ssid: 'Nyabula-1', ipv4: '192.168.4.1' } });
+  assert.deepEqual(s, { state: 'ap_provision', ifname: 'wlan0', configured: true, error: null, attempt: 2, ssid: 'Home', ipv4: null, rssi: null, hostname: null, ap: { ssid: 'Nyabula-1', ipv4: '192.168.4.1' } });
+  const online = parseNetworkStatus({ state: 'sta_online', ssid: 'Home', ipv4: '192.168.1.7', rssi: -61, hostname: 'nyabula-cat' });
+  assert.deepEqual([online.rssi, online.hostname], [-61, 'nyabula-cat']);
+  assert.equal(parseNetworkStatus({ rssi: '-61' }).rssi, null);
   assert.equal(parseNetworkStatus({ state: 'bogus' }).state, null);
 });
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* Network: WiFi status from sys.info + network.status; scan / switch share
  * useWifiSetup() with the provisioning page. */
-import { computed, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue';
 import { EmptyState, MdButton, MdCard, Skeleton, UiIcon, useDialogStore } from '@nyabula/ui';
 import { rssiBars, useSysInfo, wifiOf } from './sysinfo';
 import { useDeviceRuntime } from '../../../composables/useDeviceRuntime';
@@ -10,17 +10,50 @@ import { NETWORK_STATE_LABEL } from '../../../lib/wifi';
 import WifiSetupForm from '../../../components/WifiSetupForm.vue';
 import WifiJoinNotice from '../../../components/WifiJoinNotice.vue';
 
-const { task, info } = useSysInfo();
-const device = useDeviceRuntime();
-const wifi = computed(() => {
-  const wireless = device.snapshot?.network.interfaces.find(item => item.ssid);
-  return wireless ? { ssid: wireless.ssid ?? null, rssi: null } : wifiOf(info.value);
-});
+/** The device refreshes its signal reading every 10 s; poll at the same pace. */
+const SIGNAL_POLL_MS = 10000;
 
+const { session, task, info } = useSysInfo();
+const device = useDeviceRuntime();
 const setup = useWifiSetup();
 const dialog = useDialogStore();
 const net = computed(() => setup.status.value);
+/* Signal: network.status `rssi` (live, dBm) first, sys.info `wifi.rssi` as the
+ * fallback for firmware that only reports it there. */
+const wifi = computed(() => {
+  const fromInfo = wifiOf(info.value);
+  const wireless = device.snapshot?.network.interfaces.find(item => item.ssid);
+  const online = net.value?.state === 'sta_online';
+  return {
+    ssid: wireless?.ssid ?? (online ? net.value?.ssid : null) ?? fromInfo.ssid,
+    rssi: net.value?.rssi ?? fromInfo.rssi,
+  };
+});
 watch(() => setup.session.connected, (c) => { if (c) void setup.refreshStatus(); }, { immediate: true });
+
+/* Keep the signal fresh while this section is on screen. The joining phase
+ * runs its own faster poll, so stay out of its way. */
+let signalTimer: number | undefined;
+async function pollSignal(): Promise<void> {
+  if (document.hidden || !session.connected || setup.phase.value === 'joining') return;
+  const status = await setup.refreshStatus(true);
+  if (status && status.rssi === null && status.state === 'sta_online') {
+    try {
+      task.data.value = (await session.request('sys.info')) as typeof task.data.value;
+    } catch { /* keep the last reading */ }
+  }
+}
+function onVisibility(): void {
+  if (!document.hidden) void pollSignal();
+}
+onMounted(() => {
+  signalTimer = window.setInterval(() => void pollSignal(), SIGNAL_POLL_MS);
+  document.addEventListener('visibilitychange', onVisibility);
+});
+onBeforeUnmount(() => {
+  window.clearInterval(signalTimer);
+  document.removeEventListener('visibilitychange', onVisibility);
+});
 
 async function forgetWifi(): Promise<void> {
   if (await dialog.confirm('设备会断开当前 WiFi 并回到配网热点，需要重新扫描设备上的二维码来配置。', { title: '清除保存的 WiFi？', danger: true, confirmText: '清除' })) {
@@ -33,14 +66,17 @@ const quality = computed(() => ['无信号', '弱', '一般', '良好', '优秀'
 <template>
   <div class="stack">
     <MdCard title="WiFi 状态">
-      <Skeleton v-if="task.busy.value && !info" :lines="3" />
-      <EmptyState v-else-if="!info" tone="error" compact title="读取失败" action-text="重试" @action="task.run()" />
+      <Skeleton v-if="task.busy.value && !info && !net" :lines="3" />
+      <EmptyState v-else-if="!info && !net" tone="error" compact title="读取失败" action-text="重试" @action="task.run()" />
       <div v-else class="wifi">
         <span class="orb"><UiIcon name="wifi" :size="26" /></span>
         <div class="wifi-body">
           <div class="ssid">{{ wifi.ssid ?? 'WiFi 关联状态未提供' }}</div>
           <div class="muted sub">
-            <template v-if="wifi.rssi !== null">信号 {{ quality }} · {{ wifi.rssi }} dBm</template>
+            <template v-if="wifi.rssi !== null">
+              <span class="bars" :title="`${rssiBars(wifi.rssi)} / 4 格`"><i v-for="n in 4" :key="n" :class="{ on: n <= rssiBars(wifi.rssi) }" /></span>
+              信号 {{ quality }} · {{ wifi.rssi }} dBm
+            </template>
             <template v-else>无信号数据</template>
           </div>
         </div>
@@ -63,6 +99,7 @@ const quality = computed(() => ['无信号', '弱', '一般', '良好', '优秀'
           <div><dt>状态</dt><dd>{{ net.state ? NETWORK_STATE_LABEL[net.state] : '未知' }}</dd></div>
           <div><dt>已保存的 WiFi</dt><dd>{{ net.ssid ?? '无' }}</dd></div>
           <div v-if="net.ipv4"><dt>地址</dt><dd class="mono">{{ net.ipv4 }}</dd></div>
+          <div v-if="net.hostname"><dt>路由器显示名</dt><dd class="mono">{{ net.hostname }}</dd></div>
           <div v-if="net.error"><dt>最近的错误</dt><dd>{{ net.error }}</dd></div>
         </dl>
         <div class="row" style="justify-content: flex-end; margin-top: 12px">
@@ -101,7 +138,14 @@ const quality = computed(() => ['无信号', '弱', '一般', '良好', '优秀'
 }
 .wifi-body { flex: 1; min-width: 0; }
 .ssid { font: 600 16px var(--font-title); color: var(--md-on-surface); }
-.sub { font-size: 12.5px; margin-top: 2px; }
+.sub { font-size: 12.5px; margin-top: 2px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; flex: none; }
+.bars i { width: 3px; background: var(--md-outline-variant); border-radius: 1px; }
+.bars i:nth-child(1) { height: 4px; }
+.bars i:nth-child(2) { height: 7px; }
+.bars i:nth-child(3) { height: 10px; }
+.bars i:nth-child(4) { height: 12px; }
+.bars i.on { background: var(--md-primary); }
 .join-error { margin: 0 0 12px; font-size: 13px; color: var(--md-error); }
 .md-btn :deep(.ui-icon) { vertical-align: -3px; margin-right: 4px; }
 </style>
