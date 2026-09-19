@@ -70,6 +70,10 @@ static int g_web_clients[NY_WEB_MAX_CLIENTS];
 
 static char g_web_product_token[NYABULA_WS_TOKEN_SIZE + 1];
 
+/* Sockets that have said hello, i.e. panels someone has open. */
+
+static int g_web_panels;
+
 struct ny_web_client_args_s
 {
   int slot;
@@ -356,6 +360,13 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
 #endif
 #endif
       ret = nyabula_eye_ws_emit(fd, s, "res", id, topic, result);
+      if (ret == 0 && !s->authenticated)
+        {
+          nxmutex_lock(&g_web_lock);
+          g_web_panels++;
+          nxmutex_unlock(&g_web_lock);
+        }
+
       s->authenticated = ret == 0;
       s->published = false;
       goto out;
@@ -439,9 +450,18 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
     }
 
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
+  /* The product layer also answers eyes.expression, for the agent: it shows
+   * the feeling under the agent's name on a five second lease, which is
+   * right for an emotion and wrong for a choice the owner made on the
+   * panel.  That topic is this transport's own, so it is not offered to the
+   * product layer at all.
+   */
+
   const struct ny_product_caller_s caller = { "bootstrap", NY_PRODUCT_OWNER };
   result = NULL;
-  ret = ny_product_request(&caller, topic, data, &result);
+  ret = strcmp(topic, "eyes.expression") == 0
+            ? -ENOSYS
+            : ny_product_request(&caller, topic, data, &result);
   if (ret != -ENOSYS)
     {
       if (ret < 0)
@@ -491,10 +511,34 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
 
   /* Identity, priority and lease never come from the request. The transport
    * calls the same copied queue used by other Core workers, not the engine.
+   *
+   * What the owner picks stays picked: an expression, a scene, an iris or
+   * ambient setting holds until it is changed, because a face that snaps
+   * back to neutral five seconds after being told to look happy reads as
+   * a fault.  A glance or a blink is a gesture and still expires.
+   *
+   * Holding for ever has a cost -- this source outranks the agent, so a
+   * pinned expression would silence every emotion the agent shows from
+   * then on.  Choosing the idle expression is therefore a release rather
+   * than one more override: it gives the face back.
    */
 
+  uint32_t lease_ms =
+      strcmp(topic, "eyes.gaze") == 0 || strcmp(topic, "eyes.blink") == 0
+          ? NYABULA_WS_LEASE_MS
+          : 0;
+  const char *action = topic;
+  const char *chosen = nyabula_eye_ws_string(data, "expression");
+  bool release = strcmp(topic, "eyes.expression") == 0 && chosen != NULL &&
+                 strcmp(chosen, "idle") == 0;
+
   cJSON *command = cJSON_CreateObject();
-  cJSON *params = cJSON_Duplicate(data, true);
+  cJSON *params = release ? cJSON_CreateObject() : cJSON_Duplicate(data, true);
+  if (release && params != NULL)
+    {
+      action = "core.release";
+      cJSON_AddStringToObject(params, "domain", "expression");
+    }
 
   if (command == NULL || params == NULL ||
       !cJSON_AddItemToObject(command, "params", params))
@@ -507,11 +551,10 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
 
   if (cJSON_AddStringToObject(command, "source", NYABULA_WS_SOURCE) == NULL ||
       cJSON_AddStringToObject(command, "id", id) == NULL ||
-      cJSON_AddStringToObject(command, "action", topic) == NULL ||
+      cJSON_AddStringToObject(command, "action", action) == NULL ||
       cJSON_AddNumberToObject(command, "priority", NYABULA_WS_PRIORITY) ==
           NULL ||
-      cJSON_AddNumberToObject(command, "lease_ms", NYABULA_WS_LEASE_MS) ==
-          NULL ||
+      cJSON_AddNumberToObject(command, "lease_ms", lease_ms) == NULL ||
       !cJSON_PrintPreallocated(command, s->output, sizeof(s->output), false))
     {
       cJSON_Delete(command);
@@ -706,6 +749,30 @@ static int nyabula_eye_ws_client(int fd, const char *token, const char *origin)
       s->used = 0;
     }
 
+  if (s->authenticated)
+    {
+      bool last;
+      nxmutex_lock(&g_web_lock);
+      last = --g_web_panels == 0;
+      nxmutex_unlock(&g_web_lock);
+
+      /* What the panel set holds for as long as a panel is open, and no
+       * longer.  Without this a scene started from a page that was then
+       * closed, or lost its connection, would sit on the eyes until the
+       * next restart with nobody left to dismiss it.
+       */
+
+      if (last)
+        {
+          static const char release[] =
+              "{\"action\":\"core.release\",\"id\":\"panel-closed\","
+              "\"source\":\"" NYABULA_WS_SOURCE "\",\"priority\":40,"
+              "\"lease_ms\":0,\"params\":{\"domain\":\"all\"}}";
+          nyabula_eye_service_submit(NYABULA_WS_SOURCE, release,
+                                     sizeof(release) - 1);
+        }
+    }
+
   free(s);
   return ret;
 }
@@ -835,6 +902,27 @@ int ny_web_product_token(char *out, size_t size)
 
   nxmutex_unlock(&g_web_lock);
   return ret;
+}
+
+/****************************************************************************
+ * Name: ny_web_panel_count
+ *
+ * Description:
+ *   How many panels are open, counting only sockets that have
+ *   authenticated.
+ *
+ ****************************************************************************/
+
+int ny_web_panel_count(void)
+{
+  int count = 0;
+  if (nxmutex_lock(&g_web_lock) == 0)
+    {
+      count = g_web_panels;
+      nxmutex_unlock(&g_web_lock);
+    }
+
+  return count;
 }
 
 /****************************************************************************
