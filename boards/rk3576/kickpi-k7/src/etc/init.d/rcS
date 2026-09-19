@@ -26,3 +26,12 @@
 #ifdef CONFIG_SYSTEM_ADBD
 adbd &
 #endif
+
+/* The eyes are the product's face, so they come up with the system rather
+ * than waiting for something to ask.  The engine owns LVGL and both panels
+ * and never returns, hence the background start.
+ */
+
+#ifdef CONFIG_NYABULA_EYE_DISPLAY
+nyabula_eye &
+#endif
