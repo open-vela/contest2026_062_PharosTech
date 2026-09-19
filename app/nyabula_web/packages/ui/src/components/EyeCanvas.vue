@@ -10,7 +10,9 @@ import { EyeEngine, type EyeState } from '@nyabula/eye-engine';
 const props = defineProps<{
   eyeState?: EyeState | null;
   clockOffsetMs?: number;
-  toyMode?: boolean;
+  /** Canvas backdrop. Default 'transparent': only the two round eyes are
+   *  painted, so they float over whatever the host renders behind them. */
+  background?: string;
 }>();
 
 const emit = defineEmits<{
@@ -33,8 +35,7 @@ function cancelPendingLook() {
 onMounted(() => {
   const cv = canvasRef.value!;
   engine = new EyeEngine(cv, {
-    background: '#000',
-    toyMode: props.toyMode,
+    background: props.background ?? 'transparent',
     onInteraction: (x, y, phase) => {
       if (phase === 'up') {
         cancelPendingLook();
@@ -64,11 +65,6 @@ onMounted(() => {
   emit('ready', engine);
 });
 
-watch(() => props.toyMode, value => {
-  if (!value) cancelPendingLook();
-  engine?.setToyMode(value ?? false);
-});
-
 watch(
   () => props.eyeState,
   (s) => {
@@ -94,7 +90,7 @@ defineExpose({ getEngine: () => engine });
   width: 100%;
   height: 100%;
   display: block;
-  border-radius: var(--radius-l);
+  background: transparent;
   cursor: crosshair;
   touch-action: none;
 }

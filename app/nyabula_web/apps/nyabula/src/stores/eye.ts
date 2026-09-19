@@ -54,8 +54,16 @@ export const useEyeStore = defineStore('eye', () => {
   const pendingMode = ref<string | null>(null);
   const pendingScene = ref<string | null | undefined>(undefined);
   const sceneStyle = ref<SceneStyle>('full');
-  /** Local-only preview of ambient light (no device topic yet). */
+  /** Ambient light 0..100. On a native Core it mirrors the device value and
+   *  is changed through `eyes.ambient`, so the preview never shows a pupil the
+   *  hardware does not; legacy links have no topic and keep it preview-only. */
   const lightPreview = ref(55);
+  /** Commands sent but not answered yet. A broadcast that arrives meanwhile was
+   *  produced before the device applied them and must not undo the choice. */
+  let inflight = 0;
+  /** Ambient level waiting to be sent / being sent (see setAmbient). */
+  let nextAmbient: number | null = null;
+  let sendingAmbient = false;
 
   let unsub: (() => void) | null = null;
   function receiveState(data: Record<string, unknown>) {
@@ -67,9 +75,16 @@ export const useEyeStore = defineStore('eye', () => {
     } else {
       lastState.value = data as unknown as EyeState;
     }
-    pendingMode.value = null;
-    pendingScene.value = undefined;
+    const ex = lastState.value?.expression;
     const sc = lastState.value?.scene;
+    // The device is authoritative, but only once it has seen the command: keep
+    // the optimistic choice while its request is in flight unless this state
+    // already confirms it.
+    if (inflight === 0 || ex?.mode === pendingMode.value) pendingMode.value = null;
+    if (inflight === 0 || (sc?.type ?? null) === pendingScene.value) pendingScene.value = undefined;
+    if (nativeCore.value && typeof ex?.lightLevel === 'number' && nextAmbient === null && !sendingAmbient) {
+      lightPreview.value = Math.round(ex.lightLevel * 100);
+    }
     if (sc?.style === 'full' || sc?.style === 'minimal') sceneStyle.value = sc.style;
   }
   watch(
@@ -115,12 +130,15 @@ export const useEyeStore = defineStore('eye', () => {
     const prev = pendingMode.value;
     pendingMode.value = mode;
     if (!nativeCore.value) pendingScene.value = null;
+    inflight++;
     try {
       await session.request(nativeCore.value ? 'eyes.expression' : 'eye.mode', nativeCore.value ? { expression: mode } : { mode });
     } catch (e) {
       pendingMode.value = prev;
       pendingScene.value = undefined;
       toast.error(e, '切换表情失败');
+    } finally {
+      inflight--;
     }
   }
 
@@ -128,6 +146,7 @@ export const useEyeStore = defineStore('eye', () => {
     if (nativeCore.value && type === 'sleep') return setMode('sleep');
     pendingScene.value = type;
     if (type) sceneStyle.value = style;
+    inflight++;
     try {
       const data: Record<string, unknown> = { type };
       if (type) {
@@ -148,6 +167,8 @@ export const useEyeStore = defineStore('eye', () => {
     } catch (e) {
       pendingScene.value = undefined;
       toast.error(e, '切换场景失败');
+    } finally {
+      inflight--;
     }
   }
 
@@ -181,5 +202,33 @@ export const useEyeStore = defineStore('eye', () => {
     void flushLook();
   }
 
-  return { lastState, nativeCore, ready, activeMode, activeScene, sceneStyle, lightPreview, setMode, setScene, toggleScene, look };
+  /* Ambient light, latest-wins like look(): a slider drag produces many values
+   * and only the newest one matters. */
+  async function flushAmbient(): Promise<void> {
+    if (sendingAmbient || nextAmbient === null) return;
+    sendingAmbient = true;
+    const client = session.client;
+    const level = nextAmbient;
+    nextAmbient = null;
+    try {
+      await session.request('eyes.ambient', { level });
+    } catch (e) {
+      nextAmbient = null;
+      toast.error(e, '设置环境光失败');
+    } finally {
+      sendingAmbient = false;
+      if (client !== session.client) nextAmbient = null;
+      if (nextAmbient !== null) void flushAmbient();
+    }
+  }
+  /** True when the slider drives the device, false when it is preview-only. */
+  const ambientOnDevice = computed(() => nativeCore.value && session.canControl);
+  function setAmbient(percent: number): void {
+    lightPreview.value = percent;
+    if (!ambientOnDevice.value) return;
+    nextAmbient = Math.min(1, Math.max(0, percent / 100));
+    void flushAmbient();
+  }
+
+  return { lastState, nativeCore, ready, activeMode, activeScene, sceneStyle, lightPreview, ambientOnDevice, setMode, setScene, toggleScene, look, setAmbient };
 });

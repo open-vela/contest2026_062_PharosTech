@@ -70,7 +70,7 @@ function pickStyle(v: string) {
         <UiIcon name="light_mode" :size="18" class="muted" />
         <span class="light-val">{{ eye.lightPreview }}%</span>
       </div>
-      <p class="light-hint"><span class="contract-only">仅本地预览</span> 暗 → 散瞳 · 亮 → 竖瞳；设备侧由传感器驱动</p>
+      <p class="light-hint"><span v-if="!eye.ambientOnDevice" class="contract-only">仅本地预览</span> 暗 → 散瞳 · 亮 → 竖瞳{{ eye.ambientOnDevice ? '；设备与预览同步变化' : '' }}</p>
     </MdCard>
   </div>
 </template>

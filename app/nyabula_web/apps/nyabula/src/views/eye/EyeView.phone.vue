@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* Phone: stage fills the first screen, quick expression strip beneath,
+/* Phone: the two eyes float at the top, quick expression strip beneath,
  * segmented sections (表情 / 场景 / 更多) below; scene picking opens a sheet
  * with grouped list for one-hand reach. */
 import { inject, ref } from 'vue';
@@ -90,7 +90,7 @@ const { eye } = page;
 
 <style scoped>
 .eye-phone { display: flex; flex-direction: column; gap: 12px; padding: 4px 14px 28px; }
-.stage-wrap { height: min(52vh, 420px); }
+.stage-wrap { --eye-stage-max-height: 46vh; padding-top: 6px; }
 .quick-strip {
   display: flex;
   gap: 8px;

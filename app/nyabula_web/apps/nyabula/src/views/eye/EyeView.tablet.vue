@@ -61,8 +61,8 @@ const tabs = [
   min-height: 100%;
 }
 .eye-tablet.portrait { grid-template-columns: 1fr; }
-.stage-col > * { height: min(60vh, 560px); }
-.portrait .stage-col > * { height: min(46vh, 480px); }
+.stage-col { --eye-stage-max-height: min(60vh, 560px); }
+.portrait .stage-col { --eye-stage-max-height: min(46vh, 480px); }
 .side { display: flex; flex-direction: column; gap: 14px; }
 .below { display: flex; flex-direction: column; gap: 14px; }
 </style>

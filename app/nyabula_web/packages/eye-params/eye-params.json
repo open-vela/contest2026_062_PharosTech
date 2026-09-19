@@ -43,9 +43,16 @@
     "irisDefault": "#38e06e",
     "pupilBase": "0~1 由环境光: dil=1-light; pupilW=lerp(0.10, 0.95, dil*dil*0.3 + dil*0.7)"
   },
+  "geometry": {
+    "comment": "Device panel geometry, from nyabula_eye_renderer_lvgl.c (W/H 360, R 178, eye_globe_radius = R - 2). The C side hardcodes these; keep both in step.",
+    "panelSizePx": 360,
+    "eyeRadiusPx": 178,
+    "globeInsetPx": 2
+  },
   "layout": {
-    "eyeRadius": "R = min(W*0.16, H*0.30)",
-    "gap": "R*2.7",
+    "panelRadius": "P = min(W*0.16, H*0.30)",
+    "eyeRadius": "R = P * eyeRadiusPx / (panelSizePx / 2)",
+    "gap": "P*2.7",
     "centerY": "H*0.46"
   }
 }

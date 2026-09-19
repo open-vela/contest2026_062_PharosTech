@@ -1,4 +1,9 @@
 /* Pixel parity against the original demo. No reference source is changed.
+ * NOTE: the expression eye (iris base, fibers, pupil clamp, overlays, lids,
+ * gaze range) now follows the device renderer nyabula_eye_renderer_lvgl.c
+ * instead of the demo, and everything is drawn at the device's 178/180 eye
+ * radius. Every case is therefore EXPECTED to differ from the demo; use this
+ * script to eyeball the differences, not as a pass/fail gate.
  * Usage: node visual-parity.cjs <bundled-node-modules> <output-directory> */
 const fs = require('node:fs');
 const path = require('node:path');

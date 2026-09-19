@@ -37,6 +37,8 @@ export interface EyeParamsJson {
     sleepCloseDuration: number;
   };
   appearance: { irisDefault: string; pupilBase: string };
+  /** Device panel geometry in panel pixels (nyabula_eye_renderer_lvgl.c). */
+  geometry: { panelSizePx: number; eyeRadiusPx: number; globeInsetPx: number };
 }
 
 export const EYE_PARAMS = rawParams as unknown as EyeParamsJson;

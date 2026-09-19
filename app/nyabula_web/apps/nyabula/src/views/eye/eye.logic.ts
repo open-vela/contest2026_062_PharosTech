@@ -34,8 +34,10 @@ export function useEyePage() {
     eye.look(d);
   }
   function onLight(v: number) {
-    eye.lightPreview = v;
-    engine?.setLight(v / 100);
+    eye.setAmbient(v);
+    // On a native Core the device applies the level and its eye.state drives
+    // the preview; only a link without that topic previews locally.
+    if (!eye.ambientOnDevice) engine?.setLight(v / 100);
   }
 
   const modes = MODES.map((m) => ({ id: m, label: MODE_LABELS[m] ?? m }));
