@@ -8,6 +8,8 @@ export interface SysInfo {
   uptime?: number;
   battery?: number | { level?: number; charging?: boolean };
   wifi?: { ssid?: string; rssi?: number } | string;
+  /** `external`: mains powered, there is no battery to report. */
+  power?: { source?: string };
 }
 
 export function fmtUptime(s: number | undefined): string {
@@ -19,11 +21,23 @@ export function fmtUptime(s: number | undefined): string {
   return h > 0 ? `${h} 小时 ${m} 分` : `${m} 分`;
 }
 
-export function batteryOf(info: SysInfo | null): { level: number | null; charging: boolean } {
+export interface BatteryState {
+  level: number | null;
+  charging: boolean;
+  /** Mains powered with no charge level: show "plugged in", not a dash. */
+  external: boolean;
+}
+
+export function batteryOf(info: SysInfo | null): BatteryState {
   const b = info?.battery;
-  if (typeof b === 'number') return { level: b, charging: false };
-  if (b && typeof b === 'object') return { level: typeof b.level === 'number' ? b.level : null, charging: b.charging === true };
-  return { level: null, charging: false };
+  let level: number | null = null;
+  let charging = false;
+  if (typeof b === 'number') level = b;
+  else if (b && typeof b === 'object') {
+    level = typeof b.level === 'number' ? b.level : null;
+    charging = b.charging === true;
+  }
+  return { level, charging, external: level === null && info?.power?.source === 'external' };
 }
 
 export function wifiOf(info: SysInfo | null): { ssid: string | null; rssi: number | null } {
