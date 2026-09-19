@@ -4,13 +4,14 @@ import { computed } from 'vue';
 import { MdChip, UiIcon } from '@nyabula/ui';
 import { useCoreTimer } from '../../../composables/useCoreTimer';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import EyeShowButton from './EyeShowButton.vue';
 defineProps<{ type: string; ff: FormFactor; active: boolean; payload: Record<string, unknown> | null }>();
 const timer = useCoreTimer('countdown');
 const running = timer.running;
+const scene = timer.scene;
 const armed = computed(() => timer.current.value !== null);
 const disabled = computed(() => timer.core.busy.value || !timer.core.available.value);
 const PRESETS = [1, 3, 5, 10, 25];
-const elapsed = timer.elapsed;
 const display = computed(() => {
   const ms = timer.remaining.value;
   const s = Math.ceil(ms / 1000);
@@ -20,7 +21,6 @@ const progress = computed(() => timer.current.value?.duration_ms ? timer.remaini
 async function start(minutes = 0) {
   await timer.create(minutes * 60000, '倒计时');
 }
-async function stop() { await timer.action('pause'); }
 async function pause() { await timer.action('pause'); }
 async function resume() { await timer.action('resume'); }
 async function reset() { await timer.action('delete'); }
@@ -37,6 +37,7 @@ async function reset() { await timer.action('delete'); }
     </div>
     <button type="button" class="rb main" :disabled="disabled || timer.finished.value || timer.waitingClock.value" :aria-label="running ? '暂停' : '继续'" @click="running ? pause() : resume()"><UiIcon :name="running ? 'pause' : 'play_arrow'" :size="22" /></button>
     <button type="button" class="rb" aria-label="重置" :disabled="disabled" @click="reset"><UiIcon name="refresh" :size="20" /></button>
+    <EyeShowButton kind="round" :shown="active || scene.held.value" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
   </div>
   <p v-if="timer.core.error.value" role="alert">{{ timer.core.error.value }}</p>
 </template>

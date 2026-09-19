@@ -1,52 +1,50 @@
 <script setup lang="ts">
-/* Live caption feature: enable switch, font size segment, caption text
- * input with a "show" action and a local history list. Showing pushes
- * {text, size} to the device; turning the switch off clears the scene. */
+/* Caption feature: enable switch, caption input with a "show" action and a
+ * per-browser history list. The sentence is laid out over the device's three
+ * caption lines (previous / current / next); the device has no font size. */
 import { computed, ref, watch } from 'vue';
-import { MdButton, MdTextField, NkListSection, NkRow, NkSegmentRow, NkToggleRow, UiIcon } from '@nyabula/ui';
+import { MdButton, MdTextField, NkListSection, NkRow, NkToggleRow, UiIcon } from '@nyabula/ui';
 import { useEyeStore } from '../../../stores/eye';
+import { useEyeScene } from '../../../composables/useEyeScene';
+import { captionScene } from '../../../composables/eyeScenePayload';
 import { useFeatureMemory, saveFeatureMemory } from './contract';
 import type { FormFactor } from '../../../composables/useFormFactor';
 
 const props = defineProps<{ type: string; ff: FormFactor }>();
 const eye = useEyeStore();
 
-const SIZES = [
-  { id: 'small', label: '小' },
-  { id: 'medium', label: '中' },
-  { id: 'large', label: '大' },
-];
 const HISTORY_MAX = 20;
 
-const mem = useFeatureMemory(props.type, { size: 'medium', history: [] as string[] });
-const size = ref(mem.size);
+const mem = useFeatureMemory(props.type, { history: [] as string[] });
 const history = ref<string[]>(Array.isArray(mem.history) ? mem.history.slice(0, HISTORY_MAX) : []);
 const text = ref('');
-const lastShown = ref('');
-const isShown = computed(() => eye.activeScene === props.type);
+/* What this panel last put on the eyes; after a reload it is read back from
+ * the caption the device still shows. */
+const live = eye.webScene === props.type ? eye.lastState?.scene?.payload as Record<string, unknown> | undefined : undefined;
+const lastShown = ref([live?.current_line, live?.next_line].filter((l) => typeof l === 'string' && l).join(''));
+const previous = ref(typeof live?.previous_line === 'string' ? live.previous_line : '');
+const scene = useEyeScene(props.type, () => (lastShown.value ? captionScene(lastShown.value, previous.value) : null));
+const isShown = computed(() => scene.shown.value || scene.held.value);
 /* The switch reflects the device state; it is on while the caption scene is shown. */
 const enabled = computed({
   get: () => isShown.value,
   set: (v: boolean) => {
-    if (v) show(lastShown.value || text.value || ' ');
-    else void eye.setScene(null);
+    if (!v) void scene.hide();
+    else if (lastShown.value) void scene.show();
+    else show(text.value || history.value[0] || '');
   },
 });
-watch([size, history], () => saveFeatureMemory(props.type, { size: size.value, history: history.value }), { deep: true });
-watch(size, () => {
-  if (isShown.value) push(lastShown.value);
-});
+watch(history, () => saveFeatureMemory(props.type, { history: history.value }), { deep: true });
 
-function push(t: string): void {
-  void eye.setScene(props.type, eye.sceneStyle, { text: t, size: size.value });
-}
 function show(t: string): void {
   const v = t.trim();
   if (!v) return;
+  if (v !== lastShown.value) previous.value = lastShown.value;
   lastShown.value = v;
   history.value = [v, ...history.value.filter((h) => h !== v)].slice(0, HISTORY_MAX);
-  push(v);
   text.value = '';
+  // A new sentence goes out at once, also when the caption is already up.
+  void scene.show();
 }
 function remove(i: number): void {
   history.value = history.value.filter((_, j) => j !== i);
@@ -62,7 +60,6 @@ function clearHistory(): void {
       <section class="col">
         <NkListSection title="显示">
           <NkToggleRow v-model="enabled" icon="article" title="实时字幕" :sub="isShown ? '正在显示：' + (lastShown || '（空）') : '打开后在设备上显示字幕'" />
-          <NkSegmentRow v-model="size" title="字号" :items="SIZES" />
         </NkListSection>
         <NkListSection title="字幕内容">
           <div class="compose">

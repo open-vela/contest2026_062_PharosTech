@@ -5,6 +5,7 @@ import { computed, ref, shallowRef, watch } from 'vue';
 import { coreEyeState, isCoreEyeSnapshot, type EyeState } from '@nyabula/eye-engine';
 import { useSessionStore } from './session';
 import { useToastStore } from '@nyabula/ui';
+import { coreSceneName, sanitizeScenePayload } from '../composables/eyeScenePayload';
 
 export type SceneStyle = 'full' | 'minimal';
 
@@ -41,9 +42,25 @@ export const SCENE_META: Record<string, { label: string; icon: string; group: st
   home: { label: '家居', icon: 'home', group: '系统' },
   sleep: { label: '休眠', icon: 'moon', group: '系统' },
   pairing: { label: '配对', icon: 'qr_code', group: '系统' },
+  qr: { label: '二维码', icon: 'qr_code', group: '系统' },
 };
 
 export const SCENE_GROUPS = ['媒体', '通讯', '时间', '信息', '系统'];
+
+/** Source name the device gives every panel connection (ny_web.c). */
+const WEB_SOURCE = 'webui';
+
+/** Panel payload spelling -> device payload, reduced to what the device accepts. */
+function corePayload(payload?: Record<string, unknown>, options?: Record<string, unknown>): Record<string, unknown> {
+  const p = { ...payload };
+  const aliases: Record<string, string> = { total_ms:'duration_ms', text:'current_line', temp:'temperature_c', condition:'weather', running:'active' };
+  for (const [from,to] of Object.entries(aliases)) if (p[from] !== undefined) { p[to]=p[from]; delete p[from]; }
+  const optionNames: Record<string,string> = { musicView:'music_view', battery:'battery_state', alarmCopy:'alarm_copy', call:'call_state', task:'task_state', network:'network_state', audio:'audio_route', eq:'eq_view', weather:'weather' };
+  for (const [key,value] of Object.entries(options ?? {})) if (optionNames[key]) p[optionNames[key]]=value;
+  if (p.audio_route === 'headphone') p.audio_route = 'headphones';
+  if (p.eq_view === 'calibrate') p.eq_view = 'calibrating';
+  return sanitizeScenePayload(p);
+}
 
 export const useEyeStore = defineStore('eye', () => {
   const session = useSessionStore();
@@ -54,6 +71,11 @@ export const useEyeStore = defineStore('eye', () => {
   const pendingMode = ref<string | null>(null);
   const pendingScene = ref<string | null | undefined>(undefined);
   const sceneStyle = ref<SceneStyle>('full');
+  /** Scene this panel's source ("webui") holds on the device, shown or not:
+   *  a higher-priority source (an alarm notice, a briefing card) can cover it
+   *  for a few seconds without taking it away. Live payload updates follow
+   *  this, not `activeScene`, so they never chase somebody else's scene. */
+  const webScene = ref<string | null>(null);
   /** Ambient light 0..100. On a native Core it mirrors the device value and
    *  is changed through `eyes.ambient`, so the preview never shows a pupil the
    *  hardware does not; legacy links have no topic and keep it preview-only. */
@@ -77,6 +99,11 @@ export const useEyeStore = defineStore('eye', () => {
     }
     const ex = lastState.value?.expression;
     const sc = lastState.value?.scene;
+    if (nativeCore.value && inflight === 0) {
+      const owner = data.scene_owner as { active?: unknown; source?: unknown } | undefined;
+      if (!sc?.type) webScene.value = null;
+      else if (owner?.active === true && owner.source === WEB_SOURCE) webScene.value = sc.type;
+    }
     // The device is authoritative, but only once it has seen the command: keep
     // the optimistic choice while its request is in flight unless this state
     // already confirms it.
@@ -105,6 +132,7 @@ export const useEyeStore = defineStore('eye', () => {
       lastState.value = null;
       pendingMode.value = null;
       pendingScene.value = undefined;
+      webScene.value = null;
       return;
     }
     const hasEye = client?.capabilities.includes('eyes.native-v1') === true;
@@ -155,21 +183,46 @@ export const useEyeStore = defineStore('eye', () => {
         if (options) data.options = options;
       }
       if (nativeCore.value) {
-        const p = { ...payload };
-        const aliases: Record<string, string> = { total_ms:'duration_ms', text:'current_line', temp:'temperature_c', condition:'weather', running:'active' };
-        for (const [from,to] of Object.entries(aliases)) if (p[from] !== undefined) { p[to]=p[from]; delete p[from]; }
-        const optionNames: Record<string,string> = { musicView:'music_view', battery:'battery_state', alarmCopy:'alarm_copy', call:'call_state', task:'task_state', network:'network_state', audio:'audio_route', eq:'eq_view', weather:'weather' };
-        for (const [key,value] of Object.entries(options ?? {})) if (optionNames[key]) p[optionNames[key]]=value;
-        if (p.audio_route === 'headphone') p.audio_route = 'headphones';
-        if (p.eq_view === 'calibrate') p.eq_view = 'calibrating';
-        await session.request(type ? 'eyes.scene.show' : 'eyes.scene.hide', type ? { scene:type.replaceAll('-','_'), style, payload:p } : {});
-      } else await session.request('eye.scene', data);
+        const scene = type ? coreSceneName(type) : null;
+        // Not a device scene (e.g. a planned feature): nothing may be sent.
+        if (type && !scene) { pendingScene.value = undefined; return; }
+        await session.request(scene ? 'eyes.scene.show' : 'eyes.scene.hide', scene ? { scene, style, payload:corePayload(payload, options) } : {});
+        webScene.value = type;
+      } else { await session.request('eye.scene', data); webScene.value = type; }
     } catch (e) {
       pendingScene.value = undefined;
       toast.error(e, '切换场景失败');
     } finally {
       inflight--;
     }
+  }
+
+  /* Payload refresh of the scene this panel already holds. The device swaps
+   * the whole payload, so callers pass a complete one. Latest-wins and at most
+   * one request in flight: a slow link drops frames instead of queueing them. */
+  let nextUpdate: { type: string; payload: Record<string, unknown> } | null = null;
+  let sendingUpdate = false;
+  async function flushUpdate(): Promise<void> {
+    if (sendingUpdate || !nextUpdate) return;
+    const { type, payload } = nextUpdate;
+    nextUpdate = null;
+    if (!session.canControl || webScene.value !== type) return;
+    sendingUpdate = true;
+    const client = session.client;
+    try {
+      if (nativeCore.value) await session.request('eyes.scene.update', { payload:corePayload(payload) });
+      else await session.request('eye.scene', { type, style:sceneStyle.value, payload });
+    } catch { /* A dropped frame is replaced by the next one; show() reports real failures. */ }
+    finally {
+      sendingUpdate = false;
+      if (client !== session.client) nextUpdate = null;
+      if (nextUpdate) void flushUpdate();
+    }
+  }
+  function updateScene(type: string, payload: Record<string, unknown>): void {
+    if (webScene.value !== type) return;
+    nextUpdate = { type, payload };
+    void flushUpdate();
   }
 
   function toggleScene(type: string): Promise<void> {
@@ -230,5 +283,5 @@ export const useEyeStore = defineStore('eye', () => {
     void flushAmbient();
   }
 
-  return { lastState, nativeCore, ready, activeMode, activeScene, sceneStyle, lightPreview, ambientOnDevice, setMode, setScene, toggleScene, look, setAmbient };
+  return { lastState, nativeCore, ready, activeMode, activeScene, webScene, sceneStyle, lightPreview, ambientOnDevice, setMode, setScene, updateScene, toggleScene, look, setAmbient };
 });

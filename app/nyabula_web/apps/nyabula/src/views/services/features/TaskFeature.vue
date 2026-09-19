@@ -3,13 +3,13 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { NkActionBar, NkListSection, NkProgressRing, NkSegmentRow, NkSliderRow, MdButton, MdTextField, UiIcon } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
-import { useEyeStore } from '../../../stores/eye';
+import { useEyeScene } from '../../../composables/useEyeScene';
+import { taskScene } from '../../../composables/eyeScenePayload';
 import { useProductRecords } from '../../../composables/useProductRecords';
 import type { ProductRecord } from '../../../stores/product';
 import type { FormFactor } from '../../../composables/useFormFactor';
 
 const props=defineProps<{type:string;ff:FormFactor}>();
-const eye=useEyeStore();
 type TaskState='queued'|'running'|'confirm'|'done'|'failed'|'cancelled';
 interface Task extends ProductRecord {id:string;title:string;state:TaskState;progress:number;done:boolean}
 const core=useProductRecords<Task>('task');
@@ -25,7 +25,9 @@ const total=computed(()=>tasks.value.length);
 const doneCount=computed(()=>tasks.value.filter(t=>t.done).length);
 const ratio=computed(()=>total.value?doneCount.value/total.value:0);
 const current=computed<Task|null>(()=>tasks.value.find(t=>t.id===state.selected)??tasks.value[0]??null);
-const active=computed(()=>eye.activeScene===props.type);
+/* Eye link: the selected task as saved on the device; edits follow by themselves. */
+const scene=useEyeScene(props.type,()=>{const t=current.value;return t?taskScene({title:t.title,progress:t.progress,state:t.state}):null;},{hideWhenEmpty:true});
+const active=computed(()=>scene.shown.value||scene.held.value);
 const subtitle=computed(()=>core.available.value?`完成 ${doneCount.value} / ${total.value}`:'未连接支持此功能的 Core');
 const draftState=ref<TaskState>('queued');
 const draftProgress=ref(0);
@@ -57,11 +59,8 @@ async function add(){
   }
 }
 async function remove(t:Task){await core.mutate('delete',{id:t.id});}
-function push(){
-  const t=current.value;
-  if(t)void eye.setScene(props.type,eye.sceneStyle,{title:t.title,progress:t.progress/100,task_state:t.state});
-}
-function hide(){void eye.setScene(null);}
+const push=()=>scene.show();
+const hide=()=>scene.hide();
 </script>
 
 <template>
@@ -84,7 +83,7 @@ function hide(){void eye.setScene(null);}
           <span v-if="dirty" class="muted">编辑值尚未保存到设备</span>
         </div>
         <p v-else class="muted">新建一个待办后可推送到眼睛。</p>
-        <NkActionBar primary-text="推送当前任务" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" :disabled="!current" @primary="push" @secondary="hide" />
+        <NkActionBar primary-text="推送当前任务" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" :disabled="!scene.canShow.value" @primary="push" @secondary="hide" />
       </section>
       <section class="card">
         <NkListSection title="待办" :card="false">

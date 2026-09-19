@@ -1,7 +1,8 @@
 /* Feature page contract. Every feature (one per eye.scene type) is a Vue
- * component rendered inside the ServiceDetail frame. It owns its own
- * consumer-grade UI, keeps local state where the device has no topic yet,
- * and talks to the device only through useEyeStore().setScene(). */
+ * component rendered inside the ServiceDetail frame. A `ready` feature reads
+ * and writes device topics and reaches the eyes through useEyeScene(); a
+ * `planned` one waits for hardware or driver work, is listed dimmed and is
+ * never mounted, so it cannot send anything to the device. */
 import type { Component } from 'vue';
 import type { FormFactor } from '../../../composables/useFormFactor';
 
@@ -20,8 +21,14 @@ export interface FeatureMiniProps extends FeatureProps {
   payload: Record<string, unknown> | null;
 }
 
+/** `ready`: works against the device today. `planned`: listed, not usable yet. */
+export type FeatureStage = 'ready' | 'planned';
+
 export interface FeatureDef {
   type: string;
+  stage: FeatureStage;
+  /** Planned features: what has to exist before this can work. */
+  needs?: string;
   label: string;
   icon: string;
   group: string;
@@ -34,7 +41,7 @@ export interface FeatureDef {
   status?: (payload: Record<string, unknown> | null, active: boolean) => string | null;
 }
 
-/** Local persistence helper for feature state the device does not own yet. */
+/** Per-browser convenience state (input history, drafts). Never device state. */
 export function useFeatureMemory<T extends object>(type: string, initial: T): T {
   const key = `nyabula.feature.${type}`;
   try {

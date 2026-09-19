@@ -3,9 +3,12 @@ import { computed, ref } from 'vue';
 import { UiIcon } from '@nyabula/ui';
 import { useNativeMedia } from '../../../composables/useNativeMedia';
 import { useDeviceRuntime } from '../../../composables/useDeviceRuntime';
+import { useMusicScene } from './sceneLinks';
 import type { FeatureMiniProps } from './contract';
-defineProps<FeatureMiniProps>();
+import EyeShowButton from './EyeShowButton.vue';
+const props = defineProps<FeatureMiniProps>();
 const media = useNativeMedia();
+const scene = useMusicScene(props.type, media);
 const device = useDeviceRuntime();
 const switching = ref(false);
 const tracks = computed(() => media.library?.items.filter(item => item.supported) ?? []);
@@ -35,6 +38,7 @@ async function move(delta: number): Promise<void> {
       <button type="button" aria-label="上一首" :disabled="!ready" @click="move(-1)"><UiIcon name="skip_previous" :size="20" /></button>
       <button type="button" :aria-label="playing ? '暂停' : '播放'" :disabled="!ready" @click="toggle"><UiIcon :name="playing ? 'pause' : 'play_arrow'" :size="22" /></button>
       <button type="button" aria-label="下一首" :disabled="!ready" @click="move(1)"><UiIcon name="skip_next" :size="20" /></button>
+      <EyeShowButton kind="round" :shown="active || scene.held.value" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
     </div><div class="bar" role="progressbar" :aria-valuenow="Math.round(progress)" aria-valuemin="0" aria-valuemax="100"><span :style="{ width: `${progress}%` }" /></div>
   </div>
 </template>

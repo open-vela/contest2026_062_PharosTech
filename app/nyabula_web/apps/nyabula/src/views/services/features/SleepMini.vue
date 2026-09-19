@@ -1,30 +1,20 @@
 <script setup lang="ts">
-/* Sleep mini: sleep switch (eye mode 'sleep' / 'idle') + brightness slider.
- * Shares nyabula.feature.sleep with SleepFeature; the slider re-pushes
- * { asleep, wake_by, brightness } on release while the scene is active. */
-import { computed, reactive, ref, watch } from 'vue';
-import { MdSlider, MdSwitch, UiIcon } from '@nyabula/ui';
-import { useEyeStore } from '../../../stores/eye';
-import { useFeatureMemory, saveFeatureMemory, type FeatureMiniProps } from './contract';
+/* Sleep mini: the sleep switch. It drives the device eye expression
+ * ('sleep', or a release back to the agent's own expression). */
+import { computed } from 'vue';
+import { MdSwitch, UiIcon } from '@nyabula/ui';
+import { MODE_LABELS, useEyeStore } from '../../../stores/eye';
+import { useSessionStore } from '../../../stores/session';
+import type { FeatureMiniProps } from './contract';
 
-const props = defineProps<FeatureMiniProps>();
+defineProps<FeatureMiniProps>();
 const eye = useEyeStore();
-
-const state = reactive(useFeatureMemory(props.type, { wakeBy: ['voice', 'touch'] as string[], brightness: 70, dimOnSleep: true }));
-watch(state, () => saveFeatureMemory(props.type, state), { deep: true });
+const session = useSessionStore();
 
 const asleep = computed(() => eye.activeMode === 'sleep');
-const brightness = ref(state.brightness);
-watch(() => props.payload, (pl) => {
-  if (props.active && pl && typeof pl.brightness === 'number') brightness.value = pl.brightness;
-}, { immediate: true });
-
+const note = computed(() => (!session.connected ? '设备离线' : asleep.value ? '眼睛已闭上' : `当前表情：${MODE_LABELS[eye.activeMode] ?? eye.activeMode}`));
 function setAsleep(v: boolean): void {
   void eye.setMode(v ? 'sleep' : 'idle');
-}
-function commit(): void {
-  state.brightness = brightness.value;
-  if (props.active) void eye.setScene(props.type, eye.sceneStyle, { asleep: asleep.value, wake_by: [...state.wakeBy], brightness: state.brightness });
 }
 </script>
 
@@ -33,17 +23,14 @@ function commit(): void {
     <label class="slm-sw">
       <UiIcon name="moon" :size="18" :class="{ on: asleep }" />
       <span>{{ asleep ? '休眠中' : '休眠' }}</span>
-      <MdSwitch :model-value="asleep" @update:model-value="setAsleep" />
+      <MdSwitch :model-value="asleep" :disabled="!session.canControl" @update:model-value="setAsleep" />
     </label>
-    <div class="slm-bright">
-      <UiIcon name="light_mode" :size="16" class="ic" />
-      <MdSlider v-model="brightness" :min="0" :max="100" aria-label="亮度" @change="commit" />
-      <span class="pct">{{ brightness }}%</span>
-    </div>
+    <span class="slm-note">{{ note }}</span>
   </div>
 </template>
 
 <style scoped>
+.slm-note { flex: 1; min-width: 0; font-size: 12.5px; color: var(--md-on-surface-variant); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .slm { display: flex; align-items: center; gap: 12px; min-height: 44px; }
 .slm-sw { display: flex; align-items: center; gap: 6px; min-height: 40px; flex: none; font: 600 13px var(--font-body); color: var(--md-on-surface); cursor: pointer; }
 .slm-sw .on { color: var(--md-primary); }

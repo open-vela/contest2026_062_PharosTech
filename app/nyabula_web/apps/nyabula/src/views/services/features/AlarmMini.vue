@@ -1,24 +1,23 @@
 <script setup lang="ts">
-/* Alarm mini: next enabled alarm as a big time with its enable switch, and
- * an "add" button that opens the full page. Alarms live in
- * nyabula.feature.alarm (shared with AlarmFeature); toggling re-pushes the
- * next alarm the same way the full page does (none enabled -> hide). */
+/* Alarm mini: the next alarm as a big time with its enable switch, a "show on
+ * the eyes" button and "add". While an alarm rings the card turns into the
+ * dismiss / snooze pair. Alarms are Core records (useAlarms). */
 import { computed } from 'vue';
 import { useRouter } from 'vue-router';
-import { MdSwitch, UiIcon } from '@nyabula/ui';
+import { MdButton, MdSwitch, UiIcon } from '@nyabula/ui';
 import { useSessionStore } from '../../../stores/session';
 import { useAlarms, type Alarm } from '../../../composables/useAlarms';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import EyeShowButton from './EyeShowButton.vue';
 
 const props = defineProps<{ type: string; ff: FormFactor; active: boolean; payload: Record<string, unknown> | null }>();
-const { product, sorted, nextAlarm } = useAlarms();
+const { product, sorted, nextAlarm, ringing, scene, dismiss, snooze } = useAlarms();
 const session = useSessionStore();
 const router = useRouter();
 
 /* Shown row: the next enabled alarm, else the earliest (disabled) one. */
 const shown = computed<Alarm | null>(() => nextAlarm.value ?? sorted.value[0] ?? null);
-const liveTime = computed(() => (props.active && typeof props.payload?.time === 'string' ? (props.payload.time as string) : null));
-const liveLabel = computed(() => (props.active && typeof props.payload?.label === 'string' ? (props.payload.label as string) : null));
+const ring = computed<Alarm | null>(() => ringing.value[0] ?? null);
 
 function toggle(a: Alarm, v: boolean): void {
   void product.mutate('alarm', 'update', { id:a.id, record:{ ...a, enabled:v } });
@@ -30,13 +29,22 @@ function openAdd(): void {
 </script>
 
 <template>
-  <div class="al">
+  <div v-if="ring" class="al" role="alert">
+    <div class="next">
+      <span class="time mono live">{{ ring.time }}</span>
+      <span class="label">闹钟到点{{ ring.label ? ' · ' + ring.label : '' }}</span>
+    </div>
+    <MdButton class="act" :disabled="product.busy.alarm" @click="dismiss(ring)">关闭</MdButton>
+    <MdButton variant="tonal" class="act" :disabled="product.busy.alarm" @click="snooze(ring)">稍后</MdButton>
+  </div>
+  <div v-else class="al">
     <div v-if="shown" class="next" :class="{ off: !shown.enabled }">
-      <span class="time mono">{{ liveTime ?? shown.time }}</span>
-      <span class="label">{{ liveLabel ?? shown.label ?? '' }}{{ nextAlarm ? '' : ' · 未启用' }}</span>
+      <span class="time mono">{{ shown.time }}</span>
+      <span class="label">{{ shown.label ?? '' }}{{ nextAlarm ? '' : ' · 未启用' }}</span>
     </div>
     <span v-else class="empty">还没有闹钟</span>
     <span v-if="shown" class="sw"><MdSwitch :model-value="shown.enabled" @update:model-value="toggle(shown, $event)" /></span>
+    <EyeShowButton kind="round" :shown="active || scene.held.value" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
     <button type="button" class="add" aria-label="添加闹钟" @click="openAdd"><UiIcon name="add" :size="18" /><span>添加</span></button>
   </div>
 </template>
@@ -45,6 +53,8 @@ function openAdd(): void {
 .al { display: flex; align-items: center; gap: 10px; min-height: 44px; }
 .next { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .time { font-size: 28px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: var(--md-on-surface); }
+.time.live { color: var(--md-primary); }
+.act { flex: none; min-height: 40px; padding: 0 14px; }
 .next.off .time { color: var(--md-on-surface-variant); }
 .label { font-size: 12px; color: var(--md-on-surface-variant); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .empty { flex: 1; font-size: 13px; color: var(--md-on-surface-variant); }

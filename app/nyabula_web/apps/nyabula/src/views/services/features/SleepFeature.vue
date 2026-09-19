@@ -1,40 +1,29 @@
 <script setup lang="ts">
-/* Sleep feature. The sleep toggle drives the eye mode ('sleep' / 'idle');
- * wake methods and screen brightness are local settings. Pushes
- * { asleep, wake_by, brightness } to the eye. */
-import { computed, reactive, watch } from 'vue';
-import { NkActionBar, NkChipSelect, NkListSection, NkSliderRow, NkToggleRow, UiIcon } from '@nyabula/ui';
+/* Sleep feature. Sleeping is an eye expression on the device ('sleep'); waking
+ * releases it so the agent's own expressions show again. Wake sources and
+ * screen dimming need driver work and are listed as planned, not as switches. */
+import { computed } from 'vue';
+import { NkListSection, NkRow, NkToggleRow, UiIcon } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
-import { useEyeStore } from '../../../stores/eye';
-import { useFeatureMemory, saveFeatureMemory } from './contract';
+import { MODE_LABELS, useEyeStore } from '../../../stores/eye';
+import { useSessionStore } from '../../../stores/session';
 import type { FormFactor } from '../../../composables/useFormFactor';
 
-const props = defineProps<{ type: string; ff: FormFactor }>();
+defineProps<{ type: string; ff: FormFactor }>();
 const eye = useEyeStore();
+const session = useSessionStore();
 
-const WAKE = [
-  { id: 'voice', label: '语音', icon: 'mic' },
-  { id: 'touch', label: '触摸', icon: 'toggle_on' },
-  { id: 'schedule', label: '定时', icon: 'alarm' },
+const PLANNED = [
+  { icon: 'mic', title: '语音唤醒', sub: '唤醒词“你好，openvela”，待语音前端接入' },
+  { icon: 'toggle_on', title: '触摸唤醒', sub: '待触摸传感器驱动接入' },
+  { icon: 'dark_mode', title: '休眠时调暗屏幕', sub: '待背光控制接入' },
 ];
 
-const mem = useFeatureMemory(props.type, { wakeBy: ['voice', 'touch'] as string[], brightness: 70, dimOnSleep: true });
-const state = reactive(mem);
-watch(state, () => saveFeatureMemory(props.type, state), { deep: true });
-
 const asleep = computed(() => eye.activeMode === 'sleep');
-const wakeModel = computed({ get: () => state.wakeBy as string | string[], set: (v: string | string[]) => { state.wakeBy = Array.isArray(v) ? v : [v]; } });
-const wakeLabels = computed(() => WAKE.filter((w) => state.wakeBy.includes(w.id)).map((w) => w.label).join(' / ') || '无');
-const subtitle = computed(() => (asleep.value ? `休眠中 · ${wakeLabels.value}可唤醒` : '清醒'));
+const subtitle = computed(() => (!session.connected ? '设备离线' : asleep.value ? '休眠中' : `清醒 · ${MODE_LABELS[eye.activeMode] ?? eye.activeMode}`));
 
 function setAsleep(v: boolean): void {
   void eye.setMode(v ? 'sleep' : 'idle');
-}
-function push(): void {
-  void eye.setScene(props.type, eye.sceneStyle, { asleep: asleep.value, wake_by: [...state.wakeBy], brightness: state.brightness });
-}
-function hide(): void {
-  void eye.setScene(null);
 }
 </script>
 
@@ -47,21 +36,17 @@ function hide(): void {
           <span class="hero-icon"><UiIcon :name="asleep ? 'moon' : 'light_mode'" :size="40" /></span>
           <div>
             <div class="hero-title">{{ asleep ? '正在休眠' : '清醒中' }}</div>
-            <div class="muted">{{ asleep ? '眼睛已闭上，等待唤醒' : '切换后眼睛会慢慢闭上' }}</div>
+            <div class="muted">{{ asleep ? '眼睛已闭上，可在这里唤醒' : '切换后眼睛会慢慢闭上' }}</div>
           </div>
         </div>
         <NkListSection>
-          <NkToggleRow :model-value="asleep" icon="moon" title="休眠" :sub="asleep ? '点按唤醒' : '点按进入休眠'" @update:model-value="setAsleep" />
+          <NkToggleRow :model-value="asleep" icon="moon" title="休眠" :sub="asleep ? '点按唤醒' : '点按进入休眠'" :disabled="!session.canControl" @update:model-value="setAsleep" />
         </NkListSection>
-        <NkActionBar primary-text="显示到眼睛" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" @primary="push" @secondary="hide" />
+        <p class="muted small">休眠是设备上的眼睛表情，关闭网页后保持；唤醒会把表情交还给猫猫自己。睡眠定时到点也会进入这里的休眠。</p>
       </section>
       <section class="card">
-        <h3 class="section-title">唤醒方式</h3>
-        <NkChipSelect v-model="wakeModel" :options="WAKE" multi />
-        <p class="muted small">语音唤醒词：“你好，openvela”。<span class="contract-only">唤醒方式同步为契约预留</span></p>
-        <NkListSection title="屏幕">
-          <NkSliderRow v-model="state.brightness" title="屏幕亮度" unit="%" :min="5" :max="100" icon-start="dark_mode" icon-end="light_mode" />
-          <NkToggleRow v-model="state.dimOnSleep" icon="visibility" title="休眠时调暗" sub="休眠后亮度降到最低" />
+        <NkListSection title="规划中" :card="false">
+          <NkRow v-for="p in PLANNED" :key="p.title" :icon="p.icon" :title="p.title" :sub="p.sub"><span class="tag">规划中</span></NkRow>
         </NkListSection>
       </section>
     </div>
@@ -69,6 +54,7 @@ function hide(): void {
 </template>
 
 <style scoped>
+.tag { font: 600 11px var(--font-body); padding: 2px 8px; border-radius: 999px; background: var(--md-surface-container-highest); color: var(--md-on-surface-variant); }
 .feature { display: flex; flex-direction: column; gap: 16px; }
 .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }

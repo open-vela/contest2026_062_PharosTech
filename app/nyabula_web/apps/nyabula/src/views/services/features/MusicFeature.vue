@@ -2,15 +2,15 @@
 /* Core owns audio playback. Lyrics here remain explicit display drafts. */
 import { computed, ref, watch } from 'vue';
 import { MdButton, MdTextField, NkListSection, NkMediaPlayer, NkRow, UiIcon } from '@nyabula/ui';
-import { useEyeStore } from '../../../stores/eye';
 import { useNativeMedia } from '../../../composables/useNativeMedia';
 import { useDeviceRuntime } from '../../../composables/useDeviceRuntime';
 import { useFeatureMemory, saveFeatureMemory } from './contract';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import { useMusicScene } from './sceneLinks';
+import EyeShowButton from './EyeShowButton.vue';
 const props = defineProps<{ type: string; ff: FormFactor }>();
 const media = useNativeMedia();
 const device = useDeviceRuntime();
-const eye = useEyeStore();
 const selected = ref('');
 const switching = ref(false);
 const tracks = computed(() => media.library?.items.filter(item => item.supported) ?? []);
@@ -24,7 +24,9 @@ watch([tracks, () => media.state?.track], () => {
   else if (!tracks.value.some(item => item.name === selected.value)) selected.value = tracks.value[0]?.name ?? '';
 }, { immediate: true });
 const playing = computed(() => media.state?.state === 'playing');
-const shown = computed(() => eye.activeScene === props.type);
+/* Eye link: title, play state and position from music.status, plus the manual lyric lines. */
+const scene = useMusicScene(props.type, media, () => lyrics.value);
+const shown = computed(() => scene.shown.value || scene.held.value);
 const disabled = computed(() => !media.available || media.busy || switching.value || !selected.value || !outputReady.value);
 const label = computed(() => !media.available ? '当前设备未启用原生播放服务' : !outputReady.value ? '未找到可用输出设备' : media.state?.state === 'playing' ? '设备正在播放' : media.state?.state === 'paused' ? '设备已暂停' : '设备未播放');
 async function play(): Promise<void> {
@@ -46,13 +48,6 @@ function adjacent(delta: number): void {
   const current = tracks.value.findIndex(item => item.name === selected.value);
   const next = tracks.value[(current + delta + tracks.value.length) % tracks.value.length];
   if (next) void select(next.name, true);
-}
-function push(): void {
-  const state = media.state;
-  if (!state) return;
-  void eye.setScene(props.type, eye.sceneStyle, { title: state.track || selected.value,
-    artist: '本地文件', playing: state.state === 'playing', position_ms: state.elapsedMs,
-    duration_ms: state.durationMs, lyrics: lyrics.value });
 }
 function format(ms = 0): string { const seconds = Math.floor(ms / 1000); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`; }
 </script>
@@ -89,8 +84,8 @@ function format(ms = 0): string { const seconds = Math.floor(ms / 1000); return 
             <MdTextField v-model="lyricPrev" label="上一句" />
             <MdTextField v-model="lyricCurrent" label="当前句" />
             <MdTextField v-model="lyricNext" label="下一句" />
-            <div class="actions"><MdButton :disabled="!media.state" @click="push">显示当前快照</MdButton><MdButton variant="text" :disabled="!shown" @click="eye.setScene(null)">隐藏展示</MdButton></div>
-            <p class="hint muted">这里只发送当前状态与手动歌词快照；实时频谱、歌词同步尚未接入。</p>
+            <div class="actions"><EyeShowButton kind="wide" :shown="shown" :disabled="!scene.canShow.value" @toggle="scene.toggle()" /></div>
+            <p class="hint muted">显示期间，曲名、播放状态与进度每秒随设备播放器同步；填写歌词后猫眼切到歌词视图。频谱为设备端动画，歌词时间轴尚未接入。</p>
           </div>
         </NkListSection>
       </section>

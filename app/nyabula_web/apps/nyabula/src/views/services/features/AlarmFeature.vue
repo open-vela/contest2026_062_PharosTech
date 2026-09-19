@@ -2,16 +2,18 @@
 /* Alarm feature. Local list of alarms (persisted), each row shows a large
  * time, repeat days and label with an enable toggle. Editing happens in a
  * side panel (desktop) or BottomSheet (phone/tablet) with NkTimeWheel,
- * repeat-day chips and a label field. The next enabled alarm is mirrored to
- * the device scene; with none enabled the scene is cleared. */
+ * repeat-day chips and a label field. Alarms are Core records. The next alarm
+ * can be put on the eyes; a ringing one goes there by itself (useAlarms). */
 import { computed, ref } from 'vue';
 import { BottomSheet, MdButton, MdSwitch, MdTextField, NkActionBar, NkChipSelect, NkListSection, NkRow, NkTimeWheel, UiIcon } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
 import { useAlarms, type Alarm } from '../../../composables/useAlarms';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import EyeShowButton from './EyeShowButton.vue';
 
 const props = defineProps<{ type: string; ff: FormFactor }>();
-const { product, alarms, sorted, nextAlarm } = useAlarms();
+const { product, alarms, sorted, nextAlarm, ringing, scene, dismiss, snooze } = useAlarms();
+const onEyes = computed(() => scene.shown.value || scene.held.value);
 const DAYS = [
   { id: 'mon', label: '一' }, { id: 'tue', label: '二' }, { id: 'wed', label: '三' }, { id: 'thu', label: '四' },
   { id: 'fri', label: '五' }, { id: 'sat', label: '六' }, { id: 'sun', label: '日' },
@@ -83,10 +85,16 @@ function toggle(a: Alarm, v: boolean): void {
     </NkHeader>
     <p v-if="product.errors.alarm" role="alert">{{ product.errors.alarm }}</p>
     <p class="muted">闹钟由设备运行，关闭网页仍有效；设备关机或时钟未校准时不能准时提醒。固定 UTC 偏移不自动跟随夏令时。</p>
-    <div v-for="a in alarms.filter(a => a.status === 'ringing')" :key="a.id" class="card" role="alert">
-      <strong>闹钟到点：{{ a.label || a.time }}</strong>
-      <MdButton @click="product.mutate('alarm', 'dismiss', { id:a.id })">关闭提醒</MdButton>
-      <MdButton @click="product.mutate('alarm', 'snooze', { id:a.id })">5 分钟后提醒</MdButton>
+    <div v-for="a in ringing" :key="a.id" class="card ring" role="alert">
+      <strong>闹钟到点：{{ a.time }}{{ a.label ? ' · ' + a.label : '' }}</strong>
+      <div class="ring-actions">
+        <MdButton :disabled="product.busy.alarm" @click="dismiss(a)">关闭提醒</MdButton>
+        <MdButton variant="tonal" :disabled="product.busy.alarm" @click="snooze(a)">5 分钟后提醒</MdButton>
+      </div>
+    </div>
+    <div class="eye-row">
+      <span class="muted">{{ onEyes ? '猫眼正在显示闹钟' : nextAlarm ? `可将下一个闹钟（${nextAlarm.time}）显示到猫眼` : '没有待触发的闹钟可显示' }}</span>
+      <EyeShowButton :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
     </div>
     <div class="grid" :class="{ editing: editing && !sheetMode }">
       <section class="card">
@@ -136,6 +144,9 @@ function toggle(a: Alarm, v: boolean): void {
 .editor { position: sticky; top: 0; align-self: start; }
 .empty { padding: 12px 0; text-align: center; }
 /* Large tabular time as the row title; dim when disabled. */
+.ring { border: 1px solid rgba(var(--md-primary-rgb), 0.45); }
+.ring-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.eye-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .alarm-row :deep(.nk-row-title) { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.15; }
 .alarm-row.off :deep(.nk-row-title) { color: var(--md-on-surface-variant); }
 .switch-wrap { display: inline-flex; align-items: center; min-height: 44px; }

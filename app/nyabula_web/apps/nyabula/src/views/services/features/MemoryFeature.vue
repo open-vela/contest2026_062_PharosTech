@@ -3,13 +3,13 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { NkActionBar, NkChipSelect, MdButton, MdTextField, UiIcon } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
-import { useEyeStore } from '../../../stores/eye';
+import { useEyeScene } from '../../../composables/useEyeScene';
+import { memoryScene } from '../../../composables/eyeScenePayload';
 import { useProductRecords } from '../../../composables/useProductRecords';
 import type { ProductRecord } from '../../../stores/product';
 import type { FormFactor } from '../../../composables/useFormFactor';
 
 const props = defineProps<{ type: string; ff: FormFactor }>();
-const eye = useEyeStore();
 interface Card extends ProductRecord { id:string; text:string; at:number; tag:string }
 const core = useProductRecords<Card>('memory');
 const TAGS = [
@@ -30,7 +30,9 @@ const filtered = computed(() => {
   return [...cards.value].filter(c=>(!tag||c.tag===tag)&&(!q||c.text.toLowerCase().includes(q)||TAG_LABEL[c.tag]?.includes(q))).sort((a,b)=>b.at-a.at);
 });
 const current = computed<Card|null>(()=>cards.value.find(c=>c.id===state.selected)??filtered.value[0]??null);
-const active = computed(()=>eye.activeScene===props.type);
+/* Eye link: the selected memory. */
+const scene = useEyeScene(props.type, () => { const card=current.value; return card ? memoryScene({text:card.text,tag:TAG_LABEL[card.tag]??card.tag}) : null; }, {hideWhenEmpty:true});
+const active = computed(()=>scene.shown.value||scene.held.value);
 const subtitle = computed(()=>core.available.value ? `${cards.value.length} 条设备记忆` : '未连接支持此功能的 Core');
 function fmt(ts:number) {
   if(ts<1577836800000) return '设备时间未校准';
@@ -48,11 +50,8 @@ async function add() {
   }
 }
 async function remove(card:Card) { await core.mutate('delete',{id:card.id}); }
-function recall() {
-  const card=current.value;
-  if(card) void eye.setScene(props.type,eye.sceneStyle,{text:card.text,tag:TAG_LABEL[card.tag]??card.tag});
-}
-function hide() { void eye.setScene(null); }
+const recall = () => scene.show();
+const hide = () => scene.hide();
 </script>
 
 <template>
@@ -84,7 +83,7 @@ function hide() { void eye.setScene(null); }
           </div>
         </div>
         <p v-else class="muted">选择一条记忆。</p>
-        <NkActionBar primary-text="回顾一条到眼睛" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" :disabled="!current" @primary="recall" @secondary="hide" />
+        <NkActionBar primary-text="回顾一条到眼睛" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" :disabled="!scene.canShow.value" @primary="recall" @secondary="hide" />
         <h3 class="section-title">新建记忆</h3>
         <MdTextField v-model="newText" label="内容" placeholder="想让它记住什么" @keydown.enter="add" />
         <NkChipSelect v-model="newTag" :options="TAGS" label="标签" />

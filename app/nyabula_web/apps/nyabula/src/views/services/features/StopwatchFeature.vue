@@ -5,9 +5,12 @@ import { MdButton, NkActionBar, NkChipSelect, NkListSection, UiIcon, useDialogSt
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
 import { useCoreTimer } from '../../../composables/useCoreTimer';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import EyeShowButton from './EyeShowButton.vue';
 
 defineProps<{ type: string; ff: FormFactor }>();
 const timer = useCoreTimer('stopwatch');
+const scene = timer.scene;
+const onEyes = computed(() => scene.shown.value || scene.held.value);
 const dialog = useDialogStore();
 const instances = computed(() => {
   const rows = timer.choices.value.filter(choice => choice.id !== 'new');
@@ -68,6 +71,8 @@ async function reset() {
           @primary="running ? stop() : start()"
           @secondary="running ? lap() : reset()"
         />
+        <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
+        <p v-if="onEyes" class="muted">猫眼上的读数每秒同步一次；离开「功能」页后停止同步。</p>
       </section>
       <section class="card laps-card">
         <NkListSection title="分段" :card="false">

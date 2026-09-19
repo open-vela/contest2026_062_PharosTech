@@ -1,39 +1,35 @@
 <script setup lang="ts">
-/* Memory mini: latest card in one line + "random recall". Shares
- * nyabula.feature.memory with MemoryFeature; recall pushes { text, tag }. */
-import { computed, reactive, watch } from 'vue';
+/* Memory mini: one memory in a line + "random recall" onto the eyes. Memories
+ * are the Core records the full page edits; nothing is kept in the browser. */
+import { computed, ref } from 'vue';
 import { MdButton, UiIcon } from '@nyabula/ui';
-import { useEyeStore } from '../../../stores/eye';
-import { useFeatureMemory, saveFeatureMemory, type FeatureMiniProps } from './contract';
+import { useProductRecords } from '../../../composables/useProductRecords';
+import { useEyeScene } from '../../../composables/useEyeScene';
+import { memoryScene } from '../../../composables/eyeScenePayload';
+import type { ProductRecord } from '../../../stores/product';
+import type { FeatureMiniProps } from './contract';
 
 const props = defineProps<FeatureMiniProps>();
-const eye = useEyeStore();
 
-interface Card { id: string; text: string; at: number; tag: string }
+interface Card extends ProductRecord { id: string; text: string; at?: number; tag?: string }
 const TAG_LABEL: Record<string, string> = { daily: '日常', family: '家人', pet: '猫咪', todo: '待办', fun: '趣事' };
-const state = reactive(useFeatureMemory(props.type, {
-  cards: [
-    { id: 'm1', text: '主人喜欢在早上喝黑咖啡，不加糖。', at: Date.now() - 86400e3 * 3, tag: 'daily' },
-    { id: 'm2', text: '小花每天晚上八点要吃罐头。', at: Date.now() - 86400e3, tag: 'pet' },
-    { id: 'm3', text: '周末全家一起看了电影，大家都很开心。', at: Date.now() - 3600e3 * 5, tag: 'family' },
-  ] as Card[],
-  selected: 'm1',
-}));
-watch(state, () => saveFeatureMemory(props.type, state), { deep: true });
+const core = useProductRecords<Card>('memory', 5000);
+const cards = computed(() => core.items.value);
+const picked = ref('');
+const latest = computed<Card | null>(() => [...cards.value].sort((a, b) => (b.at ?? 0) - (a.at ?? 0))[0] ?? null);
+const card = computed<Card | null>(() => cards.value.find((c) => c.id === picked.value) ?? latest.value);
+const tagOf = (c: Card): string => TAG_LABEL[c.tag ?? 'daily'] ?? c.tag ?? '日常';
+const text = computed(() => card.value?.text ?? (core.available.value ? '还没有记忆' : '未连接支持记忆的 Core'));
+const tag = computed(() => (card.value ? tagOf(card.value) : ''));
 
-const latest = computed<Card | null>(() => [...state.cards].sort((a, b) => b.at - a.at)[0] ?? null);
-const text = computed(() => (props.active && typeof props.payload?.text === 'string' ? props.payload.text : latest.value?.text ?? '还没有记忆'));
-const tag = computed(() => (props.active && typeof props.payload?.tag === 'string' ? props.payload.tag : latest.value ? TAG_LABEL[latest.value.tag] ?? latest.value.tag : ''));
+const scene = useEyeScene(props.type, () => (card.value ? memoryScene({ text: card.value.text, tag: tagOf(card.value) }) : null), { hideWhenEmpty: true });
 
 function recall(): void {
-  if (!state.cards.length) return;
-  const pool = state.cards.length > 1 ? state.cards.filter((c) => c.id !== state.selected) : state.cards;
-  const c = pool[Math.floor(Math.random() * pool.length)];
-  state.selected = c.id;
-  void eye.setScene(props.type, eye.sceneStyle, { text: c.text, tag: TAG_LABEL[c.tag] ?? c.tag });
-}
-function hide(): void {
-  void eye.setScene(null);
+  if (!cards.value.length) return;
+  const pool = cards.value.length > 1 ? cards.value.filter((c) => c.id !== card.value?.id) : cards.value;
+  picked.value = pool[Math.floor(Math.random() * pool.length)]!.id;
+  // A held scene follows the pick through its payload; otherwise show it now.
+  if (!scene.held.value) void scene.show();
 }
 </script>
 
@@ -43,8 +39,8 @@ function hide(): void {
       <span v-if="tag" class="mm-tag">{{ tag }}</span>
       <span class="mm-line">{{ text }}</span>
     </div>
-    <MdButton variant="tonal" class="mm-btn" :disabled="!state.cards.length" @click="recall"><UiIcon name="auto_awesome" :size="16" /> 随机回顾</MdButton>
-    <MdButton v-if="active" variant="icon" aria-label="隐藏" @click="hide"><UiIcon name="close" :size="18" /></MdButton>
+    <MdButton variant="tonal" class="mm-btn" :disabled="!scene.canShow.value" @click="recall"><UiIcon name="auto_awesome" :size="16" /> 随机回顾</MdButton>
+    <MdButton v-if="active || scene.held.value" variant="icon" aria-label="隐藏" @click="scene.hide()"><UiIcon name="close" :size="18" /></MdButton>
   </div>
 </template>
 

@@ -1,42 +1,30 @@
 <script setup lang="ts">
-/* Task mini: completion ring + current task name + "push". Shares
- * nyabula.feature.task (tasks + selection) with TaskFeature. */
-import { computed, reactive, watch } from 'vue';
-import { MdButton, NkProgressRing } from '@nyabula/ui';
-import { useEyeStore } from '../../../stores/eye';
-import { useFeatureMemory, saveFeatureMemory, type FeatureMiniProps } from './contract';
+/* Task mini: completion ring + the task in focus + show/hide. Tasks are the
+ * Core records the full page edits; nothing is kept in the browser. */
+import { computed } from 'vue';
+import { NkProgressRing } from '@nyabula/ui';
+import { useProductRecords } from '../../../composables/useProductRecords';
+import { useEyeScene } from '../../../composables/useEyeScene';
+import { taskScene } from '../../../composables/eyeScenePayload';
+import type { ProductRecord } from '../../../stores/product';
+import type { FeatureMiniProps } from './contract';
+import EyeShowButton from './EyeShowButton.vue';
 
 const props = defineProps<FeatureMiniProps>();
-const eye = useEyeStore();
 
-type TaskState = 'queued' | 'running' | 'done' | 'failed';
-interface Task { id: string; title: string; done: boolean; state: TaskState; progress: number }
-const state = reactive(useFeatureMemory(props.type, {
-  tasks: [
-    { id: 't1', title: '整理今天的照片', done: false, state: 'running', progress: 40 },
-    { id: 't2', title: '提醒晚上喂猫', done: true, state: 'done', progress: 100 },
-    { id: 't3', title: '下载新的语音包', done: false, state: 'queued', progress: 0 },
-  ] as Task[],
-  selected: 't1',
-}));
-watch(state, () => saveFeatureMemory(props.type, state), { deep: true });
-
-const total = computed(() => state.tasks.length);
-const doneCount = computed(() => state.tasks.filter((t) => t.done).length);
+interface Task extends ProductRecord { id: string; title: string; state: string; progress?: number }
+const core = useProductRecords<Task>('task', 5000);
+const tasks = computed(() => core.items.value.map((t) => ({ ...t, progress: typeof t.progress === 'number' ? t.progress : t.state === 'done' ? 100 : 0 })));
+const total = computed(() => tasks.value.length);
+const doneCount = computed(() => tasks.value.filter((t) => t.state === 'done').length);
 const ratio = computed(() => (total.value ? doneCount.value / total.value : 0));
-const current = computed<Task | null>(() => state.tasks.find((t) => t.id === state.selected) ?? state.tasks[0] ?? null);
-const title = computed(() => (props.active && typeof props.payload?.title === 'string' ? props.payload.title : current.value?.title ?? '暂无待办'));
-const liveProgress = computed(() => (props.active && typeof props.payload?.progress === 'number' ? Math.round(props.payload.progress * 100) : null));
-const sub = computed(() => (liveProgress.value !== null ? `进度 ${liveProgress.value}%` : `完成 ${doneCount.value} / ${total.value}`));
+/* In focus: what is running, else what waits for the user, else what is next. */
+const current = computed(() => tasks.value.find((t) => t.state === 'running') ?? tasks.value.find((t) => t.state === 'confirm')
+  ?? tasks.value.find((t) => t.state === 'queued') ?? tasks.value[0] ?? null);
+const title = computed(() => current.value?.title ?? (core.available.value ? '暂无待办' : '未连接支持任务的 Core'));
+const sub = computed(() => (current.value?.state === 'running' ? `进度 ${Math.round(current.value.progress)}% · ` : '') + `完成 ${doneCount.value} / ${total.value}`);
 
-function push(): void {
-  const t = current.value;
-  if (!t) return;
-  void eye.setScene(props.type, eye.sceneStyle, { title: t.title, progress: t.progress / 100, state: t.state });
-}
-function hide(): void {
-  void eye.setScene(null);
-}
+const scene = useEyeScene(props.type, () => (current.value ? taskScene({ title: current.value.title, progress: current.value.progress, state: current.value.state }) : null), { hideWhenEmpty: true });
 </script>
 
 <template>
@@ -46,8 +34,7 @@ function hide(): void {
       <span class="tm-title">{{ title }}</span>
       <span class="tm-sub">{{ sub }}</span>
     </div>
-    <MdButton v-if="!active" variant="tonal" class="tm-btn" :disabled="!current" @click="push">推送</MdButton>
-    <MdButton v-else variant="text" class="tm-btn" @click="hide">隐藏</MdButton>
+    <EyeShowButton :shown="active || scene.held.value" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
   </div>
 </template>
 

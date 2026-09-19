@@ -3,15 +3,14 @@
 import { computed } from 'vue';
 import { NkActionBar, NkGauge, NkKeyValue, NkListSection, NkRow, Skeleton, MdButton, UiIcon, useDialogStore, useToastStore } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
-import { useEyeStore } from '../../../stores/eye';
 import { useSessionStore } from '../../../stores/session';
 import { useAsyncTask } from '../../../composables/useRequest';
 import { useDeviceRuntime, formatDeviceBytes } from '../../../composables/useDeviceRuntime';
 import { fmtUptime, type SysInfo } from '../../device/sections/sysinfo';
 import type { FormFactor } from '../../../composables/useFormFactor';
+import { useSystemScene } from './sceneLinks';
 
 const props = defineProps<{ type: string; ff: FormFactor }>();
-const eye = useEyeStore();
 const session = useSessionStore();
 const dialog = useDialogStore();
 const toast = useToastStore();
@@ -23,7 +22,8 @@ const info = computed(() => task.data.value);
 const cpu = computed(() => device.snapshot?.cpu.available ? device.snapshot.cpu.percent ?? null : null);
 const memory = computed(() => device.snapshot && device.snapshot.memory.totalBytes > 0 ? 100 * device.snapshot.memory.usedBytes / device.snapshot.memory.totalBytes : null);
 
-const active = computed(() => eye.activeScene === props.type);
+const scene = useSystemScene(props.type, () => (info.value || device.snapshot ? { cpuPercent: cpu.value, memoryPercent: memory.value, uptimeText: info.value ? fmtUptime(info.value.uptime) : '', version: info.value?.device?.coreVersion ?? '' } : null));
+const active = computed(() => scene.shown.value || scene.held.value);
 const version = computed(() => info.value?.device?.coreVersion ?? '—');
 const subtitle = computed(() => (info.value ? `Core ${version.value} · 已运行 ${fmtUptime(info.value.uptime)}` : session.connected ? '读取中' : '设备离线'));
 
@@ -44,12 +44,8 @@ async function checkUpdate(): Promise<void> {
   const ok = await dialog.confirm('将联系更新服务器检查新版本。', { title: '检查更新', confirmText: '检查' });
   if (ok) toast.warn('更新服务尚未接入，未执行版本检查');
 }
-function push(): void {
-  void eye.setScene(props.type, eye.sceneStyle, { uptime: info.value?.uptime ?? 0, version: version.value, ...(cpu.value !== null ? { load: cpu.value / 100 } : {}) });
-}
-function hide(): void {
-  void eye.setScene(null);
-}
+const push = () => scene.show();
+const hide = () => scene.hide();
 </script>
 
 <template>
@@ -67,7 +63,7 @@ function hide(): void {
         </div>
         <p class="muted small">CPU 为调度采样估算；内存来自设备分配器，不再使用演示数值。</p>
         <MdButton variant="text" :disabled="!device.available || device.busy" @click="device.refresh()">刷新设备诊断</MdButton>
-        <NkActionBar primary-text="显示到眼睛" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" @primary="push" @secondary="hide" />
+        <NkActionBar primary-text="显示到眼睛" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" :disabled="!scene.canShow.value" @primary="push" @secondary="hide" />
       </section>
       <section class="card">
         <Skeleton v-if="task.busy.value && !info" :lines="4" />
