@@ -1,7 +1,7 @@
 # 语音链路：唤醒 → ASR → LLM → TTS（2026-09-20，计算域一半已实现）
 
 状态：★ = 有上板/主机实测；【主机实测】= 构建机 x86_64 实测；其余为读码结论或设计。
-**Linux（计算域）一半已实现并通过主机测试；openvela（控制域）一半未动；整条链未上板。**
+**Linux（计算域）一半已实现并通过主机测试；openvela（控制域）一半已实现、主机测试与交叉语法检查通过（第 9 节）；整条链未上板。**
 
 ## 1. 已实现 / 未实现
 
@@ -20,7 +20,7 @@
 | TSan | 已跑 | 四个新测试 0 条 ThreadSanitizer 警告；ASan+UBSan 同样干净 |
 | 线上端到端 | 已实现 | `tools/amp/test_voice_flow.py`：纯 Python 客户端 ↔ 真实 Dispatch/服务，SOCK_SEQPACKET + 文件映射的 arena |
 | SPEAKER（声纹）服务 | **未实现**（仅占号 11） | `tools/amp/voice/nyamp_speaker.*` 库在，未接入 |
-| 控制域：`ny_voice_capture/pump/sm/play`、nyampctl 的 asr/tts/kws 子命令 | **未实现** | 本轮禁止改 `app/**` |
+| 控制域：`ny_voice_capture/pump/sm/play/eyes`、`voice.*` 话题、nyampctl 的 kws/asr/tts 子命令 | 已实现，**未上板、未整编** | 第 9 节：主机测试 4103+235 项、交叉语法检查全过 |
 | NPU 声码器路径（`nyamp_melo.cpp`） | 只做了 aarch64 编译链接 | 需上板 |
 | 板上 RTF、内存、三模型并发、真人唤醒率 | **未测** | 需上板 / 真人录音 |
 
@@ -147,7 +147,7 @@ librknnrt / libstdc++ / libm / libgcc_s / libc，无 RUNPATH。**未在板上运
 3. `nyampd_main.cpp` 的 `bootlog=` 原先在剩余空间不足时会让 `info_size` 超过缓冲区（snprintf 返回"本应写入"的长度）；
    加 `asr= tts= kws=` 行后更容易触发，已顺手改成按剩余空间截取。
 
-## 7. 控制域那一半（未动，设计保持）
+## 7. 控制域那一半（最初设计；实现见第 9 节，与此处不同之处以第 9 节为准：默认 F32 窗口、保留 4 s 预录环、HALF 下无 VAD 打断）
 
 NuttX 线程：`ny_voice_capture`（独占 pcm_in0 16 kHz S16★，RMS 门限 VAD；**S16 可直接 PUSH**，BEGIN flags bit0，省一半穿越非缓存区的字节）、
 `ny_voice_pump`（采集 → CAPTURE 槽 → `KWS_PUSH`）、`ny_voice_sm`（状态机、提交 agent、驱动眼睛）、
@@ -186,3 +186,149 @@ NYAMP_ORT_LIBRARY=$D/speech/libonnxruntime.so NYAMP_RKNN_INCLUDE=$W/deps/include
 NYAMP_RKNN_LIBRARY=$D/rknn/librknnrt.so JOBS=4 nice bash <src>/tools/amp/nyampd/build_arm64.sh $W/arm/nyampd
 # initramfs 照 amp-linux-20260920/out/MANIFEST.txt 的 build_compute_initramfs.sh 一步，换成这个 nyampd 即可（脚本未改）。
 ```
+
+## 9. 控制域实现进度（2026-09-20 起，随做随记；未上板）
+
+设计定稿见本节末"设计决定"。文件均在 `app/nyabula_core/`，前缀 `ny_voice_`。
+
+- [x] `ny_voice_dsp.{c,h}` 纯函数：S16↔F32（双向同一比例 32768，往返逐值相等）、单声道→立体声、RMS、
+  WAV 头生成/解析、预录环（绝对采样位置、多游标、落后告知 gap）、attach 偏移算术、空闲门限、
+  44.1k→16k 多相重采样（160/441，48 抽头）、按句切分。
+- [x] `ny_voice_sm.{c,h}` 状态机纯转移函数（事件 + 时间 → 状态 + 有序动作表）。
+- [x] 主机测试 `tools/nyabula_core/tests/voice_test.{py,c}`：-std=c99 -Wall -Wextra -Werror -Wshadow -Wundef，
+  普通 + ASan/UBSan 两遍，各 4103 项检查 0 失败【主机实测，构建机】。
+  测试抓到并已修的两个真问题：①/32768 与 ×32767 不对称导致往返差 1；②噪声底在说话期间被语音抬高，
+  一句 5 s 的话后半句会被判成"不响"。
+- [x] `ny_voice_wire.{c,h}` 语音线上客户端（经回调收发：板上走 ny_compute 的 port，nyampctl 独立模式走端点，
+  主机测试走 socketpair），不含任何 NuttX 头。头部带当前 generation（0=未知）：nyampd 重启后旧请求回
+  `STALE_GENERATION`→`-ECONNRESET`，等待中发现 generation 变化也立即结束。
+- [x] 主机测试 `tools/nyabula_core/tests/voice_wire_test.{py,c}`：服务端复用 `tools/amp/test_voice_flow.py` 里的
+  harness（真实 Dispatch + AsrService/TtsService/KwsService，脚本模型），客户端是固件里那份 C。
+  235 项检查 0 失败，ASan/UBSan 干净【主机实测】：PUSH 式 ASR、KWS 流 + DETECTED + attach（consumed=position-end）、
+  DISCONTINUITY、偏移不可信时按 trigger 回退、FLAG_CANCEL 取消、TTS 多块文本 55 个窗口逐窗 RELEASE、
+  播放中取消得 FINISH(-6)、S16 窗口、generation 变化。
+  实测到的线上事实：`trigger_sample` 是**解码块**（1600 采样）末尾而不是 PUSH 窗口末尾；跳号的 ASR_PUSH 回 INVALID 但请求仍可 END。
+- [x] `ny_voice_audio.{c,h}`：NuttX 音频节点的流式封装（RESERVE→CONFIGURE→GETBUFFERINFO→REGISTERMQ→ALLOCBUFFER→
+  ENQUEUE/START，放音首块带 44 字节 WAV 头）。与蓝牙同事的 `ny_audio_stream.c` 同类，但那份只在
+  `NYABULA_CORE_BT` 下编译且仍在改，语音链不依赖它；**两份日后应合并**。编译通过，未上板。
+- [x] `ny_voice.{c,h}`：服务本体（任务 `ny_voice_sm` + 线程 `ny_voice_capture/pump/play/eyes`）、`voice.*` 话题、
+  设置持久化（store 域 `voice`，已加入 `ny_product_store.c` 白名单）。编译通过，未上板。
+- [x] `ny_compute.{c,h}` 扩展：`ny_compute_generation()`、`ny_compute_capabilities()`、`NY_COMPUTE_CAP_ASR/TTS/KWS`
+  (bit4/5/6)、`compute.status` 的 capabilities 数组加 asr/tts/kws、端口数 4→8（语音常驻 3 个会话）、
+  `ny_compute_start/stop` 里起停语音任务（`ny_product_runtime.c` 他人在改，故挂在这里）。
+- [x] `app/nyampctl/nyampctl_voice.c`：`kws listen [秒]`、`asr file <wav>`、`asr mic [秒]`、`tts say <文本> [out.wav]`，
+  与服务共用 `ny_voice_wire.c`。nyampctl 栈默认在开 VOICE 时升到 8192。
+- [x] 构建接线：`app/nyabula_core/{Kconfig,Makefile,CMakeLists.txt}`、`app/nyampctl/{Kconfig,Makefile,CMakeLists.txt}`。
+- [x] 交叉语法检查【构建机实测】：固件树 `product-amp-20260920` 的 aarch64-none-elf-gcc 13.4，真实 include 路径，
+  `-Wall -Wshadow -Wundef -Werror -Wstrict-prototypes`，10 个文件 × 3 种 codec 方案 × 2 组选项全过；
+  不定义 `CONFIG_NYABULA_CORE_VOICE` 时 `ny_compute.c/ny_product.c/nyampctl_main.c` 也过。**没有做过固件链接/整编。**
+- [ ] 上板：全部未做，脚本见 9.4。
+
+### 9.1 设计决定
+
+**ES8388 采样率约束（读驱动得出，`nuttx/drivers/audio/es8388.c`）。** 放音、录音是两个实例，`es8388_reserve()` 允许
+不同 stream_type 同时 reserve；但 `es8388_configure()` 先调 `es8388_check_peer_format()`：对端实例 `reserved` 且
+`samprate != 0` 时，本端的 **采样率、位宽、声道数**任一不同即 `-EBUSY`。`samprate` 只在 reserve 时清零，
+所以只要麦克风节点开着（16 kHz/16 bit/单声道），任何 44.1 kHz 放音（TTS、闹钟提示音 44.1k 立体声、flash 音乐、
+蓝牙 A2DP）都配置不上——不只是 TTS 的问题，是**常驻唤醒与全机所有放音**的冲突。三种方案做成 Kconfig choice：
+
+| 方案 | 录音 / 放音 | 说话时麦克风 | 其它播放者 | 依据 |
+|---|---|---|---|---|
+| `CODEC_HALF`（默认） | 16k 单声道 / 44.1k 立体声，**不同时** | 关闭 | 须先调 `ny_voice_speaker_claim()` | 唯一建立在板上已测事实（pcm_in0 16k 单声道、pcm0 44.1k）之上 |
+| `CODEC_SHARED_16K` | 16k 单声道 / TTS 重采样到 16k 单声道 | 开着 | 同上 | 重采样器已主机实测；16k 单声道放音未上板 |
+| `CODEC_SHARED_44K` | 44.1k 立体声录音、软件抽取到 16k / 44.1k 立体声 | 开着 | 44.1k 立体声的无需仲裁 | SAI 44.1k 立体声录音未上板 |
+
+**★ 必须的集成补丁（不在本次改动内，因 `ny_product_media.c` / 蓝牙音频他人在改）：** HALF 与 SHARED_16K 下，
+`ny_media_start()` 在 `nxplayer_setdevice()` 之前、蓝牙音频在打开 pcm0 之前要调 `ny_voice_speaker_claim()`，播完调
+`ny_voice_speaker_release()`（与现有 `ny_product_bt_speaker_claim()` 同一位置、同一形状；语音未开时两者零成本）。
+**不打这个补丁，voice.enable 期间音乐和闹钟提示音会 `-EBUSY`。** 默认 `NYABULA_CORE_VOICE=n` 且 `enabled=false`，不开语音不受影响。
+
+**回声 / 打断策略。** 没有 AEC。SPEAKING 期间不向 KWS 推流：HALF 下麦克风本来就关了；SHARED 下默认也不推，
+除非开 `NYABULA_CORE_VOICE_BARGE_IN`（主人宁可冒自唤醒风险也要语音打断）；即便如此，回复文本含 "openvela" 的那一句
+照样闭麦。状态机对 SPEAKING 中的 WAKE/LISTEN 一律处理为：`TTS CANCEL` + 停放音 → LISTENING，所以 HALF 下的打断入口是
+面板的 `voice.listen` / `voice.cancel`。恢复推流时带 `DISCONTINUITY`，`stream_sample` 照实继续。
+
+**预录环留在控制域（4 s，S16，128 KB）。** 计算域 10 s 环解决"唤醒后指令不丢"，解决不了"门限开得晚、唤醒词前半截没推"。
+门限（自适应噪声底 ×2.5、最低 RMS 150、2 s 拖尾）只决定静音要不要过链路；门一开先补推最近 1.5 s（不早于麦克风上次打开的位置），
+LISTENING 期间强制开门。`NYABULA_CORE_VOICE_VAD_GATE=n` 可整个关掉。
+
+**attach 位置**（`ny_voice_attach_sample`，主机实测）：`HAS_OFFSETS` 且 start<end≤trigger → `end_sample`；否则 `trigger−0.5 s`；
+再夹到 [max(流头−10 s+0.5 s, 上次 DISCONTINUITY 位置), 流头]，因为服务对早于环的位置回 INVALID 而不是悄悄后移。
+首次唤醒要先加载 ASR：先放"稍等"提示（`/data/voice/wait.wav`，没有就两声提示音），加载完从**流头**接入（HALF 下提示音期间麦克风是关的）。
+
+**以主人身份提交 agent，不改 `ny_agent.c`。** 直接走公开的 `ny_agent_request(owner, "agent.chat")`，再用 `agent.run.get` 每 300 ms 轮询：
+`succeeded/failed/cancelled/unknown` → 回复；`waiting_approval` → 说固定句"这个操作需要你在面板上确认一下"，之后继续跟踪该 run 10 分钟，
+主人在面板批准后把结果说出来。5 分钟内的连续回合共用一个 `conversationId`（"那明天呢"能接上），超时换新，避免历史无限增长。
+安全性靠 agent 自己的规则：有副作用的动作（principal 为空）一律 `pending`，语音只会"请求确认"，不会替主人确认。
+打断思考（THINKING 中再次唤醒）= `agent.cancel` + 重新聆听；新回合提交遇 `-EBUSY/-EAGAIN` 在 10 s 内每 0.5 s 重试。
+
+**模型懒加载与内存。** KWS 在语音启用时加载（12.5 MiB）；ASR 首次唤醒时；TTS 首次回复时（≈10 s，短提示不为此加载 TTS）。
+加载/拉取进度在 `voice.status.models.*.{state,pulled,total}`。Linux 可用 ≈3.65 GiB★，LLM 进程 830 MiB + tmpfs 835 MiB，
+三个语音模型 tmpfs 192 MiB + 运行时（TTS ≈200 MiB、ASR/KWS 估 <150 MiB，**未测**）≈ 2.2 GiB，放得下，所以默认**不卸载**
+（`NYABULA_CORE_VOICE_UNLOAD_IDLE_S=0`）；设成 N 则空闲 N 秒后 UNLOAD TTS 与 ASR（文件留在 tmpfs，重载只是运行时加载）。
+`/tmp` 1536 MiB 上限：835+192=1027 MiB。nyampd 重启（generation 变）→ 三个模型状态清零、在途回合按状态机 LINK_LOST 处理、KWS 流自动重建。
+
+**线程与端口。** 一个 port 一次只路由一个 request_id，而一次语音请求的全部消息共用 BEGIN 的 id，所以 KWS/ASR/TTS 各占一个 port，
+分属 pump / sm / play 线程，互不读对方的帧。跨线程取消用无应答的 `NYAMP_FLAG_CANCEL` 帧。眼睛走单槽邮箱 + 独立低优先级线程；
+恢复 idle 前先读 `eyes.status`，表情已不是本服务设的那个就不动（agent 可能在本回合里被要求换了表情）。
+
+### 9.2 defconfig 与开销
+
+```
+CONFIG_NYABULA_CORE_VOICE=y                  # 依赖 NYABULA_CORE_COMPUTE、_AGENT、_AUDIO、AUDIO（AMP 配置里都已是 y）
+CONFIG_NYABULA_CORE_VOICE_CODEC_HALF=y       # 默认；另两个：_CODEC_SHARED_16K / _CODEC_SHARED_44K
+# CONFIG_NYABULA_CORE_VOICE_BARGE_IN is not set   （仅 SHARED）
+CONFIG_NYABULA_CORE_VOICE_VAD_GATE=y
+CONFIG_NYABULA_CORE_VOICE_VAD_MIN_RMS=150
+CONFIG_NYABULA_CORE_VOICE_WINDOW_MS=200
+CONFIG_NYABULA_CORE_VOICE_SPEAKER=1
+CONFIG_NYABULA_CORE_VOICE_CUE_DIR="/data/voice"
+CONFIG_NYABULA_CORE_VOICE_UNLOAD_IDLE_S=0
+CONFIG_NYABULA_CORE_VOICE_PRIORITY=100
+CONFIG_NYABULA_CORE_VOICE_STACKSIZE=32768
+CONFIG_EXAMPLES_NYAMPCTL=y
+CONFIG_EXAMPLES_NYAMPCTL_STACKSIZE=8192      # 开 VOICE 后的新默认
+```
+
+RAM【构建机实测，aarch64 -O2 的 `size`】：HALF text 57.7 KB / data 19.9 KB / bss 326.7 KB（环 128 KB、输出缓冲 88 KB、窗口 32 KB、
+提示音 35 KB、三个会话 25 KB）；SHARED_16K bss 445.9 KB、SHARED_44K 396.2 KB（重采样表 30 KB 等）。启用后另加堆：3 个 port ≈96 KB、
+音频缓冲 ≈26 KB（录）+66 KB（放，仅说话时）；栈：sm 32 KB + play 16 KB + eyes 16 KB + capture 8 KB + pump 8 KB = 80 KB。
+合计 HALF 约 0.4 MB 常驻 + 启用时 ≈0.27 MB。关闭语音时任务读完设置即退出，不占线程与堆。
+
+### 9.3 没有板子验证不了的
+
+1. `ny_voice_audio.c` 的 ioctl 序列在本板是否工作：录音 100 ms 小缓冲（ALLOCBUFFER 3200 B）、8 块缓冲对 `CONFIG_AUDIO_NUM_BUFFERS=2`、
+   放音欠载时驱动行为（已用"缺数据时补 50 ms 静音"规避）、STOP 后是否一定收到 `AUDIO_MSG_COMPLETE`。
+2. HALF 下麦克风关→放音开→放音关→麦克风开的切换耗时（决定提示音后丢多少话）。
+3. SHARED_16K 的 16k 单声道放音、SHARED_44K 的 44.1k 立体声录音。
+4. 门限默认值（RMS 150、×2.5）对真实麦克风增益是否合适；`voice.status.microphone.level` 可现场看。
+5. 首音延迟、TTS RTF、三模型并发内存、真人唤醒率、自唤醒。
+6. `agent.chat` 在 32 KB 栈上是否够（面板调用栈同量级，未测）。
+7. 整固件链接（本次只做了 -fsyntax-only 与单文件 -c）。
+
+### 9.4 上板逐环测试脚本（每步先过再下一步；全部**未上板**）
+
+前置：固件与 nyampd 用同一版 `nyamp_protocol.h` / `rk3576_shmem_layout.h`；第 3 节文件放好；`/data/voice` 目录存在。
+串口 NSH 执行。话题从 nsh 发：`echo '{"enabled":true}' > /tmp/v.json`，然后 `nycore product voice.enable /tmp/v.json`，结果以 `PRODUCT_RESULT {...}` 打印（下文简写成 `topic {json}`）。
+
+| # | 命令 | 预期 |
+|---|---|---|
+| 0 | `nyampctl health` | `capabilities=0x0000007f`。`0x0f` = nyampd 没带语音后端，后面全部 `-ENOTSUP(-138)` |
+| 1 | `nyampctl status` | running/linked、generation 非 0；`compute.status` 的 capabilities 含 `asr tts kws` |
+| 2 | `nyampctl tts say "你好，我是星喵。" /data/voice/t.wav` | `tts loaded in ≈10000 ms`（首次含 155 MiB 拉取进度行）→ `window 0: … unit` … `last` → `finish: status 0, N windows`；文件为 44.1k 单声道。金标准句 `你好，我是星喵。忙了一天，辛苦啦。要不要休息一会儿？` 应为 4 窗 44100/44100/44100/42804、共 175104 采样 |
+| 3 | `music.play {"name":…}` 或 nxplayer 播 `t.wav` | 听到人声 → TTS 数值正确，与播放线程无关 |
+| 4 | `nyampctl tts say "你好，我是星喵。"` | 直接从喇叭出声，无爆音/断续 → `ny_voice_audio` 放音路径成立。`-EBUSY(-16)` = 喇叭被占或麦克风以别的格式开着 |
+| 5 | `nyampctl tts say 稍等。 /data/voice/wait.wav`；同理 `not_heard.wav`(没听清，再说一遍吧。) `busy.wav` `error.wav` `approval.wav` | 预合成提示音就位（可选；没有则两声提示音） |
+| 6 | 把 `test_wavs/0.wav` 放到 `/data/voice/0.wav`，`nyampctl asr file /data/voice/0.wav` | `asr loaded`（24 MiB，≈1–2 s）→ 多行 `partial … @<consumed>: <文本渐长>` → `final resync …: 对我做了介绍那么我想说的是呢大家如果对我的研究感兴趣呢` → `finish: status 0`。`1.wav` → `重点想谈个问题首先呢就是这一轮全球金融动量的表现` |
+| 7 | `nyampctl asr mic 5` 然后说话 | `speak now, 5 s` → partial → final 为所说内容 → 录音路径（16k 单声道、100 ms 块）成立。`-EBUSY` = voice 还开着 |
+| 8 | `nyampctl kws listen 30`，说"你好 openvela" | `keywords: nihao_openvela hello_openvela`、`grant: offset 0x120000 capacity 262144`；每秒一行 level（安静时应远小于说话时，用来校 `VAD_MIN_RMS`）；`DETECTED nihao_openvela id 0 flags 0x1 start … end … trigger …`，trigger−end 约 0.3–0.6 s；结束 `stream finished: status 0, N detections` |
+| 9 | `voice.enable {"enabled":true}` → `voice.status {}` | `state:"idle"`、`models.kws.state:"ready"`、`streaming:true`、`microphone.open:true`；安静时 `gateOpen:false` 且 `windows` 不涨，出声后涨 |
+| 10 | `voice.say {"text":"现在几点了，我来报时。"}` | 状态 speaking→idle，眼睛 happy→idle；HALF 下说话期间 `microphone.open:false`，说完恢复且 `windows` 继续涨 |
+| 11 | `voice.listen {}` 后说"现在几点" | listening（眼睛 curious）→ 首次先"稍等"提示并加载 ASR → thinking（processing）→ speaking（happy）→ idle；`lastTranscript`/`lastReply` 有值；规则类回复 <1 s，聊天 3–30 s |
+| 12 | 说"你好 openvela"，停顿后说"今天天气怎么样" | `wakeWord:"nihao_openvela"`、`detections`+1，其余同 11；一口气连说（不停顿）也应识别完整指令（attach 在 end_sample） |
+| 13 | 唤醒后不说话 | ≈5 s 后"没听清"提示 → idle |
+| 14 | 说一个需要批准的动作（如"把闹钟删掉"） | 说"这个操作需要你在面板上确认一下" → idle；面板批准后把结果说出来；10 分钟不批则放弃跟踪 |
+| 15 | 回复播放中 `voice.cancel {}` / `voice.listen {}` | 立即静音；后者转 listening。SHARED+BARGE_IN 时用唤醒词也应能打断 |
+| 16 | 思考或播放中在 Linux 侧重启 nyampd | `errors.text` 出现 stream lost，`models.*` 回 unloaded→kws 自动 ready，状态回 idle，不死锁；下一次唤醒正常（ASR/TTS 重新加载） |
+| 17 | voice 开着时 `music.play`（**未打 9.1 的 claim 补丁**） | 预期 `-EBUSY`——这是已知缺口，不是回归；打补丁后应能播，播完唤醒恢复 |
+| 18 | `voice.enable {"enabled":false}` → 重启 → `voice.status` | `enabled:false`、`running:false`、无 `ny_voice_*` 线程（`ps`） |

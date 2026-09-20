@@ -52,6 +52,9 @@ static uint32_t nyampctl_get_le32(const uint8_t *source);
 static int nyampctl_open_endpoint(void);
 static int nyampctl_llm_command(int fd, int argc, char *argv[]);
 static int nyampctl_blob_command(int fd, int argc, char *argv[]);
+#ifdef CONFIG_NYABULA_CORE_VOICE
+static int nyampctl_voice_command(int fd, int argc, char *argv[]);
+#endif
 static int nyampctl_attach(int *fd);
 static void nyampctl_detach(int fd);
 
@@ -368,6 +371,39 @@ static int nyampctl_blob_command(int fd, int argc, char *argv[])
   return -EINVAL;
 }
 
+#ifdef CONFIG_NYABULA_CORE_VOICE
+static int nyampctl_voice_command(int fd, int argc, char *argv[])
+{
+  unsigned int seconds =
+      argc > 3 ? (unsigned int)strtoul(argv[3], NULL, 10) : 0;
+
+  if (strcmp(argv[1], "kws") == 0 && strcmp(argv[2], "listen") == 0 &&
+      argc <= 4)
+    {
+      return nyampctl_kws_listen(fd, seconds == 0 ? 30 : seconds);
+    }
+
+  if (strcmp(argv[1], "asr") == 0 && strcmp(argv[2], "file") == 0 && argc == 4)
+    {
+      return nyampctl_asr(fd, argv[3], 0);
+    }
+
+  if (strcmp(argv[1], "asr") == 0 && strcmp(argv[2], "mic") == 0 && argc <= 4)
+    {
+      return nyampctl_asr(fd, NULL, seconds == 0 ? 5 : seconds);
+    }
+
+  if (strcmp(argv[1], "tts") == 0 && strcmp(argv[2], "say") == 0 &&
+      (argc == 4 || argc == 5))
+    {
+      return nyampctl_tts_say(fd, argv[3], argc == 5 ? argv[4] : NULL);
+    }
+
+  fprintf(stderr, "nyampctl: unknown %s command\n", argv[1]);
+  return -EINVAL;
+}
+#endif
+
 int main(int argc, char *argv[])
 {
   int fd = -1;
@@ -387,18 +423,33 @@ int main(int argc, char *argv[])
               "       %s shmem test [keep]\n",
               argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0],
               argv[0], argv[0]);
+#ifdef CONFIG_NYABULA_CORE_VOICE
+      fprintf(stderr,
+              "       %s kws listen [seconds]\n"
+              "       %s asr file <16k-mono.wav>\n"
+              "       %s asr mic [seconds]\n"
+              "       %s tts say <text> [out.wav]\n",
+              argv[0], argv[0], argv[0], argv[0]);
+#endif
       return 2;
     }
 
   if (strcmp(argv[1], "health") != 0 && strcmp(argv[1], "info") != 0 &&
       strcmp(argv[1], "status") != 0 && strcmp(argv[1], "llm") != 0 &&
-      strcmp(argv[1], "blob") != 0 && strcmp(argv[1], "shmem") != 0)
+      strcmp(argv[1], "blob") != 0 && strcmp(argv[1], "shmem") != 0
+#ifdef CONFIG_NYABULA_CORE_VOICE
+      && strcmp(argv[1], "kws") != 0 && strcmp(argv[1], "asr") != 0 &&
+      strcmp(argv[1], "tts") != 0
+#endif
+  )
     {
       fprintf(stderr, "nyampctl: unknown command: %s\n", argv[1]);
       return 2;
     }
 
-  if ((strcmp(argv[1], "llm") == 0 || strcmp(argv[1], "blob") == 0) &&
+  if ((strcmp(argv[1], "llm") == 0 || strcmp(argv[1], "blob") == 0 ||
+       strcmp(argv[1], "kws") == 0 || strcmp(argv[1], "asr") == 0 ||
+       strcmp(argv[1], "tts") == 0) &&
       argc < 3)
     {
       fprintf(stderr, "nyampctl: %s needs a sub-command\n", argv[1]);
@@ -444,6 +495,13 @@ int main(int argc, char *argv[])
         {
           ret = nyampctl_blob_command(fd, argc, argv);
         }
+#ifdef CONFIG_NYABULA_CORE_VOICE
+      else if (strcmp(argv[1], "kws") == 0 || strcmp(argv[1], "asr") == 0 ||
+               strcmp(argv[1], "tts") == 0)
+        {
+          ret = nyampctl_voice_command(fd, argc, argv);
+        }
+#endif
       else
         {
           ret = nyampctl_query(fd, strcmp(argv[1], "info") == 0
