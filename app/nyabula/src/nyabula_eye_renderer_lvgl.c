@@ -21,6 +21,9 @@
 
 #include <nuttx/config.h>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -478,6 +481,8 @@ static void prepare_scene_lids(struct eye_s *e,
                                float lid);
 static float scene_lid_boundary(const float samples[LID_SAMPLES], float x);
 static void apply_scene_lid_mask(lv_draw_buf_t *buffer, struct eye_s *eye);
+static void debug_dump_poll(struct nyabula_eye_renderer_s *r, int id);
+static void debug_dump(const lv_draw_buf_t *buffer, int id);
 static void render_scene_lid_mask(struct nyabula_eye_renderer_s *r,
                                   const struct nyabula_eye_frame_s *frame,
                                   const struct eye_s *scene_eye, int id);
@@ -4536,6 +4541,76 @@ static float scene_lid_boundary(const float samples[LID_SAMPLES], float x)
          (samples[index + 1] - samples[index]) * (sample - index);
 }
 
+/****************************************************************************
+ * Name: debug_dump
+ *
+ * Description:
+ *   What the panel is about to be given, for somebody who cannot see the
+ *   panel.  Creating NYABULA_EYE_DUMP_TRIGGER writes the finished page of
+ *   each eye once -- width, height, stride and colour format as four
+ *   little-endian words, then the pixels -- and removes the trigger.  The
+ *   trigger is looked for every 32nd frame: a stat() per frame is not free
+ *   on FAT.  A page that is not changing is not rendered and so would never
+ *   be written; debug_dump_poll() makes both pages render once.
+ *
+ ****************************************************************************/
+
+#define NYABULA_EYE_DUMP_TRIGGER "/data/tmp/eyedump"
+
+static uint8_t g_debug_dump_pending;
+
+static void debug_dump_poll(struct nyabula_eye_renderer_s *r, int id)
+{
+  static uint8_t divider;
+  int eye;
+
+  if (g_debug_dump_pending != 0 || id != 0 || (++divider & 31) != 0 ||
+      access(NYABULA_EYE_DUMP_TRIGGER, F_OK) < 0)
+    {
+      return;
+    }
+
+  g_debug_dump_pending = (1 << NYABULA_EYE_COUNT) - 1;
+  for (eye = 0; eye < NYABULA_EYE_COUNT; eye++)
+    {
+      r->last_frame_valid[eye] = false;
+    }
+}
+
+static void debug_dump(const lv_draw_buf_t *buffer, int id)
+{
+  uint32_t header[4];
+  char path[40];
+  int fd;
+
+  if ((g_debug_dump_pending & (1 << id)) == 0)
+    {
+      return;
+    }
+
+  g_debug_dump_pending &= ~(1 << id);
+  snprintf(path, sizeof(path), "/data/tmp/eye%d.raw", id);
+  fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd >= 0)
+    {
+      header[0] = buffer->header.w;
+      header[1] = buffer->header.h;
+      header[2] = buffer->header.stride;
+      header[3] = buffer->header.cf;
+      if (write(fd, header, sizeof(header)) == sizeof(header))
+        {
+          write(fd, buffer->data, buffer->header.stride * buffer->header.h);
+        }
+
+      close(fd);
+    }
+
+  if (g_debug_dump_pending == 0)
+    {
+      unlink(NYABULA_EYE_DUMP_TRIGGER);
+    }
+}
+
 static void apply_scene_lid_mask(lv_draw_buf_t *buffer, struct eye_s *eye)
 {
   float half_pixel = 0.5f / fmaxf(fabsf(eye->t.sy), 0.001f);
@@ -5125,6 +5200,7 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
       r->baked = true;
     }
 
+  debug_dump_poll(r, id);
   if (frame_pixels_unchanged(r, frame, id))
     {
       r->reused_eyes++;
@@ -5256,6 +5332,7 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
   lv_canvas_finish_layer(r->canvas[id], &r->layer);
   graphics_trace_endex("raster");
   r->raster_total += lv_tick_elaps(stage_start);
+  debug_dump(r->draw, id);
   stage_start = lv_tick_get();
   lv_obj_invalidate(r->canvas[id]);
   r->flush_total += lv_tick_elaps(stage_start);
