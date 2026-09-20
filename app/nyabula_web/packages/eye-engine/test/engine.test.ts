@@ -105,6 +105,95 @@ describe('EyeEngine', () => {
   });
 });
 
+describe('ambient light pupil', () => {
+  const remote = (mode: string, lightLevel: number): EyeState => ({
+    expression: { mode, since: Date.now(), lightLevel },
+  });
+  const run = (e: EyeEngine, seconds: number) => {
+    for (let i = 0; i < Math.round(seconds * 60); i++) e.step(1 / 60);
+  };
+  /* nyabula_eye_engine_reset_target(): the baseline the device draws. */
+  const baseline = (light: number) => {
+    const dil = 1 - light;
+    return { w: 0.10 + 0.85 * (dil * dil * 0.3 + dil * 0.7), h: 0.72 + 0.23 * dil };
+  };
+
+  it('takes the first reported level as it is and eases the following ones', () => {
+    const e = new EyeEngine(stubCanvas());
+    e.applyRemoteState(remote('idle', 0.2), 0);
+    expect(e.lightCur).toBeCloseTo(0.2, 6);
+    e.applyRemoteState(remote('idle', 0.9), 0);
+    expect(e.lightLvl).toBeCloseTo(0.9, 6);
+    expect(e.lightCur).toBeCloseTo(0.2, 6); // no step on arrival
+    let last = e.lightCur;
+    let largest = 0;
+    for (let i = 0; i < 240; i++) {
+      e.step(1 / 60);
+      expect(e.lightCur).toBeGreaterThanOrEqual(last); // monotonic, no overshoot
+      largest = Math.max(largest, e.lightCur - last);
+      last = e.lightCur;
+    }
+    expect(largest).toBeLessThan(0.05); // a 0.7 jump never shows as one frame
+    expect(e.lightCur).toBeCloseTo(0.9, 3);
+  });
+
+  it('narrows faster than it widens', () => {
+    const up = new EyeEngine(stubCanvas());
+    up.applyRemoteState(remote('idle', 0), 0);
+    up.applyRemoteState(remote('idle', 1), 0);
+    const down = new EyeEngine(stubCanvas());
+    down.applyRemoteState(remote('idle', 1), 0);
+    down.applyRemoteState(remote('idle', 0), 0);
+    run(up, 0.25);
+    run(down, 0.25);
+    expect(up.lightCur).toBeCloseTo(1 - Math.exp(-4 * 0.25), 3);
+    expect(1 - down.lightCur).toBeCloseTo(1 - Math.exp(-2 * 0.25), 3);
+  });
+
+  it('dark is a wide round pupil, bright a narrow slit', () => {
+    const dark = new EyeEngine(stubCanvas());
+    dark.applyRemoteState(remote('sleepy', 0), 0); // sleepy: no idle breathing
+    dark.step(1 / 60);
+    const bright = new EyeEngine(stubCanvas());
+    bright.applyRemoteState(remote('sad', 1), 0);
+    bright.step(1 / 60);
+    expect(dark.tgt.pupilW).toBeCloseTo(baseline(0).w, 6);
+    expect(dark.tgt.pupilH).toBeCloseTo(baseline(0).h, 6);
+    expect(bright.tgt.pupilW).toBeCloseTo(Math.min(0.9, baseline(1).w + 0.3), 6);
+    expect(bright.tgt.pupilH).toBeCloseTo(baseline(1).h, 6);
+    expect(dark.tgt.pupilW / dark.tgt.pupilH).toBeGreaterThan(0.95); // round
+    expect(baseline(1).w / baseline(1).h).toBeLessThan(0.15); // slit
+  });
+
+  it('stays under expressions that draw their own pupil', () => {
+    const e = new EyeEngine(stubCanvas());
+    e.applyRemoteState(remote('heart', 1), 0);
+    for (const light of [0, 1, 0.3]) {
+      e.applyRemoteState(remote('heart', light), 0);
+      run(e, 2);
+      expect(e.tgt.pupilW).toBe(0);
+      expect(e.tgt.pupilH).toBe(0);
+      expect(e.tgt.overlay).toBe(1);
+    }
+    e.applyRemoteState(remote('angry', 0), 0);
+    run(e, 5);
+    expect(e.tgt.pupilW).toBeCloseTo(0.13, 6);
+    expect(e.tgt.pupilH).toBeCloseTo(0.8, 6);
+    // The eased level kept following underneath and is there when it ends.
+    e.applyRemoteState(remote('sleepy', 0), 0);
+    e.step(1 / 60);
+    expect(e.tgt.pupilW).toBeCloseTo(baseline(0).w, 3);
+  });
+
+  it('setLight() is immediate: a local slider is already a continuous motion', () => {
+    const e = new EyeEngine(stubCanvas());
+    e.setLight(0.1);
+    expect(e.lightCur).toBeCloseTo(0.1, 6);
+    e.step(1 / 60);
+    expect(e.lightCur).toBeCloseTo(0.1, 6);
+  });
+});
+
 describe('scene content lifetime', () => {
   const peek = (e: EyeEngine) => e as unknown as { scenePayload: Record<string, unknown>; weatherKind: string };
   const caption = (line: string): EyeState => ({
