@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
+#include <sys/param.h>
 #include <sys/stat.h>
 #include <system/nxplayer.h>
 #include <unistd.h>
@@ -46,6 +47,18 @@
 #define NY_MEDIA_LIBRARY_MAX 64
 #define NY_MEDIA_PROBE_MS    2000
 #define NY_MEDIA_WAVE_HEADER 44 /* RIFF + fmt(16) + data chunk header */
+
+/* The alert chime.  The leading dot keeps it out of music.library. */
+
+#define NY_MEDIA_CHIME         ".nyabula-chime.wav"
+#define NY_MEDIA_CHIME_RATE    44100
+#define NY_MEDIA_CHIME_HZ      880
+#define NY_MEDIA_CHIME_BEEPS   3
+#define NY_MEDIA_CHIME_ON_MS   160
+#define NY_MEDIA_CHIME_OFF_MS  110
+#define NY_MEDIA_CHIME_FADE_MS 12
+#define NY_MEDIA_CHIME_LEVEL   14000
+#define NY_MEDIA_CHIME_GAP_MS  1200
 
 struct ny_media_wave_s
 {
@@ -86,8 +99,17 @@ static uint64_t g_media_duration;
 static uint64_t g_media_sampled;
 static bool g_media_preferences_loaded;
 static bool g_media_settings_saved = true;
+static int g_media_alert = NY_PRODUCT_MEDIA_ALERT_OFF;
+static bool g_media_alert_silence;
+static bool g_media_sleep;
+static uint64_t g_media_alert_next;
 
 static uint32_t ny_media_le32(const unsigned char *bytes);
+static void ny_media_put_le32(unsigned char *bytes, uint32_t value);
+static int ny_media_chime_create(void);
+static int ny_media_start(const char *name);
+static void ny_media_halt(void);
+static void ny_media_alert_tick(int state, uint64_t now);
 static int ny_media_wave(const char *name, struct ny_media_wave_s *wave);
 static cJSON *ny_media_status(void);
 static int ny_media_library(cJSON **result);
@@ -286,6 +308,10 @@ static cJSON *ny_media_status(void)
   cJSON_AddNumberToObject(result, "durationMs", g_media_duration);
   cJSON_AddNumberToObject(result, "sampledAtMs", g_media_sampled);
   cJSON_AddNumberToObject(result, "lastError", g_media_error);
+  cJSON_AddBoolToObject(result, "alert",
+                        g_media_alert != NY_PRODUCT_MEDIA_ALERT_OFF ||
+                            (g_media_state != NXPLAYER_STATE_IDLE &&
+                             !strcmp(g_media_track, NY_MEDIA_CHIME)));
   return result;
 }
 
@@ -426,6 +452,242 @@ static void ny_media_levels_sync(void)
 }
 
 /****************************************************************************
+ * Name: ny_media_put_le32
+ ****************************************************************************/
+
+static void ny_media_put_le32(unsigned char *bytes, uint32_t value)
+{
+  bytes[0] = value & 0xff;
+  bytes[1] = (value >> 8) & 0xff;
+  bytes[2] = (value >> 16) & 0xff;
+  bytes[3] = (value >> 24) & 0xff;
+}
+
+/****************************************************************************
+ * Name: ny_media_chime_create
+ * Description: Synthesise the alert chime into the media directory.
+ *
+ *   The tone is generated on the device rather than shipped: a repository
+ *   of sources has no place for a binary sound, and a file lets the alert
+ *   reuse the one playback path that is known to work instead of growing a
+ *   second, streaming one.
+ ****************************************************************************/
+
+static int ny_media_chime_create(void)
+{
+  const uint32_t period = NY_MEDIA_CHIME_ON_MS + NY_MEDIA_CHIME_OFF_MS;
+  const uint32_t frames = (uint32_t)((uint64_t)NY_MEDIA_CHIME_RATE *
+                                     NY_MEDIA_CHIME_BEEPS * period / 1000);
+  const uint32_t bytes = frames * 4;
+  unsigned char header[44];
+  static int16_t block[2048];
+  char path[256];
+  char partial[264];
+  int length = snprintf(path, sizeof(path), "%s/%s",
+                        CONFIG_NYABULA_CORE_MEDIA_ROOT, NY_MEDIA_CHIME);
+  if (length < 0 || (size_t)length >= sizeof(path))
+    return -ENAMETOOLONG;
+  snprintf(partial, sizeof(partial), "%s.tmp", path);
+  mkdir(CONFIG_NYABULA_CORE_MEDIA_ROOT, 0755);
+  int fd = open(partial, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0)
+    return -errno;
+  memcpy(header, "RIFF", 4);
+  ny_media_put_le32(header + 4, 36 + bytes);
+  memcpy(header + 8, "WAVEfmt ", 8);
+  ny_media_put_le32(header + 16, 16);
+  header[20] = 1; /* PCM */
+  header[21] = 0;
+  header[22] = 2; /* Stereo: the format every track played so far has had */
+  header[23] = 0;
+  ny_media_put_le32(header + 24, NY_MEDIA_CHIME_RATE);
+  ny_media_put_le32(header + 28, NY_MEDIA_CHIME_RATE * 4);
+  header[32] = 4;
+  header[33] = 0;
+  header[34] = 16;
+  header[35] = 0;
+  memcpy(header + 36, "data", 4);
+  ny_media_put_le32(header + 40, bytes);
+  int ret = write(fd, header, sizeof(header)) == sizeof(header) ? 0 : -EIO;
+  uint32_t filled = 0;
+  for (uint32_t frame = 0; ret == 0 && frame < frames; frame++)
+    {
+      uint32_t ms = (uint32_t)((uint64_t)frame * 1000 / NY_MEDIA_CHIME_RATE);
+      uint32_t within = ms % period;
+      float gain = 0;
+      if (within < NY_MEDIA_CHIME_ON_MS)
+        {
+          /* Ramp both edges: a tone that starts or stops at full level
+           * clicks.
+           */
+
+          uint32_t edge = within < NY_MEDIA_CHIME_ON_MS - within
+                              ? within
+                              : NY_MEDIA_CHIME_ON_MS - within;
+          gain = edge >= NY_MEDIA_CHIME_FADE_MS
+                     ? 1.0f
+                     : (float)edge / NY_MEDIA_CHIME_FADE_MS;
+        }
+      float phase = 2.0f * (float)M_PI * NY_MEDIA_CHIME_HZ *
+                    (float)(frame % NY_MEDIA_CHIME_RATE) / NY_MEDIA_CHIME_RATE;
+      int16_t sample = (int16_t)(sinf(phase) * gain * NY_MEDIA_CHIME_LEVEL);
+      block[filled++] = sample;
+      block[filled++] = sample;
+      if (filled == nitems(block) || frame + 1 == frames)
+        {
+          ssize_t size = filled * sizeof(block[0]);
+          if (write(fd, block, size) != size)
+            ret = -EIO;
+          filled = 0;
+        }
+    }
+  if (close(fd) < 0 && ret == 0)
+    ret = -errno;
+  if (ret == 0 && rename(partial, path) < 0)
+    ret = -errno;
+  if (ret < 0)
+    unlink(partial);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: ny_media_start
+ * Description: Start one track of the media directory on an idle player.
+ ****************************************************************************/
+
+static int ny_media_start(const char *name)
+{
+  struct ny_media_wave_s wave;
+  int fd = ny_media_wave(name, &wave);
+  if (fd < 0)
+    return fd;
+  int ret = nxplayer_setdevice(g_media_player, g_media_device);
+  bool supported = ny_media_volume_support(g_media_device);
+#ifndef CONFIG_AUDIO_EXCLUDE_VOLUME
+  if (ret == 0 && supported)
+    {
+      /* nxplayer writes the volume it holds to the device when a track
+       * starts, so it has to hold the one the codec was last given.
+       */
+
+      nxmutex_lock(&g_media_lock);
+      ny_media_levels_sync();
+      int level = g_media_muted ? 0 : g_media_volume * 10;
+      nxmutex_unlock(&g_media_lock);
+      ret = nxplayer_setvolume(g_media_player, level);
+    }
+#endif
+  if (ret == 0)
+    ret = nxplayer_playpcmfd(g_media_player, fd, wave.channels, wave.bits,
+                             wave.rate);
+  if (ret < 0)
+    {
+      close(fd);
+      return ret;
+    }
+  uint64_t deadline = ny_product_time_ms(true) + NY_MEDIA_START_MS;
+  while (nxplayer_getstate(g_media_player) == NXPLAYER_STATE_IDLE &&
+         ny_product_time_ms(true) < deadline)
+    usleep(10000);
+  if (nxplayer_getstate(g_media_player) == NXPLAYER_STATE_IDLE)
+    return -EIO;
+  nxmutex_lock(&g_media_lock);
+  snprintf(g_media_track, sizeof(g_media_track), "%s", name);
+  g_media_duration = wave.duration;
+  g_media_elapsed = 0;
+  g_media_sampled = ny_product_time_ms(true);
+  g_media_state = NXPLAYER_STATE_PLAYING;
+  g_media_volume_supported = supported;
+  nxmutex_unlock(&g_media_lock);
+  return 0;
+}
+
+/****************************************************************************
+ * Name: ny_media_halt
+ ****************************************************************************/
+
+static void ny_media_halt(void)
+{
+#ifndef CONFIG_AUDIO_EXCLUDE_STOP
+  if (g_media_player)
+    nxplayer_stop(g_media_player);
+#endif
+}
+
+/****************************************************************************
+ * Name: ny_media_alert_tick
+ * Description: Act on the alert and sleep requests other services left.
+ *
+ *   Runs on the media tick because that is the only thread that touches the
+ *   player.  A request made over the panel wins over an alert for the tick
+ *   it executes in; the alert simply tries again 100 ms later.
+ ****************************************************************************/
+
+static void ny_media_alert_tick(int state, uint64_t now)
+{
+  nxmutex_lock(&g_media_lock);
+  int alert = g_media_alert;
+  bool silence = g_media_alert_silence;
+  bool asleep = g_media_sleep;
+  bool busy = g_media_job.busy && !g_media_job.done;
+  bool chime = !strcmp(g_media_track, NY_MEDIA_CHIME);
+  g_media_alert_silence = false;
+  g_media_sleep = false;
+  nxmutex_unlock(&g_media_lock);
+  if (busy)
+    {
+      /* Keep the requests for the next tick rather than dropping them. */
+
+      nxmutex_lock(&g_media_lock);
+      g_media_alert_silence |= silence;
+      g_media_sleep |= asleep;
+      nxmutex_unlock(&g_media_lock);
+      return;
+    }
+  if (!g_media_player)
+    g_media_player = nxplayer_create();
+  if (!g_media_player)
+    return;
+  if (state != NXPLAYER_STATE_IDLE)
+    {
+      /* A sleep timer ends music, never an alert; silencing ends an alert,
+       * never music; and a wanted alert takes the speaker from music.
+       */
+
+      if (chime ? (silence && alert == NY_PRODUCT_MEDIA_ALERT_OFF)
+                : (asleep || alert != NY_PRODUCT_MEDIA_ALERT_OFF))
+        ny_media_halt();
+      return;
+    }
+  if (alert == NY_PRODUCT_MEDIA_ALERT_OFF || now < g_media_alert_next)
+    return;
+  int ret = ny_media_start(NY_MEDIA_CHIME);
+  if (ret == -ENOENT || ret == -ENOTDIR)
+    {
+      /* FAT answers ENOTDIR, not ENOENT, while the media directory itself
+       * is still missing.
+       */
+
+      ret = ny_media_chime_create();
+      if (ret == 0)
+        ret = ny_media_start(NY_MEDIA_CHIME);
+    }
+  nxmutex_lock(&g_media_lock);
+  if (ret < 0)
+    {
+      /* Without a usable speaker an alert must not spin on the device. */
+
+      g_media_error = ret;
+      g_media_alert_next = now + 10000;
+    }
+  else
+    g_media_alert_next = now + g_media_duration + NY_MEDIA_CHIME_GAP_MS;
+  if (g_media_alert == NY_PRODUCT_MEDIA_ALERT_ONCE)
+    g_media_alert = NY_PRODUCT_MEDIA_ALERT_OFF;
+  nxmutex_unlock(&g_media_lock);
+}
+
+/****************************************************************************
  * Name: ny_media_execute
  ****************************************************************************/
 
@@ -437,53 +699,7 @@ static int ny_media_execute(const struct ny_media_job_s *job)
     return -ENOMEM;
   int state = nxplayer_getstate(g_media_player);
   if (!strcmp(job->action, "music.play"))
-    {
-      if (state != NXPLAYER_STATE_IDLE)
-        return -EBUSY;
-      struct ny_media_wave_s wave;
-      int fd = ny_media_wave(job->name, &wave);
-      if (fd < 0)
-        return fd;
-      int ret = nxplayer_setdevice(g_media_player, g_media_device);
-      bool supported = ny_media_volume_support(g_media_device);
-#ifndef CONFIG_AUDIO_EXCLUDE_VOLUME
-      if (ret == 0 && supported)
-        {
-          /* nxplayer writes the volume it holds to the device when a track
-           * starts, so it has to hold the one the codec was last given.
-           */
-
-          nxmutex_lock(&g_media_lock);
-          ny_media_levels_sync();
-          int level = g_media_muted ? 0 : g_media_volume * 10;
-          nxmutex_unlock(&g_media_lock);
-          ret = nxplayer_setvolume(g_media_player, level);
-        }
-#endif
-      if (ret == 0)
-        ret = nxplayer_playpcmfd(g_media_player, fd, wave.channels, wave.bits,
-                                 wave.rate);
-      if (ret < 0)
-        {
-          close(fd);
-          return ret;
-        }
-      uint64_t deadline = ny_product_time_ms(true) + NY_MEDIA_START_MS;
-      while (nxplayer_getstate(g_media_player) == NXPLAYER_STATE_IDLE &&
-             ny_product_time_ms(true) < deadline)
-        usleep(10000);
-      if (nxplayer_getstate(g_media_player) == NXPLAYER_STATE_IDLE)
-        return -EIO;
-      nxmutex_lock(&g_media_lock);
-      snprintf(g_media_track, sizeof(g_media_track), "%s", job->name);
-      g_media_duration = wave.duration;
-      g_media_elapsed = 0;
-      g_media_sampled = ny_product_time_ms(true);
-      g_media_state = NXPLAYER_STATE_PLAYING;
-      g_media_volume_supported = supported;
-      nxmutex_unlock(&g_media_lock);
-      return 0;
-    }
+    return state != NXPLAYER_STATE_IDLE ? -EBUSY : ny_media_start(job->name);
 #ifndef CONFIG_AUDIO_EXCLUDE_PAUSE_RESUME
   if (!strcmp(job->action, "music.pause"))
     return state == NXPLAYER_STATE_PLAYING ? nxplayer_pause(g_media_player)
@@ -705,9 +921,47 @@ int ny_product_media_tick(void)
         g_media_job.busy = false;
     }
   nxmutex_unlock(&g_media_lock);
+  ny_media_alert_tick(state, now);
   return ret;
 #else
   return 0;
+#endif
+}
+
+/****************************************************************************
+ * Name: ny_product_media_alert
+ ****************************************************************************/
+
+void ny_product_media_alert(int mode)
+{
+#ifdef CONFIG_NYABULA_CORE_MEDIA
+  nxmutex_lock(&g_media_lock);
+  if (mode == NY_PRODUCT_MEDIA_ALERT_OFF)
+    g_media_alert_silence = true;
+  else
+    g_media_alert_next = 0;
+
+  /* A single chime must not end an alarm that is still ringing. */
+
+  if (mode != NY_PRODUCT_MEDIA_ALERT_ONCE ||
+      g_media_alert != NY_PRODUCT_MEDIA_ALERT_LOOP)
+    g_media_alert = mode;
+  nxmutex_unlock(&g_media_lock);
+#else
+  (void)mode;
+#endif
+}
+
+/****************************************************************************
+ * Name: ny_product_media_sleep
+ ****************************************************************************/
+
+void ny_product_media_sleep(void)
+{
+#ifdef CONFIG_NYABULA_CORE_MEDIA
+  nxmutex_lock(&g_media_lock);
+  g_media_sleep = true;
+  nxmutex_unlock(&g_media_lock);
 #endif
 }
 

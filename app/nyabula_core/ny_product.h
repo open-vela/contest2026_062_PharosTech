@@ -85,6 +85,20 @@ int ny_product_media_request(const struct ny_product_caller_s *caller,
                              cJSON **result);
 int ny_product_media_tick(void);
 void ny_product_media_shutdown(void);
+
+/* Audible alerts raised by other product services.  They only record what
+ * is wanted; the media tick owns the player and acts on it, so callers may
+ * hold their own locks.
+ */
+
+#define NY_PRODUCT_MEDIA_ALERT_OFF  0 /* Silence an alert that is sounding */
+#define NY_PRODUCT_MEDIA_ALERT_ONCE 1 /* One chime: a countdown ran out */
+#define NY_PRODUCT_MEDIA_ALERT_LOOP       \
+  2 /* Chime until switched off: an alarm \
+     */
+
+void ny_product_media_alert(int mode);
+void ny_product_media_sleep(void);
 int ny_product_device_request(const struct ny_product_caller_s *caller,
                               const char *topic, const cJSON *data,
                               cJSON **result);
