@@ -46,6 +46,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'plugins/:id', name: 'plugin', component: () => import('../views/plugins/PluginPageView.vue'), props: true, meta: { title: '插件', nav: 'plugins', depth: 1 } },
       { path: 'plugins/:id/permissions', name: 'plugin-permissions', component: () => import('../views/plugins/PluginPermissionsView.vue'), props: true, meta: { title: '插件权限', nav: 'plugins', depth: 2 } },
       { path: 'settings', name: 'workspace-settings', component: () => import('../views/settings/WorkspaceSettingsView.vue'), meta: { title: '设置', nav: 'workspace-settings' } },
+      // Its own address, for links and docs; the page itself is a section of the device settings.
+      { path: 'models', name: 'models', redirect: (to) => ({ name: 'device', params: { key: to.params.key, section: 'models' } }) },
       { path: 'device/:section?', name: 'device', component: () => import('../views/device/DeviceView.vue'), props: true, meta: { title: '设备设置', nav: 'workspace-settings', depth: 1 } },
       { path: 'nyabot', alias: 'agent', name: 'agent', component: () => import('../views/agent/AgentView.vue'), meta: { title: 'Nyabot', nav: 'agent' } },
     ],

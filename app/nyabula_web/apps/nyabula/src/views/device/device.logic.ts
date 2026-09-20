@@ -11,6 +11,7 @@ import AccessSection from './sections/AccessSection.vue';
 import CloudSection from './sections/CloudSection.vue';
 import PermissionsSection from './sections/PermissionsSection.vue';
 import StorageSection from './sections/StorageSection.vue';
+import ModelsSection from './sections/ModelsSection.vue';
 import UpdateSection from './sections/UpdateSection.vue';
 import LogsSection from './sections/LogsSection.vue';
 import ReservedSection from './sections/ReservedSection.vue';
@@ -33,6 +34,7 @@ const BUILTIN: Record<string, Component> = {
   cloud: CloudSection,
   permissions: PermissionsSection,
   storage: StorageSection,
+  models: ModelsSection,
   update: UpdateSection,
   logs: LogsSection,
   about: AboutSection,
