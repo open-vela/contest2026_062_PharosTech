@@ -544,6 +544,8 @@ int ny_product_timers_tick(void)
   uint64_t now = ny_product_time_ms(true);
   uint64_t wall = ny_product_time_ms(false);
   bool due = false;
+  bool asleep = false;
+  bool chime = false;
   int ret = nxmutex_lock(&g_timer_lock);
   if (ret < 0)
     {
@@ -621,10 +623,34 @@ int ny_product_timers_tick(void)
             ret = -ENOMEM;
             goto out;
           }
+
+        if (strcmp(ny_timer_text(row, "kind"), "sleep") == 0)
+          {
+            asleep = true;
+          }
+        else
+          {
+            chime = true;
+          }
       }
   }
 
   ret = ny_timer_save(&candidate);
+
+  /* Act only on a transition that reached storage: a finish that was not
+   * saved is found again by the next tick, and would then sound twice.
+   */
+
+  if (ret == 0 && asleep)
+    {
+      ny_product_media_sleep();
+    }
+
+  if (ret == 0 && chime)
+    {
+      ny_product_media_alert(NY_PRODUCT_MEDIA_ALERT_ONCE);
+    }
+
 out:
   cJSON_Delete(candidate);
   nxmutex_unlock(&g_timer_lock);
