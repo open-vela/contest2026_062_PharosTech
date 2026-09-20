@@ -262,8 +262,8 @@ static char *ny_agent_tools(void)
       "before execution. Read the current revision first.\","
       "\"input_schema\":{\"type\":\"object\",\"properties\":{"
       "\"topic\":{\"type\":\"string\",\"enum\":[\"memory.create\","
-      "\"task.create\",\"calendar.create\",\"timer.create\",\"agent.mcp.out."
-      "call\",\"agent.tools.call\"]},"
+      "\"task.create\",\"calendar.create\",\"timer.create\","
+      "\"alarm.create\",\"agent.mcp.out.call\",\"agent.tools.call\"]},"
       "\"arguments\":{\"type\":\"object\"}},"
       "\"required\":[\"topic\",\"arguments\"],\"additionalProperties\":false}}"
       ","
@@ -449,8 +449,8 @@ static int ny_agent_tool_execute(const char *name, const char *input,
     "alarm.list"
   };
   static const char *const writes[] = {
-    "memory.create", "task.create",        "calendar.create",
-    "timer.create",  "agent.mcp.out.call", "agent.tools.call"
+    "memory.create", "task.create",        "calendar.create", "timer.create",
+    "alarm.create",  "agent.mcp.out.call", "agent.tools.call"
   };
   static const char *const media_topics[] = { "music.play",   "music.pause",
                                               "music.resume", "music.stop",
