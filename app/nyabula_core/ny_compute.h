@@ -71,12 +71,46 @@
 #define NY_COMPUTE_CAP_HEALTH (1U << 0)
 #define NY_COMPUTE_CAP_LLM    (1U << 1)
 #define NY_COMPUTE_CAP_BLOB   (1U << 2)
+#define NY_COMPUTE_CAP_CHAT   (1U << 3)
+
+/* ny_compute_chat() flags; the values are the wire's NYAMP_LLM_CHAT_*. */
+
+#define NY_COMPUTE_CHAT_GUARD_UNTRUSTED (1U << 0)
+#define NY_COMPUTE_CHAT_STREAM_TOKENS   (1U << 1)
+
+/* The largest request body a chat may carry. */
+
+#define NY_COMPUTE_CHAT_MAX_REQUEST 65536
 
 /****************************************************************************
  * Public Types
  ****************************************************************************/
 
 struct ny_compute_port_s;
+
+/* The local model as this domain knows it.  PROVISIONING and LOADING are the
+ * two halves of a load: the compute domain pulling the model out of
+ * /data/models, then its runtime initialising from the copy.
+ */
+
+enum ny_compute_llm_state_e
+{
+  NY_COMPUTE_LLM_UNLOADED = 0,
+  NY_COMPUTE_LLM_PROVISIONING,
+  NY_COMPUTE_LLM_LOADING,
+  NY_COMPUTE_LLM_READY,
+  NY_COMPUTE_LLM_BUSY,
+  NY_COMPUTE_LLM_ERROR
+};
+
+struct ny_compute_chat_stats_s
+{
+  uint32_t prompt_tokens;
+  uint32_t completion_tokens;
+  uint32_t prefill_ms;    /* Request accepted to first token.           */
+  uint32_t decode_ms;     /* First token to last token.                 */
+  uint32_t context_limit; /* What prompt + max_new_tokens has to fit.   */
+};
 
 struct ny_compute_status_s
 {
@@ -92,6 +126,13 @@ struct ny_compute_status_s
   uint64_t blob_offset; /* End of the last window served (or hashed).    */
   uint64_t blob_size;
   uint32_t blob_bytes_per_sec;
+
+  enum ny_compute_llm_state_e llm_state;
+  char llm_model[NY_COMPUTE_NAME_MAX + 1];
+  struct ny_compute_chat_stats_s llm_last; /* The most recent chat.       */
+  uint32_t llm_tokens_per_sec_x10;         /* Decode rate of that chat.   */
+  int llm_last_error;
+  char llm_last_error_text[NY_COMPUTE_ERROR_MAX];
 
   uint32_t generation_changes;
   uint32_t dropped_frames; /* Malformed, or a port queue was full.        */
@@ -189,21 +230,71 @@ ssize_t ny_compute_port_recv(struct ny_compute_port_s *port, uint8_t *wire,
 
 uint64_t ny_compute_request_id(void);
 
-/* Declarations only.  The agent bridge (tokenizer, prompt assembly, tool
- * round trips) belongs to the agent work and is not implemented here; these
- * fix the shape it is expected to take on top of a port.
+/****************************************************************************
+ * Name: ny_compute_llm_load / ny_compute_llm_unload
  *
- * TODO: implement in the agent bridge.
- */
+ * Description:
+ *   Load a model on the compute domain, or drop it.  `name` is a logical
+ *   name under /data/models ("llm/model.rkllm"): the compute domain pulls the
+ *   file and its tokenizer.json through the BLOB service this library
+ *   serves, so the first load of an 875 MB model is a matter of minutes.
+ *   NULL selects CONFIG_NYABULA_CORE_COMPUTE_LLM.  Loading what is already
+ *   loaded succeeds at once.
+ *
+ *   Blocking.  -EBUSY while another load, unload or chat is in progress,
+ *   -ENOENT when the model or its tokenizer is not on this device,
+ *   -ETIMEDOUT, -ENOTCONN without a link.  timeout_ms <= 0 selects a default
+ *   sized for a cold load.
+ *
+ ****************************************************************************/
 
-typedef int (*ny_compute_token_cb_t)(void *arg, const char *text,
-                                     size_t length);
+int ny_compute_llm_load(const char *name, int timeout_ms);
+int ny_compute_llm_unload(void);
 
-int ny_compute_llm_load(const char *model, int timeout_ms);
-int ny_compute_llm_generate(const int32_t *token_ids, size_t count,
-                            uint32_t max_new_tokens,
-                            ny_compute_token_cb_t callback, void *arg);
-int ny_compute_llm_cancel(void);
+/****************************************************************************
+ * Name: ny_compute_chat
+ *
+ * Description:
+ *   One chat completion on the local model.  `request_json` is an OpenAI
+ *   chat-completions request ({"messages":[...],"tools":[...]}); on success
+ *   `*response_json` is a malloc'd, NUL terminated chat.completion object the
+ *   caller frees.  Tokenizing, the chat template and tool-call parsing all
+ *   happen on the compute domain; this side only moves text.
+ *
+ *   If no model is loaded, CONFIG_NYABULA_CORE_COMPUTE_LLM is loaded first,
+ *   so the first call after boot can take minutes (see timeout_ms).
+ *
+ *   Blocking, one at a time.  Returns 0, or:
+ *     -EBUSY      another chat, load or unload is in progress
+ *     -E2BIG      prompt + max_new_tokens does not fit the context window;
+ *                 stats->prompt_tokens and stats->context_limit say by how
+ *                 much, so the caller can drop history and try again
+ *     -ECANCELED  ny_compute_chat_cancel() was called
+ *     -ETIMEDOUT  no terminal event within timeout_ms (<= 0: a default)
+ *     -EMSGSIZE   the request exceeds NY_COMPUTE_CHAT_MAX_REQUEST
+ *     -EINVAL     the compute domain could not read the request
+ *     -ENOTSUP    the loaded model has no tokenizer, or the daemon no chat
+ *     -ENOENT     the model is not on this device
+ *     -ENOTCONN / -ECONNRESET  no link, or the compute domain restarted
+ *   `stats` may be NULL.  max_new_tokens 0 selects the daemon's default.
+ *
+ ****************************************************************************/
+
+int ny_compute_chat(const char *request_json, size_t max_new_tokens,
+                    unsigned int flags, char **response_json,
+                    struct ny_compute_chat_stats_s *stats, int timeout_ms);
+
+/****************************************************************************
+ * Name: ny_compute_chat_cancel
+ *
+ * Description:
+ *   Stop the chat in progress, from any thread.  The blocked
+ *   ny_compute_chat() returns -ECANCELED once the compute domain confirms.
+ *   -ENOENT when no chat is running.
+ *
+ ****************************************************************************/
+
+int ny_compute_chat_cancel(void);
 
 #ifdef __cplusplus
 }

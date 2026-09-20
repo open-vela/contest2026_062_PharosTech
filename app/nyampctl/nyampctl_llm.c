@@ -54,6 +54,10 @@
 
 #define NYAMPCTL_LLM_LOAD_TIMEOUT_MS 600000
 
+/* A chat is bounded by the 2048-token window at the model's decode rate. */
+
+#define NYAMPCTL_LLM_CHAT_TIMEOUT_MS 180000
+
 static uint32_t nyampctl_llm_get_le32(const uint8_t *source)
 {
   uint32_t value = 0;
@@ -471,4 +475,250 @@ int nyampctl_llm_generate(int fd, const char *source, uint32_t max_new_tokens,
     }
 
   return nyampctl_llm_drain_until_finish(fd, request_id);
+}
+
+/****************************************************************************
+ * Name: nyampctl_llm_chat_wire
+ *
+ * Description:
+ *   A chat completion spoken directly on the wire: the body in ordered
+ *   chunks, each acknowledged, then the result chunks and the terminal
+ *   finish.  This is the reference client for the CHAT opcode and what the
+ *   minimal AMP profile uses; a product firmware goes through the Core
+ *   compute service instead (see nyampctl_llm_chat).
+ *
+ ****************************************************************************/
+
+static int nyampctl_llm_chat_wire(int fd, const char *request, size_t total,
+                                  uint32_t max_new_tokens,
+                                  struct nyamp_llm_chat_finish_s *finish,
+                                  char **response)
+{
+  uint8_t wire[NYAMP_RPMSG_MTU];
+  uint8_t body[NYAMP_INLINE_MAX];
+  struct nyamp_llm_chat_s chunk;
+  uint64_t request_id = nyampctl_llm_request_id();
+  char *buffer = NULL;
+  uint32_t received = 0;
+  size_t body_size = 0;
+  int waited = 0;
+  int ret;
+
+  chunk.total = (uint32_t)total;
+  chunk.offset = 0;
+  chunk.max_new_tokens = max_new_tokens;
+  chunk.flags = NYAMP_LLM_CHAT_GUARD_UNTRUSTED;
+  while (chunk.offset < chunk.total)
+    {
+      chunk.length = chunk.total - chunk.offset;
+      if (chunk.length > NYAMP_LLM_CHAT_MAX_CHUNK)
+        {
+          chunk.length = NYAMP_LLM_CHAT_MAX_CHUNK;
+        }
+
+      if (nyamp_llm_chat_encode(body, sizeof(body), &body_size, &chunk,
+                                (const uint8_t *)request + chunk.offset) !=
+          NYAMP_OK)
+        {
+          return -EINVAL;
+        }
+
+      ret = nyampctl_llm_request(fd, NYAMP_LLM_CHAT, request_id, body,
+                                 body_size);
+      if (ret < 0)
+        {
+          return ret;
+        }
+
+      chunk.offset += chunk.length;
+    }
+
+  while (waited < NYAMPCTL_LLM_CHAT_TIMEOUT_MS)
+    {
+      struct nyamp_header_s header;
+      struct nyamp_llm_result_s part;
+      const uint8_t *payload = wire + NYAMP_WIRE_HEADER_SIZE;
+      const uint8_t *bytes;
+      ssize_t size;
+
+      size = nyampctl_recv(fd, wire, sizeof(wire), NYAMPCTL_LLM_POLL_MS);
+      if (size < 0)
+        {
+          free(buffer);
+          return (int)size;
+        }
+
+      if (size == 0)
+        {
+          waited += NYAMPCTL_LLM_POLL_MS;
+          continue;
+        }
+
+      if (nyamp_header_decode(&header, wire, (size_t)size) != NYAMP_OK ||
+          header.flags != NYAMP_FLAG_EVENT ||
+          header.service != NYAMP_SERVICE_LLM ||
+          header.request_id != request_id)
+        {
+          continue;
+        }
+
+      if (header.opcode == NYAMP_LLM_EVENT_RESULT)
+        {
+          if (nyamp_llm_result_decode(&part, &bytes, payload,
+                                      header.payload_size) != NYAMP_OK ||
+              part.offset != received)
+            {
+              free(buffer);
+              return -EPROTO;
+            }
+
+          if (buffer == NULL)
+            {
+              buffer = malloc((size_t)part.total + 1);
+              if (buffer == NULL)
+                {
+                  return -ENOMEM;
+                }
+            }
+
+          memcpy(buffer + received, bytes, part.length);
+          received += part.length;
+          buffer[received] = '\0';
+          continue;
+        }
+
+      if (header.opcode == NYAMP_LLM_EVENT_FINISH)
+        {
+          if (nyamp_llm_chat_finish_decode(finish, payload,
+                                           header.payload_size) != NYAMP_OK)
+            {
+              free(buffer);
+              return -EPROTO;
+            }
+
+          *response = buffer;
+          return 0;
+        }
+    }
+
+  free(buffer);
+  return -ETIMEDOUT;
+}
+
+/****************************************************************************
+ * Name: nyampctl_llm_chat
+ *
+ * Description:
+ *   Send the chat-completions request in `path` and print the response and
+ *   the run's statistics.  With the Core compute service running this calls
+ *   ny_compute_chat(), so it exercises exactly what the on-device agent
+ *   uses, including the load of the default model on first use.
+ *
+ ****************************************************************************/
+
+int nyampctl_llm_chat(int fd, const char *path, uint32_t max_new_tokens)
+{
+  struct nyamp_llm_chat_finish_s finish;
+  char *response = NULL;
+  char *request;
+  size_t total = 0;
+  int status;
+  int file;
+  int ret;
+
+  request = malloc(NYAMP_LLM_CHAT_MAX_BODY + 1);
+  if (request == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  file = open(path, O_RDONLY);
+  if (file < 0)
+    {
+      ret = -errno;
+      fprintf(stderr, "nyampctl: cannot read %s: %d\n", path, -ret);
+      free(request);
+      return ret;
+    }
+
+  for (;;)
+    {
+      ssize_t got =
+          read(file, request + total, NYAMP_LLM_CHAT_MAX_BODY + 1 - total);
+
+      if (got < 0 && errno == EINTR)
+        {
+          continue;
+        }
+
+      if (got <= 0)
+        {
+          break;
+        }
+
+      total += (size_t)got;
+    }
+
+  close(file);
+  if (total == 0 || total > NYAMP_LLM_CHAT_MAX_BODY)
+    {
+      fprintf(stderr, "nyampctl: request must be 1..%u bytes\n",
+              NYAMP_LLM_CHAT_MAX_BODY);
+      free(request);
+      return -EMSGSIZE;
+    }
+
+  request[total] = '\0';
+  memset(&finish, 0, sizeof(finish));
+
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+  if (g_nyampctl_port != NULL)
+    {
+      struct ny_compute_chat_stats_s stats;
+
+      ret = ny_compute_chat(request, max_new_tokens,
+                            NY_COMPUTE_CHAT_GUARD_UNTRUSTED, &response, &stats,
+                            0);
+      finish.status = ret;
+      finish.prompt_tokens = stats.prompt_tokens;
+      finish.completion_tokens = stats.completion_tokens;
+      finish.prefill_ms = stats.prefill_ms;
+      finish.decode_ms = stats.decode_ms;
+      finish.context_limit = stats.context_limit;
+      status = ret;
+    }
+  else
+#endif
+    {
+      ret = nyampctl_llm_chat_wire(fd, request, total, max_new_tokens, &finish,
+                                   &response);
+      status = ret < 0 ? ret : finish.status;
+    }
+
+  free(request);
+
+  if (response != NULL)
+    {
+      printf("%s\n", response);
+      free(response);
+    }
+
+  printf("nyamp llm chat: status=%d prompt_tokens=%" PRIu32
+         " completion_tokens=%" PRIu32 " prefill_ms=%" PRIu32
+         " decode_ms=%" PRIu32 " context=%" PRIu32 "\n",
+         status, finish.prompt_tokens, finish.completion_tokens,
+         finish.prefill_ms, finish.decode_ms, finish.context_limit);
+  if (finish.decode_ms != 0)
+    {
+      printf("nyamp llm chat: %" PRIu32 ".%" PRIu32 " tokens/s\n",
+             finish.completion_tokens * 1000 / finish.decode_ms,
+             finish.completion_tokens * 10000 / finish.decode_ms % 10);
+    }
+
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  return status == 0 ? 0 : -EREMOTEIO;
 }

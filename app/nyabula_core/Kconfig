@@ -348,6 +348,16 @@ config NYABULA_CORE_COMPUTE_BOUNCE
 		directly.  Slower; only for a storage driver that cannot
 		transfer into the non-cacheable shared region.
 
+config NYABULA_CORE_COMPUTE_LLM
+	string "Default local LLM (name under /data/models)"
+	default "llm/model.rkllm"
+	depends on NYABULA_CORE_COMPUTE
+	---help---
+		The model ny_compute_chat() loads when none is loaded yet, and
+		the one compute.llm.load loads when it is not given a name.  It
+		is a logical name under /data/models; the compute domain pulls
+		it, and the tokenizer.json beside it, on demand.
+
 config NYABULA_CORE_AUDIO
 	bool "ES8388 codec control (routes, volume, microphone)"
 	default y
