@@ -36,11 +36,15 @@
 #include <sys/stat.h>
 #include <system/nxplayer.h>
 #include <unistd.h>
+#ifdef CONFIG_NYABULA_CORE_AUDIO
+#include "ny_product_audio.h"
+#endif
 
 #define NY_MEDIA_TRACK_MAX   96
 #define NY_MEDIA_WAIT_MS     5000
 #define NY_MEDIA_START_MS    1000
 #define NY_MEDIA_LIBRARY_MAX 64
+#define NY_MEDIA_PROBE_MS    2000
 
 struct ny_media_wave_s
 {
@@ -74,6 +78,7 @@ static int g_media_state = NXPLAYER_STATE_IDLE;
 static int g_media_volume = 40;
 static bool g_media_muted;
 static bool g_media_volume_supported;
+static uint64_t g_media_probe_after;
 static int g_media_error;
 static uint64_t g_media_elapsed;
 static uint64_t g_media_duration;
@@ -87,6 +92,9 @@ static cJSON *ny_media_status(void);
 static int ny_media_library(cJSON **result);
 static bool ny_media_name(const char *name);
 static bool ny_media_volume_support(const char *device);
+static void ny_media_volume_probe(void);
+static bool ny_media_codec(const char *device);
+static void ny_media_levels_sync(void);
 static int ny_media_execute(const struct ny_media_job_s *job);
 static int ny_media_preferences_load(void);
 static int ny_media_preferences_save(void);
@@ -331,12 +339,78 @@ static bool ny_media_volume_support(const char *device)
   int fd = open(device, O_RDONLY);
   if (fd < 0)
     return false;
+  /* A feature-unit query is sub-typed AUDIO_FU_UNDEF.  That is the same
+   * value as AUDIO_TYPE_QUERY, so the older spelling here asked the right
+   * question; it was only ever asked too late (see ny_media_volume_probe).
+   */
+
   struct audio_caps_s caps = { .ac_len = sizeof(caps),
                                .ac_type = AUDIO_TYPE_FEATURE,
-                               .ac_subtype = AUDIO_TYPE_QUERY };
+                               .ac_subtype = AUDIO_FU_UNDEF };
   int ret = ioctl(fd, AUDIOIOC_GETCAPS, (unsigned long)(uintptr_t)&caps);
   close(fd);
   return ret >= 0 && (caps.ac_controls.hw[0] & AUDIO_FU_VOLUME) != 0;
+}
+
+/****************************************************************************
+ * Name: ny_media_volume_probe
+ *
+ * Description:
+ *   The capability used to be asked only by music.play and music.output, so
+ *   a device that had not played anything yet reported no volume control
+ *   and refused music.volume.  Ask from the status path instead, until the
+ *   node answers; it may not be registered yet right after boot.  Called
+ *   with g_media_lock held.
+ *
+ ****************************************************************************/
+
+static void ny_media_volume_probe(void)
+{
+  uint64_t now = ny_product_time_ms(true);
+  if (g_media_volume_supported || now < g_media_probe_after)
+    return;
+  g_media_probe_after = now + NY_MEDIA_PROBE_MS;
+  g_media_volume_supported = ny_media_volume_support(g_media_device);
+}
+
+/****************************************************************************
+ * Name: ny_media_codec
+ *
+ * Description:
+ *   Whether the output is the codec whose levels the audio service owns.
+ *   Any other node (USB audio) keeps the player's own volume path.
+ *
+ ****************************************************************************/
+
+static bool ny_media_codec(const char *device)
+{
+#ifdef CONFIG_NYABULA_CORE_AUDIO
+  return strcmp(device, NY_PRODUCT_AUDIO_OUTPUT) == 0;
+#else
+  (void)device;
+  return false;
+#endif
+}
+
+/****************************************************************************
+ * Name: ny_media_levels_sync
+ *
+ * Description:
+ *   audio.volume and audioctl move the codec volume without going through
+ *   here: report, and start the next track at, what the codec really has.
+ *
+ ****************************************************************************/
+
+static void ny_media_levels_sync(void)
+{
+#ifdef CONFIG_NYABULA_CORE_AUDIO
+  struct ny_product_audio_levels_s levels;
+  if (ny_media_codec(g_media_device) && ny_product_audio_levels(&levels) == 0)
+    {
+      g_media_volume = levels.volume;
+      g_media_muted = levels.muted;
+    }
+#endif
 }
 
 /****************************************************************************
@@ -362,8 +436,17 @@ static int ny_media_execute(const struct ny_media_job_s *job)
       bool supported = ny_media_volume_support(g_media_device);
 #ifndef CONFIG_AUDIO_EXCLUDE_VOLUME
       if (ret == 0 && supported)
-        ret = nxplayer_setvolume(g_media_player,
-                                 g_media_muted ? 0 : g_media_volume * 10);
+        {
+          /* nxplayer writes the volume it holds to the device when a track
+           * starts, so it has to hold the one the codec was last given.
+           */
+
+          nxmutex_lock(&g_media_lock);
+          ny_media_levels_sync();
+          int level = g_media_muted ? 0 : g_media_volume * 10;
+          nxmutex_unlock(&g_media_lock);
+          ret = nxplayer_setvolume(g_media_player, level);
+        }
 #endif
       if (ret == 0)
         ret = nxplayer_playpcmfd(g_media_player, fd, wave.channels, wave.bits,
@@ -420,10 +503,23 @@ static int ny_media_execute(const struct ny_media_job_s *job)
 #ifndef CONFIG_AUDIO_EXCLUDE_VOLUME
   if (!strcmp(job->action, "music.volume"))
     {
-      if (!g_media_volume_supported)
+      bool codec = ny_media_codec(g_media_device);
+      if (!codec && !g_media_volume_supported)
         return -ENOTSUP;
-      int ret = nxplayer_setvolume(g_media_player,
-                                   job->muted ? 0 : job->volume * 10);
+      int ret = 0;
+#ifdef CONFIG_NYABULA_CORE_AUDIO
+      /* nxplayer only reaches the device while it holds one; the audio
+       * service reaches the codec at any time and keeps audio.status, the
+       * panel and audioctl on the same number.
+       */
+
+      if (codec)
+        ret = ny_product_audio_set_levels(job->volume, job->muted ? 1 : 0,
+                                          NY_PRODUCT_AUDIO_KEEP);
+#endif
+      if (ret == 0)
+        ret = nxplayer_setvolume(g_media_player,
+                                 job->muted ? 0 : job->volume * 10);
       if (ret == 0)
         {
           nxmutex_lock(&g_media_lock);
@@ -467,6 +563,8 @@ int ny_product_media_request(const struct ny_product_caller_s *caller,
     }
   if (!strcmp(topic, "music.status"))
     {
+      ny_media_volume_probe();
+      ny_media_levels_sync();
       *result = ny_media_status();
       nxmutex_unlock(&g_media_lock);
       return *result ? 0 : -ENOMEM;

@@ -305,6 +305,27 @@ config NYABULA_CORE_MEDIA_DEVICE
 	default "/dev/audio/pcm0"
 	depends on NYABULA_CORE_MEDIA
 
+config NYABULA_CORE_AUDIO
+	bool "ES8388 codec control (routes, volume, microphone)"
+	default y
+	depends on NYABULA_CORE_PRODUCT && AUDIO_ES8388
+	---help---
+		audio.* topics: output and microphone routing, volume, mute,
+		microphone gain and channel processing of the ES8388, applied to
+		the codec directly whether or not a stream is open.  Preferences
+		live in the product store and are restored once the codec nodes
+		appear.  music.volume and the audioctl command use the same path.
+
+config NYABULA_CORE_AUDIO_OUTPUT_DEVICE
+	string "ES8388 playback node"
+	default "/dev/audio/pcm0"
+	depends on NYABULA_CORE_AUDIO
+
+config NYABULA_CORE_AUDIO_INPUT_DEVICE
+	string "ES8388 capture node"
+	default "/dev/audio/pcm_in0"
+	depends on NYABULA_CORE_AUDIO
+
 config NYABULA_CORE_STORAGE_BYTES_LIMIT
 	int "Maximum stored value bytes per plugin"
 	default 65536

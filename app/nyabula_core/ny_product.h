@@ -100,6 +100,13 @@ int ny_product_network_link(char *ssid, size_t size, int *rssi);
 int ny_product_network_name(char *out, size_t size);
 void ny_product_network_shutdown(void);
 #endif
+#ifdef CONFIG_NYABULA_CORE_AUDIO
+/* The store-free level accessors are in ny_product_audio.h. */
+int ny_product_audio_request(const struct ny_product_caller_s *caller,
+                             const char *topic, const cJSON *data,
+                             cJSON **result);
+int ny_product_audio_tick(void);
+#endif
 int ny_product_eyes_request(const struct ny_product_caller_s *caller,
                             const char *topic, const cJSON *data,
                             cJSON **result);

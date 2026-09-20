@@ -54,6 +54,9 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
          ny_product_alarms.c ny_product_notifications.c ny_product_briefing.c
          ny_product_eyes.c ny_product_device.c ny_product_media.c
          ny_product_maintenance.c)
+    if(CONFIG_NYABULA_CORE_AUDIO)
+      list(APPEND NYABULA_CORE_SRCS ny_product_audio.c)
+    endif()
     if(CONFIG_NYABULA_CORE_NETWORK)
       list(APPEND NYABULA_CORE_SRCS ny_product_network.c)
     endif()
