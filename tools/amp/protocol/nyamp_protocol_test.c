@@ -337,13 +337,14 @@ static int test_asr_messages(void)
 
   /* Text travels as a delta with its own length, so it needs no NUL. */
   CHECK(nyamp_asr_partial_encode(payload, sizeof(payload), &size, 9, 40000,
-                                 NYAMP_BUFFER_RESYNC, "world", 5) == NYAMP_OK);
+                                 NYAMP_ASR_PARTIAL_RESYNC, "world",
+                                 5) == NYAMP_OK);
   CHECK(size == NYAMP_ASR_PARTIAL_HEADER_SIZE + 5);
   CHECK(nyamp_asr_partial_decode(&sequence, &consumed, &flags, &text,
                                  &text_length, payload, size) == NYAMP_OK);
   CHECK(sequence == 9 && consumed == 40000 && text_length == 5);
   CHECK(memcmp(text, "world", 5) == 0);
-  CHECK((flags & NYAMP_BUFFER_RESYNC) != 0);
+  CHECK(flags == NYAMP_ASR_PARTIAL_RESYNC);
 
   /* Empty text is legal: a window may produce no new words. */
   CHECK(nyamp_asr_partial_encode(payload, sizeof(payload), &size, 10, 40000, 0,
@@ -1096,6 +1097,361 @@ static int test_llm_chat_result_and_finish(void)
   return 0;
 }
 
+static int test_asr_attach_and_end(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  size_t size = 0;
+  uint32_t sample_rate = 0, max_samples = 0;
+  uint16_t channels = 0, flags = 0;
+  uint64_t sample = 0;
+
+  /* The encoder sets the attach flag itself and keeps the format flag. */
+  CHECK(nyamp_asr_attach_encode(payload, sizeof(payload), &size, 16000, 1,
+                                NYAMP_AUDIO_BEGIN_S16, 128000,
+                                0x123456789aULL) == NYAMP_OK);
+  CHECK(size == NYAMP_ASR_ATTACH_SIZE);
+  CHECK(nyamp_asr_attach_decode(&sample_rate, &channels, &flags, &max_samples,
+                                &sample, payload, size) == NYAMP_OK);
+  CHECK(sample_rate == 16000 && channels == 1 && max_samples == 128000);
+  CHECK(flags == (NYAMP_AUDIO_BEGIN_S16 | NYAMP_ASR_BEGIN_ATTACH_KWS));
+  CHECK(sample == 0x123456789aULL);
+
+  /* The first 16 bytes are an ordinary BEGIN, so a dispatcher can look at
+   * the flags before it knows which of the two layouts it holds.
+   */
+  CHECK(nyamp_asr_begin_decode(&sample_rate, &channels, &flags, &max_samples,
+                               payload, NYAMP_ASR_BEGIN_SIZE) == NYAMP_OK);
+  CHECK((flags & NYAMP_ASR_BEGIN_ATTACH_KWS) != 0);
+
+  /* A plain BEGIN is not an attach, whatever its length claims. */
+  CHECK(nyamp_asr_attach_decode(&sample_rate, &channels, &flags, &max_samples,
+                                &sample, payload,
+                                NYAMP_ASR_BEGIN_SIZE) == NYAMP_EMSGSIZE);
+  payload[6] = 0;
+  CHECK(nyamp_asr_attach_decode(&sample_rate, &channels, &flags, &max_samples,
+                                &sample, payload, size) == NYAMP_EPROTO);
+  payload[6] = NYAMP_ASR_BEGIN_ATTACH_KWS | 0x80;
+  CHECK(nyamp_asr_attach_decode(&sample_rate, &channels, &flags, &max_samples,
+                                &sample, payload, size) == NYAMP_EPROTO);
+  CHECK(nyamp_asr_attach_encode(payload, sizeof(payload), &size, 16000, 1,
+                                0x80, 0, 0) == NYAMP_EINVAL);
+  CHECK(nyamp_asr_attach_encode(payload, NYAMP_ASR_ATTACH_SIZE - 1, &size,
+                                16000, 1, 0, 0, 0) == NYAMP_EMSGSIZE);
+
+  CHECK(nyamp_asr_end_encode(payload, sizeof(payload), &size,
+                             NYAMP_STREAM_SAMPLE_NOW) == NYAMP_OK);
+  CHECK(size == NYAMP_ASR_END_SIZE);
+  CHECK(nyamp_asr_end_decode(&sample, payload, size) == NYAMP_OK);
+  CHECK(sample == NYAMP_STREAM_SAMPLE_NOW);
+  CHECK(nyamp_asr_end_encode(payload, sizeof(payload), &size, 48000) ==
+        NYAMP_OK);
+  CHECK(nyamp_asr_end_decode(&sample, payload, size) == NYAMP_OK);
+  CHECK(sample == 48000);
+  CHECK(nyamp_asr_end_decode(&sample, payload, size - 1) == NYAMP_EMSGSIZE);
+  CHECK(nyamp_asr_end_decode(&sample, payload, size + 1) == NYAMP_EPROTO);
+
+  /* The partial flags are one small set, distinct from the buffer flags. */
+  CHECK(NYAMP_ASR_PARTIAL_ALL == 7U);
+  return 0;
+}
+
+static int test_tts_text_chunks(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  uint8_t text[NYAMP_TTS_TEXT_MAX_CHUNK];
+  size_t size = 0;
+  const uint8_t *bytes = NULL;
+  struct nyamp_tts_text_s chunk = {
+    .total = 1000,
+    .offset = 0,
+    .length = NYAMP_TTS_TEXT_MAX_CHUNK,
+    .speaker_id = 1,
+    .speed = 1.25f,
+    .window_samples = 44100,
+    .flags = 0,
+  };
+  struct nyamp_tts_text_s decoded;
+
+  memset(text, 'x', sizeof(text));
+  CHECK(NYAMP_TTS_TEXT_MAX_CHUNK == 428U);
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_OK);
+  CHECK(size == NYAMP_INLINE_MAX);
+  CHECK(nyamp_tts_text_decode(&decoded, &bytes, payload, size) == NYAMP_OK);
+  CHECK(decoded.total == 1000 && decoded.offset == 0 &&
+        decoded.length == NYAMP_TTS_TEXT_MAX_CHUNK &&
+        decoded.speaker_id == 1 && decoded.speed == 1.25f &&
+        decoded.window_samples == 44100 && decoded.flags == 0);
+  CHECK(bytes == payload + NYAMP_TTS_TEXT_HEADER_SIZE &&
+        memcmp(bytes, text, decoded.length) == 0);
+
+  /* A declared length must match what arrived. */
+  CHECK(nyamp_tts_text_decode(&decoded, &bytes, payload, size - 1) ==
+        NYAMP_EMSGSIZE);
+  CHECK(nyamp_tts_text_decode(&decoded, &bytes, payload,
+                              NYAMP_TTS_TEXT_HEADER_SIZE - 1) ==
+        NYAMP_EMSGSIZE);
+
+  /* The tail chunk, and the default window. */
+  chunk.offset = 856;
+  chunk.length = 144;
+  chunk.window_samples = 0;
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_OK);
+  CHECK(nyamp_tts_text_decode(&decoded, &bytes, payload, size) == NYAMP_OK);
+  CHECK(decoded.offset == 856 && decoded.length == 144);
+
+  /* A span outside the body, an oversized body, a bad speed, a window the
+   * slot cannot hold, and a reserved flag are all refused by both sides.
+   */
+  chunk.length = 145;
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
+  chunk.length = 144;
+  chunk.total = NYAMP_TTS_TEXT_MAX_BODY + 1;
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
+  chunk.total = 1000;
+  chunk.speed = 0.0f;
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
+  chunk.speed = 1.0f;
+  chunk.window_samples = NYAMP_TTS_WINDOW_SAMPLES_MAX + 1;
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
+  chunk.window_samples = NYAMP_TTS_WINDOW_SAMPLES_MIN - 1;
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
+  chunk.window_samples = 0;
+  chunk.flags = 1;
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
+  chunk.flags = 0;
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_OK);
+  payload[24] = 1;
+  CHECK(nyamp_tts_text_decode(&decoded, &bytes, payload, size) ==
+        NYAMP_EPROTO);
+  payload[24] = 0;
+
+  /* A NaN speed (all-ones exponent, non-zero mantissa). */
+  payload[16] = 1;
+  payload[17] = 0;
+  payload[18] = 0xc0;
+  payload[19] = 0x7f;
+  CHECK(nyamp_tts_text_decode(&decoded, &bytes, payload, size) ==
+        NYAMP_EPROTO);
+
+  /* The slot holds exactly the largest window. */
+  CHECK(NYAMP_TTS_WINDOW_SAMPLES_MAX * 4U == 0x00100000U);
+  return 0;
+}
+
+static int test_kws_messages(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  size_t size = 0;
+  struct nyamp_kws_load_s load = {
+    .threshold = 0.1f,
+    .score = 2.0f,
+    .max_active_paths = 16,
+    .num_trailing_blanks = 1,
+    .directory_length = 3,
+    .keywords_length = 12,
+    .directory = "kws",
+    .keywords = "keywords.txt",
+  };
+  struct nyamp_kws_load_s loaded;
+  struct nyamp_kws_push_s push = {
+    .buffer = {
+      .magic = NYAMP_BUFFER_MAGIC,
+      .version = NYAMP_BUFFER_VERSION,
+      .flags = NYAMP_BUFFER_IN_SHMEM,
+      .offset = 0x120000,
+      .length = 6400,
+      .capacity = 6400,
+      .format = NYAMP_FORMAT_F32,
+      .lease = 0x0000000980000001ULL,
+      .generation = 9,
+    },
+    .sequence = 41,
+    .flags = NYAMP_KWS_PUSH_DISCONTINUITY,
+    .stream_sample = 0x100000001ULL,
+  };
+  struct nyamp_kws_push_s pushed;
+  struct nyamp_kws_detected_s detected = {
+    .sequence = 3,
+    .keyword_id = 0,
+    .flags = NYAMP_KWS_DETECTED_HAS_OFFSETS,
+    .score = -1.0f,
+    .label_length = 14,
+    .start_sample = 160000,
+    .end_sample = 184320,
+    .trigger_sample = 190720,
+    .label = "nihao_openvela",
+  };
+  struct nyamp_kws_detected_s seen;
+  uint64_t next = 0;
+
+  CHECK(nyamp_kws_load_encode(payload, sizeof(payload), &size, &load) ==
+        NYAMP_OK);
+  CHECK(size == NYAMP_KWS_LOAD_HEADER_SIZE + 15);
+  CHECK(nyamp_kws_load_decode(&loaded, payload, size) == NYAMP_OK);
+  CHECK(loaded.threshold == 0.1f && loaded.score == 2.0f &&
+        loaded.max_active_paths == 16 && loaded.num_trailing_blanks == 1);
+  CHECK(loaded.directory_length == 3 &&
+        memcmp(loaded.directory, "kws", 3) == 0);
+  CHECK(loaded.keywords_length == 12 &&
+        memcmp(loaded.keywords, "keywords.txt", 12) == 0);
+  CHECK(nyamp_kws_load_decode(&loaded, payload, size - 1) == NYAMP_EMSGSIZE);
+  CHECK(nyamp_kws_load_decode(&loaded, payload, size + 1) == NYAMP_EMSGSIZE);
+
+  /* The keywords name is optional; the directory is not. */
+  load.keywords_length = 0;
+  load.keywords = NULL;
+  CHECK(nyamp_kws_load_encode(payload, sizeof(payload), &size, &load) ==
+        NYAMP_OK);
+  CHECK(nyamp_kws_load_decode(&loaded, payload, size) == NYAMP_OK);
+  CHECK(loaded.keywords_length == 0);
+  load.directory_length = 0;
+  CHECK(nyamp_kws_load_encode(payload, sizeof(payload), &size, &load) ==
+        NYAMP_EINVAL);
+  load.directory_length = 3;
+  load.threshold = -0.5f;
+  CHECK(nyamp_kws_load_encode(payload, sizeof(payload), &size, &load) ==
+        NYAMP_EINVAL);
+  load.threshold = 0.0f;
+  load.directory_length = NYAMP_INLINE_MAX;
+  CHECK(nyamp_kws_load_encode(payload, sizeof(payload), &size, &load) ==
+        NYAMP_EMSGSIZE);
+
+  /* BEGIN is the ASR layout under another name. */
+  {
+    uint32_t sample_rate = 0, window = 0;
+    uint16_t channels = 0, flags = 0;
+
+    CHECK(nyamp_kws_begin_encode(payload, sizeof(payload), &size, 16000, 1,
+                                 NYAMP_AUDIO_BEGIN_S16, 1600) == NYAMP_OK);
+    CHECK(size == NYAMP_KWS_BEGIN_SIZE);
+    CHECK(nyamp_kws_begin_decode(&sample_rate, &channels, &flags, &window,
+                                 payload, size) == NYAMP_OK);
+    CHECK(sample_rate == 16000 && channels == 1 && window == 1600 &&
+          flags == NYAMP_AUDIO_BEGIN_S16);
+  }
+
+  CHECK(nyamp_kws_push_encode(payload, sizeof(payload), &size, &push) ==
+        NYAMP_OK);
+  CHECK(size == NYAMP_KWS_PUSH_SIZE);
+  CHECK(nyamp_kws_push_decode(&pushed, payload, size) == NYAMP_OK);
+  CHECK(pushed.sequence == 41 &&
+        pushed.flags == NYAMP_KWS_PUSH_DISCONTINUITY &&
+        pushed.stream_sample == 0x100000001ULL);
+  CHECK(pushed.buffer.offset == 0x120000 && pushed.buffer.length == 6400 &&
+        pushed.buffer.lease == 0x0000000980000001ULL &&
+        pushed.buffer.generation == 9);
+  CHECK(nyamp_kws_push_decode(&pushed, payload, size - 1) == NYAMP_EMSGSIZE);
+  CHECK(nyamp_kws_push_decode(&pushed, payload, size + 1) == NYAMP_EPROTO);
+  payload[NYAMP_BUFFER_SIZE + 4] = 0x02;
+  CHECK(nyamp_kws_push_decode(&pushed, payload, size) == NYAMP_EPROTO);
+  payload[NYAMP_BUFFER_SIZE + 4] = 0;
+  payload[NYAMP_BUFFER_SIZE + 6] = 1;
+  CHECK(nyamp_kws_push_decode(&pushed, payload, size) == NYAMP_EPROTO);
+  push.flags = 0x8000;
+  CHECK(nyamp_kws_push_encode(payload, sizeof(payload), &size, &push) ==
+        NYAMP_EINVAL);
+
+  CHECK(nyamp_kws_push_ack_encode(payload, sizeof(payload), &size,
+                                  0x100001901ULL) == NYAMP_OK);
+  CHECK(size == NYAMP_KWS_PUSH_ACK_SIZE);
+  CHECK(nyamp_kws_push_ack_decode(&next, payload, size) == NYAMP_OK);
+  CHECK(next == 0x100001901ULL);
+  CHECK(nyamp_kws_push_ack_decode(&next, payload, size + 1) == NYAMP_EPROTO);
+
+  CHECK(nyamp_kws_detected_encode(payload, sizeof(payload), &size,
+                                  &detected) == NYAMP_OK);
+  CHECK(size == NYAMP_KWS_DETECTED_HEADER_SIZE + 14);
+  CHECK(nyamp_kws_detected_decode(&seen, payload, size) == NYAMP_OK);
+  CHECK(seen.sequence == 3 && seen.keyword_id == 0 &&
+        seen.flags == NYAMP_KWS_DETECTED_HAS_OFFSETS && seen.score == -1.0f);
+  CHECK(seen.start_sample == 160000 && seen.end_sample == 184320 &&
+        seen.trigger_sample == 190720);
+  CHECK(seen.label_length == 14 &&
+        memcmp(seen.label, "nihao_openvela", 14) == 0);
+  CHECK(nyamp_kws_detected_decode(&seen, payload, size - 1) ==
+        NYAMP_EMSGSIZE);
+
+  /* Offsets that run backwards cannot have come from a decoder. */
+  detected.start_sample = detected.end_sample + 1;
+  CHECK(nyamp_kws_detected_encode(payload, sizeof(payload), &size,
+                                  &detected) == NYAMP_EINVAL);
+  detected.flags = 0;
+  CHECK(nyamp_kws_detected_encode(payload, sizeof(payload), &size,
+                                  &detected) == NYAMP_OK);
+  detected.flags = 0x4;
+  CHECK(nyamp_kws_detected_encode(payload, sizeof(payload), &size,
+                                  &detected) == NYAMP_EINVAL);
+  detected.flags = 0;
+  detected.label_length = NYAMP_KWS_MAX_LABEL + 1;
+  CHECK(nyamp_kws_detected_encode(payload, sizeof(payload), &size,
+                                  &detected) == NYAMP_EMSGSIZE);
+
+  /* The service ids the control domain is built against. */
+  CHECK(NYAMP_SERVICE_KWS == 10 && NYAMP_SERVICE_SPEAKER == 11);
+  return 0;
+}
+
+static int test_kws_labels(void)
+{
+  uint8_t body[64];
+  size_t size = 0;
+  size_t position = 0;
+  uint16_t count = 0;
+  uint16_t length = 0;
+  const char *label = NULL;
+
+  CHECK(nyamp_kws_labels_begin(body, sizeof(body), &size) == NYAMP_OK);
+  CHECK(size == NYAMP_KWS_LABELS_HEADER_SIZE);
+  CHECK(nyamp_kws_labels_decode(&count, body, size) == NYAMP_OK);
+  CHECK(count == 0);
+
+  CHECK(nyamp_kws_labels_append(body, sizeof(body), &size, "nihao_openvela",
+                                14) == NYAMP_OK);
+  CHECK(nyamp_kws_labels_append(body, sizeof(body), &size, "hello_openvela",
+                                14) == NYAMP_OK);
+  CHECK(size == NYAMP_KWS_LABELS_HEADER_SIZE + 2 * 16);
+  CHECK(nyamp_kws_labels_decode(&count, body, size) == NYAMP_OK);
+  CHECK(count == 2);
+
+  CHECK(nyamp_kws_labels_next(&label, &length, &position, body, size) ==
+        NYAMP_OK);
+  CHECK(length == 14 && memcmp(label, "nihao_openvela", 14) == 0);
+  CHECK(nyamp_kws_labels_next(&label, &length, &position, body, size) ==
+        NYAMP_OK);
+  CHECK(length == 14 && memcmp(label, "hello_openvela", 14) == 0);
+  CHECK(position == size);
+  CHECK(nyamp_kws_labels_next(&label, &length, &position, body, size) ==
+        NYAMP_EPROTO);
+
+  /* A label that does not fit is reported, and the body stays valid. */
+  CHECK(nyamp_kws_labels_append(body, sizeof(body), &size,
+                                "a_label_that_is_far_too_long_for_it", 35) ==
+        NYAMP_EMSGSIZE);
+  CHECK(nyamp_kws_labels_decode(&count, body, size) == NYAMP_OK);
+  CHECK(count == 2);
+
+  /* Truncated, padded, and a count that promises more than there is. */
+  CHECK(nyamp_kws_labels_decode(&count, body, size - 1) == NYAMP_EPROTO);
+  CHECK(nyamp_kws_labels_decode(&count, body, size + 1) == NYAMP_EPROTO);
+  body[0] = 3;
+  CHECK(nyamp_kws_labels_decode(&count, body, size) == NYAMP_EPROTO);
+  body[0] = 2;
+  body[2] = 1;
+  CHECK(nyamp_kws_labels_decode(&count, body, size) == NYAMP_EPROTO);
+  CHECK(nyamp_kws_labels_append(body, sizeof(body), &size, "", 0) ==
+        NYAMP_EINVAL);
+  return 0;
+}
+
 int main(void)
 {
   if (test_round_trip() != 0 || test_rejections() != 0 ||
@@ -1107,7 +1463,9 @@ int main(void)
       test_blob_open() != 0 || test_blob_read_close() != 0 ||
       test_blob_list() != 0 || test_blob_bench_and_reports() != 0 ||
       test_blob_request_header() != 0 || test_llm_chat_chunks() != 0 ||
-      test_llm_chat_result_and_finish() != 0)
+      test_llm_chat_result_and_finish() != 0 ||
+      test_asr_attach_and_end() != 0 || test_tts_text_chunks() != 0 ||
+      test_kws_messages() != 0 || test_kws_labels() != 0)
     {
       return 1;
     }

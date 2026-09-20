@@ -86,10 +86,12 @@ struct nyamp_arena_s
 /* Slot table.  Offsets are absolute within the arena and 64 KiB aligned so a
  * slot never shares a page with another service.
  *
- * BUF_SHARED is used by ASR input windows and by TTS output alternately.  The
- * two never run at once -- a turn is speech in or speech out, not both -- and
- * the lease in each grant names which service currently owns the slot, so
- * reuse needs no extra bookkeeping.
+ * BUF_SHARED carries the two bulk transfers that never overlap: model pulls
+ * (BLOB windows, control -> compute) and synthesized speech (TTS windows,
+ * compute -> control).  The compute domain lets one of them own the slot at
+ * a time -- a synthesis that finds a pull in flight, or the reverse, is
+ * answered BUSY -- and the lease in each grant names the owner, so reuse
+ * needs no extra bookkeeping on the control side.
  */
 
 #define NYAMP_SLOT_HEADER       0x00000000U
@@ -100,6 +102,23 @@ struct nyamp_arena_s
 
 #define NYAMP_SLOT_PHONEME      0x00101000U
 #define NYAMP_SLOT_PHONEME_SIZE 0x00010000U /* 64 KiB */
+
+/* Capture audio, control domain -> compute domain (KWS stream, ASR windows).
+ *
+ * It has a slot of its own instead of alternating over BUF_SHARED because
+ * the wake word stream never stops: BUF_SHARED is also the window every
+ * model pull goes through, and one synthesized sentence fills all of it, so
+ * sharing would make the listener deaf for the length of every pull.  The
+ * arena had 2.9 MiB unassigned, so the split costs nothing, and the control
+ * domain needs no change to follow it: it writes where the grant says.
+ *
+ * One stream owns the slot at a time and the grant covers all of it; the
+ * producer picks its windows inside the grant (one, or two used in turn).
+ * 256 KiB is four one-second float32 windows.
+ */
+
+#define NYAMP_SLOT_CAPTURE      0x00120000U
+#define NYAMP_SLOT_CAPTURE_SIZE 0x00040000U /* 256 KiB */
 
 /* ASR input window: one second of 16 kHz float32 mono.  The control domain
  * fills a window, submits it and releases it before writing the next, so the
