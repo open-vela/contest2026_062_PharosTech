@@ -34,6 +34,15 @@
 #define NY_ALARM_DAY_MS   86400000LL
 #define NY_ALARM_GRACE_MS 300000ULL
 
+/* How long an alarm rings before it gives up and marks itself missed.
+ * Ringing is durable state that survives a reboot, and a one-shot alarm
+ * switches itself off the moment it fires: without this an alarm nobody
+ * dismissed kept the chime and the caption on the eyes for good, and the
+ * panel showed the row as "off", so there was nothing obvious to press.
+ */
+
+#define NY_ALARM_RING_MS 600000ULL
+
 /* An occurrence is never scheduled more than a week ahead, so a next_at
  * within this distance of a reading of the clock was worked out from that
  * reading.
@@ -486,8 +495,22 @@ int ny_product_alarms_tick(void)
         cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(row, "enabled"));
     bool snoozed = !strcmp(ny_alarm_text(row, "status"), "snoozed");
     uint64_t due = (uint64_t)ny_alarm_number(row, "next_at");
-    if ((!enabled && !snoozed) ||
-        !strcmp(ny_alarm_text(row, "status"), "ringing"))
+    if (!strcmp(ny_alarm_text(row, "status"), "ringing"))
+      {
+        /* An alarm rings for a while, not for ever.  Nobody came. */
+
+        uint64_t since = (uint64_t)ny_alarm_number(row, "last_fired_at");
+        if (since && now > since && now - since >= NY_ALARM_RING_MS &&
+            !ny_alarm_status(row, "missed"))
+          {
+            ret = -ENOMEM;
+            goto out;
+          }
+
+        continue;
+      }
+
+    if (!enabled && !snoozed)
       continue;
     if (ny_alarm_stale(due, moved, before, now))
       {
