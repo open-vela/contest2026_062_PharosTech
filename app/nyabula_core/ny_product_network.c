@@ -14,7 +14,10 @@
  *   network.status            any role, current state + interfaces + QR text
  *   network.provision.start   {ssid?, psk?, channel?} -> start SoftAP
  *   network.provision.stop    tear down SoftAP, back to IDLE
- *   network.wifi.scan         STA scan (list of {ssid, rssi, freq, encode})
+ *   network.wifi.scan         STA scan (list of {ssid, rssi, freq, encode});
+ *                             {"background": true} starts it and answers at
+ *                             once, because the scan itself can drop the link
+ *   network.wifi.scan.result  {scanning, seq, error, ageSeconds, networks}
  *   network.name.set          {"name": "..."}; "" goes back to the default
  *   network.wifi.set          {ssid, psk} -> persist + connect as station
  *   network.wifi.forget       clear stored credentials
@@ -42,6 +45,7 @@
 #include <limits.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -615,6 +619,98 @@ static cJSON *ny_net_hw_scan(int *error)
   return list;
 }
 
+/* A scan that outlives the connection it was asked over.
+ *
+ * The radio has one receiver.  While it listens on the other channels the
+ * access point is silent on its own, the phone that asked for the scan
+ * loses the beacons and drops the link, and the answer -- which the panel
+ * used to wait for on that very link -- has nowhere to go.  So the scan runs
+ * on a thread of its own and its result is kept: the panel starts it, is
+ * told at once that it is running, and collects the list when its link is
+ * back.  `seq` tells a new list from the one it already has.
+ */
+
+static mutex_t g_scan_lock = NXMUTEX_INITIALIZER;
+static cJSON *g_scan_list; /* The last list, owned here. */
+static int g_scan_error;
+static uint32_t g_scan_seq; /* Completed scans. */
+static time_t g_scan_at;
+static bool g_scan_running;
+
+static void ny_net_scan_keep(cJSON *list, int error)
+{
+  nxmutex_lock(&g_scan_lock);
+  cJSON_Delete(g_scan_list);
+  g_scan_list = list;
+  g_scan_error = error;
+  g_scan_at = time(NULL);
+  g_scan_seq++;
+  g_scan_running = false;
+  nxmutex_unlock(&g_scan_lock);
+}
+
+static void *ny_net_scan_thread(void *arg)
+{
+  int error = 0;
+  cJSON *list;
+
+  (void)arg;
+  list = ny_net_hw_scan(&error);
+  ny_net_scan_keep(list, list == NULL ? -ENOMEM : error);
+  return NULL;
+}
+
+static int ny_net_scan_start(void)
+{
+  pthread_attr_t attr;
+  pthread_t thread;
+  int ret = 0;
+
+  nxmutex_lock(&g_scan_lock);
+  if (!g_scan_running)
+    {
+      pthread_attr_init(&attr);
+      pthread_attr_setstacksize(&attr, 16384);
+      pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+      ret = -pthread_create(&thread, &attr, ny_net_scan_thread, NULL);
+      pthread_attr_destroy(&attr);
+      g_scan_running = ret == 0;
+    }
+
+  nxmutex_unlock(&g_scan_lock);
+  return ret;
+}
+
+static cJSON *ny_net_scan_json(void)
+{
+  cJSON *root = cJSON_CreateObject();
+  cJSON *list;
+
+  if (root == NULL)
+    return NULL;
+  nxmutex_lock(&g_scan_lock);
+  list = g_scan_list != NULL ? cJSON_Duplicate(g_scan_list, true)
+                             : cJSON_CreateArray();
+  if (list == NULL || !cJSON_AddItemToObject(root, "networks", list))
+    {
+      cJSON_Delete(list);
+      cJSON_Delete(root);
+      root = NULL;
+    }
+  else
+    {
+      cJSON_AddBoolToObject(root, "scanning", g_scan_running);
+      cJSON_AddNumberToObject(root, "seq", g_scan_seq);
+      cJSON_AddNumberToObject(root, "error", g_scan_error);
+      cJSON_AddNumberToObject(
+          root, "ageSeconds",
+          g_scan_seq == 0 ? -1 : (double)(time(NULL) - g_scan_at));
+    }
+
+  nxmutex_unlock(&g_scan_lock);
+  return root;
+}
+
 /* The signal level costs a firmware query, so it is read from the product
  * worker every few seconds and handed out from here.  Panels ask for it on
  * every page, from their own threads, and must not queue up behind the
@@ -895,21 +991,46 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
           ret = *result ? 0 : -ENOMEM;
         }
     }
+  else if (strcmp(topic, "network.wifi.scan.result") == 0)
+    {
+      nxmutex_unlock(&g_net_lock);
+      *result = ny_net_scan_json();
+      return *result ? 0 : -ENOMEM;
+    }
   else if (strcmp(topic, "network.wifi.scan") == 0)
     {
-      /* Scanning blocks up to ~6 s; release the lock while it runs. */
-
       nxmutex_unlock(&g_net_lock);
+      if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "background")))
+        {
+          /* Start it and answer at once; the list is collected with
+           * network.wifi.scan.result, over whatever link there is by then.
+           */
+
+          ret = ny_net_scan_start();
+          if (ret < 0)
+            return ret;
+          *result = ny_net_scan_json();
+          return *result ? 0 : -ENOMEM;
+        }
+
+      /* Without the flag the caller waits, up to ~6 s, as it always did;
+       * the list is kept all the same.
+       */
+
       int error;
       cJSON *list = ny_net_hw_scan(&error);
       if (list == NULL)
         return -ENOMEM;
       cJSON *root = cJSON_CreateObject();
+      cJSON *kept = cJSON_Duplicate(list, true);
       if (root == NULL)
         {
           cJSON_Delete(list);
+          cJSON_Delete(kept);
           return -ENOMEM;
         }
+      if (kept != NULL)
+        ny_net_scan_keep(kept, error);
       cJSON_AddItemToObject(root, "networks", list);
       cJSON_AddNumberToObject(root, "error", error);
       *result = root;
