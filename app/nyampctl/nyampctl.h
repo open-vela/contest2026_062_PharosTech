@@ -46,6 +46,13 @@ int nyampctl_llm_unload(int fd);
 int nyampctl_llm_generate(int fd, const char *source, uint32_t max_new_tokens,
                           bool inline_ids);
 
+/* One chat completion: `path` holds an OpenAI chat-completions request
+ * ({"messages":[...],"tools":[...]}).  Prints the chat.completion response
+ * and the token counts and timings.  max_new_tokens 0 selects the daemon's
+ * default.
+ */
+int nyampctl_llm_chat(int fd, const char *path, uint32_t max_new_tokens);
+
 /* Ask the compute domain to measure the link: `rounds` message round trips,
  * then pattern fills of a `window_bytes` window of the shared arena (0 = the
  * whole granted slot).  These are the numbers the blob window size has to be

@@ -128,3 +128,42 @@ pstore/下次 `nyampctl info`；`pattern_errors!=0` 见上一节。若 `pread` �
 - `linked` 在 nyampd 同步加载绝对路径模型、主循环阻塞期间可能短暂为 false（20 s 超时）。
 - 每个端点同时只服务一个需要现算摘要的 OPEN；blob 槽 4 个、port 4 个。
 - FAT 无符号链接；`lstat` 逐级拒绝符号链接的分支在板上走不到，属防御性代码。
+
+## 本地 LLM 文本级调用（CHAT，2026-09-20）
+
+置信：**编译通过 + 主机单测/端到端通过，未上板**。
+
+- 协议：`NYAMP_LLM_CHAT`（见 `tools/amp/protocol/README.md`「LLM CHAT」）。
+- Linux：`tools/amp/nyampd/nyampd_chat.*` + `nyampd_llm.*`；链接 `tools/amp/chat`。
+- openvela：`ny_compute_chat()` / `ny_compute_chat_cancel()` / `ny_compute_llm_load()` /
+  `ny_compute_llm_unload()`（`app/nyabula_core/ny_compute.h`）。chat 发现未加载模型时先加载
+  `CONFIG_NYABULA_CORE_COMPUTE_LLM`（默认 `llm/model.rkllm`）。超长返回 `-E2BIG` 且 stats 里有
+  `prompt_tokens`/`context_limit`。话题 `compute.llm.load`（异步，随后轮询 `compute.status`）/
+  `compute.llm.unload`；`compute.status` 增加
+  `llm:{state, model, promptTokens, completionTokens, prefillMs, tokensPerSec, lastError}`。
+- 诊断：`nyampctl llm chat <request.json> [max_new_tokens]`。
+
+### 上板步骤
+
+前置：`/data/models/llm/model.rkllm` 与 **`/data/models/llm/tokenizer.json`**
+（sha256 `3e065a55…1fed81`，见 `tools/amp/chat/README.md`）都已上传；新 nyampd 带 RKLLM 后端。
+
+```text
+nsh> nyampctl health                      # capabilities=0x0000000f（bit3=chat）
+nsh> echo '{"messages":[{"role":"user","content":"你好，你是谁？"}]}' > /tmp/plain.json
+nsh> nyampctl llm chat /tmp/plain.json 128
+  首次：status 先经历 provisioning→loading（另一会话 nyampctl status 可见），随后打印
+  chat.completion JSON 与 status=0 prompt_tokens=… completion_tokens=… prefill_ms=… decode_ms=… tokens/s
+nsh> nyampctl info                        # model=/tmp/models/llm/model.rkllm last_load=0 chat=ready
+nsh> nyampctl llm chat /data/weather.json 128   # 带 tools 的请求：finish_reason=tool_calls，
+                                                # arguments 是 JSON 字符串（如 {"city":"Dalian"}）
+nsh> nyampctl llm chat /data/long.json 1900     # 期望 status=-7（经 Core 服务，即 -E2BIG；独立模式显示线上状态 -11）prompt_tokens=… context=2048
+```
+
+缺 tokenizer 时 `llm load`/`llm chat` 返回 -ENOENT，`nyampctl info` 显示
+`chat=tokenizer.json missing`，且不会先搬 875 MB。要记的数：首次 chat 总耗时（拉取+加载+推理）、
+prefill_ms、tokens/s、A72 上 tokenizer 加载耗时。
+
+未验证：RKLLM 回调是否把 stop token 本身也回调出来（两种情况都已处理）；RKLLM 在
+`max_new_tokens` 处自停时 `finish_reason=length` 的判定；突发 RESULT 帧下 rpmsg 发送环与
+openvela port 队列（深度 64）的余量；`compute.llm.load` 异步加载线程。

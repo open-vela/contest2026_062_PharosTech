@@ -20,7 +20,8 @@
 /****************************************************************************
  * The control-domain end of the AMP compute link.
  *
- * Three jobs share one receive task because they share one receive queue:
+ * Four jobs live here; the first three share one receive task because they
+ * share one receive queue:
  *
  *   1. Link state.  The compute domain announces a generation when its
  *      daemon starts (READY) and repeats it in every HEALTH response.  A new
@@ -37,6 +38,12 @@
  *      from the file.  The compute domain stays the only allocator of the
  *      arena -- this side never chooses an offset, it only refuses ones that
  *      would touch the arena header or leave the arena.
+ *
+ *   4. The local model.  ny_compute_chat() is the text-level LLM call: an
+ *      OpenAI chat-completions request goes out in chunks, the response comes
+ *      back in chunks, and everything model specific (chat template,
+ *      tokenizer, tool-call parsing) stays on the compute domain.  It is an
+ *      ordinary port client; nothing about it runs on the receive task.
  *
  * The receive task must never block for long: while it is blocked no local
  * requester gets its response.  Hashing a large file on OPEN (875 MB at about
@@ -123,9 +130,31 @@
  * CLOSE and the diagnostic running beside a model load.
  */
 
-#define NY_COMPUTE_MAX_BLOBS   4
-#define NY_COMPUTE_MAX_PORTS   4
-#define NY_COMPUTE_PORT_DEPTH  16
+#define NY_COMPUTE_MAX_BLOBS 4
+#define NY_COMPUTE_MAX_PORTS 4
+
+/* A chat result arrives as one burst of frames (an 8 KiB answer is nineteen)
+ * and the receive task may fill the queue faster than an equal-priority
+ * requester drains it, so the queue has to hold a whole burst.
+ */
+
+#define NY_COMPUTE_PORT_DEPTH 64
+
+/* LLM timing.  A cold load pulls 875 MB and may hash it first; a chat is
+ * bounded by the context window at the model's decode rate; an
+ * acknowledgement is one round trip.
+ */
+
+#define NY_COMPUTE_LLM_LOAD_MS   900000
+#define NY_COMPUTE_LLM_CHAT_MS   180000
+#define NY_COMPUTE_LLM_ACK_MS    10000
+#define NY_COMPUTE_LLM_CANCEL_MS 5000
+#define NY_COMPUTE_LLM_POLL_MS   200
+#define NY_COMPUTE_LOADER_STACK  8192
+
+#ifndef CONFIG_NYABULA_CORE_COMPUTE_LLM
+#define CONFIG_NYABULA_CORE_COMPUTE_LLM "llm/model.rkllm"
+#endif
 
 #define NY_COMPUTE_HASH_CHUNK  65536
 #define NY_COMPUTE_BENCH_BLOCK 4096
@@ -188,10 +217,34 @@ struct ny_compute_port_s
   struct ny_compute_frame_s queue[NY_COMPUTE_PORT_DEPTH];
 };
 
+/* The local model, as far as this domain can know it. */
+
+struct ny_compute_llm_s
+{
+  enum ny_compute_llm_state_e state;
+  char model[NY_COMPUTE_NAME_MAX + 1];
+  struct ny_compute_chat_stats_s last;
+  uint32_t tokens_per_sec_x10;
+  int last_error;
+  char last_error_text[NY_COMPUTE_ERROR_MAX];
+
+  bool chatting; /* A ny_compute_chat() is between send and finish. */
+  bool cancel;   /* ... and has been asked to stop.                 */
+
+  /* A load requested by a panel topic, carried out by the receive task's
+   * loader thread.
+   */
+
+  bool load_pending;
+  bool loader_live;
+  char requested[NY_COMPUTE_NAME_MAX + 1];
+};
+
 struct ny_compute_s
 {
-  mutex_t lock;   /* Everything below except the write path. */
-  mutex_t txlock; /* One frame at a time on the task's descriptor. */
+  mutex_t lock;     /* Everything below except the write path. */
+  mutex_t txlock;   /* One frame at a time on the task's descriptor. */
+  mutex_t llm_lock; /* One model operation (load, unload, chat) at a time. */
 
   bool running;
   bool stopping;
@@ -212,6 +265,7 @@ struct ny_compute_s
   bool hash_thread_live;
 
   struct ny_compute_port_s *ports[NY_COMPUTE_MAX_PORTS];
+  struct ny_compute_llm_s llm;
 
   /* What the panel shows. */
 
@@ -277,6 +331,26 @@ static void ny_compute_frame(const uint8_t *wire, size_t size);
 static void ny_compute_probe(void);
 static void ny_compute_link_lost(void);
 static void *ny_compute_hash_worker(void *arg);
+static void ny_compute_llm_set(enum ny_compute_llm_state_e state, int error,
+                               const char *text);
+static uint32_t ny_compute_current_generation(void);
+static int ny_compute_status_errno(int32_t status);
+static int ny_compute_llm_call(struct ny_compute_port_s *port, uint16_t opcode,
+                               uint64_t request_id, const uint8_t *body,
+                               size_t body_size, int timeout_ms,
+                               int32_t *status);
+static int ny_compute_llm_load_locked(struct ny_compute_port_s *port,
+                                      const char *name, int timeout_ms);
+static void *ny_compute_llm_loader(void *arg);
+static void ny_compute_llm_poll(void);
+static int ny_compute_chat_send(struct ny_compute_port_s *port,
+                                uint64_t request_id, const char *request,
+                                size_t total, uint32_t max_new_tokens,
+                                uint32_t flags, int32_t *status);
+static int ny_compute_chat_collect(struct ny_compute_port_s *port,
+                                   uint64_t request_id, int timeout_ms,
+                                   char **response,
+                                   struct nyamp_llm_chat_finish_s *finish);
 static int ny_compute_task(int argc, char **argv);
 
 /****************************************************************************
@@ -286,6 +360,7 @@ static int ny_compute_task(int argc, char **argv);
 static struct ny_compute_s g_compute = {
   .lock = NXMUTEX_INITIALIZER,
   .txlock = NXMUTEX_INITIALIZER,
+  .llm_lock = NXMUTEX_INITIALIZER,
   .fd = -1,
 };
 
@@ -476,6 +551,16 @@ static void ny_compute_set_generation(uint32_t generation)
   ny_compute_drop_blobs();
   g_compute.generation = generation;
   g_compute.capabilities = 0;
+
+  /* The model lived in the daemon that is gone.  A load in progress keeps
+   * its state: it will fail by itself and report why.
+   */
+
+  if (g_compute.llm.state == NY_COMPUTE_LLM_READY ||
+      g_compute.llm.state == NY_COMPUTE_LLM_BUSY)
+    {
+      g_compute.llm.state = NY_COMPUTE_LLM_UNLOADED;
+    }
 }
 
 static struct ny_compute_blob_s *ny_compute_blob_find(uint32_t id)
@@ -1691,6 +1776,523 @@ static void *ny_compute_hash_worker(void *arg)
 }
 
 /****************************************************************************
+ * Name: ny_compute_llm_set
+ *
+ * Description:
+ *   Record the model's state for compute.status.  An error keeps its text
+ *   until the next success, because "error" with no reason is useless on a
+ *   panel and the compute domain has no console to look at instead.
+ *
+ ****************************************************************************/
+
+static void ny_compute_llm_set(enum ny_compute_llm_state_e state, int error,
+                               const char *text)
+{
+  nxmutex_lock(&g_compute.lock);
+  g_compute.llm.state = state;
+  if (error != 0 || state == NY_COMPUTE_LLM_READY)
+    {
+      g_compute.llm.last_error = error;
+      strlcpy(g_compute.llm.last_error_text, text,
+              sizeof(g_compute.llm.last_error_text));
+    }
+
+  nxmutex_unlock(&g_compute.lock);
+}
+
+static uint32_t ny_compute_current_generation(void)
+{
+  uint32_t generation;
+
+  nxmutex_lock(&g_compute.lock);
+  generation = g_compute.generation;
+  nxmutex_unlock(&g_compute.lock);
+  return generation;
+}
+
+/****************************************************************************
+ * Name: ny_compute_status_errno
+ *
+ * Description:
+ *   A compute-domain status as the errno this library's callers see.
+ *
+ ****************************************************************************/
+
+static int ny_compute_status_errno(int32_t status)
+{
+  switch (status)
+    {
+      case NYAMP_MODEL_OK:
+        return 0;
+
+      case NYAMP_MODEL_INVALID:
+        return -EINVAL;
+
+      case NYAMP_MODEL_NOT_READY:
+        return -ENOENT;
+
+      case NYAMP_MODEL_BUSY:
+        return -EBUSY;
+
+      case NYAMP_MODEL_STALE_GENERATION:
+        return -ECONNRESET;
+
+      case NYAMP_MODEL_CANCELLED:
+        return -ECANCELED;
+
+      case NYAMP_MODEL_DEADLINE:
+        return -ETIMEDOUT;
+
+      case NYAMP_MODEL_UNSUPPORTED:
+        return -ENOTSUP;
+
+      case NYAMP_MODEL_PROMPT_TOO_LONG:
+        return -E2BIG;
+
+      default:
+        return -EREMOTEIO;
+    }
+}
+
+/****************************************************************************
+ * Name: ny_compute_llm_call
+ *
+ * Description:
+ *   One LLM request and its response, through a port.  Events that arrive in
+ *   between -- the pull progress of a LOAD -- are skipped: what this side
+ *   shows of a pull it knows first hand, because it is serving it.  A new
+ *   generation while waiting means the daemon that would have answered is
+ *   gone, so the wait ends instead of running into its timeout.
+ *
+ ****************************************************************************/
+
+static int ny_compute_llm_call(struct ny_compute_port_s *port, uint16_t opcode,
+                               uint64_t request_id, const uint8_t *body,
+                               size_t body_size, int timeout_ms,
+                               int32_t *status)
+{
+  uint8_t wire[NYAMP_RPMSG_MTU];
+  struct nyamp_header_s header;
+  uint32_t generation = ny_compute_current_generation();
+  uint64_t deadline = ny_compute_now_ms() + (uint64_t)timeout_ms;
+  int ret;
+
+  memset(&header, 0, sizeof(header));
+  header.service = NYAMP_SERVICE_LLM;
+  header.opcode = opcode;
+  header.flags = NYAMP_FLAG_REQUEST;
+  header.request_id = request_id;
+  header.payload_size = (uint32_t)body_size;
+  if (body_size > NYAMP_INLINE_MAX ||
+      nyamp_header_encode(wire, sizeof(wire), &header) != NYAMP_OK)
+    {
+      return -EINVAL;
+    }
+
+  if (body_size != 0)
+    {
+      memcpy(wire + NYAMP_WIRE_HEADER_SIZE, body, body_size);
+    }
+
+  ret = ny_compute_port_send(port, wire, NYAMP_WIRE_HEADER_SIZE + body_size);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  while (ny_compute_now_ms() < deadline)
+    {
+      const uint8_t *data;
+      size_t data_size;
+      ssize_t size;
+
+      size = ny_compute_port_recv(port, wire, sizeof(wire),
+                                  NY_COMPUTE_LLM_POLL_MS);
+      if (size < 0)
+        {
+          return (int)size;
+        }
+
+      if (size == 0)
+        {
+          if (generation != 0 && ny_compute_current_generation() != generation)
+            {
+              return -ECONNRESET;
+            }
+
+          continue;
+        }
+
+      if (nyamp_header_decode(&header, wire, (size_t)size) != NYAMP_OK ||
+          (header.flags & NYAMP_FLAG_KIND_MASK) != NYAMP_FLAG_RESPONSE ||
+          header.service != NYAMP_SERVICE_LLM || header.opcode != opcode)
+        {
+          continue;
+        }
+
+      if (nyamp_status_decode(status, &data, &data_size,
+                              wire + NYAMP_WIRE_HEADER_SIZE,
+                              header.payload_size) != NYAMP_OK)
+        {
+          return -EPROTO;
+        }
+
+      return 0;
+    }
+
+  return -ETIMEDOUT;
+}
+
+/****************************************************************************
+ * Name: ny_compute_llm_load_locked
+ *
+ * Description:
+ *   LOAD with the operation lock already held, so a chat can load its model
+ *   without letting another operation slip in between the two.
+ *
+ ****************************************************************************/
+
+static int ny_compute_llm_load_locked(struct ny_compute_port_s *port,
+                                      const char *name, int timeout_ms)
+{
+  int32_t status = NYAMP_MODEL_BACKEND_ERROR;
+  size_t length;
+  int ret;
+
+  if (name == NULL || name[0] == '\0')
+    {
+      name = CONFIG_NYABULA_CORE_COMPUTE_LLM;
+    }
+
+  length = strlen(name);
+  if (length == 0 || length > NY_COMPUTE_NAME_MAX)
+    {
+      return -EINVAL;
+    }
+
+  nxmutex_lock(&g_compute.lock);
+  strlcpy(g_compute.llm.model, name, sizeof(g_compute.llm.model));
+  nxmutex_unlock(&g_compute.lock);
+  ny_compute_llm_set(NY_COMPUTE_LLM_LOADING, 0, "");
+
+  ret = ny_compute_llm_call(
+      port, NYAMP_LLM_LOAD, ny_compute_request_id(), (const uint8_t *)name,
+      length, timeout_ms > 0 ? timeout_ms : NY_COMPUTE_LLM_LOAD_MS, &status);
+  if (ret == 0)
+    {
+      ret = ny_compute_status_errno(status);
+    }
+
+  if (ret == 0)
+    {
+      ny_compute_llm_set(NY_COMPUTE_LLM_READY, 0, "");
+    }
+  else
+    {
+      ny_compute_llm_set(NY_COMPUTE_LLM_ERROR, ret,
+                         ret == -ENOENT
+                             ? "model or tokenizer.json not in /data/models"
+                         : ret == -EBUSY     ? "another model is loaded"
+                         : ret == -ETIMEDOUT ? "load timed out"
+                                             : "load failed");
+    }
+
+  return ret;
+}
+
+/****************************************************************************
+ * Name: ny_compute_llm_loader
+ *
+ * Description:
+ *   The load a panel topic asked for.  It runs in the receive task's group
+ *   -- that task outlives whichever request handler set it off -- and on its
+ *   own thread, because the receive task has to stay free to serve the very
+ *   blob reads the load is about to cause.
+ *
+ ****************************************************************************/
+
+static void *ny_compute_llm_loader(void *arg)
+{
+  char name[NY_COMPUTE_NAME_MAX + 1];
+  int ret;
+
+  (void)arg;
+  nxmutex_lock(&g_compute.lock);
+  strlcpy(name, g_compute.llm.requested, sizeof(name));
+  nxmutex_unlock(&g_compute.lock);
+
+  /* A load that got as far as the compute domain records its own outcome.
+   * One that did not -- a chat slipped in first, no port was free -- would
+   * leave the panel showing "loading" for ever.
+   */
+
+  ret = ny_compute_llm_load(name, 0);
+  if (ret == -EBUSY || ret == -ENOTCONN || ret == -ENOMEM)
+    {
+      ny_compute_llm_set(NY_COMPUTE_LLM_ERROR, ret,
+                         ret == -EBUSY ? "model busy, load not started"
+                                       : "no compute link for the load");
+    }
+
+  nxmutex_lock(&g_compute.lock);
+  g_compute.llm.loader_live = false;
+  nxmutex_unlock(&g_compute.lock);
+  return NULL;
+}
+
+/* Called by the receive task once per pass. */
+
+static void ny_compute_llm_poll(void)
+{
+  pthread_attr_t attr;
+  pthread_t thread;
+  bool start;
+
+  nxmutex_lock(&g_compute.lock);
+  start = g_compute.llm.load_pending && !g_compute.llm.loader_live;
+  if (start)
+    {
+      g_compute.llm.load_pending = false;
+      g_compute.llm.loader_live = true;
+    }
+
+  nxmutex_unlock(&g_compute.lock);
+  if (!start)
+    {
+      return;
+    }
+
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, NY_COMPUTE_LOADER_STACK);
+  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  if (pthread_create(&thread, &attr, ny_compute_llm_loader, NULL) != 0)
+    {
+      nxmutex_lock(&g_compute.lock);
+      g_compute.llm.loader_live = false;
+      nxmutex_unlock(&g_compute.lock);
+      ny_compute_llm_set(NY_COMPUTE_LLM_ERROR, -ENOMEM,
+                         "loader thread not started");
+    }
+
+  pthread_attr_destroy(&attr);
+}
+
+/****************************************************************************
+ * Name: ny_compute_chat_send
+ *
+ * Description:
+ *   Send the request body as ordered chunks, each acknowledged before the
+ *   next.  Returns 0 with the last status; a status other than OK ends the
+ *   body early and is the caller's to interpret.
+ *
+ ****************************************************************************/
+
+static int ny_compute_chat_send(struct ny_compute_port_s *port,
+                                uint64_t request_id, const char *request,
+                                size_t total, uint32_t max_new_tokens,
+                                uint32_t flags, int32_t *status)
+{
+  uint8_t body[NYAMP_INLINE_MAX];
+  struct nyamp_llm_chat_s chunk;
+  size_t body_size = 0;
+  int ret;
+
+  chunk.total = (uint32_t)total;
+  chunk.offset = 0;
+  chunk.max_new_tokens = max_new_tokens;
+  chunk.flags = flags;
+  while (chunk.offset < chunk.total)
+    {
+      chunk.length = chunk.total - chunk.offset;
+      if (chunk.length > NYAMP_LLM_CHAT_MAX_CHUNK)
+        {
+          chunk.length = NYAMP_LLM_CHAT_MAX_CHUNK;
+        }
+
+      if (nyamp_llm_chat_encode(body, sizeof(body), &body_size, &chunk,
+                                (const uint8_t *)request + chunk.offset) !=
+          NYAMP_OK)
+        {
+          return -EINVAL;
+        }
+
+      ret = ny_compute_llm_call(port, NYAMP_LLM_CHAT, request_id, body,
+                                body_size, NY_COMPUTE_LLM_ACK_MS, status);
+      if (ret < 0 || *status != NYAMP_MODEL_OK)
+        {
+          return ret;
+        }
+
+      chunk.offset += chunk.length;
+    }
+
+  return 0;
+}
+
+/****************************************************************************
+ * Name: ny_compute_chat_collect
+ *
+ * Description:
+ *   Wait for the terminal event of an accepted chat, putting the result
+ *   chunks back together on the way.  A cancel or an expired deadline is
+ *   forwarded once and the wait goes on: the run is over when the compute
+ *   domain says so, and only then is it safe to start the next one.
+ *
+ ****************************************************************************/
+
+static int ny_compute_chat_collect(struct ny_compute_port_s *port,
+                                   uint64_t request_id, int timeout_ms,
+                                   char **response,
+                                   struct nyamp_llm_chat_finish_s *finish)
+{
+  uint8_t wire[NYAMP_RPMSG_MTU];
+  uint32_t generation = ny_compute_current_generation();
+  uint64_t deadline = ny_compute_now_ms() + (uint64_t)timeout_ms;
+  bool cancel_sent = false;
+  bool timed_out = false;
+  char *buffer = NULL;
+  uint32_t received = 0;
+  uint32_t total = 0;
+  int ret = -ETIMEDOUT;
+
+  for (;;)
+    {
+      struct nyamp_header_s header;
+      const uint8_t *payload = wire + NYAMP_WIRE_HEADER_SIZE;
+      uint64_t now = ny_compute_now_ms();
+      bool cancel;
+      ssize_t size;
+
+      nxmutex_lock(&g_compute.lock);
+      cancel = g_compute.llm.cancel;
+      nxmutex_unlock(&g_compute.lock);
+
+      if (now >= deadline)
+        {
+          if (timed_out)
+            {
+              /* The cancel went unanswered too; nothing more to wait for. */
+
+              ret = -ETIMEDOUT;
+              break;
+            }
+
+          timed_out = true;
+          deadline = now + NY_COMPUTE_LLM_CANCEL_MS;
+        }
+
+      if ((cancel || timed_out) && !cancel_sent)
+        {
+          memset(&header, 0, sizeof(header));
+          header.service = NYAMP_SERVICE_LLM;
+          header.opcode = NYAMP_LLM_CANCEL;
+          header.flags = NYAMP_FLAG_REQUEST;
+          header.request_id = request_id;
+          if (nyamp_header_encode(wire, sizeof(wire), &header) == NYAMP_OK)
+            {
+              ny_compute_port_send(port, wire, NYAMP_WIRE_HEADER_SIZE);
+            }
+
+          cancel_sent = true;
+        }
+
+      size = ny_compute_port_recv(port, wire, sizeof(wire),
+                                  NY_COMPUTE_LLM_POLL_MS);
+      if (size < 0)
+        {
+          ret = (int)size;
+          break;
+        }
+
+      if (size == 0)
+        {
+          if (generation != 0 && ny_compute_current_generation() != generation)
+            {
+              ret = -ECONNRESET;
+              break;
+            }
+
+          continue;
+        }
+
+      /* Token events and the response to the cancel share the port with the
+       * frames that matter here and are simply passed over.
+       */
+
+      if (nyamp_header_decode(&header, wire, (size_t)size) != NYAMP_OK ||
+          header.flags != NYAMP_FLAG_EVENT ||
+          header.service != NYAMP_SERVICE_LLM)
+        {
+          continue;
+        }
+
+      if (header.opcode == NYAMP_LLM_EVENT_RESULT)
+        {
+          struct nyamp_llm_result_s chunk;
+          const uint8_t *bytes;
+
+          if (nyamp_llm_result_decode(&chunk, &bytes, payload,
+                                      header.payload_size) != NYAMP_OK ||
+              chunk.offset != received ||
+              (buffer != NULL && chunk.total != total))
+            {
+              ret = -EPROTO;
+              break;
+            }
+
+          if (buffer == NULL)
+            {
+              total = chunk.total;
+              buffer = malloc((size_t)total + 1);
+              if (buffer == NULL)
+                {
+                  ret = -ENOMEM;
+                  break;
+                }
+            }
+
+          memcpy(buffer + received, bytes, chunk.length);
+          received += chunk.length;
+          continue;
+        }
+
+      if (header.opcode != NYAMP_LLM_EVENT_FINISH)
+        {
+          continue;
+        }
+
+      if (nyamp_llm_chat_finish_decode(finish, payload, header.payload_size) !=
+          NYAMP_OK)
+        {
+          ret = -EPROTO;
+          break;
+        }
+
+      ret = timed_out && finish->status == NYAMP_MODEL_CANCELLED
+                ? -ETIMEDOUT
+                : ny_compute_status_errno(finish->status);
+      if (ret == 0 && (buffer == NULL || received != total))
+        {
+          ret = -EPROTO;
+        }
+
+      break;
+    }
+
+  if (ret == 0)
+    {
+      buffer[total] = '\0';
+      *response = buffer;
+    }
+  else
+    {
+      free(buffer);
+    }
+
+  return ret;
+}
+
+/****************************************************************************
  * Name: ny_compute_task
  *
  * Description:
@@ -1798,6 +2400,7 @@ static int ny_compute_task(int argc, char **argv)
       if (g_compute.fd >= 0)
         {
           ny_compute_probe();
+          ny_compute_llm_poll();
         }
     }
 
@@ -2002,6 +2605,23 @@ int ny_compute_status(struct ny_compute_status_s *status)
   status->blob_size = g_compute.active_size;
   status->blob_bytes_per_sec =
       status->blob_active ? g_compute.bytes_per_sec : 0;
+
+  /* The two halves of a load look the same from the caller's side; what
+   * tells them apart is whether this domain is serving blob reads right now.
+   */
+
+  status->llm_state = g_compute.llm.state;
+  if (status->llm_state == NY_COMPUTE_LLM_LOADING && status->blob_active)
+    {
+      status->llm_state = NY_COMPUTE_LLM_PROVISIONING;
+    }
+
+  strlcpy(status->llm_model, g_compute.llm.model, sizeof(status->llm_model));
+  status->llm_last = g_compute.llm.last;
+  status->llm_tokens_per_sec_x10 = g_compute.llm.tokens_per_sec_x10;
+  status->llm_last_error = g_compute.llm.last_error;
+  strlcpy(status->llm_last_error_text, g_compute.llm.last_error_text,
+          sizeof(status->llm_last_error_text));
 
   status->generation_changes = g_compute.generation_changes;
   status->dropped_frames = g_compute.dropped_frames;
@@ -2238,6 +2858,235 @@ ssize_t ny_compute_port_recv(struct ny_compute_port_s *port, uint8_t *wire,
   return size;
 }
 
+int ny_compute_llm_load(const char *name, int timeout_ms)
+{
+  struct ny_compute_port_s *port;
+  int ret;
+
+  /* One model operation at a time, and never a queue of them: a caller that
+   * finds the link busy wants to know now, not after someone else's
+   * three-minute load.
+   */
+
+  ret = nxmutex_trylock(&g_compute.llm_lock);
+  if (ret < 0)
+    {
+      return -EBUSY;
+    }
+
+  ret = ny_compute_port_open(&port);
+  if (ret == 0)
+    {
+      ret = ny_compute_llm_load_locked(port, name, timeout_ms);
+      ny_compute_port_close(port);
+    }
+
+  nxmutex_unlock(&g_compute.llm_lock);
+  return ret;
+}
+
+int ny_compute_llm_unload(void)
+{
+  struct ny_compute_port_s *port;
+  int32_t status = NYAMP_MODEL_BACKEND_ERROR;
+  int ret;
+
+  ret = nxmutex_trylock(&g_compute.llm_lock);
+  if (ret < 0)
+    {
+      return -EBUSY;
+    }
+
+  ret = ny_compute_port_open(&port);
+  if (ret == 0)
+    {
+      ret =
+          ny_compute_llm_call(port, NYAMP_LLM_UNLOAD, ny_compute_request_id(),
+                              NULL, 0, NY_COMPUTE_LLM_ACK_MS, &status);
+      ny_compute_port_close(port);
+
+      /* INVALID is the daemon's "there was no session to unload", which is
+       * the state that was asked for.
+       */
+
+      if (ret == 0 && status != NYAMP_MODEL_INVALID)
+        {
+          ret = ny_compute_status_errno(status);
+        }
+
+      if (ret == 0)
+        {
+          nxmutex_lock(&g_compute.lock);
+          g_compute.llm.state = NY_COMPUTE_LLM_UNLOADED;
+          g_compute.llm.model[0] = '\0';
+          nxmutex_unlock(&g_compute.lock);
+        }
+    }
+
+  nxmutex_unlock(&g_compute.llm_lock);
+  return ret;
+}
+
+int ny_compute_chat(const char *request_json, size_t max_new_tokens,
+                    unsigned int flags, char **response_json,
+                    struct ny_compute_chat_stats_s *stats, int timeout_ms)
+{
+  struct nyamp_llm_chat_finish_s finish;
+  struct ny_compute_port_s *port;
+  int32_t status = NYAMP_MODEL_BACKEND_ERROR;
+  uint64_t request_id = 0;
+  size_t total;
+  int attempt;
+  int ret;
+
+  if (request_json == NULL || response_json == NULL ||
+      (flags & ~NYAMP_LLM_CHAT_FLAGS_ALL) != 0 || max_new_tokens > UINT32_MAX)
+    {
+      return -EINVAL;
+    }
+
+  *response_json = NULL;
+  memset(&finish, 0, sizeof(finish));
+  if (stats != NULL)
+    {
+      memset(stats, 0, sizeof(*stats));
+    }
+
+  total = strlen(request_json);
+  if (total == 0)
+    {
+      return -EINVAL;
+    }
+
+  if (total > NY_COMPUTE_CHAT_MAX_REQUEST)
+    {
+      return -EMSGSIZE;
+    }
+
+  ret = nxmutex_trylock(&g_compute.llm_lock);
+  if (ret < 0)
+    {
+      return -EBUSY;
+    }
+
+  ret = ny_compute_port_open(&port);
+  if (ret < 0)
+    {
+      nxmutex_unlock(&g_compute.llm_lock);
+      return ret;
+    }
+
+  nxmutex_lock(&g_compute.lock);
+  g_compute.llm.cancel = false;
+  g_compute.llm.chatting = true;
+  nxmutex_unlock(&g_compute.lock);
+
+  /* The first pass finds out whether a model is loaded by asking for the
+   * chat: the compute domain is the only one that knows (another client may
+   * have loaded or dropped it).  NOT_READY is its invitation to load one.
+   */
+
+  for (attempt = 0; attempt < 2; attempt++)
+    {
+      request_id = ny_compute_request_id();
+      ret = ny_compute_chat_send(port, request_id, request_json, total,
+                                 (uint32_t)max_new_tokens, flags, &status);
+      if (ret < 0 || status != NYAMP_MODEL_NOT_READY || attempt != 0)
+        {
+          break;
+        }
+
+      ret = ny_compute_llm_load_locked(port, NULL, 0);
+      if (ret < 0)
+        {
+          break;
+        }
+    }
+
+  if (ret == 0 && status != NYAMP_MODEL_OK)
+    {
+      ret = ny_compute_status_errno(status);
+    }
+
+  if (ret == 0)
+    {
+      ny_compute_llm_set(NY_COMPUTE_LLM_BUSY, 0, "");
+      ret = ny_compute_chat_collect(port, request_id,
+                                    timeout_ms > 0 ? timeout_ms
+                                                   : NY_COMPUTE_LLM_CHAT_MS,
+                                    response_json, &finish);
+    }
+
+  ny_compute_port_close(port);
+
+  nxmutex_lock(&g_compute.lock);
+  g_compute.llm.chatting = false;
+  g_compute.llm.cancel = false;
+  if (ret == 0 || ret == -E2BIG || ret == -ECANCELED)
+    {
+      g_compute.llm.last.prompt_tokens = finish.prompt_tokens;
+      g_compute.llm.last.completion_tokens = finish.completion_tokens;
+      g_compute.llm.last.prefill_ms = finish.prefill_ms;
+      g_compute.llm.last.decode_ms = finish.decode_ms;
+      g_compute.llm.last.context_limit = finish.context_limit;
+      g_compute.llm.tokens_per_sec_x10 =
+          finish.decode_ms == 0
+              ? 0
+              : (uint32_t)((uint64_t)finish.completion_tokens * 10000 /
+                           finish.decode_ms);
+    }
+
+  nxmutex_unlock(&g_compute.lock);
+
+  if (stats != NULL)
+    {
+      stats->prompt_tokens = finish.prompt_tokens;
+      stats->completion_tokens = finish.completion_tokens;
+      stats->prefill_ms = finish.prefill_ms;
+      stats->decode_ms = finish.decode_ms;
+      stats->context_limit = finish.context_limit;
+    }
+
+  /* What the model is now.  A refusal of this one request -- too long,
+   * cancelled, malformed -- leaves a perfectly good model loaded.
+   */
+
+  if (ret == 0 || ret == -E2BIG || ret == -ECANCELED || ret == -EINVAL)
+    {
+      ny_compute_llm_set(NY_COMPUTE_LLM_READY, 0, "");
+    }
+  else if (ret == -ECONNRESET || ret == -ENOTCONN)
+    {
+      ny_compute_llm_set(NY_COMPUTE_LLM_UNLOADED, ret, "compute link lost");
+    }
+  else if (ret != -ENOENT && ret != -ETIMEDOUT)
+    {
+      ny_compute_llm_set(NY_COMPUTE_LLM_ERROR, ret, "chat failed");
+    }
+  else if (ret == -ETIMEDOUT)
+    {
+      ny_compute_llm_set(NY_COMPUTE_LLM_ERROR, ret, "chat timed out");
+    }
+
+  nxmutex_unlock(&g_compute.llm_lock);
+  return ret;
+}
+
+int ny_compute_chat_cancel(void)
+{
+  int ret = -ENOENT;
+
+  nxmutex_lock(&g_compute.lock);
+  if (g_compute.llm.chatting)
+    {
+      g_compute.llm.cancel = true;
+      ret = 0;
+    }
+
+  nxmutex_unlock(&g_compute.lock);
+  return ret;
+}
+
 /****************************************************************************
  * Name: ny_compute_request
  *
@@ -2248,8 +3097,15 @@ ssize_t ny_compute_port_recv(struct ny_compute_port_s *port, uint8_t *wire,
  *                              capabilityMask, blob:{active, hashing, name,
  *                              offset, size, bytesPerSec}, lastError,
  *                              generationChanges, droppedFrames}
+ *                              + llm:{state, model, promptTokens,
+ *                              completionTokens, tokensPerSec, lastError}
  *   compute.start   owner     start the receive task, then the status
  *   compute.stop    owner     stop it, then the status
+ *   compute.llm.load    owner  {"model": name}? -- starts a load and returns
+ *                              the status at once; the load itself takes
+ *                              minutes, so it is followed through
+ *                              compute.status rather than waited for
+ *   compute.llm.unload  owner  drop the model, then the status
  *
  ****************************************************************************/
 
@@ -2261,24 +3117,77 @@ int ny_compute_request(const struct ny_product_caller_s *caller,
   cJSON *capabilities;
   cJSON *root;
   cJSON *blob;
+  static const char *const states[] = { "unloaded", "provisioning", "loading",
+                                        "ready",    "busy",         "error" };
+
   bool start = strcmp(topic, "compute.start") == 0;
   bool stop = strcmp(topic, "compute.stop") == 0;
+  bool load = strcmp(topic, "compute.llm.load") == 0;
+  bool unload = strcmp(topic, "compute.llm.unload") == 0;
+  cJSON *llm;
   int ret;
 
-  (void)data;
-  if (!start && !stop && strcmp(topic, "compute.status") != 0)
+  if (!start && !stop && !load && !unload &&
+      strcmp(topic, "compute.status") != 0)
     {
       return -ENOSYS;
     }
 
+  if ((start || stop || load || unload) && caller->role != NY_PRODUCT_OWNER)
+    {
+      return -EACCES;
+    }
+
   if (start || stop)
     {
-      if (caller->role != NY_PRODUCT_OWNER)
+      ret = start ? ny_compute_start() : ny_compute_stop();
+      if (ret < 0)
         {
-          return -EACCES;
+          return ret;
+        }
+    }
+
+  if (load)
+    {
+      const cJSON *model = cJSON_GetObjectItemCaseSensitive(data, "model");
+      const char *name = cJSON_IsString(model)
+                             ? model->valuestring
+                             : CONFIG_NYABULA_CORE_COMPUTE_LLM;
+
+      if ((model != NULL && !cJSON_IsString(model)) ||
+          nyamp_blob_name_check(name, strlen(name)) != NYAMP_OK)
+        {
+          return -EINVAL;
         }
 
-      ret = start ? ny_compute_start() : ny_compute_stop();
+      if (!ny_compute_running())
+        {
+          return -ENOTCONN;
+        }
+
+      /* Hand the load to the receive task's loader thread: this handler
+       * belongs to a web or CLI request that must not be held for minutes,
+       * and may be gone long before the load is.
+       */
+
+      nxmutex_lock(&g_compute.lock);
+      if (g_compute.llm.load_pending || g_compute.llm.loader_live ||
+          g_compute.llm.chatting)
+        {
+          nxmutex_unlock(&g_compute.lock);
+          return -EBUSY;
+        }
+
+      strlcpy(g_compute.llm.requested, name, sizeof(g_compute.llm.requested));
+      strlcpy(g_compute.llm.model, name, sizeof(g_compute.llm.model));
+      g_compute.llm.state = NY_COMPUTE_LLM_LOADING;
+      g_compute.llm.load_pending = true;
+      nxmutex_unlock(&g_compute.lock);
+    }
+
+  if (unload)
+    {
+      ret = ny_compute_llm_unload();
       if (ret < 0)
         {
           return ret;
@@ -2325,6 +3234,39 @@ int ny_compute_request(const struct ny_product_caller_s *caller,
        !cJSON_AddItemToArray(capabilities, cJSON_CreateString("llm"))) ||
       ((status.capabilities & NY_COMPUTE_CAP_BLOB) != 0 &&
        !cJSON_AddItemToArray(capabilities, cJSON_CreateString("blob"))))
+    {
+      cJSON_Delete(root);
+      return -ENOMEM;
+    }
+
+  llm = cJSON_AddObjectToObject(root, "llm");
+  if (llm == NULL ||
+      !cJSON_AddStringToObject(llm, "state", states[status.llm_state]) ||
+      !cJSON_AddStringToObject(llm, "model", status.llm_model) ||
+      !cJSON_AddNumberToObject(llm, "promptTokens",
+                               status.llm_last.prompt_tokens) ||
+      !cJSON_AddNumberToObject(llm, "completionTokens",
+                               status.llm_last.completion_tokens) ||
+      !cJSON_AddNumberToObject(llm, "prefillMs", status.llm_last.prefill_ms) ||
+      !cJSON_AddNumberToObject(llm, "tokensPerSec",
+                               status.llm_tokens_per_sec_x10 / 10.0))
+    {
+      cJSON_Delete(root);
+      return -ENOMEM;
+    }
+
+  if (status.llm_last_error == 0)
+    {
+      ret = cJSON_AddNullToObject(llm, "lastError") != NULL;
+    }
+  else
+    {
+      snprintf(text, sizeof(text), "%d: %s", status.llm_last_error,
+               status.llm_last_error_text);
+      ret = cJSON_AddStringToObject(llm, "lastError", text) != NULL;
+    }
+
+  if (!ret)
     {
       cJSON_Delete(root);
       return -ENOMEM;

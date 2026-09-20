@@ -295,6 +295,9 @@ int nyampctl_blob_pull(int fd, const char *name)
 int nyampctl_status(void)
 {
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
+  static const char *const states[] = { "unloaded", "provisioning", "loading",
+                                        "ready",    "busy",         "error" };
+
   struct ny_compute_status_s status;
   int ret = ny_compute_status(&status);
 
@@ -311,6 +314,14 @@ int nyampctl_status(void)
          " size=%" PRIu64 " rate=%" PRIu32 " B/s\n",
          status.blob_active, status.blob_hashing, status.blob_name,
          status.blob_offset, status.blob_size, status.blob_bytes_per_sec);
+  printf("nyamp compute: llm state=%s model=%s prompt_tokens=%" PRIu32
+         " completion_tokens=%" PRIu32 " tokens_per_sec=%" PRIu32 ".%" PRIu32
+         " last_error=%d %s\n",
+         states[status.llm_state], status.llm_model,
+         status.llm_last.prompt_tokens, status.llm_last.completion_tokens,
+         status.llm_tokens_per_sec_x10 / 10,
+         status.llm_tokens_per_sec_x10 % 10, status.llm_last_error,
+         status.llm_last_error_text);
   printf("nyamp compute: generation_changes=%" PRIu32 " dropped=%" PRIu32
          " last_error=%d %s\n",
          status.generation_changes, status.dropped_frames, status.last_error,

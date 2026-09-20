@@ -339,6 +339,12 @@ static int nyampctl_llm_command(int fd, int argc, char *argv[])
       return nyampctl_llm_generate(fd, source, max_new_tokens, inline_ids);
     }
 
+  if (strcmp(argv[2], "chat") == 0 && (argc == 4 || argc == 5))
+    {
+      return nyampctl_llm_chat(
+          fd, argv[3], argc > 4 ? (uint32_t)strtoul(argv[4], NULL, 10) : 0);
+    }
+
   fprintf(stderr, "nyampctl: bad llm arguments\n");
   return -EINVAL;
 }
@@ -375,11 +381,12 @@ int main(int argc, char *argv[])
               "       %s llm unload\n"
               "       %s llm generate <token-ids-file> [max-new-tokens]\n"
               "       %s llm generate --inline <id,id,...> [max-new-tokens]\n"
+              "       %s llm chat <request.json> [max-new-tokens]\n"
               "       %s blob bench [rounds] [window-bytes]\n"
               "       %s blob pull <name-under-/data/models>\n"
               "       %s shmem test [keep]\n",
               argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0],
-              argv[0]);
+              argv[0], argv[0]);
       return 2;
     }
 
