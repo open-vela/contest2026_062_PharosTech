@@ -1169,7 +1169,21 @@ bool IsIgnorable(char32_t c)
    * not be reviewed.  ZWSP/ZWNJ/ZWJ, variation selector 16 (emoji), BOM.
    */
 
-  if ((c >= 0x200b && c <= 0x200d) || c == 0xfe0f || c == 0xfeff)
+  if ((c >= 0x200b && c <= 0x200d) || c == 0xfe0e || c == 0xfe0f ||
+      c == 0xfeff)
+    {
+      return true;
+    }
+
+  /* Emoji and pictographs.  A model told to leave them out still emits one
+   * now and then, and an unknown symbol costs a "dropped" report and, in a
+   * long reply, the frame budget.  Dingbats, miscellaneous symbols, the
+   * supplemental planes, regional indicators and the skin tone modifiers.
+   */
+
+  if ((c >= 0x2190 && c <= 0x2bff) || (c >= 0x2e00 && c <= 0x2e7f) ||
+      (c >= 0x1f000 && c <= 0x1faff) || (c >= 0x1f1e6 && c <= 0x1f1ff) ||
+      (c >= 0xe0020 && c <= 0xe007f))
     {
       return true;
     }
