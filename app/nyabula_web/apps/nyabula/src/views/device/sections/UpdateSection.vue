@@ -501,7 +501,7 @@ onBeforeUnmount(() => {
 
         <MdCard v-if="advancedTargets.length" title="高级选项">
           <div class="row between wrap">
-            <p class="muted line adv-lead">更新引导程序 N-Boot 或原样写入单个分区。可能导致设备无法启动，平时不需要打开。</p>
+            <p class="muted line risky-lead">更新引导程序 N-Boot 或原样写入单个分区。可能导致设备无法启动，平时不需要打开。</p>
             <MdSwitch :model-value="advancedOn" :disabled="targetLocked || !session.isOwner" label="显示高级目标" @update:model-value="setAdvanced($event)" />
           </div>
           <template v-if="advancedOn">
@@ -509,13 +509,14 @@ onBeforeUnmount(() => {
               <UiIcon name="warning" :size="20" />
               <div><p>这些目标写错或写入中断，设备可能无法启动，只能经 USB（MaskROM）恢复。N-Boot 自更新不具备断电安全。</p></div>
             </div>
-            <ul class="adv-list" role="radiogroup" aria-label="高级更新目标">
+            <ul class="risky-list" role="radiogroup" aria-label="高级更新目标">
               <li v-for="t in advancedTargets" :key="t.id">
-                <!-- A div, not a button: with the row as a <button> the text column
-                     rendered empty in Chromium on the device page (only the radio
-                     dot showed), whatever the styles said. -->
+                <!-- Not "adv-": EasyList has a generic rule hiding the class "adv-text" on every site,
+                     and a blocker took the whole text column of these rows with it,
+                     leaving only the radio dot.  scripts/check-adblock-classes.mjs
+                     checks the panel against the list. -->
                 <div
-                  class="adv-row" role="radio" :aria-checked="selected?.id === t.id"
+                  class="risky-row" role="radio" :aria-checked="selected?.id === t.id"
                   :aria-disabled="targetLocked || !t.available" :tabindex="targetLocked || !t.available ? -1 : 0"
                   :class="{ on: selected?.id === t.id, off: targetLocked || !t.available }"
                   @click="!(targetLocked || !t.available) && select(t)"
@@ -523,14 +524,14 @@ onBeforeUnmount(() => {
                   @keydown.space.prevent="!(targetLocked || !t.available) && select(t)"
                 >
                   <span class="radio" aria-hidden="true" />
-                  <span class="adv-text">
-                    <span class="adv-name">{{ t.label }}
+                  <span class="risky-text">
+                    <span class="risky-name">{{ t.label }}
                       <span class="tag" :class="t.kind === 'nboot' ? 'err' : 'warn'">{{ t.kind === 'nboot' ? '引导程序' : '原样写入' }}</span>
                       <span v-if="t.mounted" class="tag warn">使用中</span>
                       <span v-if="!t.available" class="tag info">不可写</span>
                     </span>
-                    <span class="adv-desc">{{ t.description }}</span>
-                    <span class="adv-desc">{{ t.available ? `${formatName(t.format)}，分区 ${fmtBytes(t.capacity)}` : unavailableText(t) }}</span>
+                    <span class="risky-desc">{{ t.description }}</span>
+                    <span class="risky-desc">{{ t.available ? `${formatName(t.format)}，分区 ${fmtBytes(t.capacity)}` : unavailableText(t) }}</span>
                   </span>
                 </div>
               </li>
@@ -561,7 +562,7 @@ onBeforeUnmount(() => {
           <p v-else-if="!selected" class="muted line">设备没有报告可以更新的目标。</p>
           <template v-else>
             <dl class="kv target-kv">
-              <div><dt>更新目标</dt><dd>{{ selected.label }}<span v-if="selected.advanced" class="tag warn adv-tag">高级</span></dd></div>
+              <div><dt>更新目标</dt><dd>{{ selected.label }}<span v-if="selected.advanced" class="tag warn risky-tag">高级</span></dd></div>
               <div><dt>写入位置</dt><dd>{{ destination(selected) }}</dd></div>
             </dl>
             <p class="muted line" style="margin: 10px 0 12px">文件先传到设备的临时目录，两端 SHA-256 一致后才会询问是否写入；写入后设备从存储回读再校验一次。</p>
@@ -616,10 +617,10 @@ onBeforeUnmount(() => {
 .target-title h3 { margin: 0; font: 600 16px var(--font-title); color: var(--md-on-surface); }
 .target-table { margin-top: 12px; }
 .target-kv { margin-bottom: 0; }
-.adv-tag { margin-left: 8px; }
-.adv-lead { flex: 1 1 260px; }
-.adv-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.adv-row {
+.risky-tag { margin-left: 8px; }
+.risky-lead { flex: 1 1 260px; }
+.risky-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.risky-row {
   width: 100%;
   display: flex;
   align-items: flex-start;
@@ -634,15 +635,15 @@ onBeforeUnmount(() => {
   cursor: pointer;
   transition: border-color var(--dur-fast), background var(--dur-fast);
 }
-.adv-row.off { cursor: default; opacity: 0.55; }
-.adv-row.on { border-color: var(--md-primary); }
-.adv-row:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 2px; }
+.risky-row.off { cursor: default; opacity: 0.55; }
+.risky-row.on { border-color: var(--md-primary); }
+.risky-row:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 2px; }
 .radio { flex: none; width: 18px; height: 18px; margin-top: 2px; border-radius: 50%; border: 2px solid var(--md-outline); display: grid; place-items: center; }
-.adv-row.on .radio { border-color: var(--md-primary); }
-.adv-row.on .radio::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--md-primary); }
-.adv-text { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.adv-name { font-size: 14px; font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.adv-desc { font-size: 12.5px; line-height: 1.55; color: var(--md-on-surface-variant); }
+.risky-row.on .radio { border-color: var(--md-primary); }
+.risky-row.on .radio::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--md-primary); }
+.risky-text { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.risky-name { font-size: 14px; font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.risky-desc { font-size: 12.5px; line-height: 1.55; color: var(--md-on-surface-variant); }
 .progress-block { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
 .bar { height: 6px; border-radius: 3px; background: var(--md-outline-variant); overflow: hidden; }
 .bar > span { display: block; height: 100%; background: var(--md-primary); transition: width 0.2s linear; }
