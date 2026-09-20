@@ -38,6 +38,7 @@
 static mutex_t g_alarm_lock = NXMUTEX_INITIALIZER;
 static cJSON *g_alarms;
 static uint64_t g_alarm_revision;
+static bool g_alarm_sounding;
 #ifdef CONFIG_NYABULA_CORE_EYE
 static uint64_t g_alarm_eye_refresh;
 #endif
@@ -472,6 +473,30 @@ int ny_product_alarms_tick(void)
   ret = ny_alarm_save(&candidate);
 out:
   cJSON_Delete(candidate);
+
+  /* Sound follows the durable ringing state rather than the transition into
+   * it, so an alarm that was ringing when the board restarted rings again,
+   * and dismissing or snoozing one -- which only edits the rows -- silences
+   * it on the next tick.  Only changes are forwarded: the media service keeps
+   * what it was last told.
+   */
+
+  if (!ret)
+    {
+      bool ringing = false;
+      cJSON_ArrayForEach(
+          row, g_alarms) if (!strcmp(ny_alarm_text(row, "status"), "ringing"))
+      {
+        ringing = true;
+        break;
+      }
+      if (ringing != g_alarm_sounding)
+        {
+          g_alarm_sounding = ringing;
+          ny_product_media_alert(ringing ? NY_PRODUCT_MEDIA_ALERT_LOOP
+                                         : NY_PRODUCT_MEDIA_ALERT_OFF);
+        }
+    }
 #ifdef CONFIG_NYABULA_CORE_EYE
   /* Ringing is durable state; the display is a renewable projection. */
   if (!ret && ny_product_time_ms(true) >= g_alarm_eye_refresh)
