@@ -93,6 +93,9 @@ endif
 ifeq ($(CONFIG_NYABULA_CORE_WEATHER),y)
 CSRCS += ny_product_weather.c
 endif
+ifeq ($(CONFIG_NYABULA_CORE_MODELS),y)
+CSRCS += ny_web_models.c
+endif
 ifeq ($(CONFIG_NYABULA_CORE_OTA),y)
 # nbootctl lives where the manifest links it, not beside this directory:
 # "../nbootctl" is only true in the team repository checkout.

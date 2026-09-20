@@ -20,6 +20,9 @@
  ****************************************************************************/
 
 #include "ny_product.h"
+#ifdef CONFIG_NYABULA_CORE_MODELS
+#include "ny_web_models.h"
+#endif
 #ifdef CONFIG_NYABULA_CORE_AGENT
 #include "ny_agent.h"
 #endif
@@ -224,6 +227,12 @@ int ny_product_request(const struct ny_product_caller_s *caller,
   ret = ny_product_maintenance_request(caller, topic, data, result);
   if (ret != -ENOSYS)
     return ret;
+
+#ifdef CONFIG_NYABULA_CORE_MODELS
+  ret = ny_web_models_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
 
 #ifdef CONFIG_NYABULA_CORE_NETWORK
   ret = ny_product_network_request(caller, topic, data, result);

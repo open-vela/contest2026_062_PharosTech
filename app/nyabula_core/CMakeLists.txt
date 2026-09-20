@@ -60,6 +60,9 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     if(CONFIG_NYABULA_CORE_NETWORK)
       list(APPEND NYABULA_CORE_SRCS ny_product_network.c)
     endif()
+    if(CONFIG_NYABULA_CORE_MODELS)
+      list(APPEND NYABULA_CORE_SRCS ny_web_models.c)
+    endif()
     if(CONFIG_NYABULA_CORE_OTA)
       # nbootctl lives where the manifest links it, not beside this directory:
       # "../nbootctl" is only true in the team repository checkout.
