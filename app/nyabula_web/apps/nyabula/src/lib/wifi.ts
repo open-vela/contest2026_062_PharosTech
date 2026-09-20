@@ -123,3 +123,19 @@ export function isLinkDropError(e: unknown): boolean {
   const code = isRecord(e) ? e.code : undefined;
   return code === 'ECONNRESET' || code === 'ETIMEDOUT';
 }
+
+/** Firmware that has no such topic: fall back to what it does have. */
+export function isUnknownTopic(e: unknown): boolean {
+  const code = isRecord(e) ? e.code : undefined;
+  return code === 'ENOTFOUND' || code === 'ENOSYS';
+}
+
+/** How many scans the device has completed; 0 when it does not say. */
+export function scanSeq(raw: unknown): number {
+  return isRecord(raw) ? num(raw.seq) ?? 0 : 0;
+}
+
+/** The device is still listening on the other channels. */
+export function isScanning(raw: unknown): boolean {
+  return isRecord(raw) && raw.scanning === true;
+}
