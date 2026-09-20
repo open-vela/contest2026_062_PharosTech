@@ -97,6 +97,7 @@ static int ny_product_worker(int argc, char **argv)
       int media_ret = ny_product_media_tick();
       if (ret == 0)
         ret = media_ret;
+      ny_product_eyes_tick();
 #ifdef CONFIG_NYABULA_CORE_LIGHT
       /* A few microseconds of conversion, five times a second. */
 
