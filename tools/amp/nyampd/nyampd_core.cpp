@@ -36,6 +36,7 @@ constexpr std::size_t kHealthPayloadSize = 12;
 constexpr std::uint32_t kCapabilityHealth = 1U << 0;
 constexpr std::uint32_t kCapabilityLlm = 1U << 1;
 constexpr std::uint32_t kCapabilityBlob = 1U << 2;
+constexpr std::uint32_t kCapabilityChat = 1U << 3;
 
 void PutLe32(std::uint8_t *dest, std::uint32_t value)
 {
@@ -220,6 +221,28 @@ int DispatchLlm(const nyamp_header_s &request, LlmService *llm,
           break;
         }
 
+      case NYAMP_LLM_CHAT:
+        {
+          nyamp_llm_chat_s chunk{};
+          const std::uint8_t *bytes = nullptr;
+          bool started = false;
+
+          if (nyamp_llm_chat_decode(&chunk, &bytes, payload,
+                                    request.payload_size) != NYAMP_OK)
+            {
+              status = NYAMP_MODEL_INVALID;
+              break;
+            }
+
+          /* Already a wire status: chat can fail in a way the model layer
+           * has no name for.  The response acknowledges the chunk; the
+           * result and the terminal finish arrive as events.
+           */
+          status = llm->BeginChat(chunk, bytes, request.request_id,
+                                  request.deadline_ms, &started);
+          break;
+        }
+
       case NYAMP_LLM_CANCEL:
         {
           if (request.payload_size != 0)
@@ -303,7 +326,8 @@ int Dispatch(const std::uint8_t *request_wire, std::size_t request_size,
   int result = NYAMP_OK;
   const std::uint32_t capabilities =
       kCapabilityHealth | (llm != nullptr ? kCapabilityLlm : 0U) |
-      (blob != nullptr ? kCapabilityBlob : 0U);
+      (blob != nullptr ? kCapabilityBlob : 0U) |
+      (llm != nullptr && llm->ChatSupported() ? kCapabilityChat : 0U);
 
   if (request_wire == nullptr || response == nullptr ||
       response_size == nullptr)

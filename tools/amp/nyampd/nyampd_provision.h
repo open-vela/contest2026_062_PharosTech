@@ -67,6 +67,13 @@ public:
   BlobResult Provide(const std::string &name, std::string *path,
                      const BlobClient::Progress &progress, BlobStats *stats);
 
+  /* Whether `name` is a directory on the control domain.  Anything that is
+   * not positively a directory -- a file, nothing at all, a dead link --
+   * answers false; the caller only uses this to decide where a companion
+   * file is expected, and finds out the rest when it provides the name.
+   */
+  bool IsDirectory(const std::string &name);
+
   /* Abort the Provide in flight, from any thread. */
   void Cancel();
 

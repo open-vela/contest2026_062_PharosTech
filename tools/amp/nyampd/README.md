@@ -19,6 +19,21 @@ request_id 发 `BLOB/EVENT_PROGRESS`。`BlobService` 处理 openvela 发来的 `
 （rpmsg 往返时延 + 共享窗口吞吐，带位置相关图样校验）与 `PULL`（只拉不加载）。
 RESPONSE/EVENT 帧永不被应答。单测 `nyampd_blob_test` 用进程内的 openvela 应答器验证。
 
+本地 LLM 的文本级接口：`NYAMP_LLM_CHAT`（nyampd_chat.*、nyampd_llm.* 的 ChatWorker）链接
+`tools/amp/chat` 库（`add_subdirectory(../chat chat)`，该库仍可独立构建）。流程：分块收齐请求
+JSON → chat template 渲染 + 分词（`guard_untrusted` 可选）→ `prompt+max_new > 2048` 则以
+`PROMPT_TOO_LONG` 拒绝 → 走与 GENERATE 相同的 token-id 运行路径 → 收集输出 **token id**
+（RKLLM 回调本来就给 `token_id`，且后端 `skip_special_token=false`，后端无需改动）→ 用本库
+`decode(skip_special=false)` → 按请求里的工具 schema 解析 → `EVENT_RESULT` 分块 → `EVENT_FINISH`
+带统计。遇到 stop id `[1,130073,130072]` 即结束，stop token 不计入回答。逻辑名 LOAD 会连同
+`tokenizer.json` 一起拉取加载；绝对路径 LOAD 行为不变（旁边恰有 tokenizer.json 就顺带启用 chat，
+否则 CHAT 回 unsupported）。顺带修了两处旧问题：Cancel 不再去拿 worker 整个运行期间持有的
+session 锁（原先 cancel 会把传输循环卡到运行结束）；Session 要求 request id 单调递增，而线上 id
+含发起任务的 pid、并不单调，现改为服务内部自增的 run id。发送遇到 EAGAIN/ENOMEM（发送环暂满，
+chat 结果是一串突发帧）改为保留该帧下轮重发，不再退出守护进程。
+单测 `nyampd_chat_test`（字节 codec + 脚本后端；设环境变量 `NYAMP_TOKENIZER_JSON` 可加跑真词表项），
+端到端 `tools/amp/test_chat_flow.py`（真实 nyampctl 客户端 ↔ 真实服务，SOCK_SEQPACKET）。
+
 deadline 使用两端共享的 ARM generic counter 换算毫秒。AArch64 生产构建读取
 `cntvct_el0/cntfrq_el0`；主机单测显式注入当前值，不依赖主机时钟。
 
