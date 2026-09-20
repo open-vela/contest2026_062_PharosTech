@@ -21,6 +21,7 @@
 
 #include "nyamp_protocol.h"
 #include "nyampd_llm.h"
+#include "nyampd_provision.h"
 
 #include <cstring>
 #include <string>
@@ -34,6 +35,7 @@ constexpr std::size_t kStatusPayloadSize = 4;
 constexpr std::size_t kHealthPayloadSize = 12;
 constexpr std::uint32_t kCapabilityHealth = 1U << 0;
 constexpr std::uint32_t kCapabilityLlm = 1U << 1;
+constexpr std::uint32_t kCapabilityBlob = 1U << 2;
 
 void PutLe32(std::uint8_t *dest, std::uint32_t value)
 {
@@ -140,9 +142,9 @@ int EncodeResponse(const nyamp_header_s &request, std::int32_t status,
  ****************************************************************************/
 
 int DispatchLlm(const nyamp_header_s &request, LlmService *llm,
-                std::uint32_t generation, const uint8_t *payload,
-                std::uint8_t *response, std::size_t response_capacity,
-                std::size_t *response_size)
+                std::uint32_t generation, std::uint32_t capabilities,
+                const uint8_t *payload, std::uint8_t *response,
+                std::size_t response_capacity, std::size_t *response_size)
 {
   std::int32_t status = NYAMP_MODEL_UNSUPPORTED;
   std::uint8_t body[NYAMP_INLINE_MAX];
@@ -167,7 +169,17 @@ int DispatchLlm(const nyamp_header_s &request, LlmService *llm,
 
           const std::string directory(reinterpret_cast<const char *>(payload),
                                       request.payload_size);
-          status = ModelStatus(llm->Load(directory));
+          bool deferred = false;
+          status = ModelStatus(llm->BeginLoad(directory, request, &deferred));
+          if (deferred)
+            {
+              /* The model is being pulled from the control domain; the
+               * response follows through the service queue.
+               */
+              *response_size = 0;
+              return NYAMP_OK;
+            }
+
           break;
         }
 
@@ -225,8 +237,58 @@ int DispatchLlm(const nyamp_header_s &request, LlmService *llm,
         break;
     }
 
-  return EncodeResponse(request, status, generation, kCapabilityLlm, body,
+  return EncodeResponse(request, status, generation, capabilities, body,
                         body_size, response, response_capacity, response_size);
+}
+
+/****************************************************************************
+ * Name: DispatchBlob
+ *
+ * Description:
+ *   The BLOB service as seen from this side.  OPEN/READ/CLOSE/LIST/BENCH are
+ *   requests this domain SENDS; receiving one means the peer has the
+ *   direction backwards, and it is refused rather than served.  Only
+ *   BENCH_RUN and PULL arrive here, and both answer later from a worker.
+ *
+ ****************************************************************************/
+
+int DispatchBlob(const nyamp_header_s &request, BlobService *blob,
+                 std::uint32_t generation, std::uint32_t capabilities,
+                 const uint8_t *payload, std::uint8_t *response,
+                 std::size_t response_capacity, std::size_t *response_size)
+{
+  std::int32_t status = NYAMP_MODEL_UNSUPPORTED;
+
+  if (blob != nullptr && request.opcode == NYAMP_BLOB_BENCH_RUN)
+    {
+      std::uint32_t rounds = 0;
+      std::uint32_t window_bytes = 0;
+
+      status = nyamp_blob_bench_run_decode(&rounds, &window_bytes, payload,
+                                           request.payload_size) == NYAMP_OK
+                   ? blob->BeginBench(request, rounds, window_bytes)
+                   : NYAMP_MODEL_INVALID;
+    }
+  else if (blob != nullptr && request.opcode == NYAMP_BLOB_PULL)
+    {
+      std::uint32_t flags = 0;
+      const char *name = nullptr;
+      std::size_t name_length = 0;
+
+      status = nyamp_blob_open_decode(&flags, &name, &name_length, payload,
+                                      request.payload_size) == NYAMP_OK
+                   ? blob->BeginPull(request, std::string(name, name_length))
+                   : NYAMP_MODEL_INVALID;
+    }
+
+  if (status == NYAMP_MODEL_OK)
+    {
+      *response_size = 0;
+      return NYAMP_OK;
+    }
+
+  return EncodeResponse(request, status, generation, capabilities, nullptr, 0,
+                        response, response_capacity, response_size);
 }
 
 } // namespace
@@ -235,12 +297,13 @@ int Dispatch(const std::uint8_t *request_wire, std::size_t request_size,
              std::uint64_t now_ms, std::uint32_t generation,
              std::uint8_t *response, std::size_t response_capacity,
              std::size_t *response_size, std::string_view diagnostics,
-             LlmService *llm)
+             LlmService *llm, BlobService *blob)
 {
   nyamp_header_s request;
   int result = NYAMP_OK;
   const std::uint32_t capabilities =
-      kCapabilityHealth | (llm != nullptr ? kCapabilityLlm : 0U);
+      kCapabilityHealth | (llm != nullptr ? kCapabilityLlm : 0U) |
+      (blob != nullptr ? kCapabilityBlob : 0U);
 
   if (request_wire == nullptr || response == nullptr ||
       response_size == nullptr)
@@ -252,6 +315,30 @@ int Dispatch(const std::uint8_t *request_wire, std::size_t request_size,
   if (result != NYAMP_OK)
     {
       return result;
+    }
+
+  /* Never answer a response or an event.  Both domains are responders now,
+   * and an error reply to a reply is how two of them would loop.
+   */
+  const std::uint32_t kind = request.flags & NYAMP_FLAG_KIND_MASK;
+  if (kind == NYAMP_FLAG_RESPONSE || kind == NYAMP_FLAG_EVENT)
+    {
+      *response_size = 0;
+      return NYAMP_OK;
+    }
+
+  /* A payload-free CANCEL naming a BLOB request aborts that worker.  It has
+   * no response of its own; the cancelled request's response reports it.
+   */
+  if (kind == NYAMP_FLAG_CANCEL && request.service == NYAMP_SERVICE_BLOB)
+    {
+      if (blob != nullptr)
+        {
+          blob->Cancel(request.request_id);
+        }
+
+      *response_size = 0;
+      return NYAMP_OK;
     }
 
   if (request_size != NYAMP_WIRE_HEADER_SIZE + request.payload_size ||
@@ -278,9 +365,16 @@ int Dispatch(const std::uint8_t *request_wire, std::size_t request_size,
 
   if (request.service == NYAMP_SERVICE_LLM)
     {
-      return DispatchLlm(request, llm, generation,
+      return DispatchLlm(request, llm, generation, capabilities,
                          request_wire + NYAMP_WIRE_HEADER_SIZE, response,
                          response_capacity, response_size);
+    }
+
+  if (request.service == NYAMP_SERVICE_BLOB)
+    {
+      return DispatchBlob(request, blob, generation, capabilities,
+                          request_wire + NYAMP_WIRE_HEADER_SIZE, response,
+                          response_capacity, response_size);
     }
 
   if (request.service == NYAMP_SERVICE_HEALTH &&

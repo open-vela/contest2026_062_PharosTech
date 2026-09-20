@@ -19,6 +19,10 @@
 
 #include "nyampd_llm.h"
 
+#include "nyampd_provision.h"
+
+#include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 
@@ -40,9 +44,165 @@ LlmService::~LlmService()
     {
       worker_.join();
     }
+
+  /* A pull in flight would otherwise keep this destructor waiting for as
+   * long as the transfer takes.
+   */
+  if (loader_.joinable())
+    {
+      if (provisioner_ != nullptr)
+        {
+          provisioner_->Cancel();
+        }
+
+      loader_.join();
+    }
+}
+
+void LlmService::SetProvisioner(ModelProvisioner *provisioner)
+{
+  provisioner_ = provisioner;
 }
 
 models::Status LlmService::Load(const std::string &directory)
+{
+  if (loading_.load())
+    {
+      return models::Status::kBusy;
+    }
+
+  return LoadNow(directory);
+}
+
+models::Status LlmService::BeginLoad(const std::string &name,
+                                     const nyamp_header_s &request,
+                                     bool *deferred)
+{
+  if (deferred == nullptr)
+    {
+      return models::Status::kInvalid;
+    }
+
+  *deferred = false;
+
+  /* Only a relative, well-formed name is a logical model name.  Everything
+   * else -- notably the absolute paths used while the models lived on a
+   * locally mounted card -- takes the original synchronous path unchanged.
+   */
+  if (provisioner_ == nullptr || !factory_ ||
+      !ModelProvisioner::IsLogicalName(name))
+    {
+      return Load(name);
+    }
+
+  if (running_.load())
+    {
+      return models::Status::kBusy;
+    }
+
+  bool expected = false;
+  if (!loading_.compare_exchange_strong(expected, true))
+    {
+      return models::Status::kBusy;
+    }
+
+  try
+    {
+      if (loader_.joinable())
+        {
+          loader_.join();
+        }
+
+      load_request_.store(request.request_id);
+      loader_ = std::thread(&LlmService::Loader, this, name, request);
+    }
+  catch (...)
+    {
+      load_request_.store(0);
+      loading_.store(false);
+      return models::Status::kBackendError;
+    }
+
+  *deferred = true;
+  return models::Status::kOk;
+}
+
+void LlmService::Loader(std::string name, nyamp_header_s request)
+{
+  using Clock = std::chrono::steady_clock;
+
+  Clock::time_point reported = Clock::now();
+  BlobStats stats;
+  std::string path;
+
+  /* Progress rides on the LOAD's request_id as BLOB events, so a client that
+   * cares can show it and one that does not simply skips non-response frames,
+   * which every existing client already does.
+   */
+  auto progress = [&](const BlobProgress &update) {
+    const Clock::time_point now = Clock::now();
+    if (update.done != update.total &&
+        now - reported < std::chrono::milliseconds(500))
+      {
+        return;
+      }
+
+    reported = now;
+
+    nyamp_blob_progress_s wire{ update.done, update.total,
+                                update.bytes_per_second };
+    std::uint8_t payload[NYAMP_BLOB_PROGRESS_SIZE];
+    std::size_t size = 0;
+    nyamp_header_s header{};
+    Frame event;
+
+    header.service = NYAMP_SERVICE_BLOB;
+    header.opcode = NYAMP_BLOB_EVENT_PROGRESS;
+    header.flags = NYAMP_FLAG_EVENT;
+    header.request_id = request.request_id;
+    header.generation = generation_;
+    if (nyamp_blob_progress_encode(payload, sizeof(payload), &size, &wire) ==
+            NYAMP_OK &&
+        EncodeFrame(&event, header, payload, size))
+      {
+        PushFrame(event, true);
+      }
+  };
+
+  const BlobResult pulled =
+      provisioner_->Provide(name, &path, progress, &stats);
+  models::Status status;
+
+  std::fprintf(stderr, "nyampd: provision %s: %s files=%u reused=%u\n",
+               name.c_str(), BlobResultName(pulled), stats.files,
+               stats.reused);
+
+  if (pulled == BlobResult::kOk)
+    {
+      status = LoadNow(path);
+    }
+  else
+    {
+      /* The wire status is the negated model status, see ModelStatus(). */
+      status = static_cast<models::Status>(-BlobResultStatus(pulled));
+
+      std::lock_guard<std::mutex> report_lock(report_mutex_);
+      last_load_ = status;
+      last_directory_ = name;
+    }
+
+  load_request_.store(0);
+  loading_.store(false, std::memory_order_release);
+
+  Frame frame;
+  if (EncodeStatusResponse(&frame, request, generation_,
+                           -static_cast<std::int32_t>(status), nullptr, 0))
+    {
+      PushFrame(frame, false);
+    }
+}
+
+models::Status LlmService::LoadNow(const std::string &directory)
 {
   if (directory.empty())
     {
@@ -92,7 +252,7 @@ std::string LlmService::LastLoadDirectory() const
 
 models::Status LlmService::Unload()
 {
-  if (running_.load())
+  if (running_.load() || loading_.load())
     {
       return models::Status::kBusy;
     }
@@ -138,7 +298,7 @@ models::Status LlmService::BeginGenerate(
       return models::Status::kInvalid;
     }
 
-  if (running_.load())
+  if (running_.load() || loading_.load())
     {
       return models::Status::kBusy;
     }
@@ -287,6 +447,17 @@ models::Status LlmService::Cancel(std::uint64_t request_id)
       return models::Status::kInvalid;
     }
 
+  /* A load that is still pulling its model is cancelled at the provisioner;
+   * the session is not involved yet.  The LOAD's own response reports the
+   * outcome, as a generate's finish event does for a generate.
+   */
+  if (loading_.load() && load_request_.load() == request_id &&
+      provisioner_ != nullptr)
+    {
+      provisioner_->Cancel();
+      return models::Status::kOk;
+    }
+
   std::lock_guard<std::mutex> lock(session_mutex_);
   if (!session_)
     {
@@ -332,6 +503,22 @@ bool LlmService::Push(const std::uint8_t *payload, std::size_t payload_size,
     }
 
   frame.size = NYAMP_WIRE_HEADER_SIZE + payload_size;
+  queue_.push_back(frame);
+  return true;
+}
+
+bool LlmService::PushFrame(const Frame &frame, bool droppable)
+{
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+
+  /* A response is the only answer its requester will get, so it is queued
+   * even when the limit is reached; progress is advisory and is shed.
+   */
+  if (droppable && queue_.size() >= kLlmEventQueueLimit)
+    {
+      return false;
+    }
+
   queue_.push_back(frame);
   return true;
 }

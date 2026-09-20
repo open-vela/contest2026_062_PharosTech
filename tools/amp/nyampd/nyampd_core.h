@@ -15,6 +15,7 @@ namespace nyamp
 {
 
 class LlmService;
+class BlobService;
 
 constexpr std::uint16_t kHealthQuery = 1;
 constexpr std::uint16_t kInfoQuery = 2;
@@ -40,13 +41,23 @@ enum class Status : std::int32_t
  *   A GENERATE that completes its chunk sequence is accepted here and its
  *   events are drained later by TakeEvent, not returned from this call.
  *
+ *   NYAMP_OK with *response_size == 0 means "nothing to send now".  That is
+ *   the result for a request whose response is deferred to a service queue
+ *   (a LOAD that must first pull its model, a BLOB bench or pull), and for a
+ *   RESPONSE or EVENT frame.  The latter matters now that both domains answer
+ *   requests: replying to a response would let two responders bounce error
+ *   frames off each other forever, so such a frame is dropped, never answered.
+ *
+ *   blob may be null; the control-originated BLOB opcodes then answer
+ *   unsupported.
+ *
  ****************************************************************************/
 
 int Dispatch(const std::uint8_t *request, std::size_t request_size,
              std::uint64_t now_ms, std::uint32_t generation,
              std::uint8_t *response, std::size_t response_capacity,
              std::size_t *response_size, std::string_view diagnostics = {},
-             LlmService *llm = nullptr);
+             LlmService *llm = nullptr, BlobService *blob = nullptr);
 
 } // namespace nyamp
 

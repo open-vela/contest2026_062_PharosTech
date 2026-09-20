@@ -89,7 +89,8 @@ int main(int argc,char **argv) {{
     subprocess.run(['cc','-std=gnu11','-D_GNU_SOURCE','-Wall','-Werror',
                     '-I',str(root),'-I',str(protocol),'-I',str(client_dir),
                     str(root/'client.c'), str(root/'driver.c'),
-                    str(client_dir/'nyampctl_llm.c'), str(root/'shmem_stub.c'),
+                    str(client_dir/'nyampctl_llm.c'), str(client_dir/'nyampctl_blob.c'),
+                    str(root/'shmem_stub.c'),
                     str(protocol/'nyamp_protocol.c'),'-o',str(root/'client')],
                    check=True)
     master,slave=pty.openpty()

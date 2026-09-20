@@ -4,8 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  ****************************************************************************/
 
+#include "nyampd_blob.h"
 #include "nyampd_core.h"
 #include "nyampd_llm.h"
+#include "nyampd_provision.h"
 
 #include "nyamp_backends.h"
 #include "nyamp_protocol.h"
@@ -16,6 +18,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -23,6 +27,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/random.h>
@@ -30,6 +35,7 @@
 #include <unistd.h>
 
 #include "nyamp_shmem_uapi.h"
+#include "rk3576_shmem_layout.h"
 
 namespace
 {
@@ -42,6 +48,152 @@ namespace
 constexpr int kIdlePollMs = 20;
 
 using BackendFactory = nyamp::LlmService::BackendFactory;
+
+/****************************************************************************
+ * Name: Outbox
+ *
+ * Description:
+ *   Frames a worker thread wants sent.  The blob client runs on a worker --
+ *   it blocks for the length of a transfer -- but the transport loop stays
+ *   the only thread that touches the endpoint, so the worker queues here and
+ *   rings an eventfd.  Without the eventfd every window would wait out the
+ *   loop's idle tick, which at 835 windows is most of the transfer time.
+ *
+ ****************************************************************************/
+
+class Outbox final : public nyamp::BlobTransport
+{
+public:
+  Outbox() : wake_(eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) {}
+
+  ~Outbox() override
+  {
+    if (wake_ >= 0)
+      {
+        close(wake_);
+      }
+  }
+
+  bool Send(const nyamp::Frame &frame) override
+  {
+    const std::uint64_t one = 1;
+
+    if (wake_ < 0)
+      {
+        return false;
+      }
+
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      queue_.push_back(frame);
+    }
+
+    return write(wake_, &one, sizeof(one)) == sizeof(one);
+  }
+
+  bool Poll(nyamp::Frame *frame)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (queue_.empty())
+      {
+        return false;
+      }
+
+    *frame = queue_.front();
+    queue_.pop_front();
+    return true;
+  }
+
+  void Acknowledge() const
+  {
+    std::uint64_t count;
+
+    while (read(wake_, &count, sizeof(count)) > 0)
+      {
+      }
+  }
+
+  int wake_fd() const { return wake_; }
+
+private:
+  int wake_;
+  std::mutex mutex_;
+  std::deque<nyamp::Frame> queue_;
+};
+
+/****************************************************************************
+ * Name: SharedWindow
+ *
+ * Description:
+ *   The slot this daemon grants for blob windows.  It is NYAMP_SLOT_SHARED,
+ *   the same megabyte ASR input and TTS output alternate over; a model pull
+ *   happens while neither is running, and the lease in every grant says who
+ *   the window belongs to.  The arena header in front of it is never part of
+ *   a grant.
+ *
+ *   The region is mapped on first use rather than at start-up: the daemon
+ *   must keep serving health on an image without the shared-memory driver.
+ *
+ ****************************************************************************/
+
+class SharedWindow final : public nyamp::BlobWindow
+{
+public:
+  ~SharedWindow() override
+  {
+    if (mapping_ != nullptr)
+      {
+        munmap(mapping_, size_);
+      }
+  }
+
+  const std::uint8_t *data() const override
+  {
+    const std::uint8_t *base = Map();
+    return base == nullptr ? nullptr : base + NYAMP_SLOT_SHARED;
+  }
+
+  std::uint32_t offset() const override { return NYAMP_SLOT_SHARED; }
+  std::uint32_t capacity() const override { return NYAMP_SLOT_SHARED_SIZE; }
+
+private:
+  const std::uint8_t *Map() const
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (mapping_ != nullptr)
+      {
+        return static_cast<const std::uint8_t *>(mapping_);
+      }
+
+    const int fd = open("/dev/nyamp-shmem", O_RDWR | O_CLOEXEC);
+    if (fd < 0)
+      {
+        return nullptr;
+      }
+
+    nyamp_shmem_info info{};
+    if (ioctl(fd, NYAMP_SHMEM_IOC_INFO, &info) == 0 &&
+        info.size == NYAMP_SHMEM_SIZE)
+      {
+        void *mapping =
+            mmap(nullptr, info.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (mapping != MAP_FAILED)
+          {
+            mapping_ = mapping;
+            size_ = info.size;
+          }
+      }
+
+    close(fd);
+    return static_cast<const std::uint8_t *>(mapping_);
+  }
+
+  mutable std::mutex mutex_;
+  mutable void *mapping_ = nullptr;
+  mutable std::size_t size_ = 0;
+};
 
 /****************************************************************************
  * Name: SelectBackendFactory
@@ -397,12 +549,17 @@ bool WriteAll(int fd, const std::uint8_t *data, std::size_t size)
  *
  ****************************************************************************/
 
-bool DrainEvents(int fd, nyamp::LlmService &llm)
+bool DrainEvents(int fd, nyamp::LlmService &llm, nyamp::BlobService &blob,
+                 Outbox &outbox)
 {
   for (;;)
     {
-      nyamp::LlmFrame frame;
-      if (!llm.Poll(&frame))
+      nyamp::Frame frame;
+
+      /* Blob requests first: a transfer in flight is latency bound, and each
+       * queued request is the only thing its worker is waiting for.
+       */
+      if (!outbox.Poll(&frame) && !llm.Poll(&frame) && !blob.Poll(&frame))
         {
           return true;
         }
@@ -450,6 +607,25 @@ int Run(const char *requested_device)
   std::fprintf(stderr, "nyampd: generation=%u device=%s\n", generation,
                device);
 
+  /* The blob client pulls model files from the control domain, which owns
+   * the storage.  It is declared ahead of the services on purpose: they hold
+   * plain pointers to it, and their destructors join workers that may still
+   * be inside a transfer, so it has to be destroyed after them.
+   */
+
+  Outbox outbox;
+  SharedWindow window;
+  nyamp::BlobClient::Options blob_options;
+  const char *model_root = std::getenv("NYAMPD_MODEL_ROOT");
+  if (model_root != nullptr && model_root[0] == '/')
+    {
+      blob_options.root = model_root;
+    }
+
+  nyamp::BlobClient blob_client(generation, &outbox, &window, blob_options);
+  nyamp::ModelProvisioner provisioner(&blob_client);
+  nyamp::BlobService blob(generation, &provisioner);
+
   /* The service is always constructed so a client can learn from the health
    * capability mask whether an LLM backend was compiled in.  Without the
    * external RKLLM runtime the factory is absent and every LLM opcode is
@@ -458,6 +634,7 @@ int Run(const char *requested_device)
 
   nyamp::LlmService llm(generation, SharedCounterMilliseconds,
                         SelectBackendFactory());
+  llm.SetProvisioner(&provisioner);
 
   // Standard Linux RPMsg does not announce dynamically assigned addresses.
   // The first message lets the remote learn our endpoint address.
@@ -477,8 +654,16 @@ int Run(const char *requested_device)
 
   for (;;)
     {
-      struct pollfd pollfd = { fd, POLLIN, 0 };
-      const int ready_count = poll(&pollfd, 1, kIdlePollMs);
+      struct pollfd pollfds[2] = { { fd, POLLIN, 0 },
+                                   { outbox.wake_fd(), POLLIN, 0 } };
+      struct pollfd &pollfd = pollfds[0];
+      const int ready_count =
+          poll(pollfds, outbox.wake_fd() >= 0 ? 2 : 1, kIdlePollMs);
+
+      if (ready_count > 0 && (pollfds[1].revents & POLLIN) != 0)
+        {
+          outbox.Acknowledge();
+        }
 
       if (ready_count < 0 && errno != EINTR)
         {
@@ -501,7 +686,7 @@ int Run(const char *requested_device)
 
           if (received < 0 && (errno == EINTR || errno == EAGAIN))
             {
-              if (!DrainEvents(fd, llm))
+              if (!DrainEvents(fd, llm, blob, outbox))
                 {
                   close(fd);
                   return 1;
@@ -523,10 +708,36 @@ int Run(const char *requested_device)
           std::size_t info_size = 0;
           std::size_t response_size = 0;
           nyamp_header_s header;
-          if (nyamp_header_decode(&header, request,
+          const bool decoded =
+              nyamp_header_decode(&header, request,
                                   static_cast<std::size_t>(received)) ==
-                  NYAMP_OK &&
-              header.service == NYAMP_SERVICE_HEALTH &&
+              NYAMP_OK;
+
+          /* Responses to the requests this daemon originates.  They go to
+           * the client that is blocked on them and are never dispatched:
+           * Dispatch answers requests, and answering a response is how two
+           * responders end up looping.
+           */
+          if (decoded && header.service == NYAMP_SERVICE_BLOB &&
+              (header.flags & NYAMP_FLAG_KIND_MASK) == NYAMP_FLAG_RESPONSE)
+            {
+              if (static_cast<std::size_t>(received) ==
+                  NYAMP_WIRE_HEADER_SIZE + header.payload_size)
+                {
+                  blob_client.OnFrame(header,
+                                      request + NYAMP_WIRE_HEADER_SIZE);
+                }
+
+              if (!DrainEvents(fd, llm, blob, outbox))
+                {
+                  close(fd);
+                  return 1;
+                }
+
+              continue;
+            }
+
+          if (decoded && header.service == NYAMP_SERVICE_HEALTH &&
               header.opcode == nyamp::kInfoQuery)
             {
               info_size = CpuInfo(info, sizeof(info));
@@ -552,8 +763,13 @@ int Run(const char *requested_device)
               nyamp::Dispatch(request, static_cast<std::size_t>(received),
                               SharedCounterMilliseconds(), generation,
                               response, sizeof(response), &response_size,
-                              std::string_view(info, info_size), &llm);
-          if (result == NYAMP_OK && !WriteAll(fd, response, response_size))
+                              std::string_view(info, info_size), &llm, &blob);
+
+          /* A zero-length result is a deferred response or a dropped frame,
+           * not something to write.
+           */
+          if (result == NYAMP_OK && response_size != 0 &&
+              !WriteAll(fd, response, response_size))
             {
               std::fprintf(stderr, "nyampd: transport write failed: %s\n",
                            std::strerror(errno));
@@ -567,7 +783,7 @@ int Run(const char *requested_device)
             }
         }
 
-      if (!DrainEvents(fd, llm))
+      if (!DrainEvents(fd, llm, blob, outbox))
         {
           close(fd);
           return 1;

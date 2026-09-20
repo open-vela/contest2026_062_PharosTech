@@ -33,9 +33,12 @@
 
 #include "nyamp_models.h"
 #include "nyamp_protocol.h"
+#include "nyampd_frame.h"
 
 namespace nyamp
 {
+
+class ModelProvisioner;
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -53,11 +56,7 @@ constexpr std::size_t kLlmEventQueueLimit = 64;
  * Public Types
  ****************************************************************************/
 
-struct LlmFrame
-{
-  std::uint8_t data[NYAMP_RPMSG_MTU];
-  std::size_t size;
-};
+using LlmFrame = Frame;
 
 /****************************************************************************
  * Name: LlmService
@@ -92,6 +91,24 @@ public:
 
   models::Status Load(const std::string &directory);
   models::Status Unload();
+
+  /* Attach the provisioner that turns a logical model name into a local
+   * path.  Without one every LOAD behaves as it always has.
+   */
+
+  void SetProvisioner(ModelProvisioner *provisioner);
+
+  /* LOAD as the transport loop sees it.  An absolute path -- or any path when
+   * no provisioner is attached -- loads synchronously and the returned status
+   * is the answer.  A logical name ("llm/model.rkllm") may need hundreds of
+   * megabytes pulled from the control domain first, and the loop has to keep
+   * running for that pull to make progress at all: it is what delivers the
+   * blob responses.  So the load moves to a worker, `*deferred` is set, and
+   * the response to `request` arrives later through Poll.
+   */
+
+  models::Status BeginLoad(const std::string &name,
+                           const nyamp_header_s &request, bool *deferred);
 
   /* Accumulate one generate chunk.  On success `*started` reports whether the
    * chunk completed the request and the worker was launched; a chunk that only
@@ -133,6 +150,9 @@ private:
   };
 
   void Worker(std::uint64_t request_id, std::uint64_t deadline_ms);
+  void Loader(std::string name, nyamp_header_s request);
+  models::Status LoadNow(const std::string &directory);
+  bool PushFrame(const Frame &frame, bool droppable);
   void ResetPendingLocked();
   bool Push(const std::uint8_t *payload, std::size_t payload_size,
             std::uint16_t opcode, std::uint64_t request_id);
@@ -153,6 +173,14 @@ private:
 
   std::thread worker_;
   std::atomic<bool> running_{ false };
+
+  /* A deferred load.  It excludes generate, unload and a second load for as
+   * long as it runs, exactly as a synchronous load did by blocking the loop.
+   */
+  ModelProvisioner *provisioner_ = nullptr;
+  std::thread loader_;
+  std::atomic<bool> loading_{ false };
+  std::atomic<std::uint64_t> load_request_{ 0 };
 
   /* Move-only transfer of the assembled token array to the worker. */
   std::mutex ready_mutex_;
