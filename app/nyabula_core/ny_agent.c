@@ -663,6 +663,10 @@ static int ny_agent_worker(int argc, char **argv)
     ret = llm_proxy_init();
   if (ret == OK)
     ret = llm_router_init();
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+  if (ret == OK)
+    ret = ny_agent_local_init() < 0 ? ERROR : OK;
+#endif
   if (ret == OK)
     ret = tool_web_search_init();
   if (ret == OK)
@@ -1286,7 +1290,8 @@ int ny_agent_request(const struct ny_product_caller_s *caller,
     {
       ret = !g_agent_ready ? -EAGAIN
             : g_agent_active[0] && strcmp(topic, "agent.config.get") &&
-                    strcmp(topic, "agent.config.router.get")
+                    strcmp(topic, "agent.config.router.get") &&
+                    strcmp(topic, "agent.config.ondevice.get")
                 ? -EBUSY
                 : ny_agent_config(caller, topic, data, result);
       nxmutex_unlock(&g_agent_lock);

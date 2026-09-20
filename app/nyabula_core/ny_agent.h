@@ -51,6 +51,11 @@ int ny_agent_automation(const struct ny_product_caller_s *caller,
 int ny_agent_automation_tick(void);
 int ny_agent_config(const struct ny_product_caller_s *caller,
                     const char *topic, const cJSON *data, cJSON **result);
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+/* The on-device model as a router backend; see ny_agent_local.c. */
+int ny_agent_local_init(void);
+int ny_agent_local(const char *topic, const cJSON *data, cJSON **result);
+#endif
 
 /* Private ingress entry; the transport must hold its authorization lock. */
 int ny_agent_remote_request(const char *principal, const char *topic,

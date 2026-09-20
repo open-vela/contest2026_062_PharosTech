@@ -38,7 +38,8 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
   if(CONFIG_NYABULA_CORE_AGENT)
     list(APPEND NYABULA_CORE_SRCS ny_agent.c ny_agent_capabilities.c ny_agent_config.c ny_agent_skills.c ny_agent_automation.c ny_agent_mcp_wire.c ny_agent_mcp.c ny_agent_mcp_in.c)
     list(APPEND NYABULA_CORE_SRCS ny_agent_profile.c ny_agent_channels.c ny_agent_builtin.c ny_agent_weixin.c ny_agent_feishu.c ny_agent_node.c)
-    list(APPEND NYABULA_CORE_SRCS ny_product_companion.c)
+    list(APPEND NYABULA_CORE_SRCS ny_product_companion.c ny_agent_local.c
+         ny_agent_local_intent.c)
     list(APPEND NYABULA_CORE_DEPENDS apps_ai_agent libsodium)
     list(APPEND NYABULA_CORE_SRCS ny_agent_mcp_server.c)
     set(NYABULA_AGENT_INCLUDES ${NUTTX_APPS_DIR}/../packages/ai_agent/include

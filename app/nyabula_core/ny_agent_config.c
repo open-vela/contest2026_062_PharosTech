@@ -177,6 +177,10 @@ int ny_agent_config(const struct ny_product_caller_s *caller,
     return -EACCES;
   if (!strncmp(topic, "agent.config.router.", 20))
     return ny_agent_router(topic, data, result);
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+  if (!strncmp(topic, "agent.config.ondevice.", 22))
+    return ny_agent_local(topic, data, result);
+#endif
   if (strcmp(topic, "agent.config.get") != 0 &&
       strcmp(topic, "agent.config.set") != 0)
     return -ENOSYS;
