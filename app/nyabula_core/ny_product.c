@@ -26,6 +26,9 @@
 #ifdef CONFIG_NYABULA_CORE_AGENT
 #include "ny_agent.h"
 #endif
+#ifdef CONFIG_NYABULA_CORE_LIGHT
+#include "ny_product_light.h"
+#endif
 #include <errno.h>
 #include <malloc.h>
 #include <math.h>
@@ -197,6 +200,16 @@ static int ny_product_system(const struct ny_product_caller_s *caller,
             }
         }
 #endif
+
+#ifdef CONFIG_NYABULA_CORE_LIGHT
+      /* A copy of two numbers the light sensor already holds. */
+
+      if (!ny_product_light_describe(root))
+        {
+          cJSON_Delete(root);
+          return -ENOMEM;
+        }
+#endif
     }
 
   *result = root;
@@ -282,8 +295,26 @@ int ny_product_request(const struct ny_product_caller_s *caller,
     return ret;
 #endif
 
+#ifdef CONFIG_NYABULA_CORE_LIGHT
+  ret = ny_product_light_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
+#ifdef CONFIG_NYABULA_CORE_BT
+  ret = ny_product_bt_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
   ret = ny_compute_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
+#ifdef CONFIG_NYABULA_CORE_VOICE
+  ret = ny_voice_request(caller, topic, data, result);
   if (ret != -ENOSYS)
     return ret;
 #endif
