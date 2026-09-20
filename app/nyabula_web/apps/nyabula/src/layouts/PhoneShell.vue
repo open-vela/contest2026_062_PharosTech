@@ -6,6 +6,7 @@ import { RouterView, useRoute } from 'vue-router';
 import { StatusPill, ThemeSwitcher, UiIcon, NyabulaLogo } from '@nyabula/ui';
 import { useShell } from '../composables/useShell';
 import ConnectionBanner from '../components/ConnectionBanner.vue';
+import PanelUpdateBanner from '../components/PanelUpdateBanner.vue';
 
 const shell = useShell();
 const route = useRoute();
@@ -33,6 +34,7 @@ const showBottom = computed(() => shell.depth.value === 0);
       <ThemeSwitcher compact />
     </header>
     <ConnectionBanner />
+    <PanelUpdateBanner />
     <main class="main" :class="{ 'has-bottom': showBottom }">
       <RouterView v-slot="{ Component }">
         <Transition :name="transitionName">
