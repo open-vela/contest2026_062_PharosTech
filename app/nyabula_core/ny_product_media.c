@@ -45,6 +45,7 @@
 #define NY_MEDIA_START_MS    1000
 #define NY_MEDIA_LIBRARY_MAX 64
 #define NY_MEDIA_PROBE_MS    2000
+#define NY_MEDIA_WAVE_HEADER 44 /* RIFF + fmt(16) + data chunk header */
 
 struct ny_media_wave_s
 {
@@ -234,6 +235,17 @@ static int ny_media_wave(const char *name, struct ny_media_wave_s *wave)
            */
           if (!format || !size || size % (wave->channels * 2) ||
               (uint64_t)position + size != (uint64_t)info.st_size)
+            goto failed;
+
+          /* /dev/audio/pcm0 is the PCM decoder in front of the codec: it
+           * reads the WAV header itself and rejects a stream that starts at
+           * the samples ("Invalid PCM WAV file"), after which the player
+           * never reaches PLAYING.  It only knows the canonical 44-byte
+           * header, so that is the only layout worth accepting here, and
+           * the descriptor goes back to the start of the file.
+           */
+
+          if (position != NY_MEDIA_WAVE_HEADER || lseek(fd, 0, SEEK_SET) < 0)
             goto failed;
           wave->bytes = size;
           wave->duration =
