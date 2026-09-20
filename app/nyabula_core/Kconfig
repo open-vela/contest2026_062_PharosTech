@@ -379,6 +379,255 @@ config NYABULA_CORE_AUDIO_INPUT_DEVICE
 	default "/dev/audio/pcm_in0"
 	depends on NYABULA_CORE_AUDIO
 
+config NYABULA_CORE_LIGHT
+	bool "Ambient light sensor: pupils that react to the room"
+	default y
+	depends on NYABULA_CORE_PRODUCT && ADC
+	---help---
+		light.* topics.  A photodiode on an ADC channel is read a few
+		times a second from the product worker and turned into how wide
+		the cat's pupils are: a slit in bright light, round in the dark.
+		Nothing is assumed about the circuit; the range and the direction
+		of the reading are learnt, kept in the product store, and can be
+		overruled by the owner.  The eyes are told through eyes.ambient,
+		so this does something visible only with NYABULA_CORE_EYE.
+
+config NYABULA_CORE_LIGHT_DEVICE
+	string "Photodiode ADC node"
+	default "/dev/adc4"
+	depends on NYABULA_CORE_LIGHT
+	---help---
+		The node must convert on ANIOC_TRIGGER and return one
+		struct adc_msg_s per read, as rk3576_saradc.c does.
+
+config NYABULA_CORE_VOICE
+	bool "Voice assistant: wake word, speech recognition, agent, speech"
+	default n
+	depends on NYABULA_CORE_COMPUTE && NYABULA_CORE_AGENT
+	depends on NYABULA_CORE_AUDIO && AUDIO
+	---help---
+		The control-domain half of the voice chain.  The models run on
+		the Linux compute domain (nyampd: KWS, ASR, TTS); this side owns
+		the microphone and the speaker, streams captured audio to the
+		wake word service, attaches a recognition request after
+		"ni hao openvela", submits the transcript to the agent as the
+		owner, and speaks the reply.  Adds the voice.* topics and the
+		kws/asr/tts commands of nyampctl.  Off until the owner enables
+		it (voice.enable, persisted).  Needs /data/models/kws, asr and
+		tts; see docs/voice-chain-plan.md.  About 0.4 MB of static RAM,
+		and 0.3 MB more of heap and stacks while the owner has it on.
+
+if NYABULA_CORE_VOICE
+
+choice
+	prompt "How microphone and speaker share the ES8388"
+	default NYABULA_CORE_VOICE_CODEC_HALF
+	---help---
+		The ES8388 driver refuses to configure one direction in a rate,
+		width or channel count other than the one the other direction
+		is reserved in.  The wake word needs 16 kHz mono; speech, music
+		and the alarm chime are 44.1 kHz.
+
+config NYABULA_CORE_VOICE_CODEC_HALF
+	bool "Half duplex: microphone closed while the robot speaks"
+	---help---
+		16 kHz mono capture, 44.1 kHz stereo playback, never at the same
+		time.  The only arrangement built on what was measured on the
+		board.  No echo, no self-wake; a reply is interrupted from the
+		panel (voice.listen, voice.cancel), not by voice.  Another
+		player must call ny_voice_speaker_claim() before it opens the
+		speaker, or it gets -EBUSY while the microphone is open.
+
+config NYABULA_CORE_VOICE_CODEC_SHARED_16K
+	bool "Full duplex at 16 kHz mono: speech is resampled down"
+	---help---
+		Both directions run in the capture format, so the microphone
+		stays open while the robot speaks.  Speech loses what is above
+		7 kHz.  Other players still have to claim the codec.
+
+config NYABULA_CORE_VOICE_CODEC_SHARED_44K
+	bool "Full duplex at 44.1 kHz stereo: capture is decimated to 16 kHz"
+	---help---
+		The microphone runs in the speaker's format and is decimated
+		here, so the flash player, the chime and Bluetooth music coexist
+		with the wake word without arbitration.  Not yet tried on the
+		board: needs stereo 44.1 kHz capture from the SAI.
+
+endchoice
+
+config NYABULA_CORE_VOICE_BARGE_IN
+	bool "Keep listening for the wake word while speaking"
+	default n
+	depends on !NYABULA_CORE_VOICE_CODEC_HALF
+	---help---
+		There is no echo canceller: the microphone hears the reply.
+		With this the owner can interrupt a reply by voice, at the risk
+		of the robot waking itself.  A reply that contains the wake word
+		is spoken deaf in any case.
+
+config NYABULA_CORE_VOICE_VAD_GATE
+	bool "Do not stream silence to the wake word service"
+	default y
+	---help---
+		An energy gate with an adaptive noise floor and a two second
+		hang-over; when it opens, the last 1.5 s are streamed first, so
+		wake word detection does not depend on the gate being right.
+		Without it every captured sample crosses the link.
+
+config NYABULA_CORE_VOICE_VAD_MIN_RMS
+	int "Gate: lowest level that counts as sound (16 bit RMS)"
+	default 150
+	range 1 8000
+
+config NYABULA_CORE_VOICE_WIRE_S16
+	bool "Send capture windows as int16 instead of float32"
+	default n
+	---help---
+		Halves the bytes written to the non-cacheable shared region.
+		float32 is what the compute-domain tests exercise most.
+
+config NYABULA_CORE_VOICE_WINDOW_MS
+	int "Capture window pushed to the wake word service (ms)"
+	default 200
+	range 100 1000
+	---help---
+		One RPMsg round trip per window.  It bounds how late a wake word
+		is noticed and how late a command ends.
+
+config NYABULA_CORE_VOICE_SPEAKER
+	int "Default TTS speaker id"
+	default 1
+	range 0 255
+
+config NYABULA_CORE_VOICE_CUE_DIR
+	string "Directory of pre-synthesised cues"
+	default "/data/voice"
+	---help---
+		wait.wav, not_heard.wav, busy.wav, error.wav and approval.wav
+		here (44.1 kHz mono; `nyampctl tts say <text> <file>` makes
+		them) are played while the TTS model is not loaded; two tones
+		are where a file is missing.
+
+config NYABULA_CORE_VOICE_UNLOAD_IDLE_S
+	int "Unload ASR and TTS after this many idle seconds (0 = never)"
+	default 0
+	---help---
+		The LLM (about 1 GB with its tmpfs copy), TTS (about 200 MB
+		resident) and ASR share the compute domain's memory.  Measured
+		headroom allows all of them to stay; set this when it does not.
+		The files stay in the compute domain's tmpfs, so a reload is a
+		runtime load, not a pull.
+
+config NYABULA_CORE_VOICE_PRIORITY
+	int "Voice task priority"
+	default 100
+	range 20 200
+	---help---
+		The microphone thread runs ten above it, the eye thread ten
+		below.
+
+config NYABULA_CORE_VOICE_STACKSIZE
+	int "Voice turn thread stack size"
+	default 32768
+	---help---
+		The turn thread calls agent.chat, which serialises the agent
+		store.
+
+endif # NYABULA_CORE_VOICE
+
+config NYABULA_CORE_BT
+	bool "Bluetooth speaker and hands-free unit (A2DP sink, AVRCP, HFP)"
+	default n
+	depends on NYABULA_CORE_PRODUCT && NYABULA_CORE_AUDIO
+	depends on BT_CLASSIC && BT_A2DP_SINK && BT_HFP_HF
+	depends on BT_AVRCP_CONTROLLER && BT_AVRCP_TARGET
+	depends on LIB_FLUORIDE_SBC && !DISABLE_PTHREAD
+	---help---
+		bt.* topics on the raw ZBlue host: the phone sees a speaker
+		(SBC decoded on an audio thread to the ES8388, play control,
+		track text and absolute volume over AVRCP) and a hands-free unit
+		(mSBC or CVSD call audio both ways, with the microphone gated
+		while the far end speaks).  Pairing is Just Works inside a
+		window the owner opens and confirms on the panel.
+
+		Call audio also needs the controller driver to pass SCO packets
+		(SV6621_BT_SCO).  Phones are only remembered across a restart
+		with BT_SETTINGS; BT_DEVICE_NAME_DYNAMIC lets the inquiry
+		response carry the product name.
+
+config NYABULA_CORE_BT_OUTPUT_DEVICE
+	string "Bluetooth playback node"
+	default "/dev/audio/pcm0"
+	depends on NYABULA_CORE_BT
+	---help---
+		A node behind the PCM decoder: the stream starts with a WAV
+		header that tells it the format.
+
+config NYABULA_CORE_BT_INPUT_DEVICE
+	string "Bluetooth call microphone node"
+	default "/dev/audio/pcm_in0"
+	depends on NYABULA_CORE_BT
+
+config NYABULA_CORE_BT_COD
+	hex "Class of device"
+	default 0x240414
+	depends on NYABULA_CORE_BT
+	---help---
+		Audio and rendering services, audio/video major class,
+		loudspeaker.  This is what decides the icon a phone shows.
+
+config NYABULA_CORE_BT_DISCOVERABLE_SECONDS
+	int "Default length of the pairing window (s)"
+	default 120
+	range 10 600
+	depends on NYABULA_CORE_BT
+
+config NYABULA_CORE_BT_AUTOCONNECT
+	bool "Call the last phone once after start"
+	default y
+	depends on NYABULA_CORE_BT && BT_SETTINGS
+
+config NYABULA_CORE_BT_A2DP_PREBUFFER_MS
+	int "Music buffered before playback starts (ms)"
+	default 200
+	range 40 1000
+	depends on NYABULA_CORE_BT
+	---help---
+		The cushion against radio jitter, which Wi-Fi traffic on the
+		same chip makes worse.  It is also the delay behind the phone.
+
+config NYABULA_CORE_BT_GATE_THRESHOLD
+	int "Far end level that turns the call microphone down (RMS)"
+	default 500
+	range 0 32767
+	depends on NYABULA_CORE_BT
+
+config NYABULA_CORE_BT_GATE_ATTENUATION_DB
+	int "Call microphone attenuation while the far end speaks (dB)"
+	default 24
+	range 0 90
+	depends on NYABULA_CORE_BT
+
+config NYABULA_CORE_BT_GATE_HANG_MS
+	int "Time the call microphone stays down after the far end (ms)"
+	default 250
+	range 0 2000
+	depends on NYABULA_CORE_BT
+
+config NYABULA_CORE_BT_AUDIO_PRIORITY
+	int "Bluetooth audio thread priority"
+	default 120
+	range 1 255
+	depends on NYABULA_CORE_BT
+	---help---
+		Above the product worker and the web server, so that neither
+		can make the music stutter.
+
+config NYABULA_CORE_BT_STACKSIZE
+	int "Bluetooth bring-up thread stack size"
+	default 8192
+	depends on NYABULA_CORE_BT
+
 config NYABULA_CORE_STORAGE_BYTES_LIMIT
 	int "Maximum stored value bytes per plugin"
 	default 65536

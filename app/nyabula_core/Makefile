@@ -86,6 +86,16 @@ CSRCS += ny_product_alarms.c ny_product_notifications.c ny_product_briefing.c
 ifeq ($(CONFIG_NYABULA_CORE_AUDIO),y)
 CSRCS += ny_product_audio.c
 endif
+ifeq ($(CONFIG_NYABULA_CORE_LIGHT),y)
+CSRCS += ny_product_light.c ny_light_math.c
+endif
+ifeq ($(CONFIG_NYABULA_CORE_BT),y)
+# The Bluetooth host exports no include path of its own; these are the ones
+# its public headers need.  The SBC library adds its own through Make.defs.
+CSRCS += ny_product_bt.c ny_product_bt_audio.c ny_audio_stream.c ny_pcm.c ny_sbc.c
+CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/external/zblue/zblue/port/include
+CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/external/zblue/zblue/port/include/zephyr
+endif
 ifeq ($(CONFIG_NYABULA_CORE_NETWORK),y)
 CSRCS += ny_product_network.c
 endif
@@ -133,6 +143,11 @@ ifneq ($(CONFIG_EXAMPLES_NYAMPCTL),y)
 CSRCS += nyamp_protocol.c
 VPATH += :$(NYCORE_NYAMP_DIR)
 DEPPATH += --dep-path $(NYCORE_NYAMP_DIR)
+endif
+ifeq ($(CONFIG_NYABULA_CORE_VOICE),y)
+# The voice chain: wake word, recognition and speech run on the compute
+# domain; these own the microphone, the speaker and the turn.
+CSRCS += ny_voice.c ny_voice_audio.c ny_voice_dsp.c ny_voice_sm.c ny_voice_wire.c
 endif
 endif
 
