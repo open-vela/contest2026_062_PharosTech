@@ -2,6 +2,7 @@
 /* Scrollable message list; auto-scrolls to the newest message. */
 import { nextTick, ref, watch } from 'vue';
 import { EmptyState, UiIcon, NyabulaLogo } from '@nyabula/ui';
+import MarkdownText from './MarkdownText.vue';
 import type { ChatMessage } from './agent.logic';
 
 const props = defineProps<{ messages: ChatMessage[]; connected: boolean }>();
@@ -70,6 +71,8 @@ watch(
   color: var(--md-on-surface);
   border-bottom-left-radius: var(--radius-s);
 }
+/* Markdown brings its own blocks and spacing. */
+.bubble:has(.markdown) { white-space: normal; }
 .user .bubble {
   background: var(--md-primary);
   color: var(--md-on-primary);
