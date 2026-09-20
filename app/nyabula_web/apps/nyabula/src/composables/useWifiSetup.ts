@@ -5,10 +5,16 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useToastStore } from '@nyabula/ui';
 import { useSessionStore } from '../stores/session';
 import { useDeviceAccessStore } from '../stores/deviceAccess';
-import { isLinkDropError, joinFailed, normalizeScan, parseNetworkStatus, validateWifiInput, type NetworkStatus, type WifiNetwork } from '../lib/wifi';
+import { isLinkDropError, isScanning, isUnknownTopic, joinFailed, normalizeScan, parseNetworkStatus, scanSeq, validateWifiInput, type NetworkStatus, type WifiNetwork } from '../lib/wifi';
 
 /** A WiFi scan takes up to ~6 s on the device; the client default is 8 s. */
 const SCAN_TIMEOUT_MS = 20000;
+/** Starting a scan, or asking for its result, answers at once. */
+const SCAN_START_TIMEOUT_MS = 4000;
+const SCAN_POLL_MS = 1500;
+/** Scan, link drop, the phone finding the hotspot again, reconnect. */
+const SCAN_COLLECT_MS = 45000;
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 const SET_TIMEOUT_MS = 15000;
 const POLL_MS = 2500;
 /** Right after the submit the device may still report its hotspot state; only
@@ -72,13 +78,46 @@ export function useWifiSetup() {
     }
   }
 
+  /* The scan is started, not waited for.  On the device's own hotspot the
+   * radio leaves the channel to listen on the others, the phone loses the
+   * beacons and the link drops -- taking with it the answer this page used to
+   * wait for.  The device keeps the list instead; it is collected here once
+   * the link is back, however many requests fail in between. */
   async function scan(): Promise<void> {
     if (scanning.value) return;
     scanning.value = true;
     scanError.value = null;
+    const deadline = Date.now() + SCAN_COLLECT_MS;
     try {
-      networks.value = normalizeScan(await session.request('network.wifi.scan', {}, { timeoutMs: SCAN_TIMEOUT_MS }));
-      scanned.value = true;
+      let before: number | null = null;
+      try {
+        before = scanSeq(await session.request('network.wifi.scan', { background: true }, { timeoutMs: SCAN_START_TIMEOUT_MS }));
+      } catch (e) {
+        /* Firmware without the background scan refuses nothing here, it just
+         * scans and answers; a dropped link is the case this is all for. */
+        if (!isLinkDropError(e)) throw e;
+      }
+      for (;;) {
+        await sleep(SCAN_POLL_MS);
+        try {
+          const result = await session.request('network.wifi.scan.result', {}, { timeoutMs: SCAN_START_TIMEOUT_MS });
+          const seq = scanSeq(result);
+          if (!isScanning(result) && (before === null ? seq > 0 : seq > before)) {
+            networks.value = normalizeScan(result);
+            scanned.value = true;
+            return;
+          }
+        } catch (e) {
+          if (isUnknownTopic(e)) {
+            /* Older firmware: the one request that waits is all there is. */
+            networks.value = normalizeScan(await session.request('network.wifi.scan', {}, { timeoutMs: SCAN_TIMEOUT_MS }));
+            scanned.value = true;
+            return;
+          }
+          /* Not connected right now: that is expected, keep asking. */
+        }
+        if (Date.now() > deadline) throw new Error('扫描超时，请重试');
+      }
     } catch (e) {
       scanError.value = isLinkDropError(e) ? '扫描时连接中断，请稍后重试' : message(e);
     } finally {

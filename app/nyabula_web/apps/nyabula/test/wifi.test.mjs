@@ -81,3 +81,14 @@ test('only a drop after sending counts as the expected hotspot teardown', () => 
 test('band label', () => {
   assert.deepEqual([bandLabel(2437), bandLabel(5180), bandLabel(5955), bandLabel(null)], ['2.4 GHz', '5 GHz', '6 GHz', '']);
 });
+
+test('a background scan is told apart by its sequence number', async () => {
+  const { isScanning, isUnknownTopic, scanSeq } = await import('../src/lib/wifi.ts');
+  assert.equal(scanSeq({ seq: 3, scanning: false, networks: [] }), 3);
+  assert.equal(scanSeq({ networks: [] }), 0);
+  assert.equal(scanSeq(null), 0);
+  assert.equal(isScanning({ scanning: true }), true);
+  assert.equal(isScanning({ scanning: 'yes' }), false);
+  assert.equal(isUnknownTopic({ code: 'ENOTFOUND' }), true);
+  assert.equal(isUnknownTopic({ code: 'ECONNRESET' }), false);
+});
