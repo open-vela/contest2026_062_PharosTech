@@ -43,6 +43,9 @@
 #ifdef CONFIG_NYABULA_CORE_BT
 #include "ny_product_bt.h"
 #endif
+#ifdef CONFIG_NYABULA_CORE_VOICE
+#include "ny_voice.h"
+#endif
 
 #define NY_MEDIA_TRACK_MAX   96
 #define NY_MEDIA_WAIT_MS     5000
@@ -105,6 +108,15 @@ static bool g_media_settings_saved = true;
 static int g_media_alert = NY_PRODUCT_MEDIA_ALERT_OFF;
 static bool g_media_alert_silence;
 static bool g_media_sleep;
+
+#ifdef CONFIG_NYABULA_CORE_VOICE
+/* The player holds the microphone shut while a track runs.  Only the media
+ * tick reads and clears it, and only ny_media_start sets it, both on the
+ * same thread, so it needs no lock.
+ */
+
+static bool g_media_claimed;
+#endif
 static uint64_t g_media_alert_next;
 
 static uint32_t ny_media_le32(const unsigned char *bytes);
@@ -565,6 +577,24 @@ static int ny_media_chime_create(void)
 }
 
 /****************************************************************************
+ * Name: ny_media_speaker_release
+ * Description: Give the microphone back once the player is done with the
+ *   codec.  Paired with the claim ny_media_start takes; doing nothing when
+ *   voice is not in the build keeps the call sites free of #ifdef.
+ ****************************************************************************/
+
+static void ny_media_speaker_release(void)
+{
+#ifdef CONFIG_NYABULA_CORE_VOICE
+  if (g_media_claimed)
+    {
+      g_media_claimed = false;
+      ny_voice_speaker_release();
+    }
+#endif
+}
+
+/****************************************************************************
  * Name: ny_media_start
  * Description: Start one track of the media directory on an idle player.
  ****************************************************************************/
@@ -589,6 +619,22 @@ static int ny_media_start(const char *name)
       return claim;
     }
 #endif
+#ifdef CONFIG_NYABULA_CORE_VOICE
+  /* The wake word holds the microphone open, and the ES8388 refuses a
+   * playback format that differs from the capture one while it is: music
+   * is 44.1 kHz, capture is 16 kHz, so without this the player never left
+   * IDLE and every track came back as EIO once voice was switched on.
+   */
+
+  int listening = ny_voice_speaker_claim();
+  if (listening < 0)
+    {
+      close(fd);
+      return listening;
+    }
+
+  g_media_claimed = true;
+#endif
   int ret = nxplayer_setdevice(g_media_player, g_media_device);
   bool supported = ny_media_volume_support(g_media_device);
 #ifndef CONFIG_AUDIO_EXCLUDE_VOLUME
@@ -611,6 +657,7 @@ static int ny_media_start(const char *name)
   if (ret < 0)
     {
       close(fd);
+      ny_media_speaker_release();
       return ret;
     }
   uint64_t deadline = ny_product_time_ms(true) + NY_MEDIA_START_MS;
@@ -618,7 +665,10 @@ static int ny_media_start(const char *name)
          ny_product_time_ms(true) < deadline)
     usleep(10000);
   if (nxplayer_getstate(g_media_player) == NXPLAYER_STATE_IDLE)
-    return -EIO;
+    {
+      ny_media_speaker_release();
+      return -EIO;
+    }
   nxmutex_lock(&g_media_lock);
   snprintf(g_media_track, sizeof(g_media_track), "%s", name);
   g_media_duration = wave.duration;
@@ -957,6 +1007,17 @@ int ny_product_media_tick(void)
         g_media_job.busy = false;
     }
   nxmutex_unlock(&g_media_lock);
+
+  /* The claim ny_media_start took lasts as long as the track does: the
+   * microphone comes back when the player falls idle, not a tick earlier,
+   * or the codec would change format under a track that is still playing.
+   */
+
+  if (state == NXPLAYER_STATE_IDLE)
+    {
+      ny_media_speaker_release();
+    }
+
   ny_media_alert_tick(state, now);
 #ifdef CONFIG_NYABULA_CORE_BT
   if (state == NXPLAYER_STATE_IDLE && !execute)
