@@ -45,7 +45,8 @@ enum nbootctl_target_e
 
 static const char *nbootctl_medium_name(unsigned int medium);
 static const char *nbootctl_reason_name(unsigned int reason);
-static int nbootctl_handoff(unsigned int *medium_out, unsigned int *slot_out);
+static int nbootctl_handoff(unsigned int *medium_out, unsigned int *domain_out,
+                            unsigned int *slot_out);
 static int nbootctl_status(void);
 static int nbootctl_parse_slot(const char *value, unsigned int *slot);
 static int nbootctl_parse_u64(const char *value, uint64_t *out);
@@ -70,6 +71,7 @@ static const char *nbootctl_reason_name(unsigned int reason)
   return reason == 0   ? "normal"
          : reason == 1 ? "requested-slot"
          : reason == 2 ? "fallback"
+         : reason == 3 ? "ram"
                        : "unknown";
 }
 
@@ -77,10 +79,12 @@ static const char *nbootctl_reason_name(unsigned int reason)
  * Name: nbootctl_handoff
  ****************************************************************************/
 
-static int nbootctl_handoff(unsigned int *medium_out, unsigned int *slot_out)
+static int nbootctl_handoff(unsigned int *medium_out, unsigned int *domain_out,
+                            unsigned int *slot_out)
 {
   uint64_t generation;
   unsigned int medium;
+  unsigned int domain;
   unsigned int reason;
   unsigned int slot;
   int ret;
@@ -89,7 +93,7 @@ static int nbootctl_handoff(unsigned int *medium_out, unsigned int *slot_out)
    * a console; only the wording of a failure is this tool's own.
    */
 
-  ret = nbootctl_handoff_read(&medium, &slot, &reason, &generation);
+  ret = nbootctl_handoff_read(&medium, &domain, &slot, &reason, &generation);
   if (ret < 0)
     {
       fprintf(stderr, "nbootctl: %s\n",
@@ -98,10 +102,19 @@ static int nbootctl_handoff(unsigned int *medium_out, unsigned int *slot_out)
       return 1;
     }
 
-  printf("medium=%s\nslot=%c\ngeneration=%llu\nreason=%s\n",
-         nbootctl_medium_name(medium), slot ? 'b' : 'a',
+  /* slot is a slot of domain.  An AMP image started from RAM runs from no
+   * slot at all.
+   */
+
+  printf("medium=%s\ndomain=%s\nslot=%s\ngeneration=%llu\nreason=%s\n",
+         nbootctl_medium_name(medium),
+         domain == NBOOTCTL_DOMAIN_AMP ? "amp" : "nuttx",
+         slot == 0   ? "a"
+         : slot == 1 ? "b"
+                     : "none",
          (unsigned long long)generation, nbootctl_reason_name(reason));
   *medium_out = medium;
+  *domain_out = domain;
   *slot_out = slot;
   return 0;
 }
@@ -113,10 +126,11 @@ static int nbootctl_handoff(unsigned int *medium_out, unsigned int *slot_out)
 static int nbootctl_status(void)
 {
   unsigned int medium;
+  unsigned int domain;
   unsigned int slot;
   int ret;
 
-  ret = nbootctl_handoff(&medium, &slot);
+  ret = nbootctl_handoff(&medium, &domain, &slot);
   if (ret != 0)
     {
       return ret;
@@ -176,10 +190,11 @@ static int nbootctl_parse_u64(const char *value, uint64_t *out)
 static int nbootctl_reboot(enum nbootctl_target_e target)
 {
   unsigned int medium;
+  unsigned int domain;
   unsigned int slot;
   int ret;
 
-  ret = nbootctl_handoff(&medium, &slot);
+  ret = nbootctl_handoff(&medium, &domain, &slot);
   if (ret != 0)
     {
       return 1;
@@ -242,6 +257,7 @@ static void nbootctl_usage(void)
 int main(int argc, FAR char *argv[])
 {
   unsigned int medium;
+  unsigned int running_domain;
   unsigned int running_slot;
   unsigned int slot;
   int ret;
@@ -257,7 +273,7 @@ int main(int argc, FAR char *argv[])
       (strcmp(argv[1], "verify") == 0 || strcmp(argv[1], "set-active") == 0 ||
        strcmp(argv[1], "mark-successful") == 0))
     {
-      ret = nbootctl_handoff(&medium, &running_slot);
+      ret = nbootctl_handoff(&medium, &running_domain, &running_slot);
       if (ret != 0 || nbootctl_parse_slot(argv[3], &slot) != 0)
         {
           nbootctl_usage();
@@ -287,13 +303,23 @@ int main(int argc, FAR char *argv[])
 
   if (argc == 4 && strcmp(argv[1], "stage") == 0)
     {
-      ret = nbootctl_handoff(&medium, &running_slot);
+      ret = nbootctl_handoff(&medium, &running_domain, &running_slot);
       if (ret != 0)
         {
           return 1;
         }
 
-      ret = nbootctl_bootctrl_stage(medium, argv[2], running_slot, argv[3]);
+      /* The running slot only protects its own domain: under AMP neither
+       * NuttX slot runs, and staging "nuttx" replaces the inactive one.
+       */
+
+      ret = nbootctl_bootctrl_stage(
+          medium, argv[2],
+          nbootctl_running_slot(running_domain, running_slot,
+                                strcmp(argv[2], "amp") == 0
+                                    ? NBOOTCTL_DOMAIN_AMP
+                                    : NBOOTCTL_DOMAIN_NUTTX),
+          argv[3]);
       if (ret < 0)
         {
           fprintf(stderr, "nbootctl: stage failed: %d\n", ret);
@@ -307,7 +333,7 @@ int main(int argc, FAR char *argv[])
     {
       unsigned int target_slot;
 
-      ret = nbootctl_handoff(&medium, &running_slot);
+      ret = nbootctl_handoff(&medium, &running_domain, &running_slot);
       if (ret != 0 || nbootctl_parse_slot(argv[3], &slot) != 0 ||
           nbootctl_parse_slot(argv[4], &target_slot) != 0)
         {
@@ -327,7 +353,7 @@ int main(int argc, FAR char *argv[])
 
   if (argc == 3 && strcmp(argv[1], "update-nboot") == 0)
     {
-      ret = nbootctl_handoff(&medium, &running_slot);
+      ret = nbootctl_handoff(&medium, &running_domain, &running_slot);
       if (ret != 0)
         {
           return 1;
@@ -366,7 +392,7 @@ int main(int argc, FAR char *argv[])
 
   if (argc == 5 && strcmp(argv[1], "write-part") == 0)
     {
-      ret = nbootctl_handoff(&medium, &running_slot);
+      ret = nbootctl_handoff(&medium, &running_domain, &running_slot);
       if (ret != 0)
         {
           return 1;
@@ -397,7 +423,7 @@ int main(int argc, FAR char *argv[])
           return 1;
         }
 
-      ret = nbootctl_handoff(&medium, &running_slot);
+      ret = nbootctl_handoff(&medium, &running_domain, &running_slot);
       if (ret != 0)
         {
           return 1;
@@ -418,7 +444,7 @@ int main(int argc, FAR char *argv[])
 
   if (argc == 4 && strcmp(argv[1], "write-gpt") == 0)
     {
-      ret = nbootctl_handoff(&medium, &running_slot);
+      ret = nbootctl_handoff(&medium, &running_domain, &running_slot);
       if (ret != 0)
         {
           return 1;
@@ -437,7 +463,7 @@ int main(int argc, FAR char *argv[])
 #ifdef CONFIG_FSUTILS_MKFATFS
   if (argc == 3 && strcmp(argv[1], "format") == 0)
     {
-      ret = nbootctl_handoff(&medium, &running_slot);
+      ret = nbootctl_handoff(&medium, &running_domain, &running_slot);
       if (ret != 0)
         {
           return 1;

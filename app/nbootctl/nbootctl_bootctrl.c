@@ -52,8 +52,15 @@
 #define NBOOTCTL_FIT_MAGIC      0xd00dfeedu
 #define NBOOTCTL_REBOOT_MAGIC   0x4e425200u
 
-/* N-Boot publishes this boot's medium and slot in PMU1 GRF scratch
- * registers immediately before it enters NuttX.
+/* N-Boot publishes this boot's medium, domain and slot in PMU1 GRF scratch
+ * registers immediately before it enters NuttX, or, for an AMP image, before
+ * it starts the first Linux CPU.
+ *
+ *   31:16 magic  15:12 version  11:8 reason  7:4 medium  3:2 domain
+ *   1 reserved, zero  0 slot
+ *
+ * The domain bits were zero in every record written before AMP handoffs, so
+ * a NuttX-slot record reads the same as it always did.
  */
 
 #define NBOOTCTL_HANDOFF_REG        0x26026234ul
@@ -109,6 +116,10 @@ _Static_assert(offsetof(struct nbootctl_record_s, padding) == 236,
                "bootctrl request offset changed");
 
 /* Private Function Prototypes */
+
+static uint32_t g_nbootctl_handoff_header;
+static uint64_t g_nbootctl_handoff_generation;
+static volatile bool g_nbootctl_handoff_latched;
 
 static uint32_t nbootctl_reg_read(uintptr_t address);
 static void nbootctl_slot_export(const struct nbootctl_slot_s *from,
@@ -343,27 +354,41 @@ static int nbootctl_write_records(struct inode *inode,
  * Name: nbootctl_handoff_read
  ****************************************************************************/
 
-int nbootctl_handoff_read(unsigned int *medium, unsigned int *slot,
-                          unsigned int *reason, uint64_t *generation)
+int nbootctl_handoff_read(unsigned int *medium, unsigned int *domain,
+                          unsigned int *slot, unsigned int *reason,
+                          uint64_t *generation)
 {
   uint32_t header;
   uint32_t confirm;
   uint64_t value;
   unsigned int boot_reason;
   unsigned int boot_medium;
+  unsigned int boot_domain;
   unsigned int boot_slot;
 
-  /* N-Boot writes the generation words first and the header last.  Reading
-   * the header on both sides of them rejects a handoff caught mid-update.
-   */
+  if (g_nbootctl_handoff_latched)
+    {
+      header = g_nbootctl_handoff_header;
+      value = g_nbootctl_handoff_generation;
+    }
+  else
+    {
+      /* N-Boot writes the generation words first and the header last.
+       * Reading the header on both sides of them rejects a handoff caught
+       * mid-update.
+       */
 
-  header = nbootctl_reg_read(NBOOTCTL_HANDOFF_REG);
-  value = nbootctl_reg_read(NBOOTCTL_GENERATION_LO_REG);
-  value |= (uint64_t)nbootctl_reg_read(NBOOTCTL_GENERATION_HI_REG) << 32;
-  confirm = nbootctl_reg_read(NBOOTCTL_HANDOFF_REG);
+      header = nbootctl_reg_read(NBOOTCTL_HANDOFF_REG);
+      value = nbootctl_reg_read(NBOOTCTL_GENERATION_LO_REG);
+      value |= (uint64_t)nbootctl_reg_read(NBOOTCTL_GENERATION_HI_REG) << 32;
+      confirm = nbootctl_reg_read(NBOOTCTL_HANDOFF_REG);
+      if (header != confirm)
+        {
+          return -ENODEV;
+        }
+    }
 
-  if (header != confirm ||
-      (header & NBOOTCTL_HANDOFF_MAGIC_MASK) != NBOOTCTL_HANDOFF_MAGIC ||
+  if ((header & NBOOTCTL_HANDOFF_MAGIC_MASK) != NBOOTCTL_HANDOFF_MAGIC ||
       ((header >> 12) & 0xf) != NBOOTCTL_HANDOFF_VERSION)
     {
       return -ENODEV;
@@ -371,10 +396,43 @@ int nbootctl_handoff_read(unsigned int *medium, unsigned int *slot,
 
   boot_reason = (header >> 8) & 0xf;
   boot_medium = (header >> 4) & 0xf;
-  boot_slot = header & 0xf;
-  if (boot_medium < 1 || boot_medium > 2 || boot_reason > 2 || boot_slot > 1)
+  boot_domain = (header >> 2) & 0x3;
+  boot_slot = header & 0x1;
+  if (boot_medium < 1 || boot_medium > 2 ||
+      boot_reason > NBOOTCTL_REASON_RAM || boot_domain > NBOOTCTL_DOMAIN_AMP ||
+      (header & 0x2) != 0)
     {
       return -EBADMSG;
+    }
+
+  /* Only bootamp starts an image from RAM, and such an image has no slot:
+   * the slot bit of that record must be zero and means nothing.
+   */
+
+  if (boot_reason == NBOOTCTL_REASON_RAM)
+    {
+      if (boot_domain != NBOOTCTL_DOMAIN_AMP || boot_slot != 0)
+        {
+          return -EBADMSG;
+        }
+
+      boot_slot = NBOOTCTL_SLOT_NONE;
+    }
+
+  /* Both writers store the same values, so two tasks getting here together
+   * do no harm; the flag goes last.
+   */
+
+  if (!g_nbootctl_handoff_latched)
+    {
+      g_nbootctl_handoff_header = header;
+      g_nbootctl_handoff_generation = value;
+      g_nbootctl_handoff_latched = true;
+    }
+
+  if (domain != NULL)
+    {
+      *domain = boot_domain;
     }
 
   if (reason != NULL)
@@ -401,6 +459,18 @@ int nbootctl_handoff_read(unsigned int *medium, unsigned int *slot,
 }
 
 /****************************************************************************
+ * Name: nbootctl_running_slot
+ ****************************************************************************/
+
+unsigned int nbootctl_running_slot(unsigned int running_domain,
+                                   unsigned int running_slot,
+                                   unsigned int domain)
+{
+  return running_domain == domain && running_slot <= 1 ? running_slot
+                                                       : NBOOTCTL_SLOT_NONE;
+}
+
+/****************************************************************************
  * Name: nbootctl_bootctrl_snapshot
  ****************************************************************************/
 
@@ -414,8 +484,8 @@ int nbootctl_bootctrl_snapshot(struct nbootctl_state_s *state)
   int ret;
 
   memset(state, 0, sizeof(*state));
-  if (nbootctl_handoff_read(&state->medium, &state->running_slot, NULL, NULL) <
-      0)
+  if (nbootctl_handoff_read(&state->medium, &state->running_domain,
+                            &state->running_slot, NULL, NULL) < 0)
     {
       /* Not an error: an image started without N-Boot has no handoff, and
        * then there is no telling which medium holds bootctrl.
@@ -780,8 +850,13 @@ int nbootctl_bootctrl_stage(unsigned int medium, const char *domain,
     }
 
   domain_entry = &records[selected].domains[domain_index];
-  target = domain_index == 0 ? 1 - (int)running_slot
-                             : 1 - (int)domain_entry->active_slot;
+  /* Never the slot this image came from.  A domain nothing runs from keeps
+   * the slot N-Boot would take next: that one is the way back if the new
+   * image turns out not to start.
+   */
+
+  target = running_slot <= 1 ? 1 - (int)running_slot
+                             : 1 - (domain_entry->active_slot ? 1 : 0);
   ret = open_blockdriver(nbootctl_slot_path(medium, domain_index, target), 0,
                          &payload);
   if (ret < 0 || payload->u.i_bops->read == NULL ||

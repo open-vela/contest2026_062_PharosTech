@@ -31,8 +31,12 @@
  *                                "advanced": bool, "force": bool}; write
  *                                the uploaded image to its target
  *   update.confirm    owner      {"target": "nuttx"|"amp"}; mark the
- *                                running NuttX slot, or the active AMP
- *                                slot, as known good
+ *                                running slot as known good.  Without a
+ *                                target it is the domain that is running.
+ *                                From a NuttX slot "amp" means the active
+ *                                AMP slot; as the AMP control domain
+ *                                "nuttx" is refused, because no NuttX
+ *                                slot is running to be vouched for
  *   update.reboot     owner      reply, then reset
  *   logs.tail         owner      {"after": seq, "limit": n}; system log lines
  *   cloud.status      any role   the stored relay settings
@@ -53,13 +57,22 @@
  * which the panel only sends after the owner has been told so:
  *
  *   EADVANCED   an advanced target without that acknowledgement
- *   ERUNNING    the partition holds the NuttX image that is running
+ *   ERUNNING    the partition holds the image that is running: a NuttX
+ *               slot, or under AMP the AMP slot this control domain came
+ *               from
  *   EMOUNTED    a filesystem is mounted from the partition and the request
  *               does not say "force": true
  *   EBLOCKED    the target is never written from here (the partition the
  *               uploaded file itself lives on)
  *   ENOTIMAGE   the staged file is not what the target takes
  *   ETOOLARGE   the staged file does not fit the target
+ *
+ * Which image is running comes from N-Boot's handoff.  As the control
+ * domain of an AMP slot, that AMP slot is the one that is never written: the
+ * AMP image goes to the other AMP slot, and the NuttX firmware, which is
+ * not running at all, goes to the NuttX slot that is not active, so that
+ * the standalone firmware N-Boot falls back to stays intact.  An AMP image
+ * that N-Boot started from RAM runs from no slot and protects none.
  *
  * Nothing is ever unmounted to make room for a write.  A forced write goes
  * under the mounted filesystem, and the reply says what that means.
@@ -175,6 +188,9 @@ struct ny_maint_apply_s
   const struct ny_web_ota_target_s *target; /* NULL before the first one */
   bool forced; /* written under a mounted filesystem */
   unsigned int medium;
+
+  /* Of the target's own domain; NBOOTCTL_SLOT_NONE when nothing runs there. */
+
   unsigned int running_slot;
   char sha256[NY_WEB_OTA_SHA256_HEX + 1];
 };
@@ -393,8 +409,13 @@ static bool ny_maint_mounted(const char *path)
 
 static enum ny_maint_refusal_e
 ny_maint_refusal(const struct ny_web_ota_target_s *target, bool handoff,
-                 unsigned int running_slot)
+                 unsigned int running_domain, unsigned int running_slot)
 {
+  static const char *const partitions[2][2] = {
+    { "nuttx_a", "nuttx_b" },
+    { "amp_a", "amp_b" },
+  };
+
   if (target->blocked || ny_web_ota_target_capacity(target) == 0)
     {
       return NY_MAINT_REFUSAL_BLOCKED;
@@ -408,16 +429,50 @@ ny_maint_refusal(const struct ny_web_ota_target_s *target, bool handoff,
     }
 
   /* Staging a slot never touches the one that runs.  A raw write would,
-   * and the image in it is the one a failed update falls back to.
+   * and the image in it is the one a failed update falls back to.  Under
+   * AMP that is an AMP slot; an image started from RAM has none.
    */
 
-  if (target->kind == NY_WEB_OTA_KIND_PARTITION &&
-      strcmp(target->partition, running_slot ? "nuttx_b" : "nuttx_a") == 0)
+  if (target->kind == NY_WEB_OTA_KIND_PARTITION && running_domain <= 1 &&
+      running_slot <= 1 &&
+      strcmp(target->partition, partitions[running_domain][running_slot]) == 0)
     {
       return NY_MAINT_REFUSAL_RUNNING;
     }
 
   return NY_MAINT_REFUSAL_NONE;
+}
+
+/****************************************************************************
+ * Name: ny_maint_domain
+ ****************************************************************************/
+
+static unsigned int ny_maint_domain(const char *name)
+{
+  return name != NULL && strcmp(name, NY_MAINT_AMP_DOMAIN) == 0
+             ? NBOOTCTL_DOMAIN_AMP
+             : NBOOTCTL_DOMAIN_NUTTX;
+}
+
+/****************************************************************************
+ * Name: ny_maint_stage_slot
+ *
+ * Description:
+ *   The slot of a domain that a staged image would replace, by the rule
+ *   nbootctl_bootctrl_stage() applies: the one that is not running, or for
+ *   a domain nothing runs from, the one that is not active.
+ *
+ ****************************************************************************/
+
+static unsigned int ny_maint_stage_slot(const struct nbootctl_state_s *state,
+                                        unsigned int domain)
+{
+  unsigned int running = nbootctl_running_slot(state->running_domain,
+                                               state->running_slot, domain);
+  unsigned int active =
+      domain == NBOOTCTL_DOMAIN_AMP ? state->amp_active : state->nuttx_active;
+
+  return running <= 1 ? 1 - running : 1 - active;
 }
 
 /****************************************************************************
@@ -520,8 +575,8 @@ static void ny_maint_target_rows(cJSON *root,
   for (size_t i = 0;
        rows != NULL && (target = ny_web_ota_target_at(i)) != NULL; i++)
     {
-      enum ny_maint_refusal_e refusal =
-          ny_maint_refusal(target, usable, state->running_slot);
+      enum ny_maint_refusal_e refusal = ny_maint_refusal(
+          target, usable, state->running_domain, state->running_slot);
       uint64_t capacity = ny_web_ota_target_capacity(target);
       const char *slot = "";
       cJSON *row = cJSON_CreateObject();
@@ -530,16 +585,15 @@ static void ny_maint_target_rows(cJSON *root,
           break;
         }
 
-      /* The slot a staged image would replace: for NuttX the one that is
-       * not running, for AMP the one that is not active.
+      /* The slot a staged image would replace: never the one that is
+       * running, and for the domain that is not running, not the active one.
        */
 
       if (usable && target->kind == NY_WEB_OTA_KIND_SLOT)
         {
-          unsigned int busy = strcmp(target->domain, NY_MAINT_AMP_DOMAIN) == 0
-                                  ? state->amp_active
-                                  : state->running_slot;
-          slot = busy ? "a" : "b";
+          slot = ny_maint_stage_slot(state, ny_maint_domain(target->domain))
+                     ? "b"
+                     : "a";
         }
 
       cJSON_AddStringToObject(row, "id", target->id);
@@ -596,23 +650,35 @@ static void ny_maint_update_slots(cJSON *root, cJSON *current)
   int error;
   int ret = nbootctl_bootctrl_snapshot(&state);
   bool usable = ret == 0 && state.handoff_valid;
+  bool amp_domain = usable && state.running_domain == NBOOTCTL_DOMAIN_AMP;
+  bool from_ram = usable && state.running_slot > 1;
+
+  /* "slot" is a slot of "domain".  As the AMP control domain no NuttX slot
+   * is running, and an AMP image that N-Boot started from RAM runs from no
+   * slot at all.
+   */
 
   cJSON_AddStringToObject(current, "slot",
-                          !usable              ? ""
+                          !usable || from_ram  ? ""
                           : state.running_slot ? "b"
                                                : "a");
+  cJSON_AddStringToObject(current, "domain",
+                          !usable      ? ""
+                          : amp_domain ? NY_MAINT_AMP_DOMAIN
+                                       : NY_MAINT_BOOT_DOMAIN);
+  cJSON_AddBoolToObject(current, "ram", from_ram);
   if (usable)
     {
       const struct nbootctl_slot_state_s *amp = &state.amp[state.amp_active];
+      unsigned int nuttx_running = nbootctl_running_slot(
+          state.running_domain, state.running_slot, NBOOTCTL_DOMAIN_NUTTX);
+      unsigned int amp_running = nbootctl_running_slot(
+          state.running_domain, state.running_slot, NBOOTCTL_DOMAIN_AMP);
 
       ny_maint_slot_rows(slots, state.nuttx, state.nuttx_active,
-                         (int)state.running_slot);
-
-      /* No AMP slot is ever "running" here: this is the image of a NuttX
-       * slot, and the handoff says nothing about the other domain.
-       */
-
-      ny_maint_slot_rows(amp_slots, state.amp, state.amp_active, -1);
+                         nuttx_running <= 1 ? (int)nuttx_running : -1);
+      ny_maint_slot_rows(amp_slots, state.amp, state.amp_active,
+                         amp_running <= 1 ? (int)amp_running : -1);
 
       /* N-Boot tries the AMP domain before the NuttX slots, and takes its
        * active slot whenever that one is a boot candidate.  So this is
@@ -621,7 +687,9 @@ static void ny_maint_update_slots(cJSON *root, cJSON *current)
 
       cJSON_AddBoolToObject(root, "ampActive",
                             amp->priority != 0 && amp->image_size != 0);
-      cJSON_AddStringToObject(root, "ampTarget", state.amp_active ? "a" : "b");
+      cJSON_AddStringToObject(
+          root, "ampTarget",
+          ny_maint_stage_slot(&state, NBOOTCTL_DOMAIN_AMP) ? "b" : "a");
     }
   else
     {
@@ -634,10 +702,21 @@ static void ny_maint_update_slots(cJSON *root, cJSON *current)
     {
       /* The slot an upload would replace: never the one that is running. */
 
-      cJSON_AddStringToObject(root, "target", state.running_slot ? "a" : "b");
-      detail = "no online update service; an uploaded image is written to "
-               "the slot that is not running, verified from the media and "
-               "then made active";
+      cJSON_AddStringToObject(
+          root, "target",
+          ny_maint_stage_slot(&state, NBOOTCTL_DOMAIN_NUTTX) ? "b" : "a");
+      detail = from_ram
+                   ? "no online update service; this AMP image was started "
+                     "from RAM and runs from no slot, so an uploaded image "
+                     "replaces the inactive slot of its domain"
+               : amp_domain
+                   ? "no online update service; this is the control domain "
+                     "of the running AMP slot, which is never written: an "
+                     "AMP image goes to the other AMP slot and NuttX "
+                     "firmware to the NuttX slot that is not active"
+                   : "no online update service; an uploaded image is "
+                     "written to the slot that is not running, verified "
+                     "from the media and then made active";
     }
   else if (ret < 0)
     {
@@ -906,7 +985,8 @@ static int ny_maint_apply(const cJSON *data, cJSON **result)
   const char *id = NY_WEB_OTA_TARGET_DEFAULT;
   struct stat status;
   unsigned int medium = 0;
-  unsigned int slot = 0;
+  unsigned int domain = NBOOTCTL_DOMAIN_NUTTX;
+  unsigned int slot = NBOOTCTL_SLOT_NONE;
   bool handoff;
   bool forced = false;
   int ret;
@@ -944,8 +1024,8 @@ static int ny_maint_apply(const cJSON *data, cJSON **result)
       return -ENOKEY;
     }
 
-  handoff = nbootctl_handoff_read(&medium, &slot, NULL, NULL) == 0;
-  switch (ny_maint_refusal(target, handoff, slot))
+  handoff = nbootctl_handoff_read(&medium, &domain, &slot, NULL, NULL) == 0;
+  switch (ny_maint_refusal(target, handoff, domain, slot))
     {
       case NY_MAINT_REFUSAL_BLOCKED:
         return -EXDEV;
@@ -1020,7 +1100,16 @@ static int ny_maint_apply(const cJSON *data, cJSON **result)
   g_maint_apply.target = target;
   g_maint_apply.forced = forced;
   g_maint_apply.medium = medium;
-  g_maint_apply.running_slot = slot;
+
+  /* What staging must leave alone is the running slot of the domain being
+   * staged; the other domain has none.
+   */
+
+  g_maint_apply.running_slot =
+      target->kind == NY_WEB_OTA_KIND_SLOT
+          ? nbootctl_running_slot(domain, slot,
+                                  ny_maint_domain(target->domain))
+          : NBOOTCTL_SLOT_NONE;
   for (size_t i = 0; i < NY_WEB_OTA_SHA256_HEX; i++)
     {
       char c = digest->valuestring[i];
@@ -1072,6 +1161,8 @@ static int ny_maint_confirm(const cJSON *data, cJSON **result)
   const char *domain = NY_MAINT_BOOT_DOMAIN;
   struct nbootctl_state_s state;
   unsigned int medium;
+  unsigned int running;
+  unsigned int wanted;
   unsigned int slot;
   int ret;
 
@@ -1080,14 +1171,34 @@ static int ny_maint_confirm(const cJSON *data, cJSON **result)
       return -EINVAL;
     }
 
-  if (nbootctl_handoff_read(&medium, &slot, NULL, NULL) < 0)
+  if (name != NULL && strcmp(name->valuestring, NY_MAINT_AMP_DOMAIN) != 0 &&
+      strcmp(name->valuestring, NY_MAINT_BOOT_DOMAIN) != 0)
+    {
+      return -EINVAL;
+    }
+
+  if (nbootctl_handoff_read(&medium, &running, &slot, NULL, NULL) < 0)
     {
       return -ENODEV;
     }
 
-  if (name != NULL && strcmp(name->valuestring, NY_MAINT_AMP_DOMAIN) == 0)
+  /* Without a target, the owner is vouching for what is running. */
+
+  wanted = name != NULL ? ny_maint_domain(name->valuestring) : running;
+  if (wanted == running)
     {
-      /* The AMP domain has no running slot as seen from here: what the
+      /* An AMP image from RAM is in no slot: there is nothing on the
+       * medium that this boot has shown to work.
+       */
+
+      if (slot > 1)
+        {
+          return -ENODEV;
+        }
+    }
+  else if (wanted == NBOOTCTL_DOMAIN_AMP)
+    {
+      /* From a NuttX slot the AMP domain has no running slot: what the
        * owner vouches for, after watching it work, is the active one.
        */
 
@@ -1097,14 +1208,19 @@ static int ny_maint_confirm(const cJSON *data, cJSON **result)
           return ret < 0 ? ret : -ENODEV;
         }
 
-      domain = NY_MAINT_AMP_DOMAIN;
       slot = state.amp_active;
     }
-  else if (name != NULL &&
-           strcmp(name->valuestring, NY_MAINT_BOOT_DOMAIN) != 0)
+  else
     {
-      return -EINVAL;
+      /* As the AMP control domain no NuttX slot is running, and marking
+       * one successful would record a boot that did not happen.
+       */
+
+      return -ENODEV;
     }
+
+  domain = wanted == NBOOTCTL_DOMAIN_AMP ? NY_MAINT_AMP_DOMAIN
+                                         : NY_MAINT_BOOT_DOMAIN;
 
   /* Staging keeps the bootctrl record in memory while it writes and stores
    * it again at the end; a change made in between would be lost.
