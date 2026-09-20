@@ -4,12 +4,17 @@
  * SPDX-License-Identifier: Apache-2.0
  ****************************************************************************/
 
+#include "nyampd_asr.h"
+#include "nyampd_audio.h"
 #include "nyampd_blob.h"
 #include "nyampd_core.h"
+#include "nyampd_kws.h"
 #include "nyampd_llm.h"
 #include "nyampd_provision.h"
+#include "nyampd_tts.h"
 
 #include "nyamp_backends.h"
+#include "nyamp_streaming.h"
 #include "nyamp_protocol.h"
 
 #include <cerrno>
@@ -91,6 +96,20 @@ public:
     return write(wake_, &one, sizeof(one)) == sizeof(one);
   }
 
+  /* Wake the loop without queueing anything: the speech services keep
+   * their own frame queues, and a PCM window that waited out the idle tick
+   * would add 20 ms to every second of speech.
+   */
+  void Wake() const
+  {
+    const std::uint64_t one = 1;
+
+    if (wake_ >= 0)
+      {
+        (void)!write(wake_, &one, sizeof(one));
+      }
+  }
+
   bool Poll(nyamp::Frame *frame)
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -123,24 +142,21 @@ private:
 };
 
 /****************************************************************************
- * Name: SharedWindow
+ * Name: Arena
  *
  * Description:
- *   The slot this daemon grants for blob windows.  It is NYAMP_SLOT_SHARED,
- *   the same megabyte ASR input and TTS output alternate over; a model pull
- *   happens while neither is running, and the lease in every grant says who
- *   the window belongs to.  The arena header in front of it is never part of
- *   a grant.
+ *   The shared region, mapped once for every slot this daemon uses.
  *
- *   The region is mapped on first use rather than at start-up: the daemon
- *   must keep serving health on an image without the shared-memory driver.
+ *   It is mapped on first use rather than at start-up: the daemon must keep
+ *   serving health on an image without the shared-memory driver, and every
+ *   service that needs a slot refuses its requests while Map returns null.
  *
  ****************************************************************************/
 
-class SharedWindow final : public nyamp::BlobWindow
+class Arena
 {
 public:
-  ~SharedWindow() override
+  ~Arena()
   {
     if (mapping_ != nullptr)
       {
@@ -148,23 +164,13 @@ public:
       }
   }
 
-  const std::uint8_t *data() const override
-  {
-    const std::uint8_t *base = Map();
-    return base == nullptr ? nullptr : base + NYAMP_SLOT_SHARED;
-  }
-
-  std::uint32_t offset() const override { return NYAMP_SLOT_SHARED; }
-  std::uint32_t capacity() const override { return NYAMP_SLOT_SHARED_SIZE; }
-
-private:
-  const std::uint8_t *Map() const
+  std::uint8_t *Map()
   {
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (mapping_ != nullptr)
       {
-        return static_cast<const std::uint8_t *>(mapping_);
+        return static_cast<std::uint8_t *>(mapping_);
       }
 
     const int fd = open("/dev/nyamp-shmem", O_RDWR | O_CLOEXEC);
@@ -187,12 +193,67 @@ private:
       }
 
     close(fd);
-    return static_cast<const std::uint8_t *>(mapping_);
+    return static_cast<std::uint8_t *>(mapping_);
   }
 
-  mutable std::mutex mutex_;
-  mutable void *mapping_ = nullptr;
-  mutable std::size_t size_ = 0;
+private:
+  std::mutex mutex_;
+  void *mapping_ = nullptr;
+  std::size_t size_ = 0;
+};
+
+/****************************************************************************
+ * Name: SharedWindow / ArenaSlot
+ *
+ * Description:
+ *   NYAMP_SLOT_SHARED as the blob client sees it, and any slot as a speech
+ *   service sees it.  The shared slot carries model pulls and synthesized
+ *   speech, one at a time (the blob client's ownership flag is the gate for
+ *   both); the capture slot carries microphone audio to the wake word
+ *   stream or to a pushed ASR request.  The arena header in front of them is
+ *   never part of a grant.
+ *
+ ****************************************************************************/
+
+class SharedWindow final : public nyamp::BlobWindow
+{
+public:
+  explicit SharedWindow(Arena *arena) : arena_(arena) {}
+
+  const std::uint8_t *data() const override
+  {
+    const std::uint8_t *base = arena_->Map();
+    return base == nullptr ? nullptr : base + NYAMP_SLOT_SHARED;
+  }
+
+  std::uint32_t offset() const override { return NYAMP_SLOT_SHARED; }
+  std::uint32_t capacity() const override { return NYAMP_SLOT_SHARED_SIZE; }
+
+private:
+  Arena *arena_;
+};
+
+class ArenaSlot final : public nyamp::SharedSlot
+{
+public:
+  ArenaSlot(Arena *arena, std::uint32_t offset, std::uint32_t capacity)
+      : arena_(arena), offset_(offset), capacity_(capacity)
+  {
+  }
+
+  std::uint8_t *data() override
+  {
+    std::uint8_t *base = arena_->Map();
+    return base == nullptr ? nullptr : base + offset_;
+  }
+
+  std::uint32_t offset() const override { return offset_; }
+  std::uint32_t capacity() const override { return capacity_; }
+
+private:
+  Arena *arena_;
+  std::uint32_t offset_;
+  std::uint32_t capacity_;
 };
 
 /****************************************************************************
@@ -213,6 +274,42 @@ BackendFactory SelectBackendFactory()
   return &nyamp::models::CreateRkllmBackend;
 #endif
   return BackendFactory();
+}
+
+/****************************************************************************
+ * Name: Select*Factory (speech)
+ *
+ * Description:
+ *   The same rule for the speech services: an empty factory when the runtime
+ *   was not linked, never a stand-in.  ASR and the wake word need
+ *   sherpa-onnx; TTS needs onnxruntime and the NPU runtime, which exist for
+ *   aarch64 only.  The text front end has no dependency, but without a
+ *   vocoder behind it TTS is still unsupported.
+ *
+ ****************************************************************************/
+
+nyamp::AsrService::BackendFactory SelectAsrFactory()
+{
+#ifdef NYAMP_WITH_SHERPA
+  return &nyamp::models::CreateSherpaStreamBackend;
+#endif
+  return nyamp::AsrService::BackendFactory();
+}
+
+nyamp::KwsService::BackendFactory SelectKwsFactory()
+{
+#ifdef NYAMP_WITH_SHERPA
+  return &nyamp::CreateSherpaKwsBackend;
+#endif
+  return nyamp::KwsService::BackendFactory();
+}
+
+nyamp::TtsService::BackendFactory SelectTtsFactory()
+{
+#ifdef NYAMP_WITH_MELO
+  return &nyamp::models::CreateMeloBackend;
+#endif
+  return nyamp::TtsService::BackendFactory();
 }
 
 std::uint64_t SharedCounterMilliseconds()
@@ -383,6 +480,33 @@ std::size_t ModelInfo(char *output, std::size_t capacity,
  *
  ****************************************************************************/
 
+/****************************************************************************
+ * Name: SpeechInfo
+ *
+ * Description:
+ *   One line for the three speech services: state and the wire status of the
+ *   last LOAD.  "none" means this build has no backend for it, which is the
+ *   same fact the HEALTH capability bit reports.
+ *
+ ****************************************************************************/
+
+std::size_t SpeechInfo(char *output, std::size_t capacity,
+                       const nyamp::AsrService &asr,
+                       const nyamp::TtsService &tts,
+                       const nyamp::KwsService &kws)
+{
+  const int size =
+      std::snprintf(output, capacity, "asr=%s tts=%s kws=%s\n",
+                    asr.Info().c_str(), tts.Info().c_str(),
+                    kws.Info().c_str());
+  if (size < 0 || static_cast<std::size_t>(size) >= capacity)
+    {
+      return 0;
+    }
+
+  return static_cast<std::size_t>(size);
+}
+
 std::size_t ShmemInfo(char *output, std::size_t capacity)
 {
   static constexpr std::uint32_t kPatternBase = 0x5a5a0000U;
@@ -478,7 +602,17 @@ std::size_t BootstrapLogInfo(char *output, std::size_t capacity)
    * short tail fits.  That is still enough to catch a probe failure, which
    * is what this exists for.
    */
-  const std::size_t limit = capacity > 200 ? 200 : capacity;
+  static constexpr std::size_t kFraming = sizeof("bootlog=\n");
+  if (capacity <= sizeof("bootlog=unavailable\n"))
+    {
+      return 0;
+    }
+
+  /* Whatever the other fields left, and never more than 200 bytes: the
+   * record must fit, or snprintf reports a length that was never written.
+   */
+  const std::size_t limit =
+      capacity - kFraming > 200 ? 200 : capacity - kFraming;
 
   std::FILE *console = std::fopen("/sys/fs/pstore/console-ramoops-0", "r");
   if (console == nullptr)
@@ -562,8 +696,15 @@ struct Backlog
   bool held = false;
 };
 
+struct Speech
+{
+  nyamp::AsrService &asr;
+  nyamp::TtsService &tts;
+  nyamp::KwsService &kws;
+};
+
 bool DrainEvents(int fd, nyamp::LlmService &llm, nyamp::BlobService &blob,
-                 Outbox &outbox, Backlog &backlog)
+                 Speech &speech, Outbox &outbox, Backlog &backlog)
 {
   for (;;)
     {
@@ -571,7 +712,10 @@ bool DrainEvents(int fd, nyamp::LlmService &llm, nyamp::BlobService &blob,
        * queued request is the only thing its worker is waiting for.
        */
       if (!backlog.held && !outbox.Poll(&backlog.frame) &&
-          !llm.Poll(&backlog.frame) && !blob.Poll(&backlog.frame))
+          !speech.kws.Poll(&backlog.frame) &&
+          !speech.tts.Poll(&backlog.frame) &&
+          !speech.asr.Poll(&backlog.frame) && !llm.Poll(&backlog.frame) &&
+          !blob.Poll(&backlog.frame))
         {
           return true;
         }
@@ -635,7 +779,8 @@ int Run(const char *requested_device)
    */
 
   Outbox outbox;
-  SharedWindow window;
+  Arena arena;
+  SharedWindow window(&arena);
   nyamp::BlobClient::Options blob_options;
   const char *model_root = std::getenv("NYAMPD_MODEL_ROOT");
   if (model_root != nullptr && model_root[0] == '/')
@@ -657,6 +802,41 @@ int Run(const char *requested_device)
   nyamp::LlmService llm(generation, SharedCounterMilliseconds,
                         SelectBackendFactory());
   llm.SetProvisioner(&provisioner);
+
+  /* Speech.  Two slots: capture audio comes in through NYAMP_SLOT_CAPTURE,
+   * owned by one stream at a time (the wake word stream, or a pushed ASR
+   * request while none runs); synthesized speech goes out through
+   * NYAMP_SLOT_SHARED, which it shares with model pulls under the blob
+   * client's ownership flag.  The services are always constructed so the
+   * capability mask and `info` can say what this build lacks.
+   */
+
+  ArenaSlot capture_slot(&arena, NYAMP_SLOT_CAPTURE, NYAMP_SLOT_CAPTURE_SIZE);
+  ArenaSlot speech_slot(&arena, NYAMP_SLOT_SHARED, NYAMP_SLOT_SHARED_SIZE);
+  nyamp::AtomicGate capture_gate;
+  nyamp::BlobGate speech_gate(&blob_client);
+  nyamp::LeaseMint mint(generation);
+
+  nyamp::KwsService kws(generation, SelectKwsFactory(), &capture_slot,
+                        &capture_gate, &mint);
+  nyamp::AsrService asr(generation, SharedCounterMilliseconds,
+                        SelectAsrFactory(), &capture_slot, &capture_gate,
+                        &mint);
+  nyamp::TtsService tts(generation, SharedCounterMilliseconds,
+                        SelectTtsFactory(), &nyamp::CreateMeloFrontend,
+                        &speech_slot, &speech_gate, &mint);
+  const auto wake = [&outbox] { outbox.Wake(); };
+
+  kws.SetProvisioner(&provisioner);
+  kws.SetWaker(wake);
+  asr.SetProvisioner(&provisioner);
+  asr.SetCaptureSource(&kws);
+  asr.SetWaker(wake);
+  tts.SetProvisioner(&provisioner);
+  tts.SetWaker(wake);
+
+  Speech speech{ asr, tts, kws };
+  const nyamp::SpeechServices speech_services{ &asr, &tts, &kws };
 
   // Standard Linux RPMsg does not announce dynamically assigned addresses.
   // The first message lets the remote learn our endpoint address.
@@ -708,7 +888,7 @@ int Run(const char *requested_device)
 
           if (received < 0 && (errno == EINTR || errno == EAGAIN))
             {
-              if (!DrainEvents(fd, llm, blob, outbox, backlog))
+              if (!DrainEvents(fd, llm, blob, speech, outbox, backlog))
                 {
                   close(fd);
                   return 1;
@@ -750,7 +930,7 @@ int Run(const char *requested_device)
                                       request + NYAMP_WIRE_HEADER_SIZE);
                 }
 
-              if (!DrainEvents(fd, llm, blob, outbox, backlog))
+              if (!DrainEvents(fd, llm, blob, speech, outbox, backlog))
                 {
                   close(fd);
                   return 1;
@@ -772,6 +952,8 @@ int Run(const char *requested_device)
               /* And the shared region, so the control domain can confirm both
                * sides reach the same memory without needing a console here.
                */
+              info_size += SpeechInfo(info + info_size,
+                                      sizeof(info) - info_size, asr, tts, kws);
               info_size +=
                   ShmemInfo(info + info_size, sizeof(info) - info_size);
               /* And the previous boot's kernel log tail: a probe that fails
@@ -785,7 +967,8 @@ int Run(const char *requested_device)
               nyamp::Dispatch(request, static_cast<std::size_t>(received),
                               SharedCounterMilliseconds(), generation,
                               response, sizeof(response), &response_size,
-                              std::string_view(info, info_size), &llm, &blob);
+                              std::string_view(info, info_size), &llm, &blob,
+                              &speech_services);
 
           /* A zero-length result is a deferred response or a dropped frame,
            * not something to write.
@@ -805,7 +988,7 @@ int Run(const char *requested_device)
             }
         }
 
-      if (!DrainEvents(fd, llm, blob, outbox, backlog))
+      if (!DrainEvents(fd, llm, blob, speech, outbox, backlog))
         {
           close(fd);
           return 1;
