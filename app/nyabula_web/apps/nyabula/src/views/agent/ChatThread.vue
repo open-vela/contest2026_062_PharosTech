@@ -27,9 +27,11 @@ watch(
       compact
     />
     <div v-for="m in messages" :key="m.id" class="msg" :class="[m.role, { unsupported: m.unsupported, error: !!m.error }]">
-      <div v-if="m.role === 'agent'" class="avatar"><NyabulaLogo  :size="18" /></div>
+      <div v-if="m.role === 'agent'" class="avatar"><NyabulaLogo :size="30" /></div>
       <div class="bubble">
-        <span v-if="m.text">{{ m.text }}</span>
+        <!-- A reply is Markdown; what the owner typed is shown as typed. -->
+        <MarkdownText v-if="m.text && m.role === 'agent' && !m.error" :text="m.text" />
+        <span v-else-if="m.text">{{ m.text }}</span>
         <span v-if="m.pending" class="pending-label" role="status"> · 等待设备</span>
         <span v-if="m.unsupported" class="contract-only" style="margin-left: 8px">契约预留</span>
       </div>
@@ -41,16 +43,21 @@ watch(
 .thread { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding: 4px 2px; scroll-behavior: smooth; }
 .msg { display: flex; gap: 10px; align-items: flex-end; max-width: 100%; }
 .msg.user { justify-content: flex-end; }
+/* The mark fills the avatar and is cropped by it, rather than sitting as a
+ * small badge inside a ring of container colour.
+ */
 .avatar {
   width: 30px;
   height: 30px;
   border-radius: 50%;
+  overflow: hidden;
   display: grid;
   place-items: center;
   background: var(--md-primary-container);
   color: var(--md-on-primary-container);
   flex: none;
 }
+.avatar :deep(svg) { width: 100%; height: 100%; display: block; }
 .bubble {
   max-width: min(78%, 640px);
   padding: 10px 14px;
