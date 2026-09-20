@@ -34,6 +34,7 @@
  */
 
 #include "ny_web.h"
+#include "ny_web_models.h"
 #include "ny_web_ota.h"
 #include "ny_websocket.h"
 #include <errno.h>
@@ -358,6 +359,17 @@ int ny_web_http_serve(int fd, const char *head, const void *body,
   bool gzip = false;
   int file;
   int ret;
+
+#ifdef CONFIG_NYABULA_CORE_MODELS
+  /* Model files are larger still and arrive in pieces.  Like the firmware
+   * upload below, ny_web_models.c checks the credentials itself.
+   */
+
+  if (ny_web_models_claims(head))
+    {
+      return ny_web_models_serve(fd, head, body, body_length, pair_token);
+    }
+#endif
 
 #ifdef CONFIG_NYABULA_CORE_OTA
   /* The firmware upload is the one request here that takes a body and acts

@@ -288,6 +288,19 @@ config NYABULA_CORE_OTA
 		in, its objects are reused; otherwise the bootctrl and partition
 		sources are compiled into Core.
 
+config NYABULA_CORE_MODELS
+	bool "Model files from the control panel"
+	default y
+	depends on NYABULA_CORE_PRODUCT && NYABULA_CORE_WEB
+	depends on !DISABLE_MOUNTPOINT
+	select CRYPTO
+	---help---
+		Accept model files over HTTP (PUT /models/upload?path=...) in
+		resumable pieces, store them under /data/models after their
+		SHA-256 has been verified, and list, verify and delete them
+		through the models.* topics.  The models themselves are
+		third-party files the owner brings; the firmware ships none.
+
 config NYABULA_CORE_MEDIA
 	bool "Native local media playback"
 	default n
