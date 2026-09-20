@@ -89,7 +89,8 @@
 
 #define NY_AUDIO_DEFAULT_VOLUME \
   (CONFIG_ES8388_OUTPUT_INITVOLUME / NY_AUDIO_VOLUME_SCALE)
-#define NY_AUDIO_DEFAULT_GAIN 100
+#define NY_AUDIO_DEFAULT_GAIN \
+  (CONFIG_ES8388_INPUT_INITVOLUME / NY_AUDIO_VOLUME_SCALE)
 
 /* The codec nodes are registered by board initialization, which may finish
  * after the product worker starts: ask often at first, then rarely.
