@@ -43,9 +43,16 @@
 
 #include "nyamp_protocol.h"
 #include "nyampctl.h"
+#include "nyampctl_io.h"
 
 #define NYAMPCTL_LLM_TIMEOUT_MS 60000
 #define NYAMPCTL_LLM_POLL_MS    1000
+
+/* A LOAD by logical name first pulls the model out of /data/models, and the
+ * first pull of a file also hashes it: 875 MB is a few minutes end to end.
+ */
+
+#define NYAMPCTL_LLM_LOAD_TIMEOUT_MS 600000
 
 static uint32_t nyampctl_llm_get_le32(const uint8_t *source)
 {
@@ -60,35 +67,11 @@ static uint32_t nyampctl_llm_get_le32(const uint8_t *source)
   return value;
 }
 
-static uint64_t nyampctl_llm_request_id(void)
-{
-  struct timespec now;
-
-  if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
-    {
-      return (uint64_t)getpid();
-    }
-
-  return ((uint64_t)(uint32_t)getpid() << 32) |
-         (uint32_t)((uint64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000);
-}
+static uint64_t nyampctl_llm_request_id(void) { return nyampctl_request_id(); }
 
 static int nyampctl_llm_write(int fd, const uint8_t *wire, size_t size)
 {
-  ssize_t written;
-
-  do
-    {
-      written = write(fd, wire, size);
-    }
-  while (written < 0 && errno == EINTR);
-
-  if (written < 0)
-    {
-      return -errno;
-    }
-
-  return written == (ssize_t)size ? 0 : -EIO;
+  return nyampctl_send(fd, wire, size);
 }
 
 /****************************************************************************
@@ -97,55 +80,53 @@ static int nyampctl_llm_write(int fd, const uint8_t *wire, size_t size)
  * Description:
  *   Read frames until the response to `request_id` arrives.  Token events for
  *   a previous request may still be in flight, so they are printed and
- *   skipped rather than mistaken for the answer.
+ *   skipped rather than mistaken for the answer.  Progress events of a model
+ *   pull that a LOAD set off are shown, since that wait can be minutes.
  *
  ****************************************************************************/
 
 static int nyampctl_llm_expect_response(int fd, uint64_t request_id,
                                         struct nyamp_header_s *response,
                                         uint8_t *wire, size_t wire_size,
-                                        size_t *wire_length)
+                                        size_t *wire_length, int timeout_ms)
 {
   int waited = 0;
 
-  while (waited < NYAMPCTL_LLM_TIMEOUT_MS)
+  while (waited < timeout_ms)
     {
-      struct pollfd pollfd = { fd, POLLIN, 0 };
       ssize_t size;
-      int ret;
       struct nyamp_header_s header;
+      struct nyamp_blob_progress_s progress;
 
-      ret = poll(&pollfd, 1, NYAMPCTL_LLM_POLL_MS);
-      if (ret < 0 && errno == EINTR)
+      size = nyampctl_recv(fd, wire, wire_size, NYAMPCTL_LLM_POLL_MS);
+      if (size < 0)
         {
-          continue;
+          return (int)size;
         }
 
-      if (ret < 0)
-        {
-          return -errno;
-        }
-
-      if (ret == 0)
+      if (size == 0)
         {
           waited += NYAMPCTL_LLM_POLL_MS;
           continue;
         }
 
-      size = read(fd, wire, wire_size);
-      if (size < 0)
-        {
-          return -errno;
-        }
-
-      if (size == 0)
-        {
-          return -ENODATA;
-        }
-
       if (nyamp_header_decode(&header, wire, (size_t)size) != NYAMP_OK)
         {
           return -EPROTO;
+        }
+
+      if (header.flags == NYAMP_FLAG_EVENT &&
+          header.service == NYAMP_SERVICE_BLOB &&
+          header.opcode == NYAMP_BLOB_EVENT_PROGRESS &&
+          header.request_id == request_id &&
+          nyamp_blob_progress_decode(&progress, wire + NYAMP_WIRE_HEADER_SIZE,
+                                     header.payload_size) == NYAMP_OK)
+        {
+          printf("nyamp llm: pulling model %" PRIu64 "/%" PRIu64
+                 " bytes, %" PRIu32 " KiB/s\n",
+                 progress.done, progress.total,
+                 progress.bytes_per_second / 1024);
+          continue;
         }
 
       /* A failed response also sets NYAMP_FLAG_ERROR, so the kind must be
@@ -184,37 +165,19 @@ static int nyampctl_llm_drain_until_finish(int fd, uint64_t request_id)
 
   while (waited < NYAMPCTL_LLM_TIMEOUT_MS)
     {
-      struct pollfd pollfd = { fd, POLLIN, 0 };
       ssize_t size;
-      int ret;
       struct nyamp_header_s header;
 
-      ret = poll(&pollfd, 1, NYAMPCTL_LLM_POLL_MS);
-      if (ret < 0 && errno == EINTR)
-        {
-          continue;
-        }
-
-      if (ret < 0)
-        {
-          return -errno;
-        }
-
-      if (ret == 0)
-        {
-          waited += NYAMPCTL_LLM_POLL_MS;
-          continue;
-        }
-
-      size = read(fd, wire, sizeof(wire));
+      size = nyampctl_recv(fd, wire, sizeof(wire), NYAMPCTL_LLM_POLL_MS);
       if (size < 0)
         {
-          return -errno;
+          return (int)size;
         }
 
       if (size == 0)
         {
-          return -ENODATA;
+          waited += NYAMPCTL_LLM_POLL_MS;
+          continue;
         }
 
       if (nyamp_header_decode(&header, wire, (size_t)size) != NYAMP_OK ||
@@ -389,8 +352,10 @@ static int nyampctl_llm_request(int fd, uint16_t opcode, uint64_t request_id,
       return ret;
     }
 
-  ret = nyampctl_llm_expect_response(fd, request_id, &response, wire,
-                                     sizeof(wire), &length);
+  ret = nyampctl_llm_expect_response(
+      fd, request_id, &response, wire, sizeof(wire), &length,
+      opcode == NYAMP_LLM_LOAD ? NYAMPCTL_LLM_LOAD_TIMEOUT_MS
+                               : NYAMPCTL_LLM_TIMEOUT_MS);
   if (ret < 0)
     {
       return ret;

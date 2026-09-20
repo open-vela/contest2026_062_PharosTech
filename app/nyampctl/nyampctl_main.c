@@ -36,6 +36,7 @@
 
 #include "nyamp_protocol.h"
 #include "nyampctl.h"
+#include "nyampctl_io.h"
 
 #define NYAMPCTL_CTRL_PATH       "/dev/rpmsg/linux"
 #define NYAMPCTL_ENDPOINT_NAME   "rpmsg-raw"
@@ -49,6 +50,14 @@
 
 static uint32_t nyampctl_get_le32(const uint8_t *source);
 static int nyampctl_open_endpoint(void);
+static int nyampctl_llm_command(int fd, int argc, char *argv[]);
+static int nyampctl_blob_command(int fd, int argc, char *argv[]);
+static int nyampctl_attach(int *fd);
+static void nyampctl_detach(int fd);
+
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+struct ny_compute_port_s *g_nyampctl_port;
+#endif
 
 static uint32_t nyampctl_get_le32(const uint8_t *source)
 {
@@ -63,23 +72,115 @@ static uint32_t nyampctl_get_le32(const uint8_t *source)
   return value;
 }
 
+/****************************************************************************
+ * Name: nyampctl_open_endpoint
+ *
+ * Description:
+ *   Create the endpoint if needed and open it.  With the Core compute
+ *   library in the image this is that library's code; the copy below only
+ *   exists so the minimal AMP profile can build this diagnostic alone.
+ *
+ ****************************************************************************/
+
 static int nyampctl_open_endpoint(void)
 {
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+  return ny_compute_endpoint_open(O_RDWR | O_NONBLOCK);
+#else
+  struct rpmsg_endpoint_info info;
   int retry;
-  int fd;
+  int ctrl;
+  int fd = -1;
+  int ret;
+
+  ctrl = open(NYAMPCTL_CTRL_PATH, O_RDWR);
+  if (ctrl < 0)
+    {
+      fprintf(stderr, "nyampctl: open %s failed: %d\n", NYAMPCTL_CTRL_PATH,
+              errno);
+      return -errno;
+    }
+
+  memset(&info, 0, sizeof(info));
+  strlcpy(info.name, NYAMPCTL_ENDPOINT_NAME, sizeof(info.name));
+  info.src = RPMSG_ADDR_ANY;
+  info.dst = RPMSG_ADDR_ANY;
+
+  ret = ioctl(ctrl, RPMSG_CREATE_DEV_IOCTL, (unsigned long)&info);
+  if (ret < 0 && errno != EEXIST)
+    {
+      ret = -errno;
+      fprintf(stderr, "nyampctl: create endpoint failed: %d\n", -ret);
+      close(ctrl);
+      return ret;
+    }
 
   for (retry = 0; retry < NYAMPCTL_OPEN_RETRIES; retry++)
     {
       fd = open(NYAMPCTL_ENDPOINT_PATH, O_RDWR | O_NONBLOCK);
       if (fd >= 0)
         {
-          return fd;
+          break;
         }
 
       usleep(NYAMPCTL_OPEN_DELAY_US);
     }
 
-  return -errno;
+  ret = fd < 0 ? -errno : fd;
+  close(ctrl);
+  return ret;
+#endif
+}
+
+/****************************************************************************
+ * Name: nyampctl_attach / nyampctl_detach
+ *
+ * Description:
+ *   Reach the compute domain for one command.  While the Core compute
+ *   service runs it owns the read side of the endpoint, so the command goes
+ *   through one of its ports and *fd stays -1.  Otherwise the endpoint is
+ *   opened directly.  Returns 0 or a negated errno.
+ *
+ ****************************************************************************/
+
+static int nyampctl_attach(int *fd)
+{
+  *fd = -1;
+
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+  if (ny_compute_running())
+    {
+      int ret = ny_compute_port_open(&g_nyampctl_port);
+
+      if (ret < 0)
+        {
+          fprintf(stderr, "nyampctl: compute service port failed: %d\n", -ret);
+          return ret;
+        }
+
+      return 0;
+    }
+#endif
+
+  *fd = nyampctl_open_endpoint();
+  return *fd < 0 ? *fd : 0;
+}
+
+static void nyampctl_detach(int fd)
+{
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+  if (g_nyampctl_port != NULL)
+    {
+      ny_compute_port_close(g_nyampctl_port);
+      g_nyampctl_port = NULL;
+      return;
+    }
+#endif
+
+  if (fd >= 0)
+    {
+      close(fd);
+    }
 }
 
 int nyampctl_query(int fd, uint16_t opcode)
@@ -94,21 +195,12 @@ int nyampctl_query(int fd, uint16_t opcode)
     .payload_size = 0,
   };
   struct nyamp_header_s response;
-  struct pollfd pollfd;
   uint8_t wire[NYAMP_RPMSG_MTU];
   ssize_t size;
   int attempt;
   int ret;
-  struct timespec now;
 
-  if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
-    {
-      return -errno;
-    }
-
-  request.request_id =
-      ((uint64_t)(uint32_t)getpid() << 32) |
-      (uint32_t)((uint64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000);
+  request.request_id = nyampctl_request_id();
 
   ret = nyamp_header_encode(wire, sizeof(wire), &request);
   if (ret != NYAMP_OK)
@@ -116,39 +208,27 @@ int nyampctl_query(int fd, uint16_t opcode)
       return ret;
     }
 
-  /* The Linux peer sends a ready event to publish its dynamic address. */
+  /* The Linux peer sends a ready event to publish its dynamic address; until
+   * it has, the send is retried.
+   */
 
-  for (attempt = 0; attempt < NYAMPCTL_OPEN_RETRIES; attempt++)
+  ret = nyampctl_send(fd, wire, NYAMP_WIRE_HEADER_SIZE);
+  if (ret < 0)
     {
-      size = write(fd, wire, NYAMP_WIRE_HEADER_SIZE);
-      if (size >= 0 || errno != EAGAIN)
-        {
-          break;
-        }
-
-      usleep(NYAMPCTL_OPEN_DELAY_US);
+      return ret;
     }
 
-  if (size != (ssize_t)NYAMP_WIRE_HEADER_SIZE)
-    {
-      return size < 0 ? -errno : -EIO;
-    }
+  /* Standalone, the first frame read may be that ready event rather than the
+   * response.  Through the compute service it never is: the service consumes
+   * the event itself, and the second pass is simply not taken.
+   */
 
-  pollfd.fd = fd;
-  pollfd.events = POLLIN;
   for (attempt = 0; attempt < 2; attempt++)
     {
-      pollfd.revents = 0;
-      ret = poll(&pollfd, 1, NYAMPCTL_RESPONSE_MS);
-      if (ret <= 0)
+      size = nyampctl_recv(fd, wire, sizeof(wire), NYAMPCTL_RESPONSE_MS);
+      if (size <= 0)
         {
-          return ret == 0 ? -ETIMEDOUT : -errno;
-        }
-
-      size = read(fd, wire, sizeof(wire));
-      if (size < 0)
-        {
-          return -errno;
+          return size == 0 ? -ETIMEDOUT : (int)size;
         }
 
       ret = nyamp_header_decode(&response, wire, (size_t)size);
@@ -221,37 +301,100 @@ int nyampctl_query(int fd, uint16_t opcode)
   return 0;
 }
 
+/****************************************************************************
+ * Name: nyampctl_llm_command / nyampctl_blob_command
+ *
+ * Description:
+ *   Argument handling for the two command families that have sub-verbs.
+ *
+ ****************************************************************************/
+
+static int nyampctl_llm_command(int fd, int argc, char *argv[])
+{
+  if (strcmp(argv[2], "load") == 0 && argc == 4)
+    {
+      return nyampctl_llm_load(fd, argv[3]);
+    }
+
+  if (strcmp(argv[2], "unload") == 0 && argc == 3)
+    {
+      return nyampctl_llm_unload(fd);
+    }
+
+  if (strcmp(argv[2], "generate") == 0 && argc >= 4)
+    {
+      bool inline_ids = strcmp(argv[3], "--inline") == 0;
+      const char *source = inline_ids ? argv[4] : argv[3];
+      int value_index = inline_ids ? 5 : 4;
+      uint32_t max_new_tokens =
+          argc > value_index ? (uint32_t)strtoul(argv[value_index], NULL, 10)
+                             : 128;
+
+      if (inline_ids && argc < 5)
+        {
+          fprintf(stderr, "nyampctl: --inline needs token ids\n");
+          return -EINVAL;
+        }
+
+      return nyampctl_llm_generate(fd, source, max_new_tokens, inline_ids);
+    }
+
+  fprintf(stderr, "nyampctl: bad llm arguments\n");
+  return -EINVAL;
+}
+
+static int nyampctl_blob_command(int fd, int argc, char *argv[])
+{
+  if (strcmp(argv[2], "bench") == 0 && argc <= 5)
+    {
+      return nyampctl_blob_bench(
+          fd, argc > 3 ? (uint32_t)strtoul(argv[3], NULL, 10) : 200,
+          argc > 4 ? (uint32_t)strtoul(argv[4], NULL, 10) : 0);
+    }
+
+  if (strcmp(argv[2], "pull") == 0 && argc == 4)
+    {
+      return nyampctl_blob_pull(fd, argv[3]);
+    }
+
+  fprintf(stderr, "nyampctl: blob needs bench [rounds] [window-bytes] or "
+                  "pull <name>\n");
+  return -EINVAL;
+}
+
 int main(int argc, char *argv[])
 {
-  struct rpmsg_endpoint_info info;
-  int ctrl;
-  int fd;
+  int fd = -1;
   int ret;
-  uint16_t opcode;
 
   if (argc < 2)
     {
       fprintf(stderr,
-              "usage: %s health|info\n"
-              "       %s llm load <model-directory-or-file>\n"
+              "usage: %s health|info|status\n"
+              "       %s llm load <model-name-or-absolute-path>\n"
               "       %s llm unload\n"
               "       %s llm generate <token-ids-file> [max-new-tokens]\n"
               "       %s llm generate --inline <id,id,...> [max-new-tokens]\n"
+              "       %s blob bench [rounds] [window-bytes]\n"
+              "       %s blob pull <name-under-/data/models>\n"
               "       %s shmem test [keep]\n",
-              argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
+              argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0],
+              argv[0]);
       return 2;
     }
 
   if (strcmp(argv[1], "health") != 0 && strcmp(argv[1], "info") != 0 &&
-      strcmp(argv[1], "llm") != 0 && strcmp(argv[1], "shmem") != 0)
+      strcmp(argv[1], "status") != 0 && strcmp(argv[1], "llm") != 0 &&
+      strcmp(argv[1], "blob") != 0 && strcmp(argv[1], "shmem") != 0)
     {
       fprintf(stderr, "nyampctl: unknown command: %s\n", argv[1]);
       return 2;
     }
 
-  if (strcmp(argv[1], "llm") == 0 && argc < 3)
+  if ((strcmp(argv[1], "llm") == 0 || strcmp(argv[1], "blob") == 0) &&
+      argc < 3)
     {
-      fprintf(stderr, "nyampctl: llm needs load|unload|generate\n");
+      fprintf(stderr, "nyampctl: %s needs a sub-command\n", argv[1]);
       return 2;
     }
 
@@ -272,84 +415,37 @@ int main(int argc, char *argv[])
                  : 0;
     }
 
-  opcode = strcmp(argv[1], "info") == 0 ? NYAMPCTL_INFO_OPCODE
-                                        : NYAMPCTL_HEALTH_OPCODE;
+  /* The control domain's own view of the link; nothing is sent. */
 
-  ctrl = open(NYAMPCTL_CTRL_PATH, O_RDWR);
-  if (ctrl < 0)
+  if (strcmp(argv[1], "status") == 0)
     {
-      fprintf(stderr, "nyampctl: open %s failed: %d\n", NYAMPCTL_CTRL_PATH,
-              errno);
-      return 1;
+      return nyampctl_status() < 0 ? 1 : 0;
     }
 
-  memset(&info, 0, sizeof(info));
-  strlcpy(info.name, NYAMPCTL_ENDPOINT_NAME, sizeof(info.name));
-  info.src = RPMSG_ADDR_ANY;
-  info.dst = RPMSG_ADDR_ANY;
-
-  ret = ioctl(ctrl, RPMSG_CREATE_DEV_IOCTL, (unsigned long)&info);
-  if (ret < 0 && errno != EEXIST)
+  ret = nyampctl_attach(&fd);
+  if (ret < 0)
     {
-      fprintf(stderr, "nyampctl: create endpoint failed: %d\n", errno);
-      close(ctrl);
-      return 1;
-    }
-
-  fd = nyampctl_open_endpoint();
-  if (fd < 0)
-    {
-      fprintf(stderr, "nyampctl: endpoint did not bind: %d\n", -fd);
-      ret = fd;
+      fprintf(stderr, "nyampctl: endpoint did not bind: %d\n", -ret);
     }
   else
     {
       if (strcmp(argv[1], "llm") == 0)
         {
-          if (strcmp(argv[2], "load") == 0 && argc == 4)
-            {
-              ret = nyampctl_llm_load(fd, argv[3]);
-            }
-          else if (strcmp(argv[2], "unload") == 0 && argc == 3)
-            {
-              ret = nyampctl_llm_unload(fd);
-            }
-          else if (strcmp(argv[2], "generate") == 0 && argc >= 4)
-            {
-              bool inline_ids = strcmp(argv[3], "--inline") == 0;
-              const char *source = inline_ids ? argv[4] : argv[3];
-              int value_index = inline_ids ? 5 : 4;
-              uint32_t max_new_tokens =
-                  argc > value_index
-                      ? (uint32_t)strtoul(argv[value_index], NULL, 10)
-                      : 128;
-
-              if (inline_ids && argc < 5)
-                {
-                  fprintf(stderr, "nyampctl: --inline needs token ids\n");
-                  ret = -EINVAL;
-                }
-              else
-                {
-                  ret = nyampctl_llm_generate(fd, source, max_new_tokens,
-                                              inline_ids);
-                }
-            }
-          else
-            {
-              fprintf(stderr, "nyampctl: bad llm arguments\n");
-              ret = -EINVAL;
-            }
+          ret = nyampctl_llm_command(fd, argc, argv);
+        }
+      else if (strcmp(argv[1], "blob") == 0)
+        {
+          ret = nyampctl_blob_command(fd, argc, argv);
         }
       else
         {
-          ret = nyampctl_query(fd, opcode);
+          ret = nyampctl_query(fd, strcmp(argv[1], "info") == 0
+                                       ? NYAMPCTL_INFO_OPCODE
+                                       : NYAMPCTL_HEALTH_OPCODE);
         }
 
-      close(fd);
+      nyampctl_detach(fd);
     }
-
-  close(ctrl);
 
   if (ret < 0)
     {

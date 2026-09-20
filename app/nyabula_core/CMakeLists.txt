@@ -85,6 +85,19 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     list(APPEND NYABULA_CORE_SRCS ny_product_weather.c)
   endif()
 
+  if(CONFIG_NYABULA_CORE_COMPUTE)
+    # The wire codec is shared with the Linux half of the link and lives with
+    # it in the team repository; this directory is reached through a link.
+    get_filename_component(NYCORE_REAL_DIR "${CMAKE_CURRENT_LIST_DIR}" REALPATH)
+    set(NYCORE_NYAMP_DIR ${NYCORE_REAL_DIR}/../../tools/amp/protocol)
+    list(APPEND NYABULA_CORE_SRCS ny_compute.c)
+    # When the nyampctl diagnostic is built in, its copy of the codec already
+    # provides these symbols to the same flat image.
+    if(NOT "${CONFIG_EXAMPLES_NYAMPCTL}" STREQUAL "y")
+      list(APPEND NYABULA_CORE_SRCS ${NYCORE_NYAMP_DIR}/nyamp_protocol.c)
+    endif()
+  endif()
+
   if(CONFIG_NYABULA_CORE_HTTP)
     list(APPEND NYABULA_CORE_SRCS ny_http.c ny_broker_http.c)
   endif()
@@ -134,6 +147,7 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     ${NYABULA_AGENT_INCLUDES}
     ${NYCORE_SQLITE_DIR}
     ${NYCORE_NBOOTCTL_DIR}
+    ${NYCORE_NYAMP_DIR}
     ${NUTTX_APPS_DIR}/crypto/libsodium/libsodium/src/libsodium/include
     ${NUTTX_APPS_DIR}/interpreters/wamr/wamr/core/iwasm/include
     DEPENDS

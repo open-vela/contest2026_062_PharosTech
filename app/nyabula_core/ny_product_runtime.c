@@ -23,6 +23,9 @@
 #ifdef CONFIG_NYABULA_CORE_AGENT
 #include "ny_agent.h"
 #endif
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+#include "ny_compute.h"
+#endif
 #include <errno.h>
 #include <nuttx/config.h>
 #include <nuttx/mutex.h>
@@ -102,6 +105,11 @@ static int ny_product_worker(int argc, char **argv)
     }
 
   ny_product_media_shutdown();
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+  /* The compute link lives exactly as long as the product services do. */
+
+  ny_compute_stop();
+#endif
 #ifdef CONFIG_NYABULA_CORE_NETWORK
   ny_product_network_shutdown();
 #endif
@@ -144,6 +152,14 @@ int ny_product_start(void)
       else
         {
           ret = 0;
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+          /* Best effort: a firmware booted without the compute domain still
+           * runs every other product service, and compute.status says why
+           * the link is down.
+           */
+
+          ny_compute_start();
+#endif
         }
     }
 
