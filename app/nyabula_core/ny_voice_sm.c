@@ -226,7 +226,17 @@ static void ny_voice_sm_listening(struct ny_voice_sm_s *sm,
         break;
 
       case NY_VOICE_EV_ASR_ENDPOINT:
-        ny_voice_sm_end(sm, result, event->now_ms);
+
+        /* The recognizer also calls a long silence with nothing decoded
+         * an endpoint.  That is the owner drawing breath after the wake
+         * word, not the end of a command: no_speech_ms decides there.
+         */
+
+        if (event->heard_speech)
+          {
+            ny_voice_sm_end(sm, result, event->now_ms);
+          }
+
         break;
 
       case NY_VOICE_EV_ASR_FINISHED:
@@ -468,7 +478,7 @@ static void ny_voice_sm_idle(struct ny_voice_sm_s *sm,
 void ny_voice_sm_defaults(struct ny_voice_sm_config_s *config)
 {
   config->max_listen_ms = 8000;
-  config->trailing_ms = 1200;
+  config->trailing_ms = 1600;
   config->no_speech_ms = 5000;
   config->asr_start_ms = 90000;
   config->asr_finish_ms = 6000;

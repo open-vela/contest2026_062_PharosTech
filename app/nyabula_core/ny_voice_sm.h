@@ -134,8 +134,8 @@ struct ny_voice_sm_event_s
   uint64_t now_ms;
   bool ok;             /* ASR_FINISHED, AGENT_REPLY, SPEAK_DONE.        */
   bool empty;          /* ASR_FINISHED, AGENT_REPLY: no text.           */
-  bool heard_speech;   /* TICK: the VAD saw speech since ASR started.   */
-  uint32_t silence_ms; /* TICK: since the VAD last saw speech.          */
+  bool heard_speech;   /* The recognizer has produced text.             */
+  uint32_t silence_ms; /* TICK: since that text last changed.           */
 };
 
 struct ny_voice_sm_action_s

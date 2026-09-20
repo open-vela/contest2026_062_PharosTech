@@ -358,6 +358,7 @@ struct ny_voice_s
 
   char say_text[NY_VOICE_TEXT_MAX + 1];
   char transcript[NY_VOICE_TRANSCRIPT_MAX];
+  uint64_t transcript_ms; /* When the recognizer last changed it.        */
   char reply[NY_VOICE_REPLY_MAX + 1];
   uint32_t turns;
   int last_error;
@@ -2265,6 +2266,7 @@ static void ny_voice_turn_asr_start(struct ny_voice_turn_s *turn, bool attach)
   memset(&where, 0, sizeof(where));
   nxmutex_lock(&g_voice.lock);
   g_voice.transcript[0] = '\0';
+  g_voice.transcript_ms = 0;
   streaming = g_voice.streaming;
   max_samples =
       (g_voice.settings.max_listen_ms + 2000) / 1000 * NY_VOICE_CAPTURE_RATE;
@@ -2391,9 +2393,18 @@ static void ny_voice_turn_asr_poll(struct ny_voice_turn_s *turn)
 
       if (event.kind == NY_VOICE_WIRE_PARTIAL)
         {
+          size_t before;
+
           nxmutex_lock(&g_voice.lock);
+          before = strlen(g_voice.transcript);
           ny_voice_wire_transcript(g_voice.transcript,
                                    sizeof(g_voice.transcript), &event);
+          if (strlen(g_voice.transcript) != before ||
+              (event.flags & NYAMP_ASR_PARTIAL_RESYNC) != 0)
+            {
+              g_voice.transcript_ms = ny_voice_now_ms();
+            }
+
           nxmutex_unlock(&g_voice.lock);
           if ((event.flags & NYAMP_ASR_PARTIAL_ENDPOINT) != 0 &&
               !turn->asr_silent)
@@ -2829,6 +2840,7 @@ static int ny_voice_task(int argc, char **argv)
       struct ny_voice_queued_s queued;
       uint64_t total;
       uint64_t loud;
+      uint64_t text_ms;
       bool stale;
 
       memset(&event, 0, sizeof(event));
@@ -2859,15 +2871,35 @@ static int ny_voice_task(int argc, char **argv)
       loud = g_voice.last_loud;
       nxmutex_unlock(&g_voice.ring_lock);
 
-      /* What the gate heard since the request attached.  While the
-       * microphone is closed nothing counts as silence.
+      /* Speech is what the recognizer turned into text, not what the
+       * energy gate found loud: the tail of the wake phrase is loud and
+       * the command of somebody across the room is not, so the gate ended
+       * turns before the owner had said a word and would have cut quiet
+       * ones short.  The gate only tells how long the room has been quiet
+       * when the recognizer's own endpoint does not come.
        */
 
       event.now_ms = ny_voice_now_ms();
-      event.heard_speech = loud > turn.asr_start;
-      event.silence_ms =
-          (uint32_t)((total - (loud > turn.asr_start ? loud : total)) /
-                     (NY_VOICE_CAPTURE_RATE / 1000));
+      nxmutex_lock(&g_voice.lock);
+      event.heard_speech =
+          g_voice.transcript[strspn(g_voice.transcript, " ")] != '\0';
+      text_ms = g_voice.transcript_ms;
+      nxmutex_unlock(&g_voice.lock);
+      event.silence_ms = 0;
+      if (event.heard_speech && text_ms != 0 && event.now_ms > text_ms)
+        {
+          event.silence_ms = (uint32_t)(event.now_ms - text_ms);
+          if (loud > turn.asr_start)
+            {
+              uint32_t quiet =
+                  (uint32_t)((total - loud) / (NY_VOICE_CAPTURE_RATE / 1000));
+
+              if (quiet < event.silence_ms)
+                {
+                  event.silence_ms = quiet;
+                }
+            }
+        }
 
       if (event.type == NY_VOICE_EV_LINK_LOST && turn.asr_open)
         {
