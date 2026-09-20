@@ -39,6 +39,8 @@ status = session.Run({request_id, generation, deadline_ms}, input,
 - LLM输入完整token IDs，输入+最大输出不超过已测2048 context。未提供任意文本tokenizer。
 - ASR输入归一化float32、mono16000Hz，单请求最多60秒。当前调用接收一个完整音频段，
   backend内部按320采样分块并产生partial；不是跨OS实时push接口。
+  实时接口是`nyamp_streaming.h`的`AsrStreamBackend/AsrStream`（边收边解码、随时取当前假设、上报endpoint标志），
+  `nyampd_asr`用的就是它；整段backend现在建在同一个stream之上，两条路径走相同的解码调用，文件测试输出逐字节不变。
 - TTS输入音素IDs+同长度tones、speaker、speed；不是通用文本G2P服务。
   prefix latent超512帧返回unsupported，不截断冒充完整音频。
 - Event包含原请求context、递增sequence；数据output为不可变shared_ptr，跨回调保留不会引用SDK已释放buffer。
