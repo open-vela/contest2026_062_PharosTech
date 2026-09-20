@@ -21,6 +21,7 @@ config EXAMPLES_NYAMPCTL_PRIORITY
 
 config EXAMPLES_NYAMPCTL_STACKSIZE
 	int "Task stack size"
+	default 8192 if NYABULA_CORE_VOICE
 	default 4096
 
 endif

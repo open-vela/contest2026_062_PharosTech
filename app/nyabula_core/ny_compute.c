@@ -86,6 +86,7 @@
 
 #include "ny_compute.h"
 #include "ny_product.h"
+#include "ny_voice.h"
 #include "nyamp_protocol.h"
 
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
@@ -131,7 +132,13 @@
  */
 
 #define NY_COMPUTE_MAX_BLOBS 4
-#define NY_COMPUTE_MAX_PORTS 4
+
+/* A chat, the loader, the diagnostic, and the voice chain's three standing
+ * conversations (wake word stream, recognition, speech): a port routes one
+ * request id at a time, so each of those needs its own.
+ */
+
+#define NY_COMPUTE_MAX_PORTS 8
 
 /* A chat result arrives as one burst of frames (an 8 KiB answer is nineteen)
  * and the receive task may fill the queue faster than an equal-priority
@@ -2522,14 +2529,33 @@ int ny_compute_start(void)
     }
 
   nxmutex_unlock(&g_compute.lock);
+
+#ifdef CONFIG_NYABULA_CORE_VOICE
+  /* The voice chain lives exactly as long as the link it talks through.
+   * Its task ends at once when the owner has voice switched off.
+   */
+
+  if (ret == 0)
+    {
+      ny_voice_start();
+    }
+#endif
+
   return ret;
 }
 
 int ny_compute_stop(void)
 {
   uint64_t deadline;
-  int ret = nxmutex_lock(&g_compute.lock);
+  int ret;
 
+#ifdef CONFIG_NYABULA_CORE_VOICE
+  /* First, while its ports still work: it has a stream to end. */
+
+  ny_voice_stop();
+#endif
+
+  ret = nxmutex_lock(&g_compute.lock);
   if (ret < 0)
     {
       return ret;
@@ -2630,6 +2656,21 @@ int ny_compute_status(struct ny_compute_status_s *status)
           sizeof(status->last_error_text));
   nxmutex_unlock(&g_compute.lock);
   return 0;
+}
+
+uint32_t ny_compute_generation(void)
+{
+  return ny_compute_current_generation();
+}
+
+uint32_t ny_compute_capabilities(void)
+{
+  uint32_t capabilities;
+
+  nxmutex_lock(&g_compute.lock);
+  capabilities = g_compute.capabilities;
+  nxmutex_unlock(&g_compute.lock);
+  return capabilities;
 }
 
 uint64_t ny_compute_request_id(void)
@@ -3233,7 +3274,13 @@ int ny_compute_request(const struct ny_product_caller_s *caller,
       ((status.capabilities & NY_COMPUTE_CAP_LLM) != 0 &&
        !cJSON_AddItemToArray(capabilities, cJSON_CreateString("llm"))) ||
       ((status.capabilities & NY_COMPUTE_CAP_BLOB) != 0 &&
-       !cJSON_AddItemToArray(capabilities, cJSON_CreateString("blob"))))
+       !cJSON_AddItemToArray(capabilities, cJSON_CreateString("blob"))) ||
+      ((status.capabilities & NY_COMPUTE_CAP_ASR) != 0 &&
+       !cJSON_AddItemToArray(capabilities, cJSON_CreateString("asr"))) ||
+      ((status.capabilities & NY_COMPUTE_CAP_TTS) != 0 &&
+       !cJSON_AddItemToArray(capabilities, cJSON_CreateString("tts"))) ||
+      ((status.capabilities & NY_COMPUTE_CAP_KWS) != 0 &&
+       !cJSON_AddItemToArray(capabilities, cJSON_CreateString("kws"))))
     {
       cJSON_Delete(root);
       return -ENOMEM;

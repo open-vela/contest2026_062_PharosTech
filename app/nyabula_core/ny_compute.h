@@ -72,6 +72,9 @@
 #define NY_COMPUTE_CAP_LLM    (1U << 1)
 #define NY_COMPUTE_CAP_BLOB   (1U << 2)
 #define NY_COMPUTE_CAP_CHAT   (1U << 3)
+#define NY_COMPUTE_CAP_ASR    (1U << 4)
+#define NY_COMPUTE_CAP_TTS    (1U << 5)
+#define NY_COMPUTE_CAP_KWS    (1U << 6)
 
 /* ny_compute_chat() flags; the values are the wire's NYAMP_LLM_CHAT_*. */
 
@@ -163,6 +166,21 @@ int ny_compute_stop(void);
 bool ny_compute_running(void);
 
 int ny_compute_status(struct ny_compute_status_s *status);
+
+/****************************************************************************
+ * Name: ny_compute_generation / ny_compute_capabilities
+ *
+ * Description:
+ *   The two facts of ny_compute_status() a requester asks for on every
+ *   frame, without the copy of the rest: the compute-domain generation (0
+ *   while unknown; a change means the daemon restarted and every grant,
+ *   lease and loaded model of the old one is gone) and the NY_COMPUTE_CAP_*
+ *   mask of the last HEALTH response.
+ *
+ ****************************************************************************/
+
+uint32_t ny_compute_generation(void);
+uint32_t ny_compute_capabilities(void);
 
 /****************************************************************************
  * Name: ny_compute_endpoint_open

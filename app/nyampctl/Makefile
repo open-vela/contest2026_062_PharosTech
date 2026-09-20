@@ -21,4 +21,10 @@ ifeq ($(CONFIG_NYABULA_CORE_COMPUTE),y)
 CFLAGS += ${INCDIR_PREFIX}$(abspath $(NYAMPCTL_SOURCE_DIR)/../nyabula_core)
 endif
 
+# The kws/asr/tts commands drive the client and the audio nodes the Core
+# voice service is built from; in a flat image those objects are its.
+ifeq ($(CONFIG_NYABULA_CORE_VOICE),y)
+CSRCS += nyampctl_voice.c
+endif
+
 include $(APPDIR)/Application.mk

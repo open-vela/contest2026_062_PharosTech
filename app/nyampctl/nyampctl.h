@@ -67,6 +67,15 @@ int nyampctl_blob_bench(int fd, uint32_t rounds, uint32_t window_bytes);
  */
 int nyampctl_blob_pull(int fd, const char *name);
 
+/* The voice chain, one link at a time (nyampctl_voice.c); only with
+ * NYABULA_CORE_VOICE.  Each loads the model it needs by its logical name.
+ * `seconds` bounds the microphone commands; `wav` NULL means the microphone;
+ * `out` NULL means the speaker, else a 44.1 kHz mono WAV file is written.
+ */
+int nyampctl_kws_listen(int fd, unsigned int seconds);
+int nyampctl_asr(int fd, const char *wav, unsigned int seconds);
+int nyampctl_tts_say(int fd, const char *text, const char *out);
+
 /* Print the Core compute service's view of the link.  Fails with -ENOSYS in
  * a build that does not contain that service.
  */
