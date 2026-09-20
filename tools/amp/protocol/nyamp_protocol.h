@@ -97,6 +97,65 @@ extern "C" {
  */
 #define NYAMP_LLM_MAX_PATH NYAMP_INLINE_MAX
 
+/* CHAT: a text-level completion.
+ *
+ * GENERATE takes token ids, which only works for a caller that owns the
+ * tokenizer.  The control domain does not -- the tokenizer needs a 10 MB
+ * vocabulary and a bit-exact chat template that live with the model -- so
+ * CHAT carries an OpenAI chat-completions request as JSON and the compute
+ * domain renders, tokenizes, runs and parses it.
+ *
+ * The request body uses the same framing idea as GENERATE: ordered chunks
+ * that share one request_id, each acknowledged by a response, the last one
+ * starting the run.  The parameters travel in every chunk but are taken from
+ * the first, so a chunk is self-describing and a mismatched continuation is
+ * detectable.
+ *
+ * After the final chunk is accepted the service emits, under that request_id:
+ *
+ *   EVENT_TOKEN   zero or more, only when STREAM_TOKENS was requested.  The
+ *                 text keeps the model's structural tokens ("<function", ...)
+ *                 because it is exactly what the parser will see.
+ *   EVENT_RESULT  the chat-completions response JSON, in ordered chunks.
+ *                 Sent only when the run produced one (status OK).
+ *   EVENT_FINISH  always, exactly once, in the CHAT_FINISH layout below: the
+ *                 status plus the token counts and timings.
+ *
+ * NYAMP_MODEL_PROMPT_TOO_LONG is its own status rather than INVALID because
+ * it is the one failure the caller is expected to repair: the finish event
+ * carries prompt_tokens and context_limit, so the caller can drop history
+ * until prompt_tokens + max_new_tokens fits and retry.
+ *
+ * CANCEL works as for GENERATE: opcode CANCEL with the CHAT's request_id.
+ */
+
+#define NYAMP_LLM_CHAT               5U
+#define NYAMP_LLM_EVENT_RESULT       0x82U
+
+#define NYAMP_LLM_CHAT_MAX_BODY      65536U
+#define NYAMP_LLM_RESULT_MAX_BODY    65536U
+
+#define NYAMP_LLM_CHAT_GUARD_UNTRUSTED (1U << 0)
+#define NYAMP_LLM_CHAT_STREAM_TOKENS   (1U << 1)
+#define NYAMP_LLM_CHAT_FLAGS_ALL \
+  (NYAMP_LLM_CHAT_GUARD_UNTRUSTED | NYAMP_LLM_CHAT_STREAM_TOKENS)
+
+/* total, offset, length, max_new_tokens, flags; then `length` bytes. */
+#define NYAMP_LLM_CHAT_HEADER_SIZE 20U
+#define NYAMP_LLM_CHAT_MAX_CHUNK \
+  (NYAMP_INLINE_MAX - NYAMP_LLM_CHAT_HEADER_SIZE)
+
+/* total, offset, length; then `length` bytes. */
+#define NYAMP_LLM_RESULT_HEADER_SIZE 12U
+#define NYAMP_LLM_RESULT_MAX_CHUNK \
+  (NYAMP_INLINE_MAX - NYAMP_LLM_RESULT_HEADER_SIZE)
+
+/* status, sequence, prompt_tokens, completion_tokens, prefill_ms, decode_ms,
+ * context_limit.  A GENERATE still finishes with the 8-byte layout above; the
+ * two are told apart by the opcode of the request they belong to.
+ */
+#define NYAMP_LLM_CHAT_FINISH_SIZE 28U
+
 /* Shared-memory buffer descriptor.
  *
  * Audio and image payloads do not fit the RPMsg inline limit: a single second
@@ -395,6 +454,12 @@ enum nyamp_model_status_e
   NYAMP_MODEL_BACKEND_ERROR = -8,
   NYAMP_MODEL_UNSUPPORTED = -9,
   NYAMP_MODEL_CONSUMER_STOPPED = -10,
+
+  /* CHAT only: the rendered prompt plus max_new_tokens exceeds the context
+   * window.  It has no counterpart in nyamp::models::Status because the model
+   * layer never sees such a request; the service refuses it first.
+   */
+  NYAMP_MODEL_PROMPT_TOO_LONG = -11,
 };
 
 struct nyamp_header_s
@@ -414,6 +479,33 @@ struct nyamp_llm_chunk_s
   uint32_t offset;         /* Index of ids[0] within that total.     */
   uint32_t count;          /* Ids carried by this chunk.             */
   uint32_t max_new_tokens; /* Meaningful only when offset is zero.   */
+};
+
+struct nyamp_llm_chat_s
+{
+  uint32_t total;          /* Bytes in the whole request body.        */
+  uint32_t offset;         /* Position of this chunk within it.       */
+  uint32_t length;         /* Bytes carried by this chunk.            */
+  uint32_t max_new_tokens; /* Zero selects the service default.       */
+  uint32_t flags;          /* NYAMP_LLM_CHAT_*.                       */
+};
+
+struct nyamp_llm_result_s
+{
+  uint32_t total;
+  uint32_t offset;
+  uint32_t length;
+};
+
+struct nyamp_llm_chat_finish_s
+{
+  int32_t status; /* nyamp_model_status_e. */
+  uint32_t sequence;
+  uint32_t prompt_tokens;
+  uint32_t completion_tokens;
+  uint32_t prefill_ms;    /* Request accepted to first token.        */
+  uint32_t decode_ms;     /* First token to last token.              */
+  uint32_t context_limit; /* What prompt + max_new_tokens must fit.  */
 };
 
 struct nyamp_blob_info_s
@@ -501,6 +593,32 @@ int nyamp_llm_finish_encode(uint8_t *payload, size_t payload_capacity,
                             uint32_t sequence);
 int nyamp_llm_finish_decode(int32_t *status, uint32_t *sequence,
                             const uint8_t *payload, size_t payload_size);
+
+/* The chunk codecs return a pointer into the payload rather than copying:
+ * the caller appends the bytes to its own reassembly buffer anyway.
+ */
+
+int nyamp_llm_chat_encode(uint8_t *payload, size_t payload_capacity,
+                          size_t *payload_size,
+                          const struct nyamp_llm_chat_s *chunk,
+                          const uint8_t *bytes);
+int nyamp_llm_chat_decode(struct nyamp_llm_chat_s *chunk,
+                          const uint8_t **bytes, const uint8_t *payload,
+                          size_t payload_size);
+
+int nyamp_llm_result_encode(uint8_t *payload, size_t payload_capacity,
+                            size_t *payload_size,
+                            const struct nyamp_llm_result_s *chunk,
+                            const uint8_t *bytes);
+int nyamp_llm_result_decode(struct nyamp_llm_result_s *chunk,
+                            const uint8_t **bytes, const uint8_t *payload,
+                            size_t payload_size);
+
+int nyamp_llm_chat_finish_encode(uint8_t *payload, size_t payload_capacity,
+                                 size_t *payload_size,
+                                 const struct nyamp_llm_chat_finish_s *finish);
+int nyamp_llm_chat_finish_decode(struct nyamp_llm_chat_finish_s *finish,
+                                 const uint8_t *payload, size_t payload_size);
 
 int nyamp_buffer_encode(uint8_t *payload, size_t payload_capacity,
                         size_t *payload_size,

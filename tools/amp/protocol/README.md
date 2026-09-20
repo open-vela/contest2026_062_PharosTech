@@ -73,6 +73,41 @@ service 1–8 都是「控制域(openvela)请求、计算域(Linux)应答」。`
 BENCH_RUN 与 PULL 走常规方向，存在的原因是计算域没有控制台：没有它们就只能靠「加载模型」
 的副作用去验证交付通路。
 
+## LLM CHAT（文本级补全，service 8）
+
+GENERATE 收 token id，只适合自己持有分词器的调用方；控制域没有（分词器要 10 MB 词表和
+逐位一致的 chat template，它们跟模型在一起）。CHAT 因此直接携带 OpenAI chat-completions
+请求 JSON，渲染模板、分词、推理、解析工具调用全部在计算域完成。
+
+| opcode | 方向 | body |
+|---|---|---|
+| 5 CHAT（请求） | openvela→Linux | `u32 total`, `u32 offset`, `u32 length`, `u32 max_new_tokens`, `u32 flags`, 然后 `length` 字节 JSON |
+| 0x80 EVENT_TOKEN | Linux→openvela | 沿用原布局；**仅当** flags bit1 置位才发，文本保留 `<function` 等结构 token |
+| 0x82 EVENT_RESULT | Linux→openvela | `u32 total`, `u32 offset`, `u32 length`, 然后 `length` 字节响应 JSON |
+| 0x81 EVENT_FINISH | Linux→openvela | CHAT 专用 28 字节布局：`i32 status`, `u32 sequence`, `prompt_tokens`, `completion_tokens`, `prefill_ms`, `decode_ms`, `context_limit` |
+
+- 请求体上限 64 KiB，分块最大 436 字节；各块共用一个 request_id、逐块应答，最后一块触发运行
+  （与 GENERATE 同一思路）。参数每块都带、以首块为准，续块的 total/offset/参数/request_id 任一
+  不符即丢弃整个半成品并回 `INVALID`。flags：bit0 `guard_untrusted`（请求数据里的 special
+  token 字面量按普通文本处理，建议生产开启），bit1 `stream_tokens`。`max_new_tokens=0` 取
+  守护进程默认值 256。
+- 末块被接受后，同一 request_id 下依次：0..n 个 TOKEN（若请求）、RESULT 分块（仅 status=OK）、
+  **恰好一个** FINISH。GENERATE 的 FINISH 仍是 8 字节；两种布局按所属请求的 opcode 区分，
+  解码器互不接受对方的长度。
+- 新状态 `NYAMP_MODEL_PROMPT_TOO_LONG = -11`：`prompt_tokens + max_new_tokens > context_limit`
+  (2048)。它单列而不并入 INVALID，因为这是唯一期望调用方自行修复的失败：FINISH 带回
+  `prompt_tokens` 与 `context_limit`，调用方据此裁剪历史后重试。模型此时不会被运行。
+- 末块应答的状态：`NOT_READY`=没有加载模型（调用方可先 LOAD 再重试），`UNSUPPORTED`=已加载的
+  模型没有 tokenizer（绝对路径加载裸 .rkllm）或守护进程无后端，`BUSY`=已有运行在途。
+- 取消沿用 GENERATE：opcode CANCEL、request_id = 该 CHAT 的 id；FINISH 报 `CANCELLED`，不发 RESULT。
+- 响应 JSON 是标准 `chat.completion`：`choices[0].message{role,content|null,tool_calls[{id,type:
+  "function",function{name,arguments(JSON 字符串)}}]}`、`finish_reason` = `stop`/`tool_calls`/
+  `length`、`usage`。解析不完整的工具调用原样留在 content，绝不执行半条命令。
+- HEALTH capability bit3 = 守护进程能服务 CHAT。
+- LOAD 逻辑名时一并拉取并加载同目录的 `tokenizer.json`（文件名 `llm/model.rkllm` →
+  `llm/tokenizer.json`；目录名则取目录内的）。缺失即 LOAD 失败 `NOT_READY`，且在搬动模型之前
+  就失败。stop id = `[1, 130073, 130072]`；BOS 只由模板输出一次。
+
 主机测试：
 
 ```sh

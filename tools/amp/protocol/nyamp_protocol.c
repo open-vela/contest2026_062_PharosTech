@@ -41,6 +41,9 @@ static uint64_t nyamp_get_le64(const uint8_t *source);
 static int nyamp_header_validate(const struct nyamp_header_s *header);
 static int nyamp_payload_ready(const uint8_t *payload, size_t payload_size,
                                size_t minimum);
+static int nyamp_llm_span_check(uint32_t total, uint32_t offset,
+                                uint32_t length, uint32_t max_total,
+                                uint32_t max_length);
 static int nyamp_blob_text_encode(uint8_t *payload, size_t payload_capacity,
                                   size_t *payload_size, uint32_t first,
                                   const char *text, size_t text_length);
@@ -1917,5 +1920,234 @@ int nyamp_blob_progress_decode(struct nyamp_blob_progress_s *progress,
       return NYAMP_EPROTO;
     }
 
+  return NYAMP_OK;
+}
+
+/****************************************************************************
+ * LLM CHAT
+ *
+ * A request body and a response body are both byte strings far past the
+ * inline limit, carried as ordered chunks.  The two chunk layouts share one
+ * shape check -- a chunk must lie inside the body it claims to belong to --
+ * so a reassembler only has to verify continuity, never bounds.
+ *
+ ****************************************************************************/
+
+static int nyamp_llm_span_check(uint32_t total, uint32_t offset,
+                                uint32_t length, uint32_t max_total,
+                                uint32_t max_length)
+{
+  if (total == 0 || total > max_total || length == 0 || length > max_length ||
+      offset > total || length > total - offset)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  return NYAMP_OK;
+}
+
+int nyamp_llm_chat_encode(uint8_t *payload, size_t payload_capacity,
+                          size_t *payload_size,
+                          const struct nyamp_llm_chat_s *chunk,
+                          const uint8_t *bytes)
+{
+  size_t needed;
+
+  if (payload == NULL || payload_size == NULL || chunk == NULL ||
+      bytes == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if ((chunk->flags & ~NYAMP_LLM_CHAT_FLAGS_ALL) != 0 ||
+      nyamp_llm_span_check(chunk->total, chunk->offset, chunk->length,
+                           NYAMP_LLM_CHAT_MAX_BODY,
+                           NYAMP_LLM_CHAT_MAX_CHUNK) != NYAMP_OK)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  needed = NYAMP_LLM_CHAT_HEADER_SIZE + chunk->length;
+  if (payload_capacity < needed)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  nyamp_put_le32(payload + 0, chunk->total);
+  nyamp_put_le32(payload + 4, chunk->offset);
+  nyamp_put_le32(payload + 8, chunk->length);
+  nyamp_put_le32(payload + 12, chunk->max_new_tokens);
+  nyamp_put_le32(payload + 16, chunk->flags);
+  memcpy(payload + NYAMP_LLM_CHAT_HEADER_SIZE, bytes, chunk->length);
+  *payload_size = needed;
+  return NYAMP_OK;
+}
+
+int nyamp_llm_chat_decode(struct nyamp_llm_chat_s *chunk,
+                          const uint8_t **bytes, const uint8_t *payload,
+                          size_t payload_size)
+{
+  int result;
+
+  if (chunk == NULL || bytes == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  result =
+      nyamp_payload_ready(payload, payload_size, NYAMP_LLM_CHAT_HEADER_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  chunk->total = nyamp_get_le32(payload + 0);
+  chunk->offset = nyamp_get_le32(payload + 4);
+  chunk->length = nyamp_get_le32(payload + 8);
+  chunk->max_new_tokens = nyamp_get_le32(payload + 12);
+  chunk->flags = nyamp_get_le32(payload + 16);
+
+  if ((chunk->flags & ~NYAMP_LLM_CHAT_FLAGS_ALL) != 0 ||
+      nyamp_llm_span_check(chunk->total, chunk->offset, chunk->length,
+                           NYAMP_LLM_CHAT_MAX_BODY,
+                           NYAMP_LLM_CHAT_MAX_CHUNK) != NYAMP_OK)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  if (payload_size != NYAMP_LLM_CHAT_HEADER_SIZE + (size_t)chunk->length)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  *bytes = payload + NYAMP_LLM_CHAT_HEADER_SIZE;
+  return NYAMP_OK;
+}
+
+int nyamp_llm_result_encode(uint8_t *payload, size_t payload_capacity,
+                            size_t *payload_size,
+                            const struct nyamp_llm_result_s *chunk,
+                            const uint8_t *bytes)
+{
+  size_t needed;
+
+  if (payload == NULL || payload_size == NULL || chunk == NULL ||
+      bytes == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if (nyamp_llm_span_check(chunk->total, chunk->offset, chunk->length,
+                           NYAMP_LLM_RESULT_MAX_BODY,
+                           NYAMP_LLM_RESULT_MAX_CHUNK) != NYAMP_OK)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  needed = NYAMP_LLM_RESULT_HEADER_SIZE + chunk->length;
+  if (payload_capacity < needed)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  nyamp_put_le32(payload + 0, chunk->total);
+  nyamp_put_le32(payload + 4, chunk->offset);
+  nyamp_put_le32(payload + 8, chunk->length);
+  memcpy(payload + NYAMP_LLM_RESULT_HEADER_SIZE, bytes, chunk->length);
+  *payload_size = needed;
+  return NYAMP_OK;
+}
+
+int nyamp_llm_result_decode(struct nyamp_llm_result_s *chunk,
+                            const uint8_t **bytes, const uint8_t *payload,
+                            size_t payload_size)
+{
+  int result;
+
+  if (chunk == NULL || bytes == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  result =
+      nyamp_payload_ready(payload, payload_size, NYAMP_LLM_RESULT_HEADER_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  chunk->total = nyamp_get_le32(payload + 0);
+  chunk->offset = nyamp_get_le32(payload + 4);
+  chunk->length = nyamp_get_le32(payload + 8);
+  if (nyamp_llm_span_check(chunk->total, chunk->offset, chunk->length,
+                           NYAMP_LLM_RESULT_MAX_BODY,
+                           NYAMP_LLM_RESULT_MAX_CHUNK) != NYAMP_OK)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  if (payload_size != NYAMP_LLM_RESULT_HEADER_SIZE + (size_t)chunk->length)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  *bytes = payload + NYAMP_LLM_RESULT_HEADER_SIZE;
+  return NYAMP_OK;
+}
+
+int nyamp_llm_chat_finish_encode(uint8_t *payload, size_t payload_capacity,
+                                 size_t *payload_size,
+                                 const struct nyamp_llm_chat_finish_s *finish)
+{
+  if (payload == NULL || payload_size == NULL || finish == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if (payload_capacity < NYAMP_LLM_CHAT_FINISH_SIZE)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  nyamp_put_le32(payload + 0, (uint32_t)finish->status);
+  nyamp_put_le32(payload + 4, finish->sequence);
+  nyamp_put_le32(payload + 8, finish->prompt_tokens);
+  nyamp_put_le32(payload + 12, finish->completion_tokens);
+  nyamp_put_le32(payload + 16, finish->prefill_ms);
+  nyamp_put_le32(payload + 20, finish->decode_ms);
+  nyamp_put_le32(payload + 24, finish->context_limit);
+  *payload_size = NYAMP_LLM_CHAT_FINISH_SIZE;
+  return NYAMP_OK;
+}
+
+int nyamp_llm_chat_finish_decode(struct nyamp_llm_chat_finish_s *finish,
+                                 const uint8_t *payload, size_t payload_size)
+{
+  int result;
+
+  if (finish == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  result =
+      nyamp_payload_ready(payload, payload_size, NYAMP_LLM_CHAT_FINISH_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  if (payload_size != NYAMP_LLM_CHAT_FINISH_SIZE)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  finish->status = (int32_t)nyamp_get_le32(payload + 0);
+  finish->sequence = nyamp_get_le32(payload + 4);
+  finish->prompt_tokens = nyamp_get_le32(payload + 8);
+  finish->completion_tokens = nyamp_get_le32(payload + 12);
+  finish->prefill_ms = nyamp_get_le32(payload + 16);
+  finish->decode_ms = nyamp_get_le32(payload + 20);
+  finish->context_limit = nyamp_get_le32(payload + 24);
   return NYAMP_OK;
 }
