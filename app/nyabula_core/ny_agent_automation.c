@@ -203,7 +203,7 @@ static int ny_auto_edit(cJSON *root, const struct ny_product_caller_s *caller,
     {
       if (row == NULL)
         return -ENOENT;
-      if (now < NY_AUTO_MIN_TIME || now > NY_AUTO_MAX_TIME)
+      if (!ny_product_clock_valid() || now > NY_AUTO_MAX_TIME)
         return -ENODATA;
       if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(row, "pending")))
         return -EBUSY;
@@ -217,7 +217,7 @@ static int ny_auto_edit(cJSON *root, const struct ny_product_caller_s *caller,
       if (!cJSON_IsBool(enabled))
         return -EINVAL;
       bool active = cJSON_IsTrue(enabled);
-      if (active && (now < NY_AUTO_MIN_TIME || now > NY_AUTO_MAX_TIME))
+      if (active && (!ny_product_clock_valid() || now > NY_AUTO_MAX_TIME))
         return -ENODATA;
       double next = 0;
       if (active)
@@ -399,7 +399,7 @@ int ny_agent_automation_tick(void)
     }
   g_auto_next_tick = monotonic + 1000;
   uint64_t now = ny_product_time_ms(false);
-  if (now < NY_AUTO_MIN_TIME || now > NY_AUTO_MAX_TIME)
+  if (!ny_product_clock_valid() || now > NY_AUTO_MAX_TIME)
     {
       nxmutex_unlock(&g_auto_lock);
       return 0;

@@ -47,6 +47,38 @@ int ny_product_records_request(const struct ny_product_caller_s *caller,
                                cJSON **result);
 int ny_product_cli(const char *topic, const char *path);
 uint64_t ny_product_time_ms(bool monotonic);
+
+/* The wall clock and how far it can be believed (ny_product_clock.c).  A
+ * service that acts on the time of day asks ny_product_clock_valid(), not
+ * whether the year looks plausible: a clock nobody set shows one too.
+ */
+
+#define NY_PRODUCT_CLOCK_MAX_MS 4102444800000ULL /* 2100-01-01 */
+
+enum ny_product_clock_source_e
+{
+  NY_PRODUCT_CLOCK_NONE = 0, /* Nothing vouches for the time */
+  NY_PRODUCT_CLOCK_RTC,      /* Carried over a power cycle by the RTC */
+  NY_PRODUCT_CLOCK_PANEL,    /* Set by the owner's panel in this boot */
+  NY_PRODUCT_CLOCK_SNTP      /* Set from a time server in this boot */
+};
+
+uint64_t ny_product_clock_floor_ms(void);
+bool ny_product_clock_valid(void);
+enum ny_product_clock_source_e ny_product_clock_source(void);
+int ny_product_clock_set(uint64_t unix_ms,
+                         enum ny_product_clock_source_e source,
+                         const char *detail);
+uint32_t ny_product_clock_step(uint64_t *before_ms, uint64_t *after_ms);
+bool ny_product_clock_describe(cJSON *root);
+#ifdef CONFIG_NYABULA_CORE_TIMESYNC
+/* Network time (ny_product_timesync.c), driven from the network tick. */
+
+void ny_product_timesync_tick(bool online);
+void ny_product_timesync_request(void);
+void ny_product_timesync_shutdown(void);
+bool ny_product_timesync_describe(cJSON *root);
+#endif
 int ny_product_request(const struct ny_product_caller_s *caller,
                        const char *topic, const cJSON *data, cJSON **result);
 int ny_product_timers_request(const struct ny_product_caller_s *caller,

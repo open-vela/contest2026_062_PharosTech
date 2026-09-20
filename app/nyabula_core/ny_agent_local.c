@@ -91,10 +91,9 @@
  * stays inside the window; -E2BIG trimming covers a wrong estimate.
  */
 
-#define NY_AGENT_LOCAL_HISTORY   3000
-#define NY_AGENT_LOCAL_WISHES    360 /* Of the profile's free-text wishes */
-#define NY_AGENT_LOCAL_FACTS     3   /* Parallel results worth one sentence */
-#define NY_AGENT_LOCAL_CLOCK_MIN 1577836800000ULL
+#define NY_AGENT_LOCAL_HISTORY 3000
+#define NY_AGENT_LOCAL_WISHES  360 /* Of the profile's free-text wishes */
+#define NY_AGENT_LOCAL_FACTS   3   /* Parallel results worth one sentence */
 
 /* No product setting holds a time zone: the panel sends the browser's
  * offset with each alarm, briefing and companion schedule.  The newest of
@@ -504,7 +503,7 @@ static int ny_agent_local_gather(const struct ny_agent_local_intent_s *intent,
         {
           uint64_t now = ny_product_time_ms(false);
           context->utc_offset_minutes = ny_agent_local_offset(result);
-          if (now >= NY_AGENT_LOCAL_CLOCK_MIN)
+          if (ny_product_clock_valid())
             context->now_minutes =
                 (int)(((int64_t)(now / 60000) + context->utc_offset_minutes) %
                       1440);

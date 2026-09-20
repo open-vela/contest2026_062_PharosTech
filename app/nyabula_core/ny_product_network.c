@@ -1324,6 +1324,20 @@ int ny_product_network_tick(void)
 {
   int ret = ny_net_step();
   ny_net_rssi_poll();
+#ifdef CONFIG_NYABULA_CORE_TIMESYNC
+  /* Online means the station holds a lease, which is the first moment a
+   * time server can be reached.  On the access point there is no way out.
+   */
+
+  bool online = false;
+  if (nxmutex_lock(&g_net_lock) == 0)
+    {
+      online = g_net.state == NY_NET_STA_ONLINE;
+      nxmutex_unlock(&g_net_lock);
+    }
+
+  ny_product_timesync_tick(online);
+#endif
 #if defined(CONFIG_NYABULA_CORE_EYE) && defined(CONFIG_NYABULA_CORE_WEB)
   ny_net_eye_sync();
 #endif
@@ -1382,6 +1396,9 @@ int ny_product_network_link(char *ssid, size_t size, int *rssi)
 
 void ny_product_network_shutdown(void)
 {
+#ifdef CONFIG_NYABULA_CORE_TIMESYNC
+  ny_product_timesync_shutdown();
+#endif
   if (nxmutex_lock(&g_net_lock) < 0)
     return;
   bool ap = g_net.state == NY_NET_AP_PROVISION;

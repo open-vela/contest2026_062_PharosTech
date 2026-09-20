@@ -31,11 +31,11 @@
 #define NY_TIMER_LIMIT     16
 #define NY_TIMER_LAP_LIMIT 32
 #define NY_TIMER_MAX_MS    604800000.0
-#define NY_TIMER_CLOCK_MIN 1577836800000ULL
 
 static mutex_t g_timer_lock = NXMUTEX_INITIALIZER;
 static cJSON *g_timers;
 static uint64_t g_timer_revision;
+static uint32_t g_timer_clock_step;
 
 static bool ny_timer_set(cJSON *row, const char *key, double value);
 static bool ny_timer_string(cJSON *row, const char *key, const char *value);
@@ -105,6 +105,15 @@ static int ny_timer_load(void)
   uint64_t revision = 0;
   uint64_t mono = ny_product_time_ms(true);
   uint64_t wall = ny_product_time_ms(false);
+
+  /* An anchor is a reading of the wall clock, stored so that a timer can
+   * be picked up after a restart.  It is only worth anything if the clock
+   * could be believed when it was taken -- one from before this firmware
+   * was built was not -- and if it can be believed now.
+   */
+
+  bool clock_valid = ny_product_clock_valid();
+  double floor_ms = (double)ny_product_clock_floor_ms();
   int ret;
   if (g_timers != NULL)
     {
@@ -166,7 +175,7 @@ static int ny_timer_load(void)
         bool stopwatch = strcmp(kind, "stopwatch") == 0;
         double anchor =
             ny_timer_number(row, stopwatch ? "anchor_at" : "due_at");
-        if (wall >= NY_TIMER_CLOCK_MIN && anchor >= NY_TIMER_CLOCK_MIN)
+        if (clock_valid && anchor >= floor_ms)
           {
             if (stopwatch)
               {
@@ -189,8 +198,8 @@ static int ny_timer_load(void)
         else
           {
             if (!ny_timer_string(row, "status",
-                                 anchor >= NY_TIMER_CLOCK_MIN ? "waiting-clock"
-                                                              : "paused") ||
+                                 anchor >= floor_ms ? "waiting-clock"
+                                                    : "paused") ||
                 !ny_timer_string(row, "recovery", "clock-unavailable"))
               {
                 ret = -ENOMEM;
@@ -243,17 +252,17 @@ static int ny_timer_save(cJSON **candidate)
   uint64_t revision;
   uint64_t mono = ny_product_time_ms(true);
   uint64_t wall = ny_product_time_ms(false);
+  bool clock_valid = ny_product_clock_valid();
   cJSON_ArrayForEach(row, *candidate)
   {
     ny_timer_project(row, mono);
     if (strcmp(ny_timer_text(row, "status"), "running") == 0)
       {
         if (!ny_timer_set(row, "due_at",
-                          wall >= NY_TIMER_CLOCK_MIN
+                          clock_valid
                               ? wall + ny_timer_number(row, "remaining_ms")
                               : 0) ||
-            !ny_timer_set(row, "anchor_at",
-                          wall >= NY_TIMER_CLOCK_MIN ? wall : 0))
+            !ny_timer_set(row, "anchor_at", clock_valid ? wall : 0))
           {
             return -ENOMEM;
           }
@@ -543,6 +552,8 @@ int ny_product_timers_tick(void)
   cJSON *row;
   uint64_t now = ny_product_time_ms(true);
   uint64_t wall = ny_product_time_ms(false);
+  bool clock_valid = ny_product_clock_valid();
+  uint32_t step = ny_product_clock_step(NULL, NULL);
   bool due = false;
   bool asleep = false;
   bool chime = false;
@@ -561,7 +572,19 @@ int ny_product_timers_tick(void)
   cJSON_ArrayForEach(row, g_timers)
   {
     if (strcmp(ny_timer_text(row, "status"), "waiting-clock") == 0 &&
-        wall >= NY_TIMER_CLOCK_MIN)
+        clock_valid)
+      {
+        due = true;
+        break;
+      }
+
+    /* A running timer counts on the monotonic clock and does not care that
+     * the wall clock was moved, but the anchors it was stored with were
+     * taken from the old one.  Saving takes them again.
+     */
+
+    if (strcmp(ny_timer_text(row, "status"), "running") == 0 &&
+        step != g_timer_clock_step)
       {
         due = true;
         break;
@@ -578,6 +601,7 @@ int ny_product_timers_tick(void)
 
   if (!due)
     {
+      g_timer_clock_step = step;
       goto out;
     }
 
@@ -591,7 +615,7 @@ int ny_product_timers_tick(void)
   cJSON_ArrayForEach(row, candidate)
   {
     if (strcmp(ny_timer_text(row, "status"), "waiting-clock") == 0 &&
-        wall >= NY_TIMER_CLOCK_MIN)
+        clock_valid)
       {
         bool stopwatch = strcmp(ny_timer_text(row, "kind"), "stopwatch") == 0;
         double anchor =
@@ -636,6 +660,10 @@ int ny_product_timers_tick(void)
   }
 
   ret = ny_timer_save(&candidate);
+  if (ret == 0)
+    {
+      g_timer_clock_step = step;
+    }
 
   /* Act only on a transition that reached storage: a finish that was not
    * saved is found again by the next tick, and would then sound twice.

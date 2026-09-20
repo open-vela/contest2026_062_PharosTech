@@ -147,7 +147,7 @@ static int ny_briefing_generate(const struct ny_product_caller_s *caller,
                                 const cJSON *settings, cJSON **result)
 {
   uint64_t now = ny_product_time_ms(false);
-  if (now < 1577836800000ULL)
+  if (!ny_product_clock_valid())
     return -EAGAIN;
   cJSON *root = cJSON_CreateObject();
   cJSON *items = root ? cJSON_AddArrayToObject(root, "items") : NULL;
@@ -432,7 +432,7 @@ int ny_product_briefing_tick(void)
   if (ret < 0)
     goto out;
   uint64_t now = ny_product_time_ms(false);
-  if (now < 1577836800000ULL)
+  if (!ny_product_clock_valid())
     goto out;
   if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "playing")) &&
       cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "schedule_enabled")))

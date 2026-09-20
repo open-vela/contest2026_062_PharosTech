@@ -30,15 +30,22 @@
 #include <nyabula_eye_service.h>
 #endif
 
-#define NY_ALARM_LIMIT     32
-#define NY_ALARM_DAY_MS    86400000LL
-#define NY_ALARM_CLOCK_MIN 1577836800000ULL
-#define NY_ALARM_GRACE_MS  300000ULL
+#define NY_ALARM_LIMIT    32
+#define NY_ALARM_DAY_MS   86400000LL
+#define NY_ALARM_GRACE_MS 300000ULL
+
+/* An occurrence is never scheduled more than a week ahead, so a next_at
+ * within this distance of a reading of the clock was worked out from that
+ * reading.
+ */
+
+#define NY_ALARM_FRAME_MS (8 * NY_ALARM_DAY_MS)
 
 static mutex_t g_alarm_lock = NXMUTEX_INITIALIZER;
 static cJSON *g_alarms;
 static uint64_t g_alarm_revision;
 static bool g_alarm_sounding;
+static uint32_t g_alarm_clock_step;
 #ifdef CONFIG_NYABULA_CORE_EYE
 static uint64_t g_alarm_eye_refresh;
 #endif
@@ -51,6 +58,8 @@ static bool ny_alarm_set(cJSON *row, const char *key, double value);
 static bool ny_alarm_status(cJSON *row, const char *value);
 static bool ny_alarm_valid(const cJSON *row);
 static uint64_t ny_alarm_next(const cJSON *row, uint64_t after);
+static bool ny_alarm_stale(uint64_t due, bool moved, uint64_t before,
+                           uint64_t now);
 static int ny_alarm_load(void);
 static int ny_alarm_save(cJSON **candidate);
 static cJSON *ny_alarm_result(void);
@@ -143,7 +152,7 @@ static bool ny_alarm_valid(const cJSON *row)
 
 static uint64_t ny_alarm_next(const cJSON *row, uint64_t after)
 {
-  if (after < NY_ALARM_CLOCK_MIN ||
+  if (!ny_product_clock_valid() ||
       !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(row, "enabled")))
     return 0;
   const char *time = ny_alarm_text(row, "time");
@@ -166,6 +175,31 @@ static uint64_t ny_alarm_next(const cJSON *row, uint64_t after)
         return candidate;
     }
   return 0;
+}
+
+/****************************************************************************
+ * Name: ny_alarm_stale
+ *
+ * Description:
+ *   Whether an occurrence was worked out from a clock that has since turned
+ *   out to be wrong.  When the clock is moved by years -- a device that
+ *   counted on from 2021 is told the real date -- everything scheduled
+ *   before the move is in the past, and taking that at face value would
+ *   report an alarm set an hour ago as missed and switch a one-off alarm
+ *   off without it ever having had its day.  Such an occurrence is worked
+ *   out again instead.  One that was scheduled against a correct clock in
+ *   an earlier boot is nowhere near the wrong reading, and is left to be
+ *   rung or reported as missed on its merits.
+ *
+ ****************************************************************************/
+
+static bool ny_alarm_stale(uint64_t due, bool moved, uint64_t before,
+                           uint64_t now)
+{
+  uint64_t jump = now > before ? now - before : before - now;
+  uint64_t apart = due > before ? due - before : before - due;
+  return moved && due != 0 && jump > NY_ALARM_FRAME_MS &&
+         apart <= NY_ALARM_FRAME_MS;
 }
 
 /****************************************************************************
@@ -235,8 +269,7 @@ static cJSON *ny_alarm_result(void)
   if (!result || !items ||
       !cJSON_AddNumberToObject(result, "revision", g_alarm_revision) ||
       !cJSON_AddBoolToObject(result, "clock_valid",
-                             ny_product_time_ms(false) >=
-                                 NY_ALARM_CLOCK_MIN) ||
+                             ny_product_clock_valid()) ||
       !cJSON_AddItemToObject(result, "items", items))
     {
       cJSON_Delete(result);
@@ -378,7 +411,7 @@ int ny_product_alarms_request(const struct ny_product_caller_s *caller,
           goto out;
         }
       bool snooze = !strcmp(op, "snooze");
-      if (snooze && now < NY_ALARM_CLOCK_MIN)
+      if (snooze && !ny_product_clock_valid())
         {
           ret = -EAGAIN;
           goto out;
@@ -410,7 +443,7 @@ out:
 int ny_product_alarms_tick(void)
 {
   uint64_t now = ny_product_time_ms(false);
-  if (now < NY_ALARM_CLOCK_MIN)
+  if (!ny_product_clock_valid())
     return 0;
   int ret = nxmutex_lock(&g_alarm_lock);
   if (ret < 0)
@@ -418,23 +451,29 @@ int ny_product_alarms_tick(void)
   cJSON *candidate = NULL;
   cJSON *row;
   bool changed = false;
+  uint64_t before = 0;
+  uint32_t step = ny_product_clock_step(&before, NULL);
+  bool moved = step != g_alarm_clock_step;
   ret = ny_alarm_load();
   if (ret < 0)
     goto out;
-  cJSON_ArrayForEach(row, g_alarms) if ((cJSON_IsTrue(
-                                             cJSON_GetObjectItemCaseSensitive(
-                                                 row, "enabled")) ||
-                                         !strcmp(ny_alarm_text(row, "status"),
-                                                 "snoozed")) &&
-                                        strcmp(ny_alarm_text(row, "status"),
-                                               "ringing") &&
-                                        ny_alarm_number(row, "next_at") <= now)
+  cJSON_ArrayForEach(row, g_alarms)
   {
-    changed = true;
-    break;
+    uint64_t due = (uint64_t)ny_alarm_number(row, "next_at");
+    if ((cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(row, "enabled")) ||
+         !strcmp(ny_alarm_text(row, "status"), "snoozed")) &&
+        strcmp(ny_alarm_text(row, "status"), "ringing") &&
+        (due <= now || ny_alarm_stale(due, moved, before, now)))
+      {
+        changed = true;
+        break;
+      }
   }
   if (!changed)
-    goto out;
+    {
+      g_alarm_clock_step = step;
+      goto out;
+    }
   candidate = cJSON_Duplicate(g_alarms, true);
   if (!candidate)
     {
@@ -448,7 +487,23 @@ int ny_product_alarms_tick(void)
     bool snoozed = !strcmp(ny_alarm_text(row, "status"), "snoozed");
     uint64_t due = (uint64_t)ny_alarm_number(row, "next_at");
     if ((!enabled && !snoozed) ||
-        !strcmp(ny_alarm_text(row, "status"), "ringing") || due > now)
+        !strcmp(ny_alarm_text(row, "status"), "ringing"))
+      continue;
+    if (ny_alarm_stale(due, moved, before, now))
+      {
+        /* A snooze is a promise to ring again shortly, and the moment it
+         * was made for can no longer be found: ring now.
+         */
+
+        if (!ny_alarm_set(row, "next_at",
+                          snoozed ? now : ny_alarm_next(row, now)))
+          {
+            ret = -ENOMEM;
+            goto out;
+          }
+        continue;
+      }
+    if (due > now)
       continue;
     bool ok = true;
     if (due)
@@ -471,6 +526,8 @@ int ny_product_alarms_tick(void)
       }
   }
   ret = ny_alarm_save(&candidate);
+  if (!ret)
+    g_alarm_clock_step = step;
 out:
   cJSON_Delete(candidate);
 
