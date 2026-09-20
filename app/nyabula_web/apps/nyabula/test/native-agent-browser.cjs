@@ -14,8 +14,12 @@ const output=path.resolve(process.argv[3]);
 const dist=path.resolve(__dirname,'../dist');
 const remote='/root/openvela/core-eye-20260910';
 const sessionFile=remote+'/agent-browser-session.json';
-const sshArgs=['-n','-T','-p','23658','-i','C:/Users/BeaconCat/.ssh/debian_vm_23658_ed25519','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','ConnectTimeout=10','-o','ServerAliveInterval=10','-o','ServerAliveCountMax=2'];
-const destination='root@49.7.10.132';
+// The simulator host is private infrastructure: it comes from the
+// environment (NYABULA_SIM_SSH=user@host, NYABULA_SIM_SSH_PORT,
+// NYABULA_SIM_SSH_KEY), never from the repository.
+if(!process.env.NYABULA_SIM_SSH) { console.error('set NYABULA_SIM_SSH=user@host'); process.exit(2); }
+const sshArgs=['-n','-T','-p',process.env.NYABULA_SIM_SSH_PORT||'22',...(process.env.NYABULA_SIM_SSH_KEY?['-i',process.env.NYABULA_SIM_SSH_KEY]:[]),'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','ConnectTimeout=10','-o','ServerAliveInterval=10','-o','ServerAliveCountMax=2'];
+const destination=process.env.NYABULA_SIM_SSH;
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,timeout=15000) {
   const end=Date.now()+timeout;
