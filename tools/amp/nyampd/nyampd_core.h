@@ -16,6 +16,20 @@ namespace nyamp
 
 class LlmService;
 class BlobService;
+class AsrService;
+class TtsService;
+class KwsService;
+
+/* The speech services.  Any of them may be null; its opcodes then answer
+ * unsupported, exactly as a null `llm` does.
+ */
+
+struct SpeechServices
+{
+  AsrService *asr = nullptr;
+  TtsService *tts = nullptr;
+  KwsService *kws = nullptr;
+};
 
 constexpr std::uint16_t kHealthQuery = 1;
 constexpr std::uint16_t kInfoQuery = 2;
@@ -49,7 +63,11 @@ enum class Status : std::int32_t
  *   frames off each other forever, so such a frame is dropped, never answered.
  *
  *   blob may be null; the control-originated BLOB opcodes then answer
- *   unsupported.
+ *   unsupported.  So may speech, or any service inside it.
+ *
+ *   A CANCEL-kind frame (no payload, request_id naming the target) is
+ *   accepted for BLOB, ASR, TTS and KWS.  It has no response of its own; the
+ *   cancelled request's terminal event or response reports it.
  *
  ****************************************************************************/
 
@@ -57,7 +75,8 @@ int Dispatch(const std::uint8_t *request, std::size_t request_size,
              std::uint64_t now_ms, std::uint32_t generation,
              std::uint8_t *response, std::size_t response_capacity,
              std::size_t *response_size, std::string_view diagnostics = {},
-             LlmService *llm = nullptr, BlobService *blob = nullptr);
+             LlmService *llm = nullptr, BlobService *blob = nullptr,
+             const SpeechServices *speech = nullptr);
 
 } // namespace nyamp
 
