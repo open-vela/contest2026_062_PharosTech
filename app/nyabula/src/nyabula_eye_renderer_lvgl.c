@@ -131,6 +131,24 @@ struct font_cache_s
   uint8_t family;
 };
 
+/* A label waiting for the vector batch of its page to be drawn.  Shapes are
+ * collected into one lv_draw_vector() at the end of a page; a label handed
+ * to LVGL at once would be rasterised first and end up underneath all of
+ * them, the scene's backdrop disc included.
+ */
+
+#define LABEL_QUEUE_COUNT 24
+#define LABEL_TEXT_BYTES  160
+
+struct label_s
+{
+  const lv_font_t *font;
+  lv_area_t area;
+  lv_color_t color;
+  lv_opa_t opa;
+  char text[LABEL_TEXT_BYTES];
+};
+
 struct text_cache_s
 {
   const lv_font_t *font;
@@ -171,6 +189,8 @@ struct nyabula_eye_renderer_s
   struct fiber_s fibers[FIBERS];
   struct z_s z[ZCOUNT];
   struct text_cache_s text_cache[TEXT_CACHE_COUNT];
+  struct label_s labels[LABEL_QUEUE_COUNT];
+  int label_count;
 #if defined(CONFIG_CONTEST2026_062_NYABULA_DYNAMIC_FONTS) && LV_USE_FREETYPE
   struct font_cache_s font_cache[FONT_CACHE_COUNT];
 #endif
@@ -238,6 +258,8 @@ static void text_center_at(struct nyabula_eye_renderer_s *r,
                            const struct eye_s *e, const lv_font_t *font,
                            const char *text, float center_x, float center_y,
                            uint32_t color, float opacity);
+static const lv_font_t *font_for_text(const lv_font_t *font, const char *text);
+static void labels_flush(struct nyabula_eye_renderer_s *r);
 static float eye_globe_radius(void);
 static void clamp_to_eye_globe(float *x, float *y, float inset);
 static void text_center(struct nyabula_eye_renderer_s *r,
@@ -749,13 +771,72 @@ static void text_center_at(struct nyabula_eye_renderer_s *r,
   area.x2 = area.x1 + width + 1;
   area.y2 = area.y1 + font->line_height + 1;
 
+  if (r->label_count < LABEL_QUEUE_COUNT)
+    {
+      struct label_s *label = &r->labels[r->label_count++];
+      size_t length = strlen(text);
+
+      /* Never cut a UTF-8 sequence in half. */
+
+      if (length >= LABEL_TEXT_BYTES)
+        {
+          length = LABEL_TEXT_BYTES - 1;
+          while (length > 0 && ((unsigned char)text[length] & 0xc0) == 0x80)
+            {
+              length--;
+            }
+        }
+
+      memcpy(label->text, text, length);
+      label->text[length] = '\0';
+      label->font = font;
+      label->area = area;
+      label->color = lv_color_hex(color);
+      label->opa = vector_opa(opacity);
+      return;
+    }
+
+  /* More labels than any scene has: drawn at once rather than dropped. */
+
   lv_draw_label_dsc_init(&descriptor);
   descriptor.text = text;
+  descriptor.text_local = 1;
   descriptor.font = font;
   descriptor.color = lv_color_hex(color);
   descriptor.opa = vector_opa(opacity);
   descriptor.align = LV_TEXT_ALIGN_CENTER;
   lv_draw_label(&r->layer, &descriptor, &area);
+}
+
+/****************************************************************************
+ * Name: labels_flush
+ *
+ * Description:
+ *   Hand the page's labels to LVGL, after its shapes.  The queue belongs to
+ *   the renderer and outlives lv_canvas_finish_layer(), so the text is not
+ *   copied again.
+ *
+ ****************************************************************************/
+
+static void labels_flush(struct nyabula_eye_renderer_s *r)
+{
+  lv_draw_label_dsc_t descriptor;
+  int index;
+
+  for (index = 0; index < r->label_count; index++)
+    {
+      struct label_s *label = &r->labels[index];
+
+      lv_draw_label_dsc_init(&descriptor);
+      descriptor.text = label->text;
+      descriptor.font = label->font;
+      descriptor.color = label->color;
+      descriptor.opa = label->opa;
+      descriptor.align = LV_TEXT_ALIGN_CENTER;
+      lv_draw_label(&r->layer, &descriptor, &label->area);
+    }
+
+  r->label_count = 0;
 }
 
 static float eye_globe_radius(void) { return R - 2.0f; }
@@ -5060,6 +5141,7 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
         }
 
       graphics_trace_endex(id == NYABULA_EYE_LEFT ? "eye_left" : "eye_right");
+      r->label_count = 0;
       lv_canvas_finish_layer(r->canvas[id], &r->layer);
       return;
     }
@@ -5117,6 +5199,7 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
   stage_start = lv_tick_get();
   graphics_trace_beginex("raster");
   lv_draw_vector(r->vector);
+  labels_flush(r);
   if (r->mask_ready)
     {
       lv_draw_image_dsc_t image_descriptor;
