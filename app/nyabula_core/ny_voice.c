@@ -257,7 +257,8 @@ enum ny_voice_cue_e
 {
   NY_VOICE_CUE_NONE = 0, /* Text through TTS.                 */
   NY_VOICE_CUE_SHORT,    /* A cue: never worth a model load.  */
-  NY_VOICE_CUE_FIXED     /* A fixed sentence that must be said. */
+  NY_VOICE_CUE_FIXED,    /* A fixed sentence that must be said. */
+  NY_VOICE_CUE_ONLY      /* Never words: the wake chime.      */
 };
 
 struct ny_voice_model_s
@@ -1808,6 +1809,7 @@ static int ny_voice_play_cue(struct ny_voice_audio_s *audio,
   size_t offset = 0;
   size_t index;
   ssize_t got;
+  bool rising;
   int ret = 0;
   int fd;
 
@@ -1841,17 +1843,20 @@ static int ny_voice_play_cue(struct ny_voice_audio_s *audio,
       close(fd);
     }
 
-  /* 80 ms of 660 Hz, 40 ms of nothing, 80 ms of 880 Hz, with 5 ms ramps so
-   * the speaker does not click.
+  /* 80 ms, 40 ms of nothing, 80 ms, with 5 ms ramps so the speaker does not
+   * click.  The wake chime rises, every other cue falls: the owner can hear
+   * which of the two happened without making out any words.
    */
 
+  rising = strcmp(name, "wake") == 0;
   memset(tone, 0, sizeof(tone));
   for (index = 0; index < NY_VOICE_TTS_RATE / 5; index++)
     {
       size_t in_tone = index % (NY_VOICE_TTS_RATE * 3 / 25);
       size_t length = NY_VOICE_TTS_RATE * 2 / 25;
       size_t ramp = NY_VOICE_TTS_RATE / 200;
-      double hz = index < NY_VOICE_TTS_RATE * 3 / 25 ? 660.0 : 880.0;
+      bool second = index >= NY_VOICE_TTS_RATE * 3 / 25;
+      double hz = rising == second ? 880.0 : 660.0;
       double gain;
 
       if (in_tone >= length)
@@ -1949,7 +1954,8 @@ static void *ny_voice_play_thread(void *arg)
            * takes; once the model is there it says the cue properly.
            */
 
-          if (cue == NY_VOICE_CUE_SHORT && !ready)
+          if (cue == NY_VOICE_CUE_ONLY ||
+              (cue == NY_VOICE_CUE_SHORT && !ready))
             {
               ret = ny_voice_play_cue(audio, resample, name);
             }
@@ -2271,6 +2277,41 @@ static void ny_voice_turn_asr_start(struct ny_voice_turn_s *turn, bool attach)
   max_samples =
       (g_voice.settings.max_listen_ms + 2000) / 1000 * NY_VOICE_CAPTURE_RATE;
   nxmutex_unlock(&g_voice.lock);
+
+  /* The chime that says the robot is listening.  It is the first thing of
+   * a turn, before the request attaches: in the HALF arrangement the
+   * microphone is closed while the speaker plays, and what the owner says
+   * over the chime would be lost.  Only the first wake since boot used to
+   * make a sound, and only by accident -- the "please wait" cue of a TTS
+   * model that was not loaded yet.
+   */
+
+  if (attach)
+    {
+      ny_voice_turn_say("", NY_VOICE_CUE_ONLY, "wake");
+      deadline = ny_voice_now_ms() + 3000;
+      for (;;)
+        {
+          bool busy;
+
+          nxmutex_lock(&g_voice.lock);
+          busy = g_voice.play_busy || !g_voice.capture_open;
+          nxmutex_unlock(&g_voice.lock);
+          if (!busy || ny_voice_now_ms() >= deadline)
+            {
+              break;
+            }
+
+          usleep(20000);
+        }
+
+      /* The wake phrase is on the far side of the chime's capture gap, so
+       * its offsets name samples the stream no longer carries: the request
+       * attaches at the head, as it does after the "please wait" cue.
+       */
+
+      cued = true;
+    }
 
   ret = streaming ? ny_voice_port_open(&turn->asr) : -ENOTCONN;
   if (ret == 0 && (ny_compute_capabilities() & NY_COMPUTE_CAP_ASR) == 0)
