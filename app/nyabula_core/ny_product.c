@@ -231,6 +231,12 @@ int ny_product_request(const struct ny_product_caller_s *caller,
     return ret;
 #endif
 
+#ifdef CONFIG_NYABULA_CORE_AUDIO
+  ret = ny_product_audio_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
   ret = ny_product_media_request(caller, topic, data, result);
   if (ret != -ENOSYS)
     return ret;

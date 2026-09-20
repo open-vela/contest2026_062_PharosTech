@@ -75,6 +75,13 @@ static int ny_product_worker(int argc, char **argv)
         ret = notice_ret;
       if (ret == 0)
         ret = alarm_ret;
+#ifdef CONFIG_NYABULA_CORE_AUDIO
+      /* Ahead of the player: a track must start at the restored volume. */
+
+      int audio_ret = ny_product_audio_tick();
+      if (ret == 0)
+        ret = audio_ret;
+#endif
       int media_ret = ny_product_media_tick();
       if (ret == 0)
         ret = media_ret;
