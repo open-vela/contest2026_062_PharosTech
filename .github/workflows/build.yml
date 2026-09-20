@@ -204,7 +204,7 @@ jobs:
           make_placeholder "$FIRMWARE_DIR/sv6160lite.nvbin" 37
 
       - name: Apply AMP GIC dependency
-        if: matrix.config == 'boards/rk3576/kickpi-k7/configs/amp'
+        if: matrix.config == 'boards/rk3576/kickpi-k7/configs/amp' || startsWith(matrix.config, 'configs/product_amp')
         run: |
           bash "${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}/tools/amp/nuttx/apply.sh" \
             "${{ env.OPENVELA_DIR }}/nuttx"
@@ -224,8 +224,18 @@ jobs:
         with:
           node-version: '22'
 
+      # configs/product builds nyabula_core against interfaces that live in
+      # patches/ until they are upstream (packages/ai_agent, nxplayer, microADB).
+      - name: Apply dependency patches
+        if: startsWith(matrix.config, 'configs/product')
+        shell: bash
+        run: |
+          cd "${{ env.OPENVELA_DIR }}"
+          REPO="$PWD/${{ env.REPO_NAME }}"
+          bash "$REPO/tools/apply_dependency_patches.sh" "$PWD" "$REPO/patches"
+
       - name: Generate Eye glyph tables from official Noto Sans
-        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services'
+        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services' || startsWith(matrix.config, 'configs/product')
         run: |
           cd ${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}
           python3 app/nyabula/tools/test_generate_fonts.py
