@@ -85,7 +85,16 @@ extern "C" {
  * has payload_size == 0.
  */
 
-/* Model directory path, UTF-8, not necessarily NUL terminated. */
+/* Model directory or file, UTF-8, not necessarily NUL terminated.
+ *
+ * An absolute path names storage the compute domain can reach itself and is
+ * handed to the backend untouched.  A relative one that satisfies the blob
+ * name rules ("llm/model.rkllm", or a directory such as "asr") is a logical
+ * name: the compute domain first pulls it from the control domain through
+ * the BLOB service below, then loads the local copy.  The LOAD response then
+ * arrives only after the pull, preceded by BLOB PROGRESS events that carry
+ * the LOAD's request_id.
+ */
 #define NYAMP_LLM_MAX_PATH NYAMP_INLINE_MAX
 
 /* Shared-memory buffer descriptor.
@@ -131,6 +140,7 @@ enum nyamp_format_e
   NYAMP_FORMAT_S16 = 2,  /* Signed 16-bit mono PCM.                */
   NYAMP_FORMAT_I64 = 3,  /* Phoneme and tone id vectors.           */
   NYAMP_FORMAT_UTF8 = 4, /* Text.                                  */
+  NYAMP_FORMAT_BYTES = 5, /* Opaque file bytes (blob windows).     */
 };
 
 struct nyamp_buffer_s
@@ -218,6 +228,133 @@ struct nyamp_buffer_s
 
 #define NYAMP_TTS_MAX_PATH    NYAMP_INLINE_MAX
 
+/* Response status prefix.
+ *
+ * Every response payload starts with one little-endian i32 status (a
+ * nyamp_model_status_e value) followed by an opcode-specific body.  The rule
+ * predates this helper -- HEALTH and LLM already follow it -- and is named
+ * here so both responders encode it the same way.
+ */
+
+#define NYAMP_STATUS_SIZE 4U
+
+/* Request-id ownership.
+ *
+ * A request_id is scoped to the domain that ORIGINATED the request; the
+ * responder only echoes it.  Both domains originate requests (the control
+ * domain for HEALTH/LLM/ASR/TTS, the compute domain for BLOB) and the two
+ * allocators never talk to each other, so the id alone is not unique on the
+ * endpoint.  The message kind disambiguates it: a RESPONSE or EVENT a domain
+ * receives can only belong to a request that domain sent, and a REQUEST or
+ * CANCEL it receives can only come from the peer.
+ *
+ * Compute-originated ids additionally set the top bit.  That is not needed
+ * for correctness; it keeps a captured trace unambiguous and lets a responder
+ * refuse a request that claims the wrong origin.  Control-originated ids are
+ * (pid << 32 | milliseconds) and never reach the top bit.
+ */
+
+#define NYAMP_REQUEST_ID_COMPUTE (1ULL << 63)
+
+/* BLOB service opcodes (NYAMP_SERVICE_BLOB).
+ *
+ * This is the one service whose REQUESTER is the compute domain and whose
+ * RESPONDER is the control domain.  The control domain owns the eMMC and the
+ * /data volume; the compute domain has no storage at all and pulls model
+ * files on demand.  Everything else keeps its meaning:
+ *
+ *  - generation is still the compute domain's.  The control domain has no
+ *    generation of its own: it learns the current one from the READY event
+ *    (or a HEALTH response) and a BLOB request must carry exactly that value.
+ *    A request with another generation is answered STALE_GENERATION, and a
+ *    new generation voids every open blob, because the compute domain that
+ *    held them no longer exists.  Responses echo the request's generation.
+ *  - the compute domain remains the only allocator of the shared arena.  READ
+ *    carries a window it minted (an NYBS descriptor with its lease); the
+ *    control domain fills that window and echoes the descriptor back with
+ *    `length` set to the bytes it wrote.  It never picks an offset itself.
+ *  - a CANCEL-kind message whose request_id names an outstanding OPEN aborts
+ *    it.  OPEN may take many seconds (the digest of a large file is computed
+ *    off the receive thread), so a requester that gives up must say so or the
+ *    blob would stay open until the next generation.
+ *
+ * Names are UTF-8, relative to the blob root (/data/models), '/' separated,
+ * and must not contain an empty, "." or ".." component, a leading '/', a
+ * backslash or a control character.
+ *
+ * BENCH is answered by the control domain: mode ECHO returns the request
+ * body untouched (round-trip time), mode FILL writes a seed-derived pattern
+ * into the granted window (shared-memory throughput without the eMMC).
+ *
+ * BENCH_RUN and PULL travel in the usual direction -- control to compute --
+ * and ask the compute domain to run a measurement or a pull and report the
+ * outcome.  They exist because the compute domain has no console: without
+ * them the delivery path could only be exercised as a side effect of loading
+ * a model.  PROGRESS events follow an accepted PULL under its request_id.
+ */
+
+#define NYAMP_BLOB_OPEN           1U
+#define NYAMP_BLOB_READ           2U
+#define NYAMP_BLOB_CLOSE          3U
+#define NYAMP_BLOB_LIST           4U
+#define NYAMP_BLOB_BENCH          5U
+#define NYAMP_BLOB_BENCH_RUN      0x10U
+#define NYAMP_BLOB_PULL           0x11U
+#define NYAMP_BLOB_EVENT_PROGRESS 0x80U
+
+#define NYAMP_BLOB_MAX_NAME       255U
+#define NYAMP_BLOB_SHA256_SIZE    32U
+
+/* flags, name length, then the name. */
+#define NYAMP_BLOB_OPEN_HEADER_SIZE 8U
+
+/* blob_id, flags, size, mtime, sha256. */
+#define NYAMP_BLOB_INFO_SIZE (24U + NYAMP_BLOB_SHA256_SIZE)
+
+/* blob_id, flags, file_offset, buffer descriptor.  Request and response share
+ * the layout: the response echoes the descriptor with `length` = bytes filled.
+ */
+#define NYAMP_BLOB_READ_SIZE (16U + NYAMP_BUFFER_SIZE)
+
+/* Set in a READ response when the window reaches end of file. */
+#define NYAMP_BLOB_READ_EOF (1U << 0)
+
+/* blob_id, reserved. */
+#define NYAMP_BLOB_CLOSE_SIZE 8U
+
+/* cursor, prefix length, then the prefix (empty = the blob root). */
+#define NYAMP_BLOB_LIST_HEADER_SIZE 8U
+
+/* next_cursor, entry count; then per entry: size u64, flags u16, name length
+ * u16, name.  The cursor is opaque to the requester: zero starts a listing
+ * and a zero next_cursor ends it.
+ */
+#define NYAMP_BLOB_LIST_BODY_HEADER_SIZE  8U
+#define NYAMP_BLOB_LIST_ENTRY_HEADER_SIZE 12U
+#define NYAMP_BLOB_LIST_BODY_MAX          (NYAMP_INLINE_MAX - NYAMP_STATUS_SIZE)
+
+#define NYAMP_BLOB_ENTRY_DIRECTORY        (1U << 0)
+
+/* mode, seed; FILL appends a buffer descriptor. */
+#define NYAMP_BLOB_BENCH_ECHO      0U
+#define NYAMP_BLOB_BENCH_FILL      1U
+#define NYAMP_BLOB_BENCH_ECHO_SIZE 8U
+#define NYAMP_BLOB_BENCH_FILL_SIZE (8U + NYAMP_BUFFER_SIZE)
+
+/* rounds, window bytes. */
+#define NYAMP_BLOB_BENCH_RUN_SIZE 8U
+
+/* rounds, window bytes, rtt min/avg/max (us), fill KiB/s, copy KiB/s,
+ * pattern errors.
+ */
+#define NYAMP_BLOB_BENCH_REPORT_SIZE 32U
+
+/* bytes, elapsed ms, files, reused files. */
+#define NYAMP_BLOB_PULL_REPORT_SIZE 24U
+
+/* done, total, bytes per second, reserved. */
+#define NYAMP_BLOB_PROGRESS_SIZE 24U
+
 enum nyamp_service_e
 {
   NYAMP_SERVICE_HEALTH = 1,
@@ -228,6 +365,7 @@ enum nyamp_service_e
   NYAMP_SERVICE_MEDIA = 6,
   NYAMP_SERVICE_HOME = 7,
   NYAMP_SERVICE_LLM = 8,
+  NYAMP_SERVICE_BLOB = 9, /* Requester: compute.  Responder: control. */
 };
 
 enum nyamp_result_e
@@ -276,6 +414,65 @@ struct nyamp_llm_chunk_s
   uint32_t offset;         /* Index of ids[0] within that total.     */
   uint32_t count;          /* Ids carried by this chunk.             */
   uint32_t max_new_tokens; /* Meaningful only when offset is zero.   */
+};
+
+struct nyamp_blob_info_s
+{
+  uint32_t blob_id; /* Valid until CLOSE or the next generation.   */
+  uint32_t flags;   /* Reserved, zero.                              */
+  uint64_t size;
+  uint64_t mtime; /* Seconds since the Unix epoch, 0 if unknown.  */
+  uint8_t sha256[NYAMP_BLOB_SHA256_SIZE];
+};
+
+struct nyamp_blob_read_s
+{
+  uint32_t blob_id;
+  uint32_t flags; /* Request: zero.  Response: NYAMP_BLOB_READ_EOF. */
+  uint64_t file_offset;
+  struct nyamp_buffer_s buffer; /* Response: length = bytes filled.  */
+};
+
+struct nyamp_blob_entry_s
+{
+  uint64_t size;
+  uint16_t flags;
+  uint16_t name_length;
+  const char *name; /* Points into the payload; not NUL terminated. */
+};
+
+struct nyamp_blob_bench_s
+{
+  uint32_t mode;
+  uint32_t seed;
+  struct nyamp_buffer_s buffer; /* Meaningful only for FILL. */
+};
+
+struct nyamp_blob_bench_report_s
+{
+  uint32_t rounds;
+  uint32_t window_bytes;
+  uint32_t rtt_min_us;
+  uint32_t rtt_avg_us;
+  uint32_t rtt_max_us;
+  uint32_t fill_kib_per_s; /* Control domain writes the window.   */
+  uint32_t copy_kib_per_s; /* Compute domain copies it back out.  */
+  uint32_t pattern_errors;
+};
+
+struct nyamp_blob_pull_report_s
+{
+  uint64_t bytes;
+  uint64_t elapsed_ms;
+  uint32_t files;
+  uint32_t reused;
+};
+
+struct nyamp_blob_progress_s
+{
+  uint64_t done;
+  uint64_t total;
+  uint32_t bytes_per_second;
 };
 
 int nyamp_header_encode(uint8_t *wire, size_t wire_size,
@@ -368,6 +565,112 @@ int nyamp_tts_finish_encode(uint8_t *payload, size_t payload_capacity,
 int nyamp_tts_finish_decode(int32_t *status, uint32_t *sequence,
                             uint32_t *total_samples, const uint8_t *payload,
                             size_t payload_size);
+
+/* Response payload = status followed by a body.  The encoder returns where
+ * the body must be written; the decoder returns where it starts.
+ */
+
+int nyamp_status_encode(uint8_t *payload, size_t payload_capacity,
+                        int32_t status, uint8_t **body,
+                        size_t *body_capacity);
+int nyamp_status_decode(int32_t *status, const uint8_t **body,
+                        size_t *body_size, const uint8_t *payload,
+                        size_t payload_size);
+
+/* NYAMP_OK when `name` is a legal blob name (see the rules above). */
+
+int nyamp_blob_name_check(const char *name, size_t name_length);
+
+int nyamp_blob_open_encode(uint8_t *payload, size_t payload_capacity,
+                           size_t *payload_size, uint32_t flags,
+                           const char *name, size_t name_length);
+int nyamp_blob_open_decode(uint32_t *flags, const char **name,
+                           size_t *name_length, const uint8_t *payload,
+                           size_t payload_size);
+
+int nyamp_blob_info_encode(uint8_t *payload, size_t payload_capacity,
+                           size_t *payload_size,
+                           const struct nyamp_blob_info_s *info);
+int nyamp_blob_info_decode(struct nyamp_blob_info_s *info,
+                           const uint8_t *payload, size_t payload_size);
+
+int nyamp_blob_read_encode(uint8_t *payload, size_t payload_capacity,
+                           size_t *payload_size,
+                           const struct nyamp_blob_read_s *read);
+int nyamp_blob_read_decode(struct nyamp_blob_read_s *read,
+                           const uint8_t *payload, size_t payload_size);
+
+int nyamp_blob_close_encode(uint8_t *payload, size_t payload_capacity,
+                            size_t *payload_size, uint32_t blob_id);
+int nyamp_blob_close_decode(uint32_t *blob_id, const uint8_t *payload,
+                            size_t payload_size);
+
+int nyamp_blob_list_encode(uint8_t *payload, size_t payload_capacity,
+                           size_t *payload_size, uint32_t cursor,
+                           const char *prefix, size_t prefix_length);
+int nyamp_blob_list_decode(uint32_t *cursor, const char **prefix,
+                           size_t *prefix_length, const uint8_t *payload,
+                           size_t payload_size);
+
+/* A LIST response body is built incrementally: begin, append until
+ * NYAMP_EMSGSIZE says the next entry does not fit, then finish.  The reader
+ * validates it with nyamp_blob_list_body_decode and walks it with
+ * nyamp_blob_list_body_next, starting from position 0.
+ */
+
+int nyamp_blob_list_body_begin(uint8_t *body, size_t body_capacity,
+                               size_t *body_size);
+int nyamp_blob_list_body_append(uint8_t *body, size_t body_capacity,
+                                size_t *body_size,
+                                const struct nyamp_blob_entry_s *entry);
+int nyamp_blob_list_body_finish(uint8_t *body, size_t body_size,
+                                uint32_t next_cursor);
+int nyamp_blob_list_body_decode(uint32_t *next_cursor, uint32_t *count,
+                                const uint8_t *body, size_t body_size);
+int nyamp_blob_list_body_next(struct nyamp_blob_entry_s *entry,
+                              size_t *position, const uint8_t *body,
+                              size_t body_size);
+
+int nyamp_blob_bench_encode(uint8_t *payload, size_t payload_capacity,
+                            size_t *payload_size,
+                            const struct nyamp_blob_bench_s *bench);
+int nyamp_blob_bench_decode(struct nyamp_blob_bench_s *bench,
+                            const uint8_t *payload, size_t payload_size);
+
+/* The FILL pattern: little-endian u32 word k of the window holds
+ * seed ^ (k * 0x9e3779b1).  It depends on the position so a window that is
+ * merely shifted or stale fails the comparison, and `first_word` lets either
+ * side produce it block by block into ordinary cached memory.
+ */
+
+void nyamp_blob_bench_pattern(uint8_t *dest, size_t words, uint32_t seed,
+                              uint32_t first_word);
+
+int nyamp_blob_bench_run_encode(uint8_t *payload, size_t payload_capacity,
+                                size_t *payload_size, uint32_t rounds,
+                                uint32_t window_bytes);
+int nyamp_blob_bench_run_decode(uint32_t *rounds, uint32_t *window_bytes,
+                                const uint8_t *payload, size_t payload_size);
+
+int nyamp_blob_bench_report_encode(
+    uint8_t *payload, size_t payload_capacity, size_t *payload_size,
+    const struct nyamp_blob_bench_report_s *report);
+int nyamp_blob_bench_report_decode(struct nyamp_blob_bench_report_s *report,
+                                   const uint8_t *payload,
+                                   size_t payload_size);
+
+int nyamp_blob_pull_report_encode(
+    uint8_t *payload, size_t payload_capacity, size_t *payload_size,
+    const struct nyamp_blob_pull_report_s *report);
+int nyamp_blob_pull_report_decode(struct nyamp_blob_pull_report_s *report,
+                                  const uint8_t *payload,
+                                  size_t payload_size);
+
+int nyamp_blob_progress_encode(uint8_t *payload, size_t payload_capacity,
+                               size_t *payload_size,
+                               const struct nyamp_blob_progress_s *progress);
+int nyamp_blob_progress_decode(struct nyamp_blob_progress_s *progress,
+                               const uint8_t *payload, size_t payload_size);
 
 #ifdef __cplusplus
 }
