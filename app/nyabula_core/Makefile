@@ -100,11 +100,11 @@ NYCORE_NBOOTCTL_DIR = $(APPDIR)/system/nbootctl
 CSRCS += ny_web_ota.c
 CFLAGS += ${INCDIR_PREFIX}$(NYCORE_NBOOTCTL_DIR)
 # A flat build links every built-in application into one image, so when the
-# nbootctl command is built in its bootctrl object already provides these
-# symbols.  Compiling it a second time here would put two definitions of
-# every nbootctl_* function into the same link.
+# nbootctl command is built in its bootctrl and partition objects already
+# provide these symbols.  Compiling them a second time here would put two
+# definitions of every nbootctl_* function into the same link.
 ifneq ($(CONFIG_SYSTEM_NBOOTCTL),y)
-CSRCS += nbootctl_bootctrl.c
+CSRCS += nbootctl_bootctrl.c nbootctl_part.c
 VPATH += :$(NYCORE_NBOOTCTL_DIR)
 DEPPATH += --dep-path $(NYCORE_NBOOTCTL_DIR)
 endif

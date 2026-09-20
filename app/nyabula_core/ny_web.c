@@ -843,6 +843,25 @@ static const char *ny_web_error_name(int status)
       case EIO:
       case EBADMSG:
         return "EIO";
+
+        /* The refusals of update.apply.  Each asks something different of
+         * the owner, so none of them may fold into EINVAL: acknowledge the
+         * advanced targets, pick another slot, agree to write under a mounted
+         * filesystem, or give up on a target that is never written.
+         */
+
+      case ENOKEY:
+        return "EADVANCED";
+      case ETXTBSY:
+        return "ERUNNING";
+      case ENOTEMPTY:
+        return "EMOUNTED";
+      case EXDEV:
+        return "EBLOCKED";
+      case EMEDIUMTYPE:
+        return "ENOTIMAGE";
+      case EFBIG:
+        return "ETOOLARGE";
       default:
         return "EINVAL";
     }

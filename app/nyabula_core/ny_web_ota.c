@@ -20,17 +20,24 @@
  *
  ****************************************************************************/
 
-/* Receiving a firmware image from the control panel:
+/* Receiving an image from the control panel:
  *
- *   POST   /ota/upload   body = the image; headers Content-Length,
- *                        X-Nya-Sha256 and Authorization: Bearer <token>
+ *   POST   /ota/upload[?target=<id>]   body = the image; headers
+ *                        Content-Length, X-Nya-Sha256 and
+ *                        Authorization: Bearer <token>
  *   DELETE /ota/upload   forget a staged image
  *
+ * The target says what the image is for, so that the size limit and the
+ * magic that are applied are the ones of the place it is meant to go.
+ * Without one it is the NuttX firmware, as it was before there were others.
+ *
  * This only ever writes a temporary file.  The digest is computed on both
- * ends and compared before the file is kept, and writing a slot is a
+ * ends and compared before the file is kept, and writing the medium is a
  * separate, owner-confirmed step on the authenticated socket (update.apply).
  * A link that drops, a wrong file or a wrong digest therefore never reaches
- * the boot media.
+ * the boot media.  Naming a target here grants nothing: update.apply checks
+ * the file against the target again and decides on its own whether the
+ * target may be written.
  */
 
 /****************************************************************************
@@ -56,6 +63,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "nbootctl_part.h"
 #include "ny_web.h"
 #include "ny_web_auth.h"
 #include "ny_web_ota.h"
@@ -65,9 +73,10 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NY_OTA_TARGET    "/ota/upload"
-#define NY_OTA_DIRECTORY "/data/tmp"
-#define NY_OTA_VOLUME    "/data"
+#define NY_OTA_TARGET        "/ota/upload"
+#define NY_OTA_DIRECTORY     "/data/tmp"
+#define NY_OTA_QUERY_KEY     "target"
+#define NY_OTA_TARGET_ID_MAX 32
 
 /* Kept free on the volume after the image is stored: the product database
  * and the logs share it, and a full volume breaks them first.
@@ -85,30 +94,45 @@
 #define NY_OTA_DRAIN_BYTES (4ul * 1024ul * 1024ul)
 #define NY_OTA_DRAIN_MS    2000
 
-/* An arm64 Image header carries "ARM\x64" at offset 56.  It is the one cheap
- * test that tells a NuttX image from a photograph picked by mistake.
+/* The start of an image that is kept for the magic: up to the end of the
+ * furthest one, the FAT signature that closes the first sector.
  */
 
-#define NY_OTA_MAGIC_OFFSET  56
-#define NY_OTA_MAGIC         "ARMd"
-#define NY_OTA_MAGIC_SIZE    4
-#define NY_OTA_MAGIC_END     (NY_OTA_MAGIC_OFFSET + NY_OTA_MAGIC_SIZE)
+#define NY_OTA_HEAD_SIZE 512
 
-#define NY_OTA_LENGTH_DIGITS 12
-#define NY_OTA_BEARER        "Bearer "
-#define NY_OTA_BEARER_SIZE   7
+/* A FIT is a flattened device tree.  Its header says where the structure
+ * block is; the image nodes are looked for in the first part of it, which
+ * is all of it for a FIT that keeps its payloads outside the tree.
+ */
+
+#define NY_OTA_FDT_HEADER     40u
+#define NY_OTA_FDT_VERSION    17u
+#define NY_OTA_FDT_WINDOW     65536u
+#define NY_OTA_FDT_BEGIN_NODE 1u
+
+#define NY_OTA_LENGTH_DIGITS  12
+#define NY_OTA_BEARER         "Bearer "
+#define NY_OTA_BEARER_SIZE    7
 
 /****************************************************************************
  * Private Types
  ****************************************************************************/
 
+struct ny_ota_magic_s
+{
+  size_t offset;
+  size_t size;
+  const char *bytes;
+};
+
 struct ny_ota_upload_s
 {
   int file;
   SHA2_CTX hash;
+  const struct ny_ota_magic_s *magic;
   uint64_t expected; /* Content-Length */
   uint64_t received;
-  uint8_t first[NY_OTA_MAGIC_END]; /* start of the image, for the magic */
+  uint8_t first[NY_OTA_HEAD_SIZE]; /* start of the image, for the magic */
 };
 
 /****************************************************************************
@@ -124,12 +148,17 @@ static void ny_ota_hex(const uint8_t *digest, char *hex);
 static bool ny_ota_token_equal(const char *offered, const char *expected);
 static bool ny_ota_authorized(const char *head, const char *pair_token);
 static int ny_ota_length(const char *head, uint64_t *length);
+static int ny_ota_hex_value(char c);
+static int ny_ota_query_target(const char *query, char *id, size_t size);
+static int ny_ota_read_full(int file, uint8_t *data, size_t length);
+static uint32_t ny_ota_be32(const uint8_t *value);
+static int ny_ota_fit_check(int file, uint64_t size, const char *const *nodes);
 static int ny_ota_consume(struct ny_ota_upload_s *upload, const uint8_t *data,
                           size_t length);
 static int ny_ota_receive(int fd, struct ny_ota_upload_s *upload,
                           const void *body, size_t body_length);
-static int ny_ota_upload(int fd, const char *head, const void *body,
-                         size_t body_length);
+static int ny_ota_upload(int fd, const char *head, const char *query,
+                         const void *body, size_t body_length);
 static int ny_ota_remove(int fd);
 
 /****************************************************************************
@@ -138,6 +167,162 @@ static int ny_ota_remove(int fd);
 
 static mutex_t g_ota_lock = NXMUTEX_INITIALIZER;
 static bool g_ota_claimed;
+
+/* Indexed by enum ny_web_ota_magic_e.  None of them proves an image good;
+ * each is the one cheap test that tells it from a photograph, or from the
+ * image of another target, picked by mistake.
+ */
+
+static const struct ny_ota_magic_s g_ota_magics[] = {
+  { 0, 0, "" },
+  { 56, 4, "ARMd" },            /* arm64 Image header, "ARM\x64" */
+  { 0, 4, "\xd0\x0d\xfe\xed" }, /* flattened device tree */
+  { 0, 8, "K7ABCTRL" },         /* first bootctrl record */
+  { 510, 2, "\x55\xaa" },       /* boot sector signature */
+};
+
+/* What N-Boot requires of the two kinds of FIT, as far as it can be seen
+ * without parsing the tree: the image nodes.  They also tell the two apart,
+ * which the magic they share cannot.
+ */
+
+static const char *const g_ota_nodes_amp[] = {
+  "linux", "fdt", "ramdisk", "openvela", NULL,
+};
+
+static const char *const g_ota_nodes_nboot[] = {
+  "atf-1", "atf-2", "atf-3", "optee", "fdt", "uboot", NULL,
+};
+
+/* The uboot partition is absent on purpose: it is the N-Boot region, and
+ * the nboot target is the way to it that looks at the image first.
+ */
+
+static const struct ny_web_ota_target_s g_ota_targets[] = {
+  {
+      .id = "nuttx",
+      .label = "openvela 固件",
+      .description = "openvela（NuttX）主域固件 nuttx.bin。写入没有在运行的"
+                     "槽位，从存储回读校验通过后设为下次启动的槽位。",
+      .kind = NY_WEB_OTA_KIND_SLOT,
+      .magic = NY_WEB_OTA_MAGIC_ARM64,
+      .domain = "nuttx",
+      .partition = "nuttx_a",
+  },
+  {
+      .id = "amp",
+      .label = "AMP 计算域镜像",
+      .description = "AMP FIT 镜像（Linux、设备树、initramfs 与 A53 侧 "
+                     "openvela）。写入非活动的 AMP 槽位，回读校验通过后激活；"
+                     "AMP 槽位处于激活状态时，N-Boot 下次启动会先尝试它。",
+      .kind = NY_WEB_OTA_KIND_SLOT,
+      .magic = NY_WEB_OTA_MAGIC_FIT,
+      .domain = "amp",
+      .partition = "amp_a",
+      .nodes = g_ota_nodes_amp,
+  },
+  {
+      .id = "nboot",
+      .label = "N-Boot 引导程序",
+      .description = "4 MiB 的 N-Boot FIT。原位覆盖，没有备份区，不具备断电"
+                     "安全：写入中途断电，或镜像本身有问题，设备将无法启动，"
+                     "只能经 USB（MaskROM）恢复。",
+      .kind = NY_WEB_OTA_KIND_NBOOT,
+      .magic = NY_WEB_OTA_MAGIC_FIT,
+      .partition = "uboot",
+      .nodes = g_ota_nodes_nboot,
+      .advanced = true,
+  },
+  {
+      .id = "partition:trust",
+      .label = "trust 分区",
+      .description = "原样写入 trust 分区。设备无法判断内容是否正确，写错"
+                     "可能导致无法启动。",
+      .kind = NY_WEB_OTA_KIND_PARTITION,
+      .magic = NY_WEB_OTA_MAGIC_NONE,
+      .partition = "trust",
+      .advanced = true,
+  },
+  {
+      .id = "partition:bootctrl",
+      .label = "bootctrl 分区",
+      .description = "原样覆盖 A/B 启动记录。记录与槽位内容不符时，N-Boot "
+                     "会把对应槽位判为不可启动。",
+      .kind = NY_WEB_OTA_KIND_PARTITION,
+      .magic = NY_WEB_OTA_MAGIC_BOOTCTRL,
+      .partition = "bootctrl",
+      .advanced = true,
+  },
+  {
+      .id = "partition:nuttx_a",
+      .label = "nuttx_a 分区（原样）",
+      .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
+                     "校验会失败并把该槽位标为不可启动。正常升级请用"
+                     "「openvela 固件」。正在运行的槽位不可写。",
+      .kind = NY_WEB_OTA_KIND_PARTITION,
+      .magic = NY_WEB_OTA_MAGIC_ARM64,
+      .partition = "nuttx_a",
+      .advanced = true,
+  },
+  {
+      .id = "partition:nuttx_b",
+      .label = "nuttx_b 分区（原样）",
+      .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
+                     "校验会失败并把该槽位标为不可启动。正常升级请用"
+                     "「openvela 固件」。正在运行的槽位不可写。",
+      .kind = NY_WEB_OTA_KIND_PARTITION,
+      .magic = NY_WEB_OTA_MAGIC_ARM64,
+      .partition = "nuttx_b",
+      .advanced = true,
+  },
+  {
+      .id = "partition:amp_a",
+      .label = "amp_a 分区（原样）",
+      .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
+                     "校验会失败并把该槽位标为不可启动。正常升级请用"
+                     "「AMP 计算域镜像」。",
+      .kind = NY_WEB_OTA_KIND_PARTITION,
+      .magic = NY_WEB_OTA_MAGIC_FIT,
+      .partition = "amp_a",
+      .nodes = g_ota_nodes_amp,
+      .advanced = true,
+  },
+  {
+      .id = "partition:amp_b",
+      .label = "amp_b 分区（原样）",
+      .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
+                     "校验会失败并把该槽位标为不可启动。正常升级请用"
+                     "「AMP 计算域镜像」。",
+      .kind = NY_WEB_OTA_KIND_PARTITION,
+      .magic = NY_WEB_OTA_MAGIC_FIT,
+      .partition = "amp_b",
+      .nodes = g_ota_nodes_amp,
+      .advanced = true,
+  },
+  {
+      .id = "partition:config",
+      .label = "config 分区",
+      .description = "用一个 FAT 镜像原样覆盖配置分区，其中的配网与设备身份"
+                     "会被替换。分区已挂载时只能强制写入，写完必须立即重启。",
+      .kind = NY_WEB_OTA_KIND_PARTITION,
+      .magic = NY_WEB_OTA_MAGIC_FAT,
+      .partition = "config",
+      .mount = "/config",
+      .advanced = true,
+  },
+  {
+      .id = "partition:data",
+      .label = "data 分区",
+      .description = "上传的文件就暂存在这个分区上，不能用它覆盖自己。"
+                     "请经 USB 刷写。",
+      .kind = NY_WEB_OTA_KIND_PARTITION,
+      .magic = NY_WEB_OTA_MAGIC_FAT,
+      .partition = "data",
+      .mount = NY_WEB_OTA_VOLUME,
+      .advanced = true,
+      .blocked = true,
+  },
+};
 
 /****************************************************************************
  * Private Functions
@@ -377,32 +562,262 @@ static int ny_ota_length(const char *head, uint64_t *length)
 }
 
 /****************************************************************************
+ * Name: ny_ota_hex_value
+ ****************************************************************************/
+
+static int ny_ota_hex_value(char c)
+{
+  if (c >= '0' && c <= '9')
+    {
+      return c - '0';
+    }
+
+  if (c >= 'a' && c <= 'f')
+    {
+      return c - 'a' + 10;
+    }
+
+  if (c >= 'A' && c <= 'F')
+    {
+      return c - 'A' + 10;
+    }
+
+  return -1;
+}
+
+/****************************************************************************
+ * Name: ny_ota_query_target
+ *
+ * Description:
+ *   The value of "target" in the query of the request target, decoded.
+ *   query points at the '?', or at whatever ended the path when there is no
+ *   query, and the request line ends at the next space.
+ *
+ *   The default when the parameter is absent; -EINVAL when it is there and
+ *   cannot be a target id.  A browser escapes the ':' of "partition:trust",
+ *   so the escapes have to be understood, but what comes out is only ever
+ *   compared with the ids in the table.
+ *
+ ****************************************************************************/
+
+static int ny_ota_query_target(const char *query, char *id, size_t size)
+{
+  static const char key[] = NY_OTA_QUERY_KEY "=";
+  const char *at = query;
+  size_t used = 0;
+
+  strlcpy(id, NY_WEB_OTA_TARGET_DEFAULT, size);
+  if (*at != '?')
+    {
+      return 0;
+    }
+
+  at++;
+  while (strncmp(at, key, sizeof(key) - 1) != 0)
+    {
+      /* Not this parameter: on to the one after the next '&'. */
+
+      at += strcspn(at, "& #\r\n");
+      if (*at != '&')
+        {
+          return 0;
+        }
+
+      at++;
+    }
+
+  at += sizeof(key) - 1;
+  while (*at != '\0' && strchr("& #\r\n", *at) == NULL)
+    {
+      int value = (unsigned char)*at;
+
+      if (*at == '%')
+        {
+          int high = ny_ota_hex_value(at[1]);
+          int low = high < 0 ? -1 : ny_ota_hex_value(at[2]);
+
+          if (low < 0)
+            {
+              return -EINVAL;
+            }
+
+          value = (high << 4) | low;
+          at += 2;
+        }
+
+      /* Ids are plain ASCII words; nothing else needs to get any further. */
+
+      if (value <= ' ' || value >= 0x7f || used + 1 >= size)
+        {
+          return -EINVAL;
+        }
+
+      id[used++] = (char)value;
+      at++;
+    }
+
+  id[used] = '\0';
+  return used > 0 ? 0 : -EINVAL;
+}
+
+/****************************************************************************
+ * Name: ny_ota_read_full
+ *
+ * Description:
+ *   Read exactly length bytes from the current position.  -ENOEXEC when the
+ *   file ends first: whatever announced that many bytes was not true.
+ *
+ ****************************************************************************/
+
+static int ny_ota_read_full(int file, uint8_t *data, size_t length)
+{
+  size_t done = 0;
+
+  while (done < length)
+    {
+      ssize_t count = read(file, data + done, length - done);
+      if (count < 0 && errno == EINTR)
+        {
+          continue;
+        }
+
+      if (count <= 0)
+        {
+          return count < 0 ? -errno : -ENOEXEC;
+        }
+
+      done += (size_t)count;
+    }
+
+  return 0;
+}
+
+/****************************************************************************
+ * Name: ny_ota_be32
+ ****************************************************************************/
+
+static uint32_t ny_ota_be32(const uint8_t *value)
+{
+  return (uint32_t)value[0] << 24 | (uint32_t)value[1] << 16 |
+         (uint32_t)value[2] << 8 | value[3];
+}
+
+/****************************************************************************
+ * Name: ny_ota_fit_check
+ *
+ * Description:
+ *   Whether a FIT has every image node a target requires.
+ *
+ *   This is not the validation N-Boot does before it writes itself over
+ *   USB: hashes, load addresses and the configuration are not looked at.
+ *   It is the part of it that fits here, and it catches the mistake that
+ *   the shared magic lets through: the FIT of one target offered to the
+ *   other.  A node starts with the begin-node token, on a four byte
+ *   boundary, followed by its name and a terminator.
+ *
+ ****************************************************************************/
+
+static int ny_ota_fit_check(int file, uint64_t size, const char *const *nodes)
+{
+  uint8_t header[NY_OTA_FDT_HEADER];
+  uint8_t *block;
+  uint32_t total;
+  uint32_t offset;
+  uint32_t length;
+  size_t i;
+  int ret;
+
+  if (lseek(file, 0, SEEK_SET) < 0)
+    {
+      return -errno;
+    }
+
+  ret = ny_ota_read_full(file, header, sizeof(header));
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  total = ny_ota_be32(header + 4);
+  offset = ny_ota_be32(header + 8);
+  length = ny_ota_be32(header + 36);
+  if (ny_ota_be32(header + 20) < NY_OTA_FDT_VERSION ||
+      total < NY_OTA_FDT_HEADER || total > size ||
+      offset < NY_OTA_FDT_HEADER || offset >= total || length > total - offset)
+    {
+      return -ENOEXEC;
+    }
+
+  if (length > NY_OTA_FDT_WINDOW)
+    {
+      length = NY_OTA_FDT_WINDOW;
+    }
+
+  block = malloc(length > 0 ? length : 1);
+  if (block == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  if (lseek(file, (off_t)offset, SEEK_SET) < 0)
+    {
+      ret = -errno;
+    }
+  else
+    {
+      ret = ny_ota_read_full(file, block, length);
+    }
+
+  for (i = 0; ret == 0 && nodes[i] != NULL; i++)
+    {
+      size_t name = strlen(nodes[i]) + 1; /* with its terminator */
+      bool found = false;
+      uint32_t at;
+
+      for (at = 0; !found && at + 4 + name <= length; at += 4)
+        {
+          found = ny_ota_be32(block + at) == NY_OTA_FDT_BEGIN_NODE &&
+                  memcmp(block + at + 4, nodes[i], name) == 0;
+        }
+
+      if (!found)
+        {
+          ret = -ENOEXEC;
+        }
+    }
+
+  free(block);
+  return ret;
+}
+
+/****************************************************************************
  * Name: ny_ota_consume
  *
  * Description:
- *   Take the next bytes of the body: check the image magic as soon as the
- *   bytes that hold it are in, then store and hash.
+ *   Take the next bytes of the body: check the magic of the target as soon
+ *   as the bytes that hold it are in, then store and hash.
  *
  ****************************************************************************/
 
 static int ny_ota_consume(struct ny_ota_upload_s *upload, const uint8_t *data,
                           size_t length)
 {
+  size_t magic_end = upload->magic->offset + upload->magic->size;
   size_t written = 0;
 
-  if (upload->received < NY_OTA_MAGIC_END)
+  if (upload->received < magic_end)
     {
       size_t have = (size_t)upload->received;
-      size_t take = NY_OTA_MAGIC_END - have;
+      size_t take = magic_end - have;
       if (take > length)
         {
           take = length;
         }
 
       memcpy(upload->first + have, data, take);
-      if (have + take == NY_OTA_MAGIC_END &&
-          memcmp(upload->first + NY_OTA_MAGIC_OFFSET, NY_OTA_MAGIC,
-                 NY_OTA_MAGIC_SIZE) != 0)
+      if (have + take == magic_end &&
+          memcmp(upload->first + upload->magic->offset, upload->magic->bytes,
+                 upload->magic->size) != 0)
         {
           return -ENOEXEC;
         }
@@ -529,29 +944,52 @@ static int ny_ota_receive(int fd, struct ny_ota_upload_s *upload,
  * Name: ny_ota_upload
  ****************************************************************************/
 
-static int ny_ota_upload(int fd, const char *head, const void *body,
-                         size_t body_length)
+static int ny_ota_upload(int fd, const char *head, const char *query,
+                         const void *body, size_t body_length)
 {
+  const struct ny_web_ota_target_s *target;
+  const struct ny_ota_magic_s *magic;
   struct ny_ota_upload_s *upload;
-  struct statfs volume;
   uint8_t digest[SHA256_DIGEST_LENGTH];
   char wanted[NY_WEB_OTA_SHA256_HEX + 1];
   char actual[NY_WEB_OTA_SHA256_HEX + 1];
-  char json[160];
+  char id[NY_OTA_TARGET_ID_MAX];
+  char json[224];
   const char *value;
   uint64_t expected = 0;
-  uint64_t space;
+  uint64_t capacity;
   size_t length = 0;
   size_t i;
   int ret;
 
+  /* What the image is for decides every limit below. */
+
+  target = ny_ota_query_target(query, id, sizeof(id)) < 0
+               ? NULL
+               : ny_web_ota_target_find(id, strlen(id));
+  if (target == NULL)
+    {
+      return ny_ota_refuse(fd, 400, "Bad Request", "ETARGET");
+    }
+
+  capacity = ny_web_ota_target_capacity(target);
+  if (target->blocked || capacity == 0)
+    {
+      /* Refused now and not after the transfer: the answer will not be
+       * any different then.
+       */
+
+      return ny_ota_refuse(fd, 403, "Forbidden", "EBLOCKED");
+    }
+
+  magic = &g_ota_magics[target->magic];
   ret = ny_ota_length(head, &expected);
   if (ret == -ENOENT)
     {
       return ny_ota_refuse(fd, 411, "Length Required", "ELENGTH");
     }
 
-  if (ret == -EFBIG || (ret == 0 && expected > NY_WEB_OTA_MAX_BYTES))
+  if (ret == -EFBIG || (ret == 0 && expected > capacity))
     {
       return ny_ota_refuse(fd, 413, "Content Too Large", "ETOOLARGE");
     }
@@ -561,7 +999,7 @@ static int ny_ota_upload(int fd, const char *head, const void *body,
       return ny_ota_refuse(fd, 400, "Bad Request", "EINVAL");
     }
 
-  if (expected < NY_OTA_MAGIC_END)
+  if (expected == 0 || expected < magic->offset + magic->size)
     {
       return ny_ota_refuse(fd, 415, "Unsupported Media Type", "ENOTIMAGE");
     }
@@ -601,22 +1039,17 @@ static int ny_ota_upload(int fd, const char *head, const void *body,
     }
 
   upload->file = -1;
+  upload->magic = magic;
   upload->expected = expected;
 
   /* An earlier image is of no further use, and its blocks may be exactly
-   * the ones this image needs.
+   * the ones this image needs.  The partition is not the only bound: an
+   * AMP slot is larger than what the volume usually has left.
    */
 
   mkdir(NY_OTA_DIRECTORY, 0755);
   unlink(NY_WEB_OTA_FILE);
-  if (statfs(NY_OTA_VOLUME, &volume) < 0)
-    {
-      ret = ny_ota_refuse(fd, 500, "Internal Server Error", "ESTORAGE");
-      goto out;
-    }
-
-  space = (uint64_t)volume.f_bavail * (uint64_t)volume.f_bsize;
-  if (space < NY_OTA_SPACE_MARGIN || space - NY_OTA_SPACE_MARGIN < expected)
+  if (ny_web_ota_staging_space() < expected)
     {
       ret = ny_ota_refuse(fd, 413, "Content Too Large", "ENOSPACE");
       goto out;
@@ -706,10 +1139,33 @@ static int ny_ota_upload(int fd, const char *head, const void *body,
       goto out;
     }
 
-  fprintf(stderr, "nyabula_web: firmware image staged, %llu bytes\n",
+  /* The magic was seen on the way in.  What needs the whole file, the image
+   * nodes of a FIT, is looked at now, so that the wrong FIT is refused here
+   * and not after the owner has confirmed writing it.
+   */
+
+  ret = ny_web_ota_file_check(target, NY_WEB_OTA_FILE);
+  if (ret < 0)
+    {
+      /* The body has been read to its end: there is nothing to drain. */
+
+      unlink(NY_WEB_OTA_FILE);
+      ret = ret == -ENOEXEC ? ny_ota_reply(fd, 415, "Unsupported Media Type",
+                                           "{\"error\":\"ENOTIMAGE\"}")
+                            : ny_ota_reply(fd, 500, "Internal Server Error",
+                                           "{\"error\":\"ESTORAGE\"}");
+      goto out;
+    }
+
+  /* The id comes from the table, not from the request: nothing in it needs
+   * escaping.
+   */
+
+  fprintf(stderr, "nyabula_web: image for %s staged, %llu bytes\n", target->id,
           (unsigned long long)upload->received);
-  snprintf(json, sizeof(json), "{\"received\":%llu,\"sha256\":\"%s\"}",
-           (unsigned long long)upload->received, actual);
+  snprintf(json, sizeof(json),
+           "{\"received\":%llu,\"sha256\":\"%s\",\"target\":\"%s\"}",
+           (unsigned long long)upload->received, actual, target->id);
   ret = ny_ota_reply(fd, 200, "OK", json);
   goto out;
 
@@ -817,7 +1273,8 @@ int ny_web_ota_serve(int fd, const char *head, const void *body,
 
   if (method_length == 4 && strncmp(head, "POST", 4) == 0)
     {
-      return ny_ota_upload(fd, head, body, body_length);
+      return ny_ota_upload(fd, head, target + target_length, body,
+                           body_length);
     }
 
   if (method_length == 6 && strncmp(head, "DELETE", 6) == 0)
@@ -862,6 +1319,150 @@ void ny_web_ota_release(void)
   nxmutex_lock(&g_ota_lock);
   g_ota_claimed = false;
   nxmutex_unlock(&g_ota_lock);
+}
+
+/****************************************************************************
+ * Name: ny_web_ota_target_at
+ ****************************************************************************/
+
+const struct ny_web_ota_target_s *ny_web_ota_target_at(size_t position)
+{
+  return position < sizeof(g_ota_targets) / sizeof(g_ota_targets[0])
+             ? &g_ota_targets[position]
+             : NULL;
+}
+
+/****************************************************************************
+ * Name: ny_web_ota_target_find
+ ****************************************************************************/
+
+const struct ny_web_ota_target_s *ny_web_ota_target_find(const char *id,
+                                                         size_t length)
+{
+  size_t i;
+
+  if (id == NULL)
+    {
+      return NULL;
+    }
+
+  for (i = 0; i < sizeof(g_ota_targets) / sizeof(g_ota_targets[0]); i++)
+    {
+      if (strlen(g_ota_targets[i].id) == length &&
+          memcmp(g_ota_targets[i].id, id, length) == 0)
+        {
+          return &g_ota_targets[i];
+        }
+    }
+
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: ny_web_ota_target_capacity
+ ****************************************************************************/
+
+uint64_t ny_web_ota_target_capacity(const struct ny_web_ota_target_s *target)
+{
+  uint64_t bytes = 0;
+
+  /* The layout table is nbootctl's; a second copy here would drift. */
+
+  if (target == NULL || nbootctl_part_size(target->partition, &bytes) < 0)
+    {
+      return 0;
+    }
+
+  return bytes;
+}
+
+/****************************************************************************
+ * Name: ny_web_ota_staging_space
+ ****************************************************************************/
+
+uint64_t ny_web_ota_staging_space(void)
+{
+  struct statfs volume;
+  uint64_t space;
+
+  if (statfs(NY_WEB_OTA_VOLUME, &volume) < 0)
+    {
+      return 0;
+    }
+
+  space = (uint64_t)volume.f_bavail * (uint64_t)volume.f_bsize;
+  return space > NY_OTA_SPACE_MARGIN ? space - NY_OTA_SPACE_MARGIN : 0;
+}
+
+/****************************************************************************
+ * Name: ny_web_ota_file_check
+ ****************************************************************************/
+
+int ny_web_ota_file_check(const struct ny_web_ota_target_s *target,
+                          const char *path)
+{
+  const struct ny_ota_magic_s *magic = &g_ota_magics[target->magic];
+  uint64_t capacity = ny_web_ota_target_capacity(target);
+  uint8_t *first;
+  struct stat status;
+  uint64_t size;
+  int file;
+  int ret = 0;
+
+  file = open(path, O_RDONLY | O_CLOEXEC);
+  if (file < 0)
+    {
+      return -errno;
+    }
+
+  if (fstat(file, &status) < 0)
+    {
+      ret = -errno;
+      close(file);
+      return ret;
+    }
+
+  size = status.st_size > 0 ? (uint64_t)status.st_size : 0;
+  if (capacity == 0 || size > capacity)
+    {
+      close(file);
+      return -EFBIG;
+    }
+
+  if (size == 0 || size < magic->offset + magic->size)
+    {
+      close(file);
+      return -ENOEXEC;
+    }
+
+  if (magic->size > 0)
+    {
+      /* Not on the stack: the worker that calls this has a small one. */
+
+      first = malloc(NY_OTA_HEAD_SIZE);
+      if (first == NULL)
+        {
+          close(file);
+          return -ENOMEM;
+        }
+
+      ret = ny_ota_read_full(file, first, magic->offset + magic->size);
+      if (ret == 0 &&
+          memcmp(first + magic->offset, magic->bytes, magic->size) != 0)
+        {
+          ret = -ENOEXEC;
+        }
+
+      free(first);
+    }
+
+  if (ret == 0 && target->nodes != NULL)
+    {
+      ret = ny_ota_fit_check(file, size, target->nodes);
+    }
+
+  close(file);
+  return ret;
 }
 
 /****************************************************************************

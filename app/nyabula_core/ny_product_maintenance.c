@@ -25,10 +25,14 @@
  *   storage.status    any role   volumes and what the known directories use
  *   storage.cleanup   owner      {"target": "tmp"}; empties a clearable one
  *   update.status     any role   the firmware that is running, the A/B
- *                                slots and the progress of an apply
- *   update.apply      owner      {"sha256": hex}; write the uploaded image
- *                                to the slot that is not running
- *   update.confirm    owner      mark the running slot as known good
+ *                                slots of both domains, what can be
+ *                                updated and the progress of an apply
+ *   update.apply      owner      {"sha256": hex, "target": id,
+ *                                "advanced": bool, "force": bool}; write
+ *                                the uploaded image to its target
+ *   update.confirm    owner      {"target": "nuttx"|"amp"}; mark the
+ *                                running NuttX slot, or the active AMP
+ *                                slot, as known good
  *   update.reboot     owner      reply, then reset
  *   logs.tail         owner      {"after": seq, "limit": n}; system log lines
  *   cloud.status      any role   the stored relay settings
@@ -40,6 +44,25 @@
  * The update.* topics other than status exist only with NYABULA_CORE_OTA.
  * Without it they fall through as unknown, which is how the panel tells a
  * firmware that cannot be updated this way from one that refused.
+ *
+ * update.apply writes one of the targets update.status lists, and the list
+ * is the whole of what it writes.  Two of them are ordinary: the NuttX
+ * firmware and the AMP image, each staged into the slot of its domain that
+ * is not in use, with its bootctrl record.  The rest can leave the device
+ * unable to start and are refused unless the request says "advanced": true,
+ * which the panel only sends after the owner has been told so:
+ *
+ *   EADVANCED   an advanced target without that acknowledgement
+ *   ERUNNING    the partition holds the NuttX image that is running
+ *   EMOUNTED    a filesystem is mounted from the partition and the request
+ *               does not say "force": true
+ *   EBLOCKED    the target is never written from here (the partition the
+ *               uploaded file itself lives on)
+ *   ENOTIMAGE   the staged file is not what the target takes
+ *   ETOOLARGE   the staged file does not fit the target
+ *
+ * Nothing is ever unmounted to make room for a write.  A forced write goes
+ * under the mounted filesystem, and the reply says what that means.
  */
 
 /****************************************************************************
@@ -71,6 +94,7 @@
 #include <sys/boardctl.h>
 
 #include "nbootctl_bootctrl.h"
+#include "nbootctl_part.h"
 #include "ny_web_ota.h"
 #endif
 
@@ -94,6 +118,16 @@
 #define NY_MAINT_REBOOT_DELAY_US 500000
 #define NY_MAINT_WORKER_STACK    16384
 #define NY_MAINT_BOOT_DOMAIN     "nuttx"
+#define NY_MAINT_AMP_DOMAIN      "amp"
+
+/* What the owner is told when a write goes under a mounted filesystem.  It
+ * is for people, so it is in the language of the panel.
+ */
+
+#define NY_MAINT_FORCE_NOTICE                                                                                    \
+  "该分区的文件系统仍处于挂载状态，设备不会卸载它。新内容直接写到已挂载的"    \
+  "文件系统之下：重启前这个文件系统读到的内容不可信，它的任何一次写入都可能" \
+  "破坏刚写入的镜像。写入完成后请立即重启。"
 
 /****************************************************************************
  * Private Types
@@ -138,9 +172,23 @@ struct ny_maint_apply_s
   enum ny_maint_apply_e state;
   int error;          /* positive errno of the last failure, or 0 */
   const char *reason; /* short word for the panel, "" when none */
+  const struct ny_web_ota_target_s *target; /* NULL before the first one */
+  bool forced; /* written under a mounted filesystem */
   unsigned int medium;
   unsigned int running_slot;
   char sha256[NY_WEB_OTA_SHA256_HEX + 1];
+};
+
+/* Why a target cannot be written right now, as update.status says it and as
+ * update.apply refuses it.
+ */
+
+enum ny_maint_refusal_e
+{
+  NY_MAINT_REFUSAL_NONE = 0,
+  NY_MAINT_REFUSAL_BLOCKED,    /* never written from here */
+  NY_MAINT_REFUSAL_NO_HANDOFF, /* the running slot is not known */
+  NY_MAINT_REFUSAL_RUNNING,    /* holds the image that is running */
 };
 #endif
 
@@ -312,15 +360,218 @@ static cJSON *ny_maint_storage(void)
 
 #ifdef CONFIG_NYABULA_CORE_OTA
 /****************************************************************************
- * Name: ny_maint_update_slots
+ * Name: ny_maint_mounted
  *
  * Description:
- *   The A/B half of update.status: which slot is running, what bootctrl
- *   says about both, and how an apply is going.
+ *   Whether a filesystem is mounted at a path.  A directory of the pseudo
+ *   filesystem answers statfs() too, but with no blocks.
+ *
+ *   This does not ask which medium the filesystem comes from.  A board that
+ *   started from the card may have /config from the eMMC, and then the
+ *   card's config partition is not in use; it is reported as mounted all the
+ *   same, because being asked to force a write that was safe costs a click
+ *   and the opposite mistake costs the partition.
+ *
+ ****************************************************************************/
+
+static bool ny_maint_mounted(const char *path)
+{
+  struct statfs info;
+
+  return path != NULL && statfs(path, &info) == 0 && info.f_blocks != 0;
+}
+
+/****************************************************************************
+ * Name: ny_maint_refusal
+ *
+ * Description:
+ *   Why a target cannot be written whatever the request says.  One answer
+ *   for update.status and update.apply, so the panel never offers what the
+ *   device then refuses.
+ *
+ ****************************************************************************/
+
+static enum ny_maint_refusal_e
+ny_maint_refusal(const struct ny_web_ota_target_s *target, bool handoff,
+                 unsigned int running_slot)
+{
+  if (target->blocked || ny_web_ota_target_capacity(target) == 0)
+    {
+      return NY_MAINT_REFUSAL_BLOCKED;
+    }
+
+  /* Every write needs the medium, and the medium comes with the handoff. */
+
+  if (!handoff)
+    {
+      return NY_MAINT_REFUSAL_NO_HANDOFF;
+    }
+
+  /* Staging a slot never touches the one that runs.  A raw write would,
+   * and the image in it is the one a failed update falls back to.
+   */
+
+  if (target->kind == NY_WEB_OTA_KIND_PARTITION &&
+      strcmp(target->partition, running_slot ? "nuttx_b" : "nuttx_a") == 0)
+    {
+      return NY_MAINT_REFUSAL_RUNNING;
+    }
+
+  return NY_MAINT_REFUSAL_NONE;
+}
+
+/****************************************************************************
+ * Name: ny_maint_staging_room
+ *
+ * Description:
+ *   What an upload can use: the free space, plus the image that is already
+ *   staged, because the next upload removes it first.
+ *
+ ****************************************************************************/
+
+static uint64_t ny_maint_staging_room(void)
+{
+  uint64_t room = ny_web_ota_staging_space();
+  struct stat status;
+
+  if (stat(NY_WEB_OTA_FILE, &status) == 0 && S_ISREG(status.st_mode) &&
+      status.st_size > 0)
+    {
+      room += (uint64_t)status.st_size;
+    }
+
+  return room;
+}
+
+/****************************************************************************
+ * Name: ny_maint_slot_rows
+ *
+ * Description:
+ *   The two slots of one domain.  running is -1 for a domain that has no
+ *   running slot to speak of.
  *
  *   tries_remaining is deliberately absent.  N-Boot chooses by priority
  *   alone; showing a retry count would describe a fallback that does not
  *   exist.
+ *
+ ****************************************************************************/
+
+static void ny_maint_slot_rows(cJSON *rows,
+                               const struct nbootctl_slot_state_s *slots,
+                               unsigned int active, int running)
+{
+  for (unsigned int i = 0; rows != NULL && i < 2; i++)
+    {
+      const struct nbootctl_slot_state_s *slot = &slots[i];
+      cJSON *row = cJSON_CreateObject();
+      if (row == NULL)
+        {
+          break;
+        }
+
+      cJSON_AddStringToObject(row, "name", i ? "b" : "a");
+      cJSON_AddBoolToObject(row, "active", active == i);
+      cJSON_AddBoolToObject(row, "running", running == (int)i);
+      cJSON_AddBoolToObject(row, "bootable", slot->priority != 0);
+      cJSON_AddBoolToObject(row, "successful", slot->successful);
+      cJSON_AddNumberToObject(row, "priority", slot->priority);
+      cJSON_AddNumberToObject(row, "version", (double)slot->image_version);
+      cJSON_AddNumberToObject(row, "size", (double)slot->image_size);
+      cJSON_AddItemToArray(rows, row);
+    }
+}
+
+/****************************************************************************
+ * Name: ny_maint_target_rows
+ *
+ * Description:
+ *   "targets" of update.status: everything update.apply can be asked to
+ *   write, and whether it would agree right now.  The panel renders from
+ *   this and knows no target of its own.
+ *
+ ****************************************************************************/
+
+static void ny_maint_target_rows(cJSON *root,
+                                 const struct nbootctl_state_s *state,
+                                 bool usable)
+{
+  static const char *const kinds[] = {
+    "slot",
+    "nboot",
+    "partition",
+  };
+
+  static const char *const formats[] = {
+    "raw", "arm64", "fit", "bootctrl", "fat",
+  };
+
+  static const char *const reasons[] = {
+    "",
+    "blocked",
+    "no-handoff",
+    "running",
+  };
+
+  const struct ny_web_ota_target_s *target;
+  cJSON *rows = cJSON_AddArrayToObject(root, "targets");
+  uint64_t room = ny_maint_staging_room();
+
+  cJSON_AddNumberToObject(root, "stagingFree", (double)room);
+  for (size_t i = 0;
+       rows != NULL && (target = ny_web_ota_target_at(i)) != NULL; i++)
+    {
+      enum ny_maint_refusal_e refusal =
+          ny_maint_refusal(target, usable, state->running_slot);
+      uint64_t capacity = ny_web_ota_target_capacity(target);
+      const char *slot = "";
+      cJSON *row = cJSON_CreateObject();
+      if (row == NULL)
+        {
+          break;
+        }
+
+      /* The slot a staged image would replace: for NuttX the one that is
+       * not running, for AMP the one that is not active.
+       */
+
+      if (usable && target->kind == NY_WEB_OTA_KIND_SLOT)
+        {
+          unsigned int busy = strcmp(target->domain, NY_MAINT_AMP_DOMAIN) == 0
+                                  ? state->amp_active
+                                  : state->running_slot;
+          slot = busy ? "a" : "b";
+        }
+
+      cJSON_AddStringToObject(row, "id", target->id);
+      cJSON_AddStringToObject(row, "label", target->label);
+      cJSON_AddStringToObject(row, "description", target->description);
+      cJSON_AddStringToObject(row, "kind", kinds[target->kind]);
+      cJSON_AddStringToObject(row, "format", formats[target->magic]);
+      cJSON_AddBoolToObject(row, "advanced", target->advanced);
+
+      /* An image has to fit the staging volume before it can fit the
+       * partition, so the smaller of the two is the limit that is true.
+       */
+
+      cJSON_AddNumberToObject(row, "maxBytes",
+                              (double)(capacity < room ? capacity : room));
+      cJSON_AddNumberToObject(row, "capacity", (double)capacity);
+      cJSON_AddStringToObject(row, "slot", slot);
+      cJSON_AddBoolToObject(row, "available",
+                            refusal == NY_MAINT_REFUSAL_NONE);
+      cJSON_AddStringToObject(row, "reason", reasons[refusal]);
+      cJSON_AddBoolToObject(row, "mounted", ny_maint_mounted(target->mount));
+      cJSON_AddItemToArray(rows, row);
+    }
+}
+
+/****************************************************************************
+ * Name: ny_maint_update_slots
+ *
+ * Description:
+ *   The A/B half of update.status: which slot is running, what bootctrl
+ *   says about the slots of both domains, what can be written and how an
+ *   apply is going.
  *
  ****************************************************************************/
 
@@ -334,11 +585,14 @@ static void ny_maint_update_slots(cJSON *root, cJSON *current)
   };
 
   struct nbootctl_state_s state;
+  const struct ny_web_ota_target_s *applied;
   enum ny_maint_apply_e progress;
   const char *reason;
   const char *detail;
   cJSON *slots = cJSON_AddArrayToObject(root, "slots");
+  cJSON *amp_slots = cJSON_AddArrayToObject(root, "ampSlots");
   cJSON *apply = cJSON_AddObjectToObject(root, "apply");
+  bool forced;
   int error;
   int ret = nbootctl_bootctrl_snapshot(&state);
   bool usable = ret == 0 && state.handoff_valid;
@@ -347,26 +601,35 @@ static void ny_maint_update_slots(cJSON *root, cJSON *current)
                           !usable              ? ""
                           : state.running_slot ? "b"
                                                : "a");
-  for (unsigned int i = 0; usable && slots != NULL && i < 2; i++)
+  if (usable)
     {
-      const struct nbootctl_slot_state_s *slot = &state.nuttx[i];
-      cJSON *row = cJSON_CreateObject();
-      if (row == NULL)
-        {
-          break;
-        }
+      const struct nbootctl_slot_state_s *amp = &state.amp[state.amp_active];
 
-      cJSON_AddStringToObject(row, "name", i ? "b" : "a");
-      cJSON_AddBoolToObject(row, "active", state.nuttx_active == i);
-      cJSON_AddBoolToObject(row, "running", state.running_slot == i);
-      cJSON_AddBoolToObject(row, "bootable", slot->priority != 0);
-      cJSON_AddBoolToObject(row, "successful", slot->successful);
-      cJSON_AddNumberToObject(row, "priority", slot->priority);
-      cJSON_AddNumberToObject(row, "version", (double)slot->image_version);
-      cJSON_AddNumberToObject(row, "size", (double)slot->image_size);
-      cJSON_AddItemToArray(slots, row);
+      ny_maint_slot_rows(slots, state.nuttx, state.nuttx_active,
+                         (int)state.running_slot);
+
+      /* No AMP slot is ever "running" here: this is the image of a NuttX
+       * slot, and the handoff says nothing about the other domain.
+       */
+
+      ny_maint_slot_rows(amp_slots, state.amp, state.amp_active, -1);
+
+      /* N-Boot tries the AMP domain before the NuttX slots, and takes its
+       * active slot whenever that one is a boot candidate.  So this is
+       * what the next start will be, not what this one was.
+       */
+
+      cJSON_AddBoolToObject(root, "ampActive",
+                            amp->priority != 0 && amp->image_size != 0);
+      cJSON_AddStringToObject(root, "ampTarget", state.amp_active ? "a" : "b");
+    }
+  else
+    {
+      cJSON_AddBoolToObject(root, "ampActive", false);
+      cJSON_AddStringToObject(root, "ampTarget", "");
     }
 
+  ny_maint_target_rows(root, &state, usable);
   if (usable)
     {
       /* The slot an upload would replace: never the one that is running. */
@@ -390,19 +653,32 @@ static void ny_maint_update_slots(cJSON *root, cJSON *current)
   cJSON_AddStringToObject(root, "channel", "upload");
   cJSON_AddBoolToObject(root, "online", false);
   cJSON_AddBoolToObject(root, "upload", usable);
-  cJSON_AddNumberToObject(root, "maxBytes", (double)NY_WEB_OTA_MAX_BYTES);
+
+  /* For a panel from before there were targets: the limit of the one it
+   * knows about.
+   */
+
+  cJSON_AddNumberToObject(
+      root, "maxBytes",
+      (double)ny_web_ota_target_capacity(ny_web_ota_target_find(
+          NY_WEB_OTA_TARGET_DEFAULT, sizeof(NY_WEB_OTA_TARGET_DEFAULT) - 1)));
   cJSON_AddStringToObject(root, "detail", detail);
 
   nxmutex_lock(&g_maint_apply_lock);
   progress = g_maint_apply.state;
   error = g_maint_apply.error;
   reason = g_maint_apply.reason;
+  applied = g_maint_apply.target;
+  forced = g_maint_apply.forced;
   nxmutex_unlock(&g_maint_apply_lock);
   if (apply != NULL)
     {
       cJSON_AddStringToObject(apply, "state", states[progress]);
       cJSON_AddNumberToObject(apply, "error", error);
       cJSON_AddStringToObject(apply, "reason", reason);
+      cJSON_AddStringToObject(apply, "target",
+                              applied != NULL ? applied->id : "");
+      cJSON_AddBoolToObject(apply, "forced", forced);
     }
 }
 #endif /* CONFIG_NYABULA_CORE_OTA */
@@ -474,18 +750,20 @@ static cJSON *ny_maint_update(void)
  * Name: ny_maint_apply_worker
  *
  * Description:
- *   Write the staged image to the slot that is not running.
+ *   Write the staged image to its target.
  *
  *   This takes as long as writing and reading back the whole image takes,
  *   which is longer than a panel waits for an answer, so it runs on its own
  *   thread and update.status reports how it is going.  The caller took the
- *   staging claim; it is given back here.
+ *   staging claim and decided that the target may be written; the claim is
+ *   given back here.
  *
  ****************************************************************************/
 
 static void *ny_maint_apply_worker(void *argument)
 {
   struct ny_maint_apply_s *job = argument;
+  const struct ny_web_ota_target_s *target = job->target;
   char actual[NY_WEB_OTA_SHA256_HEX + 1];
   const char *reason = "";
   int ret;
@@ -503,29 +781,72 @@ static void *ny_maint_apply_worker(void *argument)
       ret = -EBADMSG;
     }
 
+  if (ret < 0 && reason[0] == '\0')
+    {
+      reason = "staged-file";
+    }
+
   if (ret == 0)
     {
-      /* Staging clears the target's priority before the first sector is
-       * written and restores it only after the read-back matches, so a
-       * failure at any point leaves the running slot the one that boots.
+      /* Checked when update.apply was accepted, and again here for the same
+       * reason as the digest: this is the last look before the medium.
        */
 
-      ret = nbootctl_bootctrl_stage(job->medium, NY_MAINT_BOOT_DOMAIN,
-                                    job->running_slot, NY_WEB_OTA_FILE);
+      ret = ny_web_ota_file_check(target, NY_WEB_OTA_FILE);
+      if (ret < 0)
+        {
+          reason = ret == -EFBIG ? "too-large" : "format";
+        }
+    }
+
+  if (ret == 0)
+    {
+      switch (target->kind)
+        {
+          case NY_WEB_OTA_KIND_SLOT:
+
+            /* Staging clears the target's priority before the first sector
+             * is written and restores it only after the read-back matches,
+             * so a failure at any point leaves the other slot the one that
+             * boots.
+             */
+
+            ret = nbootctl_bootctrl_stage(job->medium, target->domain,
+                                          job->running_slot, NY_WEB_OTA_FILE);
+            break;
+
+          case NY_WEB_OTA_KIND_NBOOT:
+
+            /* One region, replaced in place, each chunk read back as it is
+             * written.  There is no second copy to fall back to: from the
+             * first sector until the last, a loss of power leaves a board
+             * that does not start.
+             */
+
+            ret = nbootctl_update_nboot(job->medium, NY_WEB_OTA_FILE);
+            break;
+
+          default:
+
+            /* Raw: bounded by the partition's own device node, and read
+             * back against the digest the owner confirmed.
+             */
+
+            ret = nbootctl_part_write(job->medium, target->partition,
+                                      NY_WEB_OTA_FILE, job->sha256);
+            break;
+        }
+
       if (ret == 0)
         {
           unlink(NY_WEB_OTA_FILE);
         }
       else
         {
-          reason = ret == -EFBIG     ? "too-large"
-                   : ret == -EBADMSG ? "verify"
-                                     : "io";
+          reason = ret == -EFBIG                             ? "too-large"
+                   : ret == -EBADMSG || ret == -EKEYREJECTED ? "verify"
+                                                             : "io";
         }
-    }
-  else if (reason[0] == '\0')
-    {
-      reason = "staged-file";
     }
 
   nxmutex_lock(&g_maint_apply_lock);
@@ -578,25 +899,91 @@ static int ny_maint_spawn(void *(*entry)(void *), void *argument)
 static int ny_maint_apply(const cJSON *data, cJSON **result)
 {
   const cJSON *digest = cJSON_GetObjectItemCaseSensitive(data, "sha256");
+  const cJSON *name = cJSON_GetObjectItemCaseSensitive(data, "target");
+  const cJSON *advanced = cJSON_GetObjectItemCaseSensitive(data, "advanced");
+  const cJSON *force = cJSON_GetObjectItemCaseSensitive(data, "force");
+  const struct ny_web_ota_target_s *target;
+  const char *id = NY_WEB_OTA_TARGET_DEFAULT;
   struct stat status;
-  unsigned int medium;
-  unsigned int slot;
+  unsigned int medium = 0;
+  unsigned int slot = 0;
+  bool handoff;
+  bool forced = false;
   int ret;
 
   if (!cJSON_IsString(digest) ||
-      !ny_web_ota_digest_ok(digest->valuestring, strlen(digest->valuestring)))
+      !ny_web_ota_digest_ok(digest->valuestring,
+                            strlen(digest->valuestring)) ||
+      (name != NULL && !cJSON_IsString(name)))
     {
       return -EINVAL;
     }
 
-  if (nbootctl_handoff_read(&medium, &slot, NULL, NULL) < 0)
+  if (name != NULL)
     {
-      /* Not started by N-Boot: which slot is running, and therefore which
-       * one may be overwritten, is not known.
-       */
-
-      return -ENODEV;
+      id = name->valuestring;
     }
+
+  /* Not -ENOENT for a target that does not exist: that would reach the
+   * panel as "no such topic", which it reads as a firmware too old to be
+   * updated this way.
+   */
+
+  target = ny_web_ota_target_find(id, strlen(id));
+  if (target == NULL)
+    {
+      return -EINVAL;
+    }
+
+  /* The acknowledgement comes before anything about the device, so that a
+   * client that did not send it learns only that it is needed.
+   */
+
+  if (target->advanced && !cJSON_IsTrue(advanced))
+    {
+      return -ENOKEY;
+    }
+
+  handoff = nbootctl_handoff_read(&medium, &slot, NULL, NULL) == 0;
+  switch (ny_maint_refusal(target, handoff, slot))
+    {
+      case NY_MAINT_REFUSAL_BLOCKED:
+        return -EXDEV;
+
+      case NY_MAINT_REFUSAL_NO_HANDOFF:
+
+        /* Not started by N-Boot: which medium holds the partitions, and
+         * which slot is running and must be left alone, is not known.
+         */
+
+        return -ENODEV;
+
+      case NY_MAINT_REFUSAL_RUNNING:
+        return -ETXTBSY;
+
+      default:
+        break;
+    }
+
+  /* Never unmounted to make way, and never written under without being
+   * told to: the owner either agrees to what NY_MAINT_FORCE_NOTICE says or
+   * the partition stays as it is.
+   */
+
+  if (ny_maint_mounted(target->mount))
+    {
+      if (!cJSON_IsTrue(force))
+        {
+          return -ENOTEMPTY;
+        }
+
+      forced = true;
+    }
+
+  /* From here on the claim is held.  It also keeps a raw write to the
+   * bootctrl partition apart from staging and update.confirm, which hold
+   * that record in memory while they work.
+   */
 
   ret = ny_web_ota_claim();
   if (ret < 0)
@@ -614,10 +1001,24 @@ static int ny_maint_apply(const cJSON *data, cJSON **result)
       return -ENODATA;
     }
 
+  /* The upload was checked against the target it named.  This is the
+   * target that will be written, and nothing ties the two together but
+   * the file itself.
+   */
+
+  ret = ny_web_ota_file_check(target, NY_WEB_OTA_FILE);
+  if (ret < 0)
+    {
+      ny_web_ota_release();
+      return ret == -ENOEXEC ? -EMEDIUMTYPE : ret == -ENOENT ? -ENODATA : ret;
+    }
+
   nxmutex_lock(&g_maint_apply_lock);
   g_maint_apply.state = NY_MAINT_APPLY_WRITING;
   g_maint_apply.error = 0;
   g_maint_apply.reason = "";
+  g_maint_apply.target = target;
+  g_maint_apply.forced = forced;
   g_maint_apply.medium = medium;
   g_maint_apply.running_slot = slot;
   for (size_t i = 0; i < NY_WEB_OTA_SHA256_HEX; i++)
@@ -648,6 +1049,16 @@ static int ny_maint_apply(const cJSON *data, cJSON **result)
     }
 
   cJSON_AddBoolToObject(*result, "started", true);
+
+  /* Which target is in "apply" already; what forcing it means is said
+   * here, once, in the answer to the request that forced it.
+   */
+
+  if (forced)
+    {
+      cJSON_AddStringToObject(*result, "notice", NY_MAINT_FORCE_NOTICE);
+    }
+
   return 0;
 }
 
@@ -655,15 +1066,44 @@ static int ny_maint_apply(const cJSON *data, cJSON **result)
  * Name: ny_maint_confirm
  ****************************************************************************/
 
-static int ny_maint_confirm(cJSON **result)
+static int ny_maint_confirm(const cJSON *data, cJSON **result)
 {
+  const cJSON *name = cJSON_GetObjectItemCaseSensitive(data, "target");
+  const char *domain = NY_MAINT_BOOT_DOMAIN;
+  struct nbootctl_state_s state;
   unsigned int medium;
   unsigned int slot;
   int ret;
 
+  if (name != NULL && !cJSON_IsString(name))
+    {
+      return -EINVAL;
+    }
+
   if (nbootctl_handoff_read(&medium, &slot, NULL, NULL) < 0)
     {
       return -ENODEV;
+    }
+
+  if (name != NULL && strcmp(name->valuestring, NY_MAINT_AMP_DOMAIN) == 0)
+    {
+      /* The AMP domain has no running slot as seen from here: what the
+       * owner vouches for, after watching it work, is the active one.
+       */
+
+      ret = nbootctl_bootctrl_snapshot(&state);
+      if (ret < 0 || !state.handoff_valid)
+        {
+          return ret < 0 ? ret : -ENODEV;
+        }
+
+      domain = NY_MAINT_AMP_DOMAIN;
+      slot = state.amp_active;
+    }
+  else if (name != NULL &&
+           strcmp(name->valuestring, NY_MAINT_BOOT_DOMAIN) != 0)
+    {
+      return -EINVAL;
     }
 
   /* Staging keeps the bootctrl record in memory while it writes and stores
@@ -676,7 +1116,7 @@ static int ny_maint_confirm(cJSON **result)
       return ret;
     }
 
-  ret = nbootctl_bootctrl_mark_successful(medium, NY_MAINT_BOOT_DOMAIN, slot);
+  ret = nbootctl_bootctrl_mark_successful(medium, domain, slot);
   ny_web_ota_release();
   if (ret < 0)
     {
@@ -1078,7 +1518,7 @@ int ny_product_maintenance_request(const struct ny_product_caller_s *caller,
 
   if (strcmp(topic, "update.confirm") == 0)
     {
-      return owner ? ny_maint_confirm(result) : -EACCES;
+      return owner ? ny_maint_confirm(data, result) : -EACCES;
     }
 
   if (strcmp(topic, "update.reboot") == 0)
