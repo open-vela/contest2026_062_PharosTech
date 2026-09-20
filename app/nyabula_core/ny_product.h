@@ -172,6 +172,7 @@ int ny_voice_request(const struct ny_product_caller_s *caller,
 int ny_product_eyes_request(const struct ny_product_caller_s *caller,
                             const char *topic, const cJSON *data,
                             cJSON **result);
+int ny_product_eyes_tick(void);
 int ny_product_start(void);
 int ny_product_stop(void);
 cJSON *ny_product_runtime_status(void);
