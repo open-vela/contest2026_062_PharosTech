@@ -121,6 +121,10 @@
 #define CONFIG_NYABULA_CORE_VOICE_WINDOW_MS 200
 #endif
 
+/* Well under half of NYABULA_EYE_DEFAULT_LEASE_MS (5 s). */
+
+#define NY_VOICE_EYES_RENEW_S 2
+
 #ifndef CONFIG_NYABULA_CORE_VOICE_VAD_MIN_RMS
 #define CONFIG_NYABULA_CORE_VOICE_VAD_MIN_RMS 150
 #endif
@@ -2004,21 +2008,45 @@ static void *ny_voice_eyes_thread(void *arg)
                                               NY_PRODUCT_OWNER, true };
 
   const char *shown = NULL;
+  int held = -1;
 
   (void)arg;
   for (;;)
     {
       cJSON *data;
       cJSON *result = NULL;
+      struct timespec until;
+      bool renew = false;
       int wanted;
 
-      while (sem_wait(&g_voice.eyes_wake) < 0)
+      /* An expression is a lease of NYABULA_EYE_DEFAULT_LEASE_MS.  Set once
+       * on entering a state, the "processing" face lapsed after five seconds
+       * while the model was still thinking, and the eyes went idle before
+       * the robot spoke (seen on the board).  The face this service put on
+       * is therefore renewed at less than half the lease until the state
+       * machine asks for another one.
+       */
+
+      clock_gettime(CLOCK_REALTIME, &until);
+      until.tv_sec += NY_VOICE_EYES_RENEW_S;
+      if (sem_timedwait(&g_voice.eyes_wake, &until) < 0)
         {
+          if (errno != ETIMEDOUT)
+            {
+              continue;
+            }
+
+          renew = true;
         }
 
       nxmutex_lock(&g_voice.lock);
       wanted = g_voice.eyes_wanted;
       g_voice.eyes_wanted = -1;
+      if (wanted < 0 && renew && held > NY_VOICE_EYES_RESTORE)
+        {
+          wanted = held;
+        }
+
       if (g_voice.stopping)
         {
           nxmutex_unlock(&g_voice.lock);
@@ -2055,6 +2083,7 @@ static void *ny_voice_eyes_thread(void *arg)
           if (!cJSON_IsString(now) || strcmp(now->valuestring, shown) != 0)
             {
               shown = NULL;
+              held = -1;
               cJSON_Delete(result);
               cJSON_Delete(data);
               continue;
@@ -2068,6 +2097,7 @@ static void *ny_voice_eyes_thread(void *arg)
           ny_product_request(&caller, "eyes.expression", data, &result) == 0)
         {
           shown = wanted == NY_VOICE_EYES_RESTORE ? NULL : names[wanted];
+          held = wanted == NY_VOICE_EYES_RESTORE ? -1 : wanted;
         }
 
       cJSON_Delete(result);
