@@ -163,8 +163,16 @@ chmod -R u+w "$RKBIN_WORK"
 cp "$RKBIN_WORK"/rk3576_idblock_*.img "$WORK/idbloader.img"
 cp "$RKBIN_WORK/trust.img" "$WORK/trust.img"
 
+# An AMP image that is packed but not recorded here has priority 0: N-Boot
+# skips it and the board comes up in the plain firmware, without the compute
+# domain -- no voice, no on-device model -- and nothing says why.
+BOOTCTRL_AMP=()
+if [ -n "${AMP_ITB:-}" ] && [ -f "$AMP_ITB" ]; then
+  BOOTCTRL_AMP=(--amp-a "$AMP_ITB" --amp-b "$AMP_ITB")
+fi
 python3 "$BOOTCTRL" init --output "$WORK/bootctrl.bin" \
-  --nuttx-a "$NUTTX" --nuttx-b "$NUTTX"
+  --nuttx-a "$NUTTX" --nuttx-b "$NUTTX" \
+  ${BOOTCTRL_AMP[@]+"${BOOTCTRL_AMP[@]}"}
 python3 "$BOOTCTRL" inspect "$WORK/bootctrl.bin" >/dev/null
 
 if [ "$TARGET" = emmc ]; then
@@ -249,7 +257,11 @@ It is deliberately separate from data.img so that wiping the bulk store
 (models, music) cannot also wipe provisioning -- losing the models costs an
 OTA, losing the wifi settings needs a human on site.
 
-data.img seals /data: models/ (TTS rknn + face onnx), music/.
+data.img seeds /data: models/ (llm, asr, kws, tts), www/ (the panel the
+device serves) and agent/ca.pem (the roots an online model is verified
+against).  amp_a / amp_b carry the AMP image and are recorded in bootctrl, so
+the board comes up in the AMP domain; nuttx_a / nuttx_b are the plain
+firmware N-Boot falls back to.
 README
 
   (cd "$PACKAGE" && sha256sum package-file README.txt Image/* > SHA256SUMS)
