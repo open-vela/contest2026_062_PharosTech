@@ -21,6 +21,8 @@
 #include "onnxruntime_c_api.h"
 #include "rknn_api.h"
 
+#include <cmath>
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <stdexcept>
@@ -34,6 +36,45 @@ constexpr std::size_t kFrames = 512;
 constexpr std::size_t kChannels = 192;
 constexpr std::size_t kSpeakerValues = 256;
 constexpr std::size_t kSamplesPerFrame = 512;
+
+// The acoustic model samples its latent, so two sentences of one reply come
+// out at different levels and nothing downstream evens them out.  A unit is
+// brought to one speech level: the RMS of the louder half of its 20 ms
+// blocks (pauses are not quiet speech), the gain bounded so that a unit of
+// near silence is not turned into noise and no peak clips.
+void LevelSpeech(std::vector<float> *pcm)
+{
+  constexpr std::size_t kBlock = 44100 / 50;
+  constexpr float kTarget = 0.12f, kPeak = 0.89f;
+  std::vector<float> blocks;
+  float peak = 0.0f;
+  for (std::size_t at = 0; at + kBlock <= pcm->size(); at += kBlock)
+    {
+      double sum = 0.0;
+      for (std::size_t i = at; i < at + kBlock; i++)
+        {
+          const float value = (*pcm)[i];
+          sum += static_cast<double>(value) * value;
+          peak = std::max(peak, std::fabs(value));
+        }
+      blocks.push_back(static_cast<float>(sum / kBlock));
+    }
+  if (blocks.size() < 4 || peak <= 0.0f)
+    return;
+  std::sort(blocks.begin(), blocks.end());
+  const std::size_t half = blocks.size() / 2;
+  double loud = 0.0;
+  for (std::size_t i = half; i < blocks.size(); i++)
+    loud += blocks[i];
+  const float rms =
+      static_cast<float>(std::sqrt(loud / (blocks.size() - half)));
+  if (rms < 1e-4f)
+    return;
+  float gain = std::min(std::max(kTarget / rms, 0.25f), 4.0f);
+  gain = std::min(gain, kPeak / peak);
+  for (float &value : *pcm)
+    value *= gain;
+}
 
 struct MeloValues
 {
@@ -203,7 +244,7 @@ Status MeloBackend::Run(const Input &input, const Emit &emit, const Stop &stop)
   auto tones = text->tone_ids;
   std::int64_t length = phones.size(), speaker_id = text->speaker_id;
   std::int64_t dimensions[] = { 1, length }, one[] = { 1 };
-  float noise = 0.667f, length_scale = 1.0f / text->speed, noise_w = 0.8f;
+  float noise = 0.3f, length_scale = 1.0f / text->speed, noise_w = 0.4f;
   void *buffers[] = { phones.data(), &length,       tones.data(), &speaker_id,
                       &noise,        &length_scale, &noise_w };
   const std::size_t bytes[] = { phones.size() * sizeof(std::int64_t),
@@ -296,6 +337,7 @@ Status MeloBackend::Run(const Input &input, const Emit &emit, const Stop &stop)
   PcmChunk pcm{
     std::vector<float>(samples, samples + frames * kSamplesPerFrame), 44100, 1
   };
+  LevelSpeech(&pcm.samples);
   return emit(std::move(pcm)) ? Status::kOk : Status::kCancelled;
 }
 
