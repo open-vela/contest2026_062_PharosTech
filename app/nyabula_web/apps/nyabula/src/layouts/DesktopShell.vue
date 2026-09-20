@@ -7,6 +7,7 @@ import { RouterView } from 'vue-router';
 import { StatusPill, ThemeSwitcher, UiIcon, NyabulaLogo } from '@nyabula/ui';
 import { useShell } from '../composables/useShell';
 import ConnectionBanner from '../components/ConnectionBanner.vue';
+import PanelUpdateBanner from '../components/PanelUpdateBanner.vue';
 import CommandPalette from '../components/CommandPalette.vue';
 import DeviceSwitcher from '../components/DeviceSwitcher.vue';
 import { contextPresence } from '../composables/contextPresence';
@@ -93,6 +94,7 @@ const showContext = computed(() => shell.inDevice.value && contextOpen.value && 
         </button>
       </header>
       <ConnectionBanner />
+      <PanelUpdateBanner />
       <div class="content">
         <main class="main">
           <RouterView v-slot="{ Component }">
