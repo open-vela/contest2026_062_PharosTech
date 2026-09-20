@@ -23,6 +23,7 @@ root = pathlib.Path(tempfile.mkdtemp(prefix="amp-llm-pty-"))
 models = repo / "tools/amp/models"
 protocol = repo / "tools/amp/protocol"
 nyampd = repo / "tools/amp/nyampd"
+chat = repo / "tools/amp/chat"
 client = repo / "app/nyampctl"
 
 # A replay backend that emits exactly the number of tokens the request asked
@@ -270,10 +271,14 @@ int main()
 subprocess.run(
     ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
      "-I", str(nyampd), "-I", str(models), "-I", str(protocol),
+     "-I", str(chat),
      str(root / "harness.cpp"), str(root / "backend.cpp"),
      str(nyampd / "nyampd_core.cpp"), str(nyampd / "nyampd_llm.cpp"),
      str(nyampd / "nyampd_frame.cpp"), str(nyampd / "nyampd_sha256.cpp"),
      str(nyampd / "nyampd_blob.cpp"), str(nyampd / "nyampd_provision.cpp"),
+     str(nyampd / "nyampd_chat.cpp"), *[str(chat / name) for name in (
+         "nyamp_json.cpp", "nyamp_unicode.cpp", "nyamp_tokenizer.cpp",
+         "nyamp_chat_template.cpp", "nyamp_chat_parse.cpp")],
      str(models / "nyamp_models.cpp"),
      str(protocol / "nyamp_protocol.c"),
      "-o", str(root / "harness"), "-lpthread"],

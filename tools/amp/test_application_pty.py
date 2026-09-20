@@ -66,6 +66,9 @@ int main(int argc,char **argv) {{
  }} else if(strcmp(argv[2],"load")==0) {{
   if(argc!=4)return 2;
   rc=nyampctl_llm_load(fd,argv[3]);
+ }} else if(strcmp(argv[2],"chat")==0) {{
+  if(argc!=4)return 2;
+  rc=nyampctl_llm_chat(fd,argv[3],16);
  }} else if(strcmp(argv[2],"generate")==0) {{
   if(argc!=4)return 2;
   rc=nyampctl_llm_generate(fd,argv[3],4,0);
@@ -112,6 +115,16 @@ int main(int argc,char **argv) {{
         assert load.returncode!=0, load
         assert 'status=-9' in load.stderr, load.stderr
         print('llm load refused as unsupported without a backend',flush=True)
+
+        # Same for a chat: the body is long enough to need two chunks, so the
+        # framing is exercised, and the first chunk is refused as unsupported.
+        request=root/'chat.json'
+        request.write_text('{"messages":[{"role":"user","content":"'+'x'*600+'"}]}')
+        chat=subprocess.run([str(root/'client'),str(master),'chat',str(request)],
+                            pass_fds=(master,),capture_output=True,text=True,timeout=10)
+        assert chat.returncode!=0, chat
+        assert 'status=-9' in chat.stderr, chat.stderr
+        print('llm chat refused as unsupported without a backend',flush=True)
 
         print('NYAMP_APPLICATION_PTY_PASS')
     finally:

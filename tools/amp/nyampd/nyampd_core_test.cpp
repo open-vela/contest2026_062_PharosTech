@@ -216,7 +216,11 @@ int TestHealthAndCapabilities()
   CHECK(nyamp::Dispatch(request_wire, NYAMP_WIRE_HEADER_SIZE, 500, generation,
                         response_wire, sizeof(response_wire), &response_size,
                         {}, &llm) == NYAMP_OK);
-  CHECK(GetLe32u(response_wire + NYAMP_WIRE_HEADER_SIZE + 8) == 0x3U);
+  /* Health, LLM, and CHAT: a service with a backend can serve the text
+   * level request too.  BLOB (bit 2) is absent because no blob service is
+   * attached here.
+   */
+  CHECK(GetLe32u(response_wire + NYAMP_WIRE_HEADER_SIZE + 8) == 0xbU);
   return 0;
 }
 
