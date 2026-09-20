@@ -283,5 +283,41 @@ export const useEyeStore = defineStore('eye', () => {
     void flushAmbient();
   }
 
-  return { lastState, nativeCore, ready, activeMode, activeScene, webScene, sceneStyle, lightPreview, ambientOnDevice, setMode, setScene, updateScene, toggleScene, look, setAmbient };
+  /* Iris colour.  Latest-wins like the ambient slider: a colour picker being
+   * dragged reports every shade it passes over.  One command per eye, and a
+   * single one for both when they match, so an unchanged eye is not resent. */
+  const irisColors = computed(() => {
+    const worn = lastState.value?.appearance;
+    return worn?.irisLeft && worn?.irisRight ? { left: worn.irisLeft.toLowerCase(), right: worn.irisRight.toLowerCase() } : null;
+  });
+  let nextIris: { left: string; right: string } | null = null;
+  let sendingIris = false;
+  async function flushIris(): Promise<void> {
+    if (sendingIris || nextIris === null) return;
+    sendingIris = true;
+    const client = session.client;
+    const pair = nextIris;
+    nextIris = null;
+    try {
+      if (pair.left === pair.right) await session.request('eyes.iris', { eyes: 'both', rgb: pair.left });
+      else {
+        await session.request('eyes.iris', { eyes: 'left', rgb: pair.left });
+        await session.request('eyes.iris', { eyes: 'right', rgb: pair.right });
+      }
+    } catch (e) {
+      nextIris = null;
+      toast.error(e, '设置瞳色失败');
+    } finally {
+      sendingIris = false;
+      if (client !== session.client) nextIris = null;
+      if (nextIris !== null) void flushIris();
+    }
+  }
+  function setIris(left: string, right: string = left): void {
+    if (!session.canControl) return;
+    nextIris = { left, right };
+    void flushIris();
+  }
+
+  return { lastState, nativeCore, ready, activeMode, activeScene, webScene, sceneStyle, lightPreview, ambientOnDevice, irisColors, setMode, setScene, updateScene, toggleScene, look, setAmbient, setIris };
 });
