@@ -13,7 +13,7 @@ export function useServiceDetail(type: Ref<string>) {
   const router = useRouter();
 
   const def = computed<FeatureDef | undefined>(() => featureByType(type.value));
-  /** Planned features have no working page; the frame says so instead. */
+  /** Planned features have no device behind them; the page is a preview. */
   const planned = computed(() => def.value?.stage === 'planned');
   const isActive = computed(() => !planned.value && (type.value === 'sleep' ? eye.activeMode === 'sleep'
     : !!eye.activeScene && featureByScene(eye.activeScene)?.type === type.value));
@@ -25,7 +25,11 @@ export function useServiceDetail(type: Ref<string>) {
   watch(
     def,
     (d) => {
-      component.value = d && d.stage === 'ready' ? defineAsyncComponent({ loader: d.load, delay: 0 }) : null;
+      /* A planned feature's page is loaded too, so the owner can look at
+       * the interface that is waiting for the hardware.  It talks to the
+       * same services as any other page; with nothing behind them it shows
+       * its own empty state, which is what there is to preview. */
+      component.value = d ? defineAsyncComponent({ loader: d.load, delay: 0 }) : null;
     },
     { immediate: true },
   );

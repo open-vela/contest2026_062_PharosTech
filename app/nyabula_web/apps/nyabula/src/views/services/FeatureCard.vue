@@ -27,7 +27,7 @@ const Mini: Component | null = props.def.mini && !planned
 <template>
   <section class="fc" :class="{ active, planned }" :aria-disabled="planned || undefined">
     <header class="fc-head">
-      <button class="fc-id" :disabled="planned" @click="emit('open')">
+      <button class="fc-id" @click="emit('open')">
         <span class="fc-icon"><UiIcon :name="def.icon" :size="20" /></span>
         <span class="fc-text">
           <span class="fc-title">{{ def.label }}</span>
@@ -39,7 +39,12 @@ const Mini: Component | null = props.def.mini && !planned
       <button v-if="!planned" class="fc-more" aria-label="详情" title="打开详情" @click="emit('open')"><UiIcon name="fullscreen" :size="18" /></button>
     </header>
     <div class="fc-body">
-      <p v-if="planned" class="fc-needs">{{ def.needs ?? '等待硬件与驱动接入' }}</p>
+      <template v-if="planned">
+        <p class="fc-needs">{{ def.needs ?? '等待硬件与驱动接入' }}</p>
+        <!-- The page exists and explains what is planned; only the device
+             side is missing, so it is worth looking at. -->
+        <button class="fc-fallback" @click="emit('open')">预览界面 <UiIcon name="chevron_right" :size="16" /></button>
+      </template>
       <component :is="Mini" v-else-if="Mini" :type="def.type" :ff="ff" :active="active" :payload="payload" />
       <button v-else class="fc-fallback" @click="emit('open')">打开设置 <UiIcon name="chevron_right" :size="16" /></button>
     </div>
@@ -61,9 +66,11 @@ const Mini: Component | null = props.def.mini && !planned
 .fc.active { border-color: rgba(var(--md-primary-rgb), 0.45); }
 /* Planned: present but clearly not usable. */
 .fc.planned { min-height: 0; background: transparent; border: 1px dashed var(--md-outline-variant); }
-.fc.planned .fc-head, .fc.planned .fc-body { opacity: 0.58; }
-.fc.planned .fc-id { cursor: default; }
-.fc.planned .fc-body { min-height: 0; }
+/* Dimmed element by element, not as a whole card: the preview button is the
+ * one thing here that does something and must stay legible. */
+.fc.planned .fc-head { opacity: 0.58; }
+.fc.planned .fc-needs { opacity: 0.58; }
+.fc.planned .fc-body { min-height: 0; gap: 8px; align-items: flex-start; }
 .fc-tag {
   flex: none; font: 600 11px var(--font-body); padding: 2px 8px; border-radius: 999px;
   background: var(--md-surface-container-highest); color: var(--md-on-surface-variant);
