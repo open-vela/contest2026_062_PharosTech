@@ -196,6 +196,14 @@ export class EyeEngine {
   irisHexL = IRIS_DEFAULT;
   irisHexR = IRIS_DEFAULT;
   lightLvl = 0.55;
+  /** What the pupil is drawn from: lightLvl eased by followLight(), as
+   *  ambient_current is in nyabula_eye_engine.c. A device with a light sensor
+   *  reports a few levels a second; easing the level turns them into one
+   *  motion instead of a step per report. */
+  lightCur = 0.55;
+  /** False until the first remote level arrived, which is taken as it is:
+   *  the device settled on it long before this preview connected. */
+  private lightSettled = false;
   private blinkPhase = -1;
   private blinkEyes = 3;
   private nextBlink = 2.5;
@@ -323,8 +331,19 @@ export class EyeEngine {
     this.lookHold = 0;
   }
 
+  /** Local control (a slider, the reference demo): takes effect at once, the
+   *  hand on the slider is already a continuous motion. Levels reported by a
+   *  device go through applyRemoteState() and are eased like the device's. */
   setLight(v: number): void {
     this.lightLvl = clamp(v, 0, 1);
+    this.lightCur = this.lightLvl;
+  }
+
+  /** nyabula_eye_engine_follow_ambient(): narrowing is faster than widening. */
+  private followLight(dt: number): void {
+    const speed = this.lightLvl > this.lightCur ? TIMING.lightConstrictSpeed : TIMING.lightDilateSpeed;
+    const next = lerp(this.lightCur, this.lightLvl, 1 - Math.exp(-speed * dt));
+    this.lightCur = Math.abs(this.lightLvl - next) < 0.00001 ? this.lightLvl : next;
   }
 
   setIris(left: string, right: string = left): void {
@@ -419,7 +438,11 @@ export class EyeEngine {
     if (clockOffsetMs !== undefined) this.clockOffsetMs = clockOffsetMs;
     const ex = state.expression;
     if (ex && typeof ex.mode === 'string') {
-      if (typeof ex.lightLevel === 'number') this.lightLvl = clamp(ex.lightLevel, 0, 1);
+      if (typeof ex.lightLevel === 'number') {
+        this.lightLvl = clamp(ex.lightLevel, 0, 1);
+        if (!this.lightSettled) this.lightCur = this.lightLvl;
+        this.lightSettled = true;
+      }
       if (ex.mode !== this.mode || this.lastRemoteMode !== ex.mode) {
         const prev = this.mode;
         if (ex.mode === 'sleep' && prev !== 'sleep') {
@@ -523,6 +546,7 @@ export class EyeEngine {
   step(dt: number): void {
     this.tNow += dt;
     this.modeT += dt;
+    this.followLight(dt);
     this.applyMode();
     this.behaviors(dt);
     this.updateZzz(dt);
@@ -724,6 +748,7 @@ export class EyeEngine {
     this.tPrev = t;
     this.tNow = t;
     this.modeT += dt;
+    this.followLight(dt);
     this.applyMode();
     this.behaviors(dt);
     this.updateZzz(dt);
@@ -750,7 +775,7 @@ export class EyeEngine {
     const p = this.tgt;
     const t = this.modeT;
     // Baseline: ambient light drives the pupil (slit <-> dilated).
-    const dil = 1 - this.lightLvl;
+    const dil = 1 - this.lightCur;
     p.pupilW = lerp(0.10, 0.95, dil * dil * 0.3 + dil * 0.7);
     p.pupilH = lerp(0.72, 0.95, dil);
     p.lidTop = 0; p.lidBot = 0; p.lidSlant = 0; p.botCurve = 0;

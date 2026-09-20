@@ -35,6 +35,10 @@ export interface EyeParamsJson {
     sceneFadeTime: number;
     sceneEase: [number, number];
     sleepCloseDuration: number;
+    /** Per second: how fast the light the pupil reacts to follows the
+     *  reported level while it rises (pupil narrows) and falls (widens). */
+    lightConstrictSpeed: number;
+    lightDilateSpeed: number;
   };
   appearance: { irisDefault: string; pupilBase: string };
   /** Device panel geometry in panel pixels (nyabula_eye_renderer_lvgl.c). */

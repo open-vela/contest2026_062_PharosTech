@@ -42,11 +42,22 @@
  * 30% faster than that.
  */
 
-#define NYABULA_EYE_WAKE_HOLD_MS       450
-#define NYABULA_EYE_WAKE_OPEN_MS       1400
-#define NYABULA_EYE_SACCADE_FIRST_MS   1200
-#define NYABULA_EYE_DEFAULT_IRIS_RGB   0x38e06e
-#define NYABULA_EYE_DEFAULT_LIGHT      0.55f
+#define NYABULA_EYE_WAKE_HOLD_MS     450
+#define NYABULA_EYE_WAKE_OPEN_MS     1400
+#define NYABULA_EYE_SACCADE_FIRST_MS 1200
+#define NYABULA_EYE_DEFAULT_IRIS_RGB 0x38e06e
+#define NYABULA_EYE_DEFAULT_LIGHT    0.55f
+
+/* How fast the light the pupil reacts to follows the commanded level, per
+ * second.  A light sensor reports a few times a second, and a pupil that
+ * took each report as a new target would move in steps; easing the level
+ * itself turns them into one motion.  A cat's pupil narrows faster than it
+ * widens, so the two directions differ.  Mirrored by lightConstrictSpeed and
+ * lightDilateSpeed in eye-params.json.
+ */
+
+#define NYABULA_EYE_LIGHT_CONSTRICT    4.0f
+#define NYABULA_EYE_LIGHT_DILATE       2.0f
 #define NYABULA_EYE_MAX_FRAME_DELTA_MS 50
 #define NYABULA_EYE_SCENE_CLOSE_MS     380
 #define NYABULA_EYE_SCENE_OPEN_MS      520
@@ -92,6 +103,13 @@ struct nyabula_eye_engine_s
   float saccade_x;
   float saccade_y;
   float ambient_light;
+
+  /* What the pupil is drawn from: ambient_light eased by the animation
+   * tick.  ambient_settled is false until the first level arrives, which is
+   * taken as it is; a start-up default is nothing to animate away from. */
+
+  float ambient_current;
+  bool ambient_settled;
   float sleep_start_top;
   float sleep_start_bottom;
   float sleep_end_top;
@@ -150,6 +168,9 @@ nyabula_eye_engine_apply_expression(struct nyabula_eye_engine_s *engine,
 static void
 nyabula_eye_engine_follow_target(struct nyabula_eye_engine_s *engine,
                                  float delta_seconds);
+static void
+nyabula_eye_engine_follow_ambient(struct nyabula_eye_engine_s *engine,
+                                  float delta_seconds);
 static void
 nyabula_eye_engine_update_saccade(struct nyabula_eye_engine_s *engine,
                                   uint32_t elapsed, float global_seconds);
@@ -325,7 +346,7 @@ nyabula_eye_engine_random_unit(struct nyabula_eye_engine_s *engine)
 static void
 nyabula_eye_engine_reset_target(struct nyabula_eye_engine_s *engine)
 {
-  float darkness = 1.0f - engine->ambient_light;
+  float darkness = 1.0f - engine->ambient_current;
   float pupil_mix = darkness * darkness * 0.3f + darkness * 0.7f;
 
   memset(&engine->target, 0, sizeof(engine->target));
@@ -483,6 +504,24 @@ nyabula_eye_engine_follow_target(struct nyabula_eye_engine_s *engine,
   FOLLOW(derp, 5.0f);
 
 #undef FOLLOW
+}
+
+/* Ease the light level the pupil baseline is computed from.  This sits
+ * under the expressions: one that sets its own pupil (heart, star, angry,
+ * ...) overwrites the baseline in apply_expression() as it always did, and
+ * finds the eased level waiting when it ends.
+ */
+
+static void
+nyabula_eye_engine_follow_ambient(struct nyabula_eye_engine_s *engine,
+                                  float delta_seconds)
+{
+  float speed = engine->ambient_light > engine->ambient_current
+                    ? NYABULA_EYE_LIGHT_CONSTRICT
+                    : NYABULA_EYE_LIGHT_DILATE;
+
+  engine->ambient_current = nyabula_eye_engine_follow(
+      engine->ambient_current, engine->ambient_light, speed, delta_seconds);
 }
 
 static void
@@ -739,6 +778,7 @@ static void nyabula_eye_engine_animation_cb(lv_timer_t *timer)
 
   engine->last_tick = now;
   delta_seconds = (float)delta_ms / 1000.0f;
+  nyabula_eye_engine_follow_ambient(engine, delta_seconds);
   nyabula_eye_engine_apply_expression(engine, mode_seconds);
   nyabula_eye_engine_update_saccade(engine, elapsed, global_seconds);
   nyabula_eye_engine_update_scene_frame(engine, &engine->scene_frame);
@@ -931,6 +971,7 @@ nyabula_eye_engine_create_dual(lv_obj_t *left_parent, lv_obj_t *right_parent)
 
   engine->expression = NYABULA_EYE_EXPRESSION_IDLE;
   engine->ambient_light = NYABULA_EYE_DEFAULT_LIGHT;
+  engine->ambient_current = NYABULA_EYE_DEFAULT_LIGHT;
   engine->auto_blink = true;
   engine->blink_eyes = NYABULA_EYE_MASK_BOTH;
   engine->random_state = 0x4e796162u;
@@ -1109,6 +1150,11 @@ void nyabula_eye_engine_set_ambient_light(struct nyabula_eye_engine_s *engine,
   if (engine != NULL)
     {
       engine->ambient_light = nyabula_eye_engine_clamp(level, 0.0f, 1.0f);
+      if (!engine->ambient_settled)
+        {
+          engine->ambient_current = engine->ambient_light;
+          engine->ambient_settled = true;
+        }
     }
 }
 

@@ -37,11 +37,13 @@
     "sceneOpenTime": 0.52,
     "sceneFadeTime": 0.32,
     "sceneEase": [0.08, 0.92],
-    "sleepCloseDuration": 1.8
+    "sleepCloseDuration": 1.8,
+    "lightConstrictSpeed": 4,
+    "lightDilateSpeed": 2
   },
   "appearance": {
     "irisDefault": "#38e06e",
-    "pupilBase": "0~1 由环境光: dil=1-light; pupilW=lerp(0.10, 0.95, dil*dil*0.3 + dil*0.7)"
+    "pupilBase": "0~1 由环境光: dil=1-light; pupilW=lerp(0.10, 0.95, dil*dil*0.3 + dil*0.7); light 本身先按 lightConstrictSpeed(变亮)/lightDilateSpeed(变暗) 缓动，首个值直接采用"
   },
   "geometry": {
     "comment": "Device panel geometry, from nyabula_eye_renderer_lvgl.c (W/H 360, R 178, eye_globe_radius = R - 2). The C side hardcodes these; keep both in step.",

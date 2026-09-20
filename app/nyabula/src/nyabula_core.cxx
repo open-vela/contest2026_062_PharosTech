@@ -686,7 +686,18 @@ extern "C" void nyabula_core_tick(struct nyabula_core_s *core)
                                     : "eye engine rejected command";
         }
 
-      nyabula_core_set_result(core, command.request_id, status, error);
+      /* last_request_id is how a caller that gave its command an id learns
+       * what became of it.  A command without one has nobody waiting, and
+       * recording its success would only erase the answer somebody else is
+       * polling for: the light sensor sends such commands all day, and the
+       * agent's eyes.expression waits on exactly this field.  A failure is
+       * still recorded, there is no other place it would show.
+       */
+
+      if (command.request_id[0] != '\0' || status < 0)
+        {
+          nyabula_core_set_result(core, command.request_id, status, error);
+        }
     }
 
   core->snapshot.queue_depth = core->queue_depth;
