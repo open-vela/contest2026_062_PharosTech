@@ -201,12 +201,16 @@ for source in (root / "client.c", protocol / "nyamp_protocol.c"):
 subprocess.run(
     ["g++", "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
      "-I", str(nyampd), "-I", str(models), "-I", str(protocol),
-     "-I", str(chat),
+     "-I", str(chat), "-I", str(nyampd.parent / "g2p"),
      str(root / "harness.cpp"),
+     # The dispatcher references every service, so the speech ones are linked
+     # even though this flow never reaches them.
      *[str(nyampd / name) for name in (
          "nyampd_core.cpp", "nyampd_llm.cpp", "nyampd_frame.cpp",
          "nyampd_sha256.cpp", "nyampd_blob.cpp", "nyampd_provision.cpp",
-         "nyampd_chat.cpp")],
+         "nyampd_chat.cpp", "nyampd_audio.cpp", "nyampd_loader.cpp",
+         "nyampd_asr.cpp", "nyampd_tts.cpp", "nyampd_kws.cpp")],
+     str(nyampd.parent / "g2p" / "nyamp_g2p.cpp"),
      *[str(chat / name) for name in (
          "nyamp_json.cpp", "nyamp_unicode.cpp", "nyamp_tokenizer.cpp",
          "nyamp_chat_template.cpp", "nyamp_chat_parse.cpp")],
