@@ -48,6 +48,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -77,28 +78,30 @@
 #define CONFIG_NYABULA_CORE_NETWORK_IFNAME "wlan0"
 #endif
 
-#define NY_NET_IFNAME        CONFIG_NYABULA_CORE_NETWORK_IFNAME
-#define NY_NET_STORE_DOMAIN  "wifi"
-#define NY_NET_AP_SSID_FMT   "Nyabula-%02X%02X"
-#define NY_NET_AP_PSK        "nyabula123"
-#define NY_NET_AP_CHANNEL    6
-#define NY_NET_AP_ADDR       "192.168.4.1"
-#define NY_NET_AP_MASK       "255.255.255.0"
-#define NY_NET_AP_POOL_START "192.168.4.100"
-#define NY_NET_STA_TIMEOUT_S 25
-#define NY_NET_STA_RETRIES   3
-#define NY_NET_STA_RETRY_S   5
-#define NY_NET_RSSI_PERIOD_S 10
-#define NY_NET_LOAD_RETRIES  150 /* worker ticks, about 15 s */
-#define NY_NET_SSID_MAX      32
-#define NY_NET_PSK_MAX       64
-#define NY_NET_SCAN_MAX      24
+#define NY_NET_IFNAME         CONFIG_NYABULA_CORE_NETWORK_IFNAME
+#define NY_NET_STORE_DOMAIN   "wifi"
+#define NY_NET_AP_SSID_FMT    "Nyabula-%02X%02X"
+#define NY_NET_AP_PSK         "nyabula123"
+#define NY_NET_AP_CHANNEL     6
+#define NY_NET_AP_ADDR        "192.168.4.1"
+#define NY_NET_AP_MASK        "255.255.255.0"
+#define NY_NET_AP_POOL_START  "192.168.4.100"
+#define NY_NET_STA_TIMEOUT_S  25
+#define NY_NET_STA_RETRIES    3
+#define NY_NET_STA_RETRY_S    5
+#define NY_NET_RSSI_PERIOD_S  10
+#define NY_NET_LINK_MISSES    2   /* polls without carrier before rejoining */
+#define NY_NET_LINK_RECHECK_S 3   /* the second look comes sooner */
+#define NY_NET_LOAD_RETRIES   150 /* worker ticks, about 15 s */
+#define NY_NET_SSID_MAX       32
+#define NY_NET_PSK_MAX        64
+#define NY_NET_SCAN_MAX       24
 
-#define NY_NET_EYE_SOURCE    "network"
-#define NY_NET_EYE_PRIORITY  70
-#define NY_NET_EYE_LEASE_MS  15000
-#define NY_NET_EYE_RENEW_S   5
-#define NY_NET_EYE_ONLINE_MS 60000
+#define NY_NET_EYE_SOURCE     "network"
+#define NY_NET_EYE_PRIORITY   70
+#define NY_NET_EYE_LEASE_MS   15000
+#define NY_NET_EYE_RENEW_S    5
+#define NY_NET_EYE_ONLINE_MS  60000
 
 /* What each code is for, shown above it.  The two on the access point are
  * numbered because they have to be used in that order.  Any text added
@@ -138,6 +141,7 @@ struct ny_net_s
   time_t rejoin_at;    /* when to try the stored network again; 0 = never */
   time_t rssi_at;      /* when the signal level is read next */
   int sta_rssi;        /* dBm, 0 = not known */
+  int link_misses;     /* consecutive polls that found the carrier down */
   unsigned int rejoin_step;
   int sta_attempt;
   int last_error;
@@ -621,6 +625,7 @@ static void ny_net_rssi_poll(void)
 {
   time_t now = time(NULL);
   int rssi = 0;
+  bool carrier = true; /* Unknown is not down. */
   bool online;
 
   if (nxmutex_lock(&g_net_lock) < 0)
@@ -647,6 +652,14 @@ static void ny_net_rssi_poll(void)
       if (ioctl(sock, SIOCGIWSENS, (unsigned long)&request) >= 0 &&
           request.u.sens.value < 0)
         rssi = request.u.sens.value;
+
+      /* The driver drops the carrier when the access point is gone. */
+
+      struct ifreq flags;
+      memset(&flags, 0, sizeof(flags));
+      strlcpy(flags.ifr_name, NY_NET_IFNAME, IFNAMSIZ);
+      if (ioctl(sock, SIOCGIFFLAGS, (unsigned long)&flags) >= 0)
+        carrier = (flags.ifr_flags & IFF_RUNNING) != 0;
       close(sock);
     }
 #endif
@@ -654,7 +667,46 @@ static void ny_net_rssi_poll(void)
   if (nxmutex_lock(&g_net_lock) < 0)
     return;
   if (g_net.state == NY_NET_STA_ONLINE)
-    g_net.sta_rssi = rssi;
+    {
+      g_net.sta_rssi = carrier ? rssi : 0;
+      if (carrier)
+        {
+          g_net.link_misses = 0;
+        }
+      else if (++g_net.link_misses < NY_NET_LINK_MISSES)
+        {
+          /* Roaming drops the carrier for a moment too: look again soon
+           * rather than tearing down a link that is about to come back.
+           */
+
+          g_net.rssi_at = time(NULL) + NY_NET_LINK_RECHECK_S;
+        }
+      else
+        {
+          /* Nothing looked at the link once the device was online, so a
+           * router that restarted, or a walk out of range and back, left
+           * it "online" and unreachable until somebody power-cycled it.
+           * The stored network is joined again through the same ladder a
+           * boot uses: a few attempts, then the access point with the
+           * network retried at growing intervals.
+           */
+
+          g_net.link_misses = 0;
+          g_net.state = NY_NET_STA_FAILED;
+          g_net.last_error = -ENETDOWN;
+          g_net.sta_ipv4[0] = '\0';
+          g_net.sta_attempt = 0;
+          g_net.sta_retry_at = 0;
+          g_net.pending_sta = true;
+          syslog(LOG_WARNING, "nynet: link to the stored network lost, "
+                              "joining it again\n");
+        }
+    }
+  else
+    {
+      g_net.link_misses = 0;
+    }
+
   nxmutex_unlock(&g_net_lock);
 }
 
