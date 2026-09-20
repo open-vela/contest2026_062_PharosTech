@@ -25,6 +25,7 @@ export const DEVICE_SECTIONS = [
   { id: 'cloud', label: '云中继', icon: 'cloud' },
   { id: 'permissions', label: '权限总览', icon: 'shield' },
   { id: 'storage', label: '存储', icon: 'storage' },
+  { id: 'models', label: '模型', icon: 'auto_awesome' },
   { id: 'update', label: '更新', icon: 'download' },
   { id: 'logs', label: '日志', icon: 'terminal' },
   { id: 'about', label: '关于', icon: 'info' },

@@ -24,8 +24,13 @@ const props = defineProps<{
   disabled?: boolean;
   /** A file is in and being worked on: it can no longer be changed. */
   locked?: boolean;
+  /** Take several files at once. They are handed on with `picks` and the zone
+   *  stays empty: whoever listens shows what became of them. */
+  multiple?: boolean;
+  /** First line of the empty zone, when the default does not fit. */
+  lead?: string;
 }>();
-const emit = defineEmits<{ (e: 'pick', file: File): void; (e: 'clear'): void }>();
+const emit = defineEmits<{ (e: 'pick', file: File): void; (e: 'picks', files: File[]): void; (e: 'clear'): void }>();
 
 const input = ref<HTMLInputElement | null>(null);
 const over = ref(false);
@@ -38,12 +43,23 @@ function browse(): void {
   if (!inert.value) input.value?.click();
 }
 
+function take(list: FileList | null | undefined): void {
+  const picked = Array.from(list ?? []);
+  if (!picked.length || inert.value) return;
+  if (props.multiple) emit('picks', picked);
+  else emit('pick', picked[0]!);
+}
+
 function onChange(e: Event): void {
   const el = e.target as HTMLInputElement;
-  const picked = el.files?.[0] ?? null;
+  // Copied first: clearing the input empties the live FileList.
+  const list = el.files;
+  const picked = list ? Array.from(list) : [];
   // Cleared so that picking the same file again is still a change.
   el.value = '';
-  if (picked && !inert.value) emit('pick', picked);
+  if (!picked.length || inert.value) return;
+  if (props.multiple) emit('picks', picked);
+  else emit('pick', picked[0]!);
 }
 
 function carriesFiles(e: DragEvent): boolean {
@@ -69,9 +85,7 @@ function onDragLeave(): void {
 function onDrop(e: DragEvent): void {
   depth = 0;
   over.value = false;
-  if (inert.value) return;
-  const dropped = e.dataTransfer?.files?.[0] ?? null;
-  if (dropped) emit('pick', dropped);
+  take(e.dataTransfer?.files);
 }
 </script>
 
@@ -84,11 +98,11 @@ function onDrop(e: DragEvent): void {
     @dragleave="onDragLeave"
     @drop.prevent="onDrop"
   >
-    <input ref="input" class="native" type="file" :accept="accept" :disabled="inert" aria-label="选择文件" @change="onChange" />
+    <input ref="input" class="native" type="file" :accept="accept" :multiple="multiple" :disabled="inert" aria-label="选择文件" @change="onChange" />
 
     <button v-if="!file" type="button" class="empty" :disabled="inert" tabindex="-1" @click="browse()">
       <span class="orb"><UiIcon name="upload" :size="24" /></span>
-      <span class="lead">{{ over ? '松开即可选中这个文件' : '把文件拖到这里，或点击选择' }}</span>
+      <span class="lead">{{ over ? (multiple ? '松开即可选中这些文件' : '松开即可选中这个文件') : lead || '把文件拖到这里，或点击选择' }}</span>
       <span v-if="hint" class="hint">{{ hint }}</span>
     </button>
 

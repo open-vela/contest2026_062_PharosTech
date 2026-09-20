@@ -9,7 +9,7 @@
     "build:device": "vite build --mode device && node scripts/gzip-dist.mjs dist-device",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json",
-    "test": "node --test test/deviceKey.test.mjs test/deviceToken.test.mjs test/wifi.test.mjs test/deviceAccess.test.mjs test/keyboardInset.test.mjs test/deviceName.test.mjs test/deviceMaint.test.mjs test/eyeScenePayload.test.mjs test/audioControl.test.mjs"
+    "test": "node --test test/deviceKey.test.mjs test/deviceToken.test.mjs test/wifi.test.mjs test/deviceAccess.test.mjs test/keyboardInset.test.mjs test/deviceName.test.mjs test/deviceMaint.test.mjs test/eyeScenePayload.test.mjs test/audioControl.test.mjs test/deviceModels.test.mjs test/modelUpload.test.mjs"
   },
   "dependencies": {
     "@nyabula/eye-engine": "workspace:*",
