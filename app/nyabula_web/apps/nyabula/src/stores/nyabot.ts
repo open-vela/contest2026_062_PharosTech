@@ -122,10 +122,11 @@ export const useNyabotStore = defineStore('nyabot', () => {
     catch (cause) { if (current === epoch) error.value = describeError(cause); }
     finally { decisions.value.delete(id); }
   }
-  async function deleteConversation(): Promise<void> {
-    if (!session.connected || !session.isOwner || !conversation.value) return;
+  /* Without an id the conversation on screen is the one deleted. */
+  async function deleteConversation(id?: string): Promise<void> {
+    const selected = id ?? conversation.value;
+    if (!session.connected || !session.isOwner || !selected) return;
     const current = epoch;
-    const selected = conversation.value;
     try {
       await session.request('agent.conversation.delete', { conversationId: selected, revision: revision.value });
       if (current !== epoch) return;
