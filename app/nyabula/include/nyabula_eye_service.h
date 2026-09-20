@@ -47,6 +47,7 @@ int nyabula_eye_service_submit(const char *source, const char *json,
 int nyabula_eye_service_notify(const char *source, const char *text,
                                size_t length);
 int nyabula_eye_service_snapshot(struct nyabula_core_snapshot_s *snapshot);
+int nyabula_eye_service_check_depth(const char *json, size_t length);
 int nyabula_eye_json_parse_command(cJSON *json,
                                    struct nyabula_core_command_s *command,
                                    char *error, size_t error_size);

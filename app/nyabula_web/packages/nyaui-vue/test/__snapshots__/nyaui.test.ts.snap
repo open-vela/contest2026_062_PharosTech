@@ -1,0 +1,86 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`NyaUiPage rendering > renders the feeder demo tree without crashing 1`] = `
+"<div data-v-1f40830d="" class="nyaui-page">
+  <!-- layout -->
+  <div data-v-7be7d5ca="" data-v-1f40830d="" style="display: flex; flex-direction: column; gap: 12px; padding: 16px; align-items: stretch;">
+    <!-- layout -->
+    <div data-v-7be7d5ca="" style="display: flex; flex-direction: row; gap: 12px; flex-wrap: nowrap; align-items: center;">
+      <!-- layout -->
+      <div data-v-7be7d5ca="" class="nya-stat">
+        <div data-v-7be7d5ca="" class="nya-stat-head"><svg data-v-629e54f1="" data-v-7be7d5ca="" class="nya-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+            <circle data-v-629e54f1="" cx="12" cy="12" r="5" fill="currentColor" opacity="0.35"></circle>
+          </svg><span data-v-7be7d5ca="" class="nya-stat-label">余粮</span></div>
+        <div data-v-7be7d5ca="" class="nya-stat-value">72<span data-v-7be7d5ca="" class="nya-stat-unit">%</span><span data-v-7be7d5ca="" class="nya-stat-trend t-down">↓</span></div>
+      </div><!-- layout -->
+      <div data-v-7be7d5ca="" class="nya-stat">
+        <div data-v-7be7d5ca="" class="nya-stat-head"><svg data-v-629e54f1="" data-v-7be7d5ca="" class="nya-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+            <circle data-v-629e54f1="" cx="12" cy="12" r="5" fill="currentColor" opacity="0.35"></circle>
+          </svg><span data-v-7be7d5ca="" class="nya-stat-label">今日已喂</span></div>
+        <div data-v-7be7d5ca="" class="nya-stat-value">3<span data-v-7be7d5ca="" class="nya-stat-unit">次</span>
+          <!--v-if-->
+        </div>
+      </div>
+    </div><!-- layout -->
+    <section data-v-caedf766="" data-v-7be7d5ca="" class="md-card">
+      <h3 data-v-caedf766="" class="card-title">手动喂食</h3>
+      <div data-v-7be7d5ca="" class="nya-card-body">
+        <!-- layout -->
+        <div data-v-7be7d5ca="" class="nya-field">
+          <div data-v-7be7d5ca="" class="nya-field-label">出粮克数 <span data-v-7be7d5ca="" class="nya-field-val">20</span></div><input data-v-7be7d5ca="" type="range" class="nya-slider" min="5" max="50" step="5" value="20">
+        </div><!-- layout -->
+        <!-- input --><button data-v-0fb6573f="" data-v-7be7d5ca="" class="md-btn filled nya-button"><span data-v-7be7d5ca="" class="nya-button-inner"><svg data-v-629e54f1="" data-v-7be7d5ca="" class="nya-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle data-v-629e54f1="" cx="12" cy="12" r="5" fill="currentColor" opacity="0.35"></circle></svg> 立即喂食</span></button>
+      </div>
+    </section><!-- layout -->
+    <section data-v-caedf766="" data-v-7be7d5ca="" class="md-card">
+      <h3 data-v-caedf766="" class="card-title">定时</h3>
+      <div data-v-7be7d5ca="" class="nya-card-body">
+        <!-- layout --><label data-v-7be7d5ca="" class="nya-switch"><span data-v-7be7d5ca="" class="nya-switch-label">定时喂食</span><button data-v-7be7d5ca="" type="button" class="nya-switch-track on" role="switch" aria-checked="true"><span data-v-7be7d5ca="" class="nya-switch-thumb"></span></button></label><!-- layout -->
+        <div data-v-7be7d5ca="" class="nya-field">
+          <div data-v-7be7d5ca="" class="nya-field-label">时间点</div>
+          <div data-v-7be7d5ca="" class="nya-chips"><button data-v-b8b4f7cb="" data-v-7be7d5ca="" class="md-chip selected">07:00</button><button data-v-b8b4f7cb="" data-v-7be7d5ca="" class="md-chip">12:00</button><button data-v-b8b4f7cb="" data-v-7be7d5ca="" class="md-chip selected">19:00</button><button data-v-b8b4f7cb="" data-v-7be7d5ca="" class="md-chip">22:00</button></div>
+        </div>
+      </div>
+    </section><!-- layout --><svg data-v-608e38dd="" data-v-7be7d5ca="" viewBox="0 0 320 120" class="nya-chart" style="height: 130px;" preserveAspectRatio="none">
+      <line data-v-608e38dd="" x1="0" y1="104" x2="320" y2="104" class="axis"></line>
+      <g data-v-608e38dd="">
+        <rect data-v-608e38dd="" x="9.857142857142858" y="45.2" width="26" height="58.8" rx="3" class="bar">
+          <title data-v-608e38dd="">一 · 3</title>
+        </rect>
+      </g>
+      <g data-v-608e38dd="">
+        <rect data-v-608e38dd="" x="55.57142857142857" y="64.8" width="26" height="39.2" rx="3" class="bar">
+          <title data-v-608e38dd="">二 · 2</title>
+        </rect>
+      </g>
+      <g data-v-608e38dd="">
+        <rect data-v-608e38dd="" x="101.28571428571429" y="25.599999999999994" width="26" height="78.4" rx="3" class="bar">
+          <title data-v-608e38dd="">三 · 4</title>
+        </rect>
+      </g>
+      <g data-v-608e38dd="">
+        <rect data-v-608e38dd="" x="147" y="45.2" width="26" height="58.8" rx="3" class="bar">
+          <title data-v-608e38dd="">四 · 3</title>
+        </rect>
+      </g>
+      <g data-v-608e38dd="">
+        <rect data-v-608e38dd="" x="192.71428571428572" y="6" width="26" height="98" rx="3" class="bar">
+          <title data-v-608e38dd="">五 · 5</title>
+        </rect>
+      </g>
+      <g data-v-608e38dd="">
+        <rect data-v-608e38dd="" x="238.42857142857144" y="45.2" width="26" height="58.8" rx="3" class="bar">
+          <title data-v-608e38dd="">六 · 3</title>
+        </rect>
+      </g>
+      <g data-v-608e38dd="">
+        <rect data-v-608e38dd="" x="284.1428571428571" y="64.8" width="26" height="39.2" rx="3" class="bar">
+          <title data-v-608e38dd="">日 · 2</title>
+        </rect>
+      </g>
+      <g data-v-608e38dd=""><text data-v-608e38dd="" x="22.857142857142858" y="116" text-anchor="middle" class="tick">一</text><text data-v-608e38dd="" x="68.57142857142857" y="116" text-anchor="middle" class="tick">二</text><text data-v-608e38dd="" x="114.28571428571429" y="116" text-anchor="middle" class="tick">三</text><text data-v-608e38dd="" x="160" y="116" text-anchor="middle" class="tick">四</text><text data-v-608e38dd="" x="205.71428571428572" y="116" text-anchor="middle" class="tick">五</text><text data-v-608e38dd="" x="251.42857142857144" y="116" text-anchor="middle" class="tick">六</text><text data-v-608e38dd="" x="297.1428571428571" y="116" text-anchor="middle" class="tick">日</text></g>
+    </svg>
+  </div>
+  <!--v-if-->
+</div>"
+`;

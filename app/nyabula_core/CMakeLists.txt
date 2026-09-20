@@ -35,8 +35,30 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
       ny_scheduler.c
       ny_wasm.c)
   set(NYABULA_CORE_DEPENDS libqjs)
+  if(CONFIG_NYABULA_CORE_AGENT)
+    list(APPEND NYABULA_CORE_SRCS ny_agent.c ny_agent_capabilities.c ny_agent_config.c ny_agent_skills.c ny_agent_automation.c ny_agent_mcp_wire.c ny_agent_mcp.c ny_agent_mcp_in.c)
+    list(APPEND NYABULA_CORE_SRCS ny_agent_profile.c ny_agent_channels.c ny_agent_builtin.c ny_agent_weixin.c ny_agent_feishu.c ny_agent_node.c)
+    list(APPEND NYABULA_CORE_SRCS ny_product_companion.c)
+    list(APPEND NYABULA_CORE_DEPENDS apps_ai_agent libsodium)
+    list(APPEND NYABULA_CORE_SRCS ny_agent_mcp_server.c)
+    set(NYABULA_AGENT_INCLUDES ${NUTTX_APPS_DIR}/../packages/ai_agent/include
+        ${NUTTX_APPS_DIR}/../packages/ai_agent/src
+        ${NUTTX_APPS_DIR}/netutils/cjson/cJSON)
+  endif()
+  if(CONFIG_NYABULA_CORE_WEB)
+    list(APPEND NYABULA_CORE_SRCS ny_web.c ny_websocket.c)
+  endif()
+  if(CONFIG_NYABULA_CORE_PRODUCT)
+    list(APPEND NYABULA_CORE_SRCS ny_product_store.c ny_product_records.c
+         ny_product_cli.c ny_product.c ny_product_timers.c ny_product_runtime.c
+         ny_product_alarms.c ny_product_notifications.c ny_product_briefing.c
+         ny_product_eyes.c ny_product_device.c ny_product_media.c)
+  endif()
   if(CONFIG_NYABULA_CORE_EYE)
     list(APPEND NYABULA_CORE_DEPENDS nyabula_eye)
+  endif()
+  if(CONFIG_NYABULA_CORE_WEATHER)
+    list(APPEND NYABULA_CORE_SRCS ny_product_weather.c)
   endif()
 
   if(CONFIG_NYABULA_CORE_HTTP)
@@ -85,9 +107,23 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     SRCS
     ${NYABULA_CORE_SRCS}
     INCLUDE_DIRECTORIES
+    ${NYABULA_AGENT_INCLUDES}
     ${NYCORE_SQLITE_DIR}
     ${NUTTX_APPS_DIR}/crypto/libsodium/libsodium/src/libsodium/include
     ${NUTTX_APPS_DIR}/interpreters/wamr/wamr/core/iwasm/include
     DEPENDS
     ${NYABULA_CORE_DEPENDS})
+
+  if(CONFIG_NYABULA_CORE_WEB)
+    nuttx_add_application(NAME nyabula_web PRIORITY 100 STACKSIZE 16384
+      SRCS ny_web_main.c DEPENDS apps_nycore)
+    if(CONFIG_NYABULA_EYE_WS)
+      nuttx_add_application(NAME nyabula_eye_ws PRIORITY 100 STACKSIZE 16384
+        SRCS ny_eye_ws_compat_main.c DEPENDS apps_nycore)
+    endif()
+  endif()
+  if(CONFIG_NYABULA_CORE_AGENT)
+    nuttx_add_application(NAME nyabula_mcp PRIORITY 100 STACKSIZE 16384
+      SRCS ny_mcp_main.c DEPENDS apps_nycore)
+  endif()
 endif()
