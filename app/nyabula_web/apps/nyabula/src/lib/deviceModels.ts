@@ -62,7 +62,9 @@ export const MODEL_CATALOGUE: readonly ModelKindSpec[] = [
     source: 'MiniCPM5-1B，经 rkllm-toolkit 1.3.0 转成 W4A16 的 .rkllm',
     files: [
       { name: 'model.rkllm', label: '模型权重', required: true, aliases: [/\.rkllm$/], typicalBytes: 835 * MB },
-      { name: 'tokenizer/tokenizer.json', label: '分词器', required: false, aliases: [/^tokenizer\.json$/] },
+      /* Beside the model, not under tokenizer/: compute.llm.load looks for llm/tokenizer.json
+       * and fails before it moves the model when it is not there. */
+      { name: 'tokenizer.json', label: '分词器', required: true, aliases: [], typicalBytes: 9.5 * MB },
       { name: 'tokenizer/tokenizer_config.json', label: '分词器配置', required: false, aliases: [/^tokenizer_config\.json$/] },
       { name: 'tokenizer/chat_template.jinja', label: '对话模板', required: false, aliases: [/^chat_template\.jinja$/] },
       { name: 'tokenizer/special_tokens_map.json', label: '特殊符号表', required: false, aliases: [/^special_tokens_map\.json$/] },

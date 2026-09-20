@@ -4,6 +4,7 @@ import { MdButton, MdTextField } from '@nyabula/ui';
 import { useSessionStore } from '../../stores/session';
 import { useNyabotStore } from '../../stores/nyabot';
 import ModelRouterPanel from './ModelRouterPanel.vue';
+import LocalModelCard from './LocalModelCard.vue';
 import PersonaPanel from './PersonaPanel.vue';
 
 interface ModelConfig { host: string; path: string; port: string; model: string; keySet: boolean; canSave: boolean }
@@ -14,6 +15,10 @@ const form = reactive({ host: '', path: '/v1/chat/completions', port: '443', mod
 const busy = ref(false);
 const error = ref('');
 const applied = ref(false);
+/* The 本机模型 card and the router list show the same router slot from two sides:
+ * a change made in one is read again by the other. */
+const localChanged = ref(0);
+const routerChanged = ref(0);
 const dirty = computed(() => !!saved.value && (form.key !== '' || ['host', 'path', 'port', 'model'].some(
   key => form[key as keyof typeof form] !== saved.value?.[key as keyof ModelConfig])));
 function discard(): void {
@@ -68,7 +73,8 @@ watch([() => session.client, () => bot.status?.ready], () => { if (!dirty.value)
       </div>
       <p role="status">{{ busy ? '处理中' : dirty ? '未保存' : applied ? '已应用' : '设备配置' }}</p>
     </form>
-    <ModelRouterPanel />
+    <LocalModelCard :reload-key="routerChanged" @changed="localChanged++" />
+    <ModelRouterPanel :reload-key="localChanged" @changed="routerChanged++" />
     <PersonaPanel />
   </section>
 </template>

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
-import { MdButton, MdTextField, useDialogStore } from '@nyabula/ui';
+import { MdButton, MdTextField, UiIcon, useDialogStore } from '@nyabula/ui';
 import { useSessionStore } from '../../stores/session';
 import { useNyabotStore } from '../../stores/nyabot';
+import { isLocalBackend } from '../../lib/deviceCompute';
 
 interface Backend {
   index: number; host: string; path: string; port: string; model: string;
@@ -10,6 +11,9 @@ interface Backend {
   status: string; total_calls: number; total_failures: number; avg_latency_ms: number;
 }
 interface Router { profile: string; backends: Backend[] }
+/* reloadKey: the 本机模型 card changed the router from its side; `changed` tells it the same. */
+const props = defineProps<{ reloadKey?: number }>();
+const emit = defineEmits<{ (e: 'changed'): void }>();
 const session = useSessionStore();
 const bot = useNyabotStore();
 const dialog = useDialogStore();
@@ -36,11 +40,18 @@ async function request(action: string, data: Record<string, unknown> = {}): Prom
     state.value = result as unknown as Router;
     error.value = '';
     if (action === 'save') { editing.value = false; form.key = ''; }
+    if (action === 'save' || action === 'delete') emit('changed');
     await bot.refresh();
   } catch (cause) { if (client === session.client) error.value = String(cause); }
   finally { busy.value = false; }
 }
+/* The on-device model is a backend the firmware writes itself (host nyabula.local):
+ * shown here so the list is complete, managed in its own card. */
+function showLocalCard(): void {
+  document.getElementById('local-model')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
 function open(backend?: Backend): void {
+  if (backend && isLocalBackend(backend.host)) return;
   Object.assign(form, backend ? { ...backend, key: '' } : { index: freeSlot.value ?? 0,
     host: '', path: '/v1/chat/completions', port: '443', model: '', key: '', enabled: true, priority: 0, cost_tier: 1 });
   editing.value = true;
@@ -51,6 +62,7 @@ function payload(): Record<string, unknown> {
     priority: Number(form.priority), cost_tier: Number(form.cost_tier) };
 }
 async function remove(backend: Backend): Promise<void> {
+  if (isLocalBackend(backend.host)) return;
   if (!canChange.value || !await dialog.confirm('移除此后端及其密钥。其他后端和当前会话记录不受影响。',
     { title: '删除模型后端', danger: true, confirmText: '删除后端' })) return;
   await request('delete', { index: backend.index });
@@ -58,6 +70,7 @@ async function remove(backend: Backend): Promise<void> {
 watch([() => session.client, () => bot.status?.ready], () => {
   state.value = null; editing.value = false; form.key = ''; void request('get');
 }, { immediate: true });
+watch(() => props.reloadKey, () => void request('get'));
 </script>
 
 <template>
@@ -76,7 +89,18 @@ watch([() => session.client, () => bot.status?.ready], () => {
         </select>
       </label>
       <p v-if="!state.backends.length">尚未添加后端，当前使用单模型配置。</p>
-      <article v-for="backend in state.backends" :key="backend.index" class="backend">
+      <template v-for="backend in state.backends" :key="backend.index">
+      <article v-if="isLocalBackend(backend.host)" class="backend local">
+        <h4><span class="local-icon"><UiIcon name="cloud_off" :size="16" /></span>本机模型 · 槽位 {{ backend.index + 1 }}
+          <span class="tag info">离线 · 设备内置</span></h4>
+        <p class="mono">{{ backend.model }}</p>
+        <p>{{ statuses[backend.status] ?? backend.status }} · 无需密钥 · 优先级 {{ backend.priority }} · 费用档位 {{ backend.cost_tier }}（免费）</p>
+        <p>成功 {{ backend.total_calls }} · 失败 {{ backend.total_failures }} · 平滑延迟 {{ backend.avg_latency_ms }} ms（本次运行统计）</p>
+        <div class="actions">
+          <MdButton variant="text" @click="showLocalCard">在「本机模型」卡片中管理</MdButton>
+        </div>
+      </article>
+      <article v-else class="backend">
         <h4>{{ backend.model }} · 槽位 {{ backend.index + 1 }}</h4>
         <p>{{ backend.host }}:{{ backend.port }}{{ backend.path }}</p>
         <p>{{ statuses[backend.status] ?? backend.status }} · {{ backend.keySet ? '密钥已设置' : '未设置密钥' }} · 优先级 {{ backend.priority }} · 费用档位 {{ backend.cost_tier }}</p>
@@ -86,6 +110,7 @@ watch([() => session.client, () => bot.status?.ready], () => {
           <MdButton variant="text" :disabled="!canChange" @click="remove(backend)">删除模型后端</MdButton>
         </div>
       </article>
+      </template>
     </template>
     <form v-if="editing" class="router-editor" @submit.prevent="request('save', payload())">
       <h4>模型后端 · 槽位 {{ form.index + 1 }}</h4>
@@ -112,6 +137,8 @@ watch([() => session.client, () => bot.status?.ready], () => {
 <style scoped>
 .model-router { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--md-outline-variant); }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.backend h4 { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; }
+.local-icon { width: 26px; height: 26px; flex: none; border-radius: 8px; display: grid; place-items: center; background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
 .backend { padding: 12px 0; border-bottom: 1px solid var(--md-outline-variant); overflow-wrap: anywhere; }
 .router-editor { display: flex; flex-direction: column; gap: 16px; padding-top: 20px; }
 label { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 44px; }
