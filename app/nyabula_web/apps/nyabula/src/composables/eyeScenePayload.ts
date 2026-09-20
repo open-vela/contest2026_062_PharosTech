@@ -238,9 +238,11 @@ export function musicScene(m: { track: string; playing: boolean; elapsedMs: numb
   };
 }
 
-/** Only `speaker` and `mute` can be told apart from music.status today. */
-export function audioScene(a: { volume: number; muted: boolean; device: string }): ScenePayload {
-  return { percent: a.muted ? 0 : Math.min(100, Math.max(0, a.volume)), title: a.device || '播放输出', audio_route: a.muted ? 'mute' : 'speaker' };
+/** `route` and `title` come from audio.status (lib/audioControl); without them only
+ * `speaker` and `mute` can be told apart, which is all music.status knows. */
+export function audioScene(a: { volume: number; muted: boolean; device: string; route?: 'speaker' | 'headphones' | 'both' | 'mute'; title?: string }): ScenePayload {
+  const route = a.muted ? 'mute' : a.route ?? 'speaker';
+  return { percent: route === 'mute' ? 0 : Math.round(Math.min(100, Math.max(0, a.volume))), title: a.title || a.device || '播放输出', audio_route: route };
 }
 
 export function networkScene(n: { ssid: string | null; rssi: number | null; connected: boolean }): ScenePayload {
