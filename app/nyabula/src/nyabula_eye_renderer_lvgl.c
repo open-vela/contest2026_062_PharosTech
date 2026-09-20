@@ -752,6 +752,49 @@ static int text_width(struct nyabula_eye_renderer_s *r, const lv_font_t *font,
   return width;
 }
 
+/****************************************************************************
+ * Name: font_for_text
+ *
+ * Description:
+ *   One line, one table.  LVGL falls back glyph by glyph, which puts the
+ *   42 px words a table happens to hold next to 28 px ones from the table
+ *   behind it.  The line is given to the first table of the fallback chain
+ *   that has all of it instead; only when none does is the mixture accepted.
+ *
+ ****************************************************************************/
+
+static const lv_font_t *font_for_text(const lv_font_t *font, const char *text)
+{
+  const lv_font_t *candidate;
+
+  for (candidate = font; candidate != NULL; candidate = candidate->fallback)
+    {
+      lv_font_glyph_dsc_t descriptor;
+      uint32_t offset = 0;
+      bool complete = true;
+
+      while (complete && text[offset] != '\0')
+        {
+          uint32_t codepoint = utf8_next(text, &offset);
+
+          /* The table's own callback: lv_font_get_glyph_dsc() would walk
+           * the chain and always find something.
+           */
+
+          complete =
+              codepoint < 0x20 ||
+              candidate->get_glyph_dsc(candidate, &descriptor, codepoint, 0);
+        }
+
+      if (complete)
+        {
+          return candidate;
+        }
+    }
+
+  return font;
+}
+
 static void text_center_at(struct nyabula_eye_renderer_s *r,
                            const struct eye_s *e, const lv_font_t *font,
                            const char *text, float center_x, float center_y,
@@ -763,7 +806,7 @@ static void text_center_at(struct nyabula_eye_renderer_s *r,
   float screen_y;
   int width;
 
-  font = renderer_font(r, font);
+  font = font_for_text(renderer_font(r, font), text);
   width = text_width(r, font, text);
   to_screen(&e->t, center_x, center_y, &screen_x, &screen_y);
   area.x1 = lroundf(screen_x - width * 0.5f);
