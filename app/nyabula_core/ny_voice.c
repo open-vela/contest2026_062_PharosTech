@@ -470,8 +470,14 @@ static struct ny_voice_s g_voice =
   .eyes_wanted = -1,
   .settings =
   {
-    .enabled = false,
-    .wake_sensitivity = 50,
+    /* A robot that has to be switched on from a panel page that does not
+     * exist yet does not listen at all: it listens out of the box, and the
+     * owner can turn that off.  70 (threshold 0.06) is what the board has
+     * been run at since 50 was reported as hard to wake.
+     */
+
+    .enabled = true,
+    .wake_sensitivity = 70,
     .max_listen_ms = 8000,
     .reply_voice = CONFIG_NYABULA_CORE_VOICE_SPEAKER,
     .reply_speed = 100,
