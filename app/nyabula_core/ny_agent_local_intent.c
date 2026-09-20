@@ -235,6 +235,34 @@ static const char *const g_intent_discussion[] = {
   "聊聊",   "what is",  "why",    "how does", "do you think", "tell me about"
 };
 
+/* Somebody else's words, or something that already happened: "我昨天定了个
+ * 闹钟没响" and "她说：“把音量调到最大”" carry every cue of a command and ask
+ * for nothing.  Host tests found both setting timers and volumes.  Kept to
+ * markers that do not occur in an order: 之前 / 以前 / 刚才 are left out
+ * because "八点之前叫我" and "刚才那首歌再放一遍" are orders.
+ */
+
+static const char *const g_intent_narration[] = {
+  "昨天",      "昨晚",       "前天",      "上次",      "上回",    "上周",
+  "上个月",    "去年",       "定了",      "设了",      "他说",    "她说",
+  "他们说",    "她们说",     "妈妈说",    "爸爸说",    "老师说",  "有人说",
+  "别人说",    "说“",        "说：“",     "说:“",      "说\"",    "说「",
+  "yesterday", "last night", "last week", "last time", "he said", "she said",
+  "they said"
+};
+
+/* English questions about what a thing is.  The list cue "what" is wanted
+ * for "what alarms do i have" and must not turn "what is a timer" into a
+ * reading of the timer list.  "what is a" cannot match "what is an": the
+ * word has to end where the phrase does.
+ */
+
+static const char *const g_intent_definitions[] = {
+  "what is a",       "what is an",      "what's a", "what's an",
+  "what are timers", "what are alarms", "why",      "how does",
+  "do you think",    "tell me about"
+};
+
 static const char *const g_intent_trailing[] = {
   "。", ".",    "！",     "!",    "？",     "?",  "~",    "～",    "，",
   ",",  " ",    "吧",     "哦",   "啊",     "呀", "啦",   "哈",    "嘛",
@@ -332,6 +360,7 @@ static bool ny_intent_reminder(const struct ny_intent_view_s *view,
                                struct ny_agent_local_intent_s *intent);
 static bool ny_intent_reads(const char *text,
                             struct ny_agent_local_intent_s *intent);
+static bool ny_intent_narrated(const char *text);
 static void ny_intent_reset(struct ny_agent_local_intent_s *intent,
                             bool numerals);
 static void ny_intent_alarm_time(const struct ny_agent_local_intent_s *intent,
@@ -1129,18 +1158,33 @@ static bool ny_intent_task(const struct ny_intent_view_s *view,
     "一条",   "一项",     "一个",     "：",       ":",      "，",
     ",",      " ",        "是",       "为",       "叫",     "list"
   };
-  static const char *const fronts[] = { "把",   "将", "请", "帮我",
-                                        "给我", "，", ",",  " " };
+  static const char *const fronts[] = { "把", "将", "请", "帮我", "给我",
+                                        "，", ",",  " ",  "add ", "put " };
   static const char *const moves[] = { "添加到", "加到", "加进",  "加入",
                                        "放到",   "放进", "记到",  "记进",
                                        "写到",   "写进", "to my", "to the" };
+  char front[NY_AGENT_LOCAL_UTTERANCE_MAX];
   const char *text = view->lower;
   size_t size = 0;
   const char *noun =
       ny_intent_find(text, nouns, NY_INTENT_COUNT(nouns), &size);
+  const char *move = ny_intent_find(text, moves, NY_INTENT_COUNT(moves), NULL);
   if (!noun)
     return false;
-  if (NY_INTENT_ANY(text, g_intent_list_cues))
+
+  /* "把买牛奶加到待办列表里" and "add buy milk to my todo list" name the list
+   * as the place to put the item: the 列表 / list after the move is part of
+   * the noun, not a request to read it.  Only what stands before the move
+   * can still make it a question ("what did i add to my todo list").
+   */
+
+  front[0] = 0;
+  if (move && move < noun)
+    ny_agent_local_intent_copy(front, sizeof(front), text,
+                               (size_t)(move - text));
+  if (NY_INTENT_ANY(text, g_intent_definitions))
+    return false;
+  if (NY_INTENT_ANY(front[0] ? front : text, g_intent_list_cues))
     {
       intent->kind = NY_AGENT_LOCAL_TASK_LIST;
       intent->complete = true;
@@ -1153,8 +1197,6 @@ static bool ny_intent_task(const struct ny_intent_view_s *view,
                     intent->text, NY_INTENT_TITLE_MAX);
   if (strlen(intent->text) < 4)
     {
-      const char *move =
-          ny_intent_find(text, moves, NY_INTENT_COUNT(moves), NULL);
       intent->text[0] = 0;
       if (move && move < noun)
         ny_intent_extract(view, text, move, fronts, NY_INTENT_COUNT(fronts),
@@ -1174,7 +1216,8 @@ static bool ny_intent_lists(const char *text,
   static const char *const timers[] = { "计时器", "倒计时", "timers",
                                         "timer" };
   static const char *const alarms[] = { "闹钟", "alarms", "alarm" };
-  if (!NY_INTENT_ANY(text, g_intent_list_cues))
+  if (!NY_INTENT_ANY(text, g_intent_list_cues) ||
+      NY_INTENT_ANY(text, g_intent_definitions))
     return false;
   if (NY_INTENT_ANY(text, timers))
     intent->kind = NY_AGENT_LOCAL_TIMER_LIST;
@@ -1210,15 +1253,22 @@ static bool ny_intent_volume(const char *text,
                                          "小点声",       "小声些",
                                          "声音小点",     "quieter",
                                          "turn it down", "volume down" };
-  static const char *const higher[] = { "大一点", "大一些",  "大点", "调高",
-                                        "调大",   "高一点",  "高点", "响一点",
-                                        "响点",   "加大",    "增大", "提高",
-                                        "太小",   "turn up", "up" };
-  static const char *const lower[] = {
-    "小一点", "小一些", "小点",      "调低", "调小", "低一点",
-    "低点",   "轻一点", "轻点",      "减小", "降低", "太大",
-    "太响",   "太吵",   "turn down", "down"
-  };
+  /* 增加 / 减少 / 加 / 减 are directions too: without them "音量增加10" fell
+   * through to the absolute rule and set the level to 10.  They are read
+   * only next to 音量 / 声音, and after the 到 / 成 targets have had their
+   * turn, so "把声音加到80" stays an absolute 80.
+   */
+
+  static const char *const higher[] = { "大一点", "大一些", "大点", "调高",
+                                        "调大",   "高一点", "高点", "响一点",
+                                        "响点",   "加大",   "增大", "提高",
+                                        "增加",   "加",     "太小", "turn up",
+                                        "up" };
+  static const char *const lower[] = { "小一点",    "小一些", "小点", "调低",
+                                       "调小",      "低一点", "低点", "轻一点",
+                                       "轻点",      "减小",   "降低", "减少",
+                                       "减",        "太大",   "太响", "太吵",
+                                       "turn down", "down" };
   static const char *const targets[] = { "到",      "成",   "为",   "至",
                                          "%",       "％",   "百分", "最大",
                                          "最小",    "最高", "最低", "一半",
@@ -1228,6 +1278,7 @@ static bool ny_intent_volume(const char *text,
   static const char *const deltas[] = { "增加", "减少", "提高", "降低",
                                         "调高", "调低", "调大", "调小",
                                         "加",   "减",   "by" };
+  static const char *const asks[] = { "多少", "how loud", "how high" };
   size_t size = 0;
   const char *sound =
       ny_intent_find(text, sounds, NY_INTENT_COUNT(sounds), &size);
@@ -1241,6 +1292,8 @@ static bool ny_intent_volume(const char *text,
     intent->kind = NY_AGENT_LOCAL_UNMUTE;
   else if (NY_INTENT_ANY(text, mute))
     intent->kind = NY_AGENT_LOCAL_MUTE;
+  else if (NY_INTENT_ANY(text, asks))
+    return false; /* "音量最大是多少" asks; it set the level to 100 */
   else if (sound && NY_INTENT_ANY(text, targets) &&
            ny_intent_percent(text, sound + size, NY_AGENT_LOCAL_TEXT_MAX,
                              &intent->percent))
@@ -1310,12 +1363,18 @@ static bool ny_intent_schedule(const struct ny_intent_view_s *view,
   static const char *const weekdays[] = { "工作日", "weekdays" };
   static const char *const weekend[] = { "周末", "weekends", "weekend" };
   static const char *const far[] = {
-    "后天",     "下周",   "下星期",  "下个星期",  "下礼拜",   "下个月",
-    "明年",     "周一",   "周二",    "周三",      "周四",     "周五",
-    "周六",     "周日",   "周天",    "星期",      "礼拜",     "号",
-    "月",       "monday", "tuesday", "wednesday", "thursday", "friday",
-    "saturday", "sunday"
+    "后天",    "下周",      "下星期",   "下个星期", "下礼拜",   "下个月",
+    "明年",    "周一",      "周二",     "周三",     "周四",     "周五",
+    "周六",    "周日",      "周天",     "星期",     "礼拜",     "monday",
+    "tuesday", "wednesday", "thursday", "friday",   "saturday", "sunday"
   };
+
+  /* 号 and 月 are a date only behind a number (三月, 5号).  Anywhere else
+   * they are ordinary words, and "晚上十点提醒我看月亮" was refused as an
+   * alarm for a far day.
+   */
+
+  static const char *const dates[] = { "号", "月" };
   static const char *const mornings[] = { "起床", "早饭", "早餐",   "上班",
                                           "上学", "晨跑", "morning" };
   static const char *const evenings[] = { "晚饭", "晚餐", "下班", "下午茶" };
@@ -1340,10 +1399,15 @@ static bool ny_intent_schedule(const struct ny_intent_view_s *view,
       verb = true;
   verb = verb || strstr(text, "倒计时") != NULL;
 
+  /* 过十分钟提醒我 says "in ten minutes" with the 过 in front and no 后
+   * behind; without it the sentence became a to-do that never rings.
+   */
+
   if (duration &&
       (timer || alarm ||
        (remind && (ny_intent_unit(span_end, afters, NY_INTENT_COUNT(afters)) ||
-                   (span - text >= 3 && ny_intent_starts(span - 3, "in "))))))
+                   (span - text >= 3 && (ny_intent_starts(span - 3, "in ") ||
+                                         ny_intent_starts(span - 3, "过")))))))
     {
       intent->kind = NY_AGENT_LOCAL_TIMER;
       intent->complete = intent->seconds <= NY_INTENT_TIMER_MAX;
@@ -1386,7 +1450,14 @@ static bool ny_intent_schedule(const struct ny_intent_view_s *view,
   else if (NY_INTENT_ANY(text, weekend))
     intent->repeat = 0x41;
   else
-    intent->far_date = NY_INTENT_ANY(text, far);
+    {
+      intent->far_date = NY_INTENT_ANY(text, far);
+      for (size_t i = 0; i < NY_INTENT_COUNT(dates); i++)
+        for (const char *hit = text; (hit = strstr(hit, dates[i])) != NULL;
+             hit += strlen(dates[i]))
+          if (ny_intent_numeral_before(text, hit))
+            intent->far_date = true;
+    }
 
   /* A date the alarm record cannot hold is not something to guess at. */
 
@@ -1579,7 +1650,12 @@ static bool ny_intent_reads(const char *text,
                                         "外面",     "今晚", "会不会",
                                         "要不要",   "出门", "today",
                                         "tomorrow", "now",  "outside" };
-  static const char *const taste[] = { "喜欢", "讨厌", "like" };
+  /* A bare "like" also turned "what's the weather like" away, which is the
+   * usual way to ask in English; only liking something is a matter of taste.
+   */
+
+  static const char *const taste[] = { "喜欢",     "讨厌",   "i like",
+                                       "you like", "i love", "i hate" };
   static const char *const status[] = {
     "设备状态", "系统状态",      "运行状态",      "你的状态",   "内存",
     "存储空间", "剩余空间",      "磁盘",          "运行了多久", "开机多久",
@@ -1601,6 +1677,23 @@ static bool ny_intent_reads(const char *text,
   else
     return false;
   return true;
+}
+
+/****************************************************************************
+ * Name: ny_intent_narrated
+ * Description: The sentence tells of a command instead of giving one.
+ *
+ *   What follows 提醒我 is the owner's own label and may say anything:
+ *   "十分钟后提醒我交昨天的作业" is still an order.
+ ****************************************************************************/
+
+static bool ny_intent_narrated(const char *text)
+{
+  const char *mark = ny_intent_find(text, g_intent_narration,
+                                    NY_INTENT_COUNT(g_intent_narration), NULL);
+  const char *remind = ny_intent_find(text, g_intent_remind,
+                                      NY_INTENT_COUNT(g_intent_remind), NULL);
+  return mark != NULL && !(remind != NULL && remind < mark);
 }
 
 /****************************************************************************
@@ -1664,6 +1757,9 @@ void ny_agent_local_intent_detect(const char *utterance,
    * actions unless the sentence is an opinion question, then plain reads.
    * A rule that declines may have scribbled on the slots, so each one
    * starts from a clean intent.
+   *
+   * A narrated sentence keeps music and the face: "播放昨天那首歌" is an
+   * order, and neither of them writes a record.
    */
 
 #define NY_INTENT_TRY(rule) (ny_intent_reset(intent, numerals), (rule))
@@ -1671,11 +1767,14 @@ void ny_agent_local_intent_detect(const char *utterance,
           NY_INTENT_TRY(ny_intent_task(&view, intent)) ||
           NY_INTENT_TRY(ny_intent_lists(lower, intent));
   if (!found && !NY_INTENT_ANY(lower, g_intent_discussion))
-    found = NY_INTENT_TRY(ny_intent_volume(lower, intent)) ||
-            NY_INTENT_TRY(ny_intent_schedule(&view, intent)) ||
-            NY_INTENT_TRY(ny_intent_music(&view, intent)) ||
-            NY_INTENT_TRY(ny_intent_face(lower, intent)) ||
-            NY_INTENT_TRY(ny_intent_reminder(&view, intent));
+    {
+      bool told = ny_intent_narrated(lower);
+      found = (!told && (NY_INTENT_TRY(ny_intent_volume(lower, intent)) ||
+                         NY_INTENT_TRY(ny_intent_schedule(&view, intent)))) ||
+              NY_INTENT_TRY(ny_intent_music(&view, intent)) ||
+              NY_INTENT_TRY(ny_intent_face(lower, intent)) ||
+              (!told && NY_INTENT_TRY(ny_intent_reminder(&view, intent)));
+    }
   if (!found)
     found = NY_INTENT_TRY(ny_intent_reads(lower, intent));
 #undef NY_INTENT_TRY
@@ -1874,6 +1973,18 @@ int ny_agent_local_intent_track(const cJSON *library, const char *hint,
 {
   const cJSON *item;
   bool any = false;
+  char wanted[NY_AGENT_LOCAL_TEXT_MAX];
+
+  /* The hint is the owner's own spelling ("Play some Jazz" gives "Jazz").
+   * Folding only the file name meant a capital in the hint never matched.
+   */
+
+  ny_agent_local_intent_copy(wanted, sizeof(wanted), hint ? hint : "",
+                             hint ? strlen(hint) : 0);
+  for (char *p = wanted; *p; p++)
+    if (*p >= 'A' && *p <= 'Z')
+      *p = (char)(*p + 32);
+  hint = wanted;
   cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(library, "items"))
   {
     char lower[256];
@@ -1886,7 +1997,7 @@ int ny_agent_local_intent_track(const cJSON *library, const char *hint,
     for (size_t i = 0; i <= length; i++)
       lower[i] =
           file[i] >= 'A' && file[i] <= 'Z' ? (char)(file[i] + 32) : file[i];
-    if (!hint || !hint[0] || strstr(lower, hint))
+    if (!hint[0] || strstr(lower, hint))
       {
         memcpy(name, file, length + 1);
         return 0;
@@ -2190,7 +2301,13 @@ static void ny_intent_civil(int64_t seconds, int *year, int *month, int *day,
 
 static void ny_intent_span(double seconds, char *out, size_t size)
 {
-  unsigned long total = seconds < 0 ? 0 : (unsigned long)(seconds + 0.5);
+  /* A missing field arrives here as NaN and a wild one as 1e300; casting
+   * either is undefined, so they are settled first.  4e9 fits 32 bits.
+   */
+
+  unsigned long total = !(seconds > 0)  ? 0
+                        : seconds > 4e9 ? 4000000000ul
+                                        : (unsigned long)(seconds + 0.5);
   unsigned long hours = total / 3600;
   unsigned long minutes = total % 3600 / 60;
   unsigned long rest = total % 60;
@@ -2247,7 +2364,13 @@ static void ny_intent_attempt(const char *tool, const cJSON *call, char *out,
       for (size_t i = 0; i < NY_INTENT_COUNT(g_intent_expressions); i++)
         if (!strcmp(name, g_intent_expressions[i].word))
           label = g_intent_expressions[i].expression;
-      snprintf(out, size, "把表情换成“%s”", label);
+
+      /* Another backend's call may name anything at any length; bounded
+       * here so that snprintf never cuts it inside a character.
+       */
+
+      ny_agent_local_intent_copy(piece, sizeof(piece), label, strlen(label));
+      snprintf(out, size, "把表情换成“%s”", piece);
     }
   else if (!strcmp(topic, "timer.create"))
     {
@@ -2261,11 +2384,13 @@ static void ny_intent_attempt(const char *tool, const cJSON *call, char *out,
   else if (!strcmp(topic, "alarm.create"))
     {
       const char *label = ny_intent_text(record, "label");
+      const char *time = ny_intent_text(record, "time");
+      char hhmm[9]; /* "HH:MM", bounded: the call may be somebody else's */
       int days = cJSON_GetArraySize(
           cJSON_GetObjectItemCaseSensitive(record, "repeat"));
       ny_agent_local_intent_copy(piece, sizeof(piece), label, strlen(label));
-      snprintf(out, size, "创建 %s 的%s闹钟%s%s%s",
-               ny_intent_text(record, "time"),
+      ny_agent_local_intent_copy(hhmm, sizeof(hhmm), time, strlen(time));
+      snprintf(out, size, "创建 %s 的%s闹钟%s%s%s", hhmm,
                days == 7  ? "每天重复"
                : days > 0 ? "按周重复"
                           : "",
@@ -2299,10 +2424,20 @@ static void ny_intent_attempt(const char *tool, const cJSON *call, char *out,
     snprintf(out, size, "继续播放");
   else if (!strcmp(topic, "music.stop"))
     snprintf(out, size, "停止播放");
-  else if (!strcmp(tool, "nyabula_read"))
-    snprintf(out, size, "读取 %.48s", topic);
   else
-    snprintf(out, size, "执行 %.48s %.48s", tool, topic);
+    {
+      /* "%.48s" counts bytes: it cut a Chinese topic inside a character and
+       * the fact stopped being UTF-8 (host fuzz).  Cut between characters.
+       */
+
+      char name[49];
+      ny_agent_local_intent_copy(name, sizeof(name), tool, strlen(tool));
+      ny_agent_local_intent_copy(piece, 49, topic, strlen(topic));
+      if (!strcmp(tool, "nyabula_read"))
+        snprintf(out, size, "读取 %s", piece);
+      else
+        snprintf(out, size, "执行 %s %s", name, piece);
+    }
 }
 
 /****************************************************************************
@@ -2363,9 +2498,11 @@ static void ny_intent_fact_read(const char *topic, const cJSON *result,
       int hour;
       int minute;
       double unix_ms = ny_intent_value(result, "unix_ms");
+      /* Year 1970 to 9999: outside it the conversion below overflows. */
+
       if (!cJSON_IsTrue(
               cJSON_GetObjectItemCaseSensitive(result, "clock_valid")) ||
-          !isfinite(unix_ms))
+          !(unix_ms >= 0 && unix_ms < 253402300800000.0))
         {
           snprintf(fact, size, "设备的时钟还没有校准，现在不知道准确时间");
           return;
@@ -2423,8 +2560,9 @@ static void ny_intent_fact_read(const char *topic, const cJSON *result,
           continue;
         const char *ssid = ny_intent_text(row, "ssid");
         ny_agent_local_intent_copy(piece, 33, ssid, strlen(ssid));
-        used += snprintf(fact + used, size - used, "，网络 %s %.20s", piece,
-                         address);
+        ny_agent_local_intent_copy(list, 21, address, strlen(address));
+        used +=
+            snprintf(fact + used, size - used, "，网络 %s %s", piece, list);
         break;
       }
     }
@@ -2472,13 +2610,17 @@ static void ny_intent_fact_read(const char *topic, const cJSON *result,
           used += snprintf(list + used, sizeof(list) - used, "%s%s",
                            shown ? "；" : "", piece);
         else
-          used += snprintf(
-              list + used, sizeof(list) - used, "%s%.5s%s%s%s",
-              shown ? "；" : "", ny_intent_text(row, "time"),
-              piece[0] ? " " : "", piece,
-              cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(row, "enabled"))
-                  ? ""
-                  : "（已关闭）");
+          {
+            char hhmm[6]; /* "HH:MM", cut between characters if it is not */
+            const char *time = ny_intent_text(row, "time");
+            ny_agent_local_intent_copy(hhmm, sizeof(hhmm), time, strlen(time));
+            used += snprintf(
+                list + used, sizeof(list) - used, "%s%s%s%s%s",
+                shown ? "；" : "", hhmm, piece[0] ? " " : "", piece,
+                cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(row, "enabled"))
+                    ? ""
+                    : "（已关闭）");
+          }
         shown++;
       }
       if (count == 0)
@@ -2530,9 +2672,11 @@ bool ny_agent_local_intent_fact(const char *tool, const char *arguments,
       if (uncertain)
         snprintf(fact, size, "%s：结果不确定，需要主人自己确认一下", attempt);
       else
+        /* Not isfinite(): a finite 1e300 does not fit an int either. */
+
         snprintf(fact, size, "%s没有成功：%s", attempt,
-                 ny_intent_reason(isfinite(error) ? (int)error : -EIO, reason,
-                                  sizeof(reason)));
+                 ny_intent_reason(fabs(error) <= 1000000 ? (int)error : -EIO,
+                                  reason, sizeof(reason)));
     }
   else if (read && cJSON_IsObject(outcome))
     ny_intent_fact_read(ny_intent_text(call, "topic"), outcome,
@@ -2564,7 +2708,9 @@ bool ny_agent_local_intent_fact(const char *tool, const char *arguments,
   if (fact[0] == 0)
     {
       size_t length = result ? strlen(result) : 0;
-      int used = snprintf(fact, size, "工具 %.32s 返回：", tool);
+      int used;
+      ny_agent_local_intent_copy(reason, 33, tool, strlen(tool));
+      used = snprintf(fact, size, "工具 %s 返回：", reason);
       if ((size_t)used < size)
         ny_agent_local_intent_copy(fact + used,
                                    size - used > NY_AGENT_LOCAL_RAW_MAX + 1
