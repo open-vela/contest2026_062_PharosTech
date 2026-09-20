@@ -929,6 +929,173 @@ static int test_blob_request_header(void)
   return 0;
 }
 
+static void nyamp_put_test_le32(uint8_t *dest, uint32_t value)
+{
+  dest[0] = (uint8_t)value;
+  dest[1] = (uint8_t)(value >> 8);
+  dest[2] = (uint8_t)(value >> 16);
+  dest[3] = (uint8_t)(value >> 24);
+}
+
+static int test_llm_chat_chunks(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  uint8_t body[NYAMP_LLM_CHAT_MAX_CHUNK];
+  size_t size = 0;
+  const uint8_t *bytes = NULL;
+  struct nyamp_llm_chat_s chunk = {
+    .total = 1000,
+    .offset = 436,
+    .length = 436,
+    .max_new_tokens = 256,
+    .flags = NYAMP_LLM_CHAT_GUARD_UNTRUSTED | NYAMP_LLM_CHAT_STREAM_TOKENS,
+  };
+  struct nyamp_llm_chat_s out;
+  unsigned int index;
+
+  for (index = 0; index < sizeof(body); index++)
+    {
+      body[index] = (uint8_t)(index * 7 + 3);
+    }
+
+  /* The largest chunk exactly fills one RPMsg payload. */
+  CHECK(NYAMP_LLM_CHAT_MAX_CHUNK == 436);
+  CHECK(nyamp_llm_chat_encode(payload, sizeof(payload), &size, &chunk, body) ==
+        NYAMP_OK);
+  CHECK(size == NYAMP_INLINE_MAX);
+  CHECK(nyamp_llm_chat_decode(&out, &bytes, payload, size) == NYAMP_OK);
+  CHECK(out.total == 1000 && out.offset == 436 && out.length == 436 &&
+        out.max_new_tokens == 256 && out.flags == chunk.flags);
+  CHECK(bytes == payload + NYAMP_LLM_CHAT_HEADER_SIZE &&
+        memcmp(bytes, body, 436) == 0);
+
+  /* One byte short or long of the declared length is refused. */
+  CHECK(nyamp_llm_chat_decode(&out, &bytes, payload, size - 1) ==
+        NYAMP_EMSGSIZE);
+  chunk.length = 100;
+  CHECK(nyamp_llm_chat_encode(payload, sizeof(payload), &size, &chunk, body) ==
+        NYAMP_OK);
+  CHECK(nyamp_llm_chat_decode(&out, &bytes, payload, size + 1) ==
+        NYAMP_EMSGSIZE);
+  CHECK(nyamp_llm_chat_decode(&out, &bytes, payload, 19) == NYAMP_EMSGSIZE);
+
+  /* A chunk must lie inside the body it claims to belong to. */
+  chunk.offset = 950;
+  CHECK(nyamp_llm_chat_encode(payload, sizeof(payload), &size, &chunk, body) ==
+        NYAMP_EINVAL);
+  chunk.offset = 0;
+  chunk.length = 0;
+  CHECK(nyamp_llm_chat_encode(payload, sizeof(payload), &size, &chunk, body) ==
+        NYAMP_EINVAL);
+  chunk.length = NYAMP_LLM_CHAT_MAX_CHUNK + 1;
+  CHECK(nyamp_llm_chat_encode(payload, sizeof(payload), &size, &chunk, body) ==
+        NYAMP_EINVAL);
+  chunk.length = 10;
+  chunk.total = NYAMP_LLM_CHAT_MAX_BODY + 1;
+  CHECK(nyamp_llm_chat_encode(payload, sizeof(payload), &size, &chunk, body) ==
+        NYAMP_EINVAL);
+  chunk.total = NYAMP_LLM_CHAT_MAX_BODY;
+  chunk.offset = NYAMP_LLM_CHAT_MAX_BODY - 10;
+  CHECK(nyamp_llm_chat_encode(payload, sizeof(payload), &size, &chunk, body) ==
+        NYAMP_OK);
+
+  /* An offset near UINT32_MAX must not wrap the bounds check. */
+  nyamp_put_test_le32(payload + 0, 100);
+  nyamp_put_test_le32(payload + 4, 0xfffffff0U);
+  nyamp_put_test_le32(payload + 8, 0x20);
+  CHECK(nyamp_llm_chat_decode(&out, &bytes, payload,
+                              NYAMP_LLM_CHAT_HEADER_SIZE + 0x20) ==
+        NYAMP_EPROTO);
+
+  /* No flag outside the defined set means anything. */
+  chunk.offset = 0;
+  chunk.total = 10;
+  chunk.flags = 4;
+  CHECK(nyamp_llm_chat_encode(payload, sizeof(payload), &size, &chunk, body) ==
+        NYAMP_EINVAL);
+  chunk.flags = 0;
+  CHECK(nyamp_llm_chat_encode(payload, sizeof(payload), &size, &chunk, body) ==
+        NYAMP_OK);
+  payload[16] = 0x80;
+  CHECK(nyamp_llm_chat_decode(&out, &bytes, payload, size) == NYAMP_EPROTO);
+  return 0;
+}
+
+static int test_llm_chat_result_and_finish(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  uint8_t body[NYAMP_LLM_RESULT_MAX_CHUNK];
+  size_t size = 0;
+  const uint8_t *bytes = NULL;
+  struct nyamp_llm_result_s chunk = { .total = 2000, .offset = 1556,
+                                      .length = 444 };
+  struct nyamp_llm_result_s out;
+  struct nyamp_llm_chat_finish_s finish = {
+    .status = NYAMP_MODEL_PROMPT_TOO_LONG,
+    .sequence = 0,
+    .prompt_tokens = 1900,
+    .completion_tokens = 0,
+    .prefill_ms = 0,
+    .decode_ms = 0,
+    .context_limit = 2048,
+  };
+  struct nyamp_llm_chat_finish_s finish_out;
+  int32_t generate_status = 0;
+  uint32_t sequence = 0;
+
+  memset(body, 0x5a, sizeof(body));
+  CHECK(NYAMP_LLM_RESULT_MAX_CHUNK == 444);
+  CHECK(nyamp_llm_result_encode(payload, sizeof(payload), &size, &chunk,
+                                body) == NYAMP_OK);
+  CHECK(size == NYAMP_INLINE_MAX);
+  CHECK(nyamp_llm_result_decode(&out, &bytes, payload, size) == NYAMP_OK);
+  CHECK(out.total == 2000 && out.offset == 1556 && out.length == 444 &&
+        bytes[0] == 0x5a && bytes[443] == 0x5a);
+
+  chunk.offset = 1557;
+  CHECK(nyamp_llm_result_encode(payload, sizeof(payload), &size, &chunk,
+                                body) == NYAMP_EINVAL);
+  CHECK(nyamp_llm_result_decode(&out, &bytes, payload, size - 1) ==
+        NYAMP_EMSGSIZE);
+  payload[0] = 0;
+  payload[1] = 0;
+  CHECK(nyamp_llm_result_decode(&out, &bytes, payload, size) == NYAMP_EPROTO);
+
+  /* The overflow status travels with the two numbers the caller needs to
+   * trim its history, and stays disjoint from every older status.
+   */
+  CHECK(NYAMP_MODEL_PROMPT_TOO_LONG == -11);
+  CHECK(nyamp_llm_chat_finish_encode(payload, sizeof(payload), &size,
+                                     &finish) == NYAMP_OK);
+  CHECK(size == NYAMP_LLM_CHAT_FINISH_SIZE);
+  CHECK(nyamp_llm_chat_finish_decode(&finish_out, payload, size) == NYAMP_OK);
+  CHECK(finish_out.status == NYAMP_MODEL_PROMPT_TOO_LONG &&
+        finish_out.prompt_tokens == 1900 && finish_out.context_limit == 2048);
+
+  finish.status = NYAMP_MODEL_OK;
+  finish.prompt_tokens = 1093;
+  finish.completion_tokens = 17;
+  finish.prefill_ms = 4100;
+  finish.decode_ms = 1250;
+  CHECK(nyamp_llm_chat_finish_encode(payload, sizeof(payload), &size,
+                                     &finish) == NYAMP_OK);
+  CHECK(nyamp_llm_chat_finish_decode(&finish_out, payload, size) == NYAMP_OK);
+  CHECK(memcmp(&finish, &finish_out, sizeof(finish)) == 0);
+
+  /* The two finish layouts must never be taken for each other: a GENERATE
+   * client reading a CHAT finish (or the reverse) gets an error, not a
+   * status that happens to be zero.
+   */
+  CHECK(nyamp_llm_finish_decode(&generate_status, &sequence, payload, size) ==
+        NYAMP_EPROTO);
+  CHECK(nyamp_llm_chat_finish_decode(&finish_out, payload,
+                                     NYAMP_LLM_FINISH_SIZE) ==
+        NYAMP_EMSGSIZE);
+  CHECK(nyamp_llm_chat_finish_decode(&finish_out, payload, size + 1) ==
+        NYAMP_EPROTO);
+  return 0;
+}
+
 int main(void)
 {
   if (test_round_trip() != 0 || test_rejections() != 0 ||
@@ -939,7 +1106,8 @@ int main(void)
       test_status_prefix() != 0 || test_blob_names() != 0 ||
       test_blob_open() != 0 || test_blob_read_close() != 0 ||
       test_blob_list() != 0 || test_blob_bench_and_reports() != 0 ||
-      test_blob_request_header() != 0)
+      test_blob_request_header() != 0 || test_llm_chat_chunks() != 0 ||
+      test_llm_chat_result_and_finish() != 0)
     {
       return 1;
     }
