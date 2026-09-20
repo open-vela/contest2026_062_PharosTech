@@ -204,15 +204,20 @@ static int nyamp_shmem_probe(struct platform_device *pdev)
    */
   writel(NYAMP_ARENA_TRACE_MAPPED, shmem->base + NYAMP_ARENA_TRACE_OFFSET);
 
-  magic = readl(shmem->base);
-
-  /* A foreign magic means this address belongs to something else.  Refusing
-   * is the only safe response: overwriting it would corrupt whatever is there.
+  /* Claim unconditionally.  The device tree hands this region to this driver
+   * alone, so whatever the header holds is either DRAM left over from power
+   * on -- seen on the board as 0xffffffff, which an earlier "refuse a foreign
+   * magic" check took for another owner and so never claimed the region -- or
+   * a header from before a warm reset, whose generation no longer matches
+   * this boot.  Neither is worth preserving, and probe runs once per boot, so
+   * there is no live claim to trample.
+   *
+   * The magic goes in last: the control domain polls it, and must not see a
+   * valid magic in front of a size or generation that is still stale.
    */
   if (magic != 0 && magic != NYAMP_SHMEM_MAGIC)
     {
-      dev_err(&pdev->dev, "unexpected arena magic %#x\n", magic);
-      return -EINVAL;
+      dev_info(&pdev->dev, "replacing stale arena magic %#x\n", magic);
     }
 
   if (magic == 0)
