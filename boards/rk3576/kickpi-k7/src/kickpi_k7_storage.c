@@ -70,6 +70,7 @@
  * provisioned while having nowhere to put a model.
  */
 #define KICKPI_K7_STORAGE_CONFIG_PART "config"
+#define KICKPI_K7_STORAGE_DATA_SCORE  100
 
 /****************************************************************************
  * Private Types
@@ -157,7 +158,7 @@ static int kickpi_k7_storage_partition_score(FAR const char *name)
 {
   if (strcasecmp(name, "data") == 0)
     {
-      return 100;
+      return KICKPI_K7_STORAGE_DATA_SCORE;
     }
 
   if (strcasecmp(name, "userdata") == 0)
@@ -505,11 +506,42 @@ static int kickpi_k7_storage_mount(FAR struct kickpi_k7_storage_media_s *media)
 
   while ((candidate = kickpi_k7_storage_best_candidate(media)) != NULL)
     {
+      bool labelled_data = candidate->score == KICKPI_K7_STORAGE_DATA_SCORE;
+
       candidate->score = -1;
       if (mount(candidate->path, mountpoint, fstype, 0, NULL) == 0)
         {
           source = candidate->path;
           goto mounted;
+        }
+
+      /* The bulk store is initialised on the board, not by an image: a
+       * filesystem written from a host is as large as the image was, not
+       * as large as the partition, and the partition is where the models
+       * go.  So a partition labelled "data" that has never been written
+       * gets a filesystem of its full size here.  Only a blank one: a
+       * volume that fails to mount for any other reason may still hold
+       * something its owner wants back.
+       */
+
+      if (labelled_data && !media->removable &&
+          kickpi_k7_storage_partition_is_blank(candidate->path))
+        {
+          syslog(LOG_INFO,
+                 "INFO: storage: %s is unformatted, creating a "
+                 "filesystem\n",
+                 candidate->path);
+          if (kickpi_k7_storage_format(candidate->path) == 0 &&
+              mount(candidate->path, mountpoint, fstype, 0, NULL) == 0)
+            {
+              source = candidate->path;
+              goto mounted;
+            }
+
+          syslog(LOG_WARNING,
+                 "WARNING: storage: could not create a "
+                 "filesystem on %s\n",
+                 candidate->path);
         }
     }
 
