@@ -6,6 +6,8 @@
  *   PUT /models/upload   resumable upload in 8 MiB pieces (stores/modelUploads)
  *   models.verify  hash a file on the device again, progress via models.status
  *   models.delete  a file, an unfinished upload of it, and their records
+ *   compute.status who uses these files: the compute domain, and what it is
+ *                  pulling out of /data/models right now (composables/useComputeStatus)
  *
  * The catalogue of expected names is the panel's (lib/deviceModels); the device
  * only knows kinds and file names. The models are third-party files the owner
@@ -18,6 +20,8 @@ import {
   fmtDuration, groupModels, parseModelsList, parseModelsStatus, verifyFailureText,
   type ModelGroup, type ModelKind, type ModelRow, type ModelsStatus,
 } from '../../../lib/deviceModels';
+import { blobPercent, capabilityLabel, llmStatusText, llmStatusTone, transferText } from '../../../lib/deviceCompute';
+import { useComputeStatus } from '../../../composables/useComputeStatus';
 import { useModelUploadsStore, type UploadTask } from '../../../stores/modelUploads';
 import FileDropZone from '../../../components/FileDropZone.vue';
 import { useDeviceTopic } from './deviceTopic';
@@ -39,6 +43,24 @@ const usedPercent = computed(() => {
 });
 const modelBytes = computed(() => groups.value.reduce((sum, g) => sum + g.bytes, 0));
 const refused = ref<string[]>([]);
+
+/* ---- compute domain ---- */
+
+const compute = useComputeStatus();
+const computeStatus = computed(() => compute.status.value);
+const computeLink = computed(() => {
+  const c = computeStatus.value;
+  if (!c) return { text: '—', tone: 'info' };
+  if (c.linked) return { text: '已连接', tone: 'ok' };
+  return c.running ? { text: '未连接 · 正在启动', tone: 'warn' } : { text: '未连接 · 没有运行', tone: 'err' };
+});
+/** What the compute domain is pulling in, in words; '' when it is idle. */
+const computeTransfer = computed(() => {
+  const b = computeStatus.value?.blob;
+  if (!b || (!b.active && !b.hashing)) return '';
+  const name = b.name || '文件';
+  return b.active ? transferText(b, `正在把「${name}」搬入计算域`) : `正在核对「${name}」的内容，随后搬入计算域…`;
+});
 
 /** Why nothing can be uploaded from this page, or ''. Read at render time:
  *  the stored token is not reactive. */
@@ -241,6 +263,36 @@ onBeforeUnmount(() => {
         </template>
       </MdCard>
 
+      <MdCard title="计算域">
+        <EmptyState v-if="compute.unsupported.value" compact icon="computer" title="此固件没有计算域"
+          hint="这是普通的单系统固件：模型文件可以照常上传和保存，但要刷入带计算域（AMP）的固件，设备才会用它们在 NPU 上运行本机模型。这不是故障。" />
+        <Skeleton v-else-if="!computeStatus && !compute.failed.value" :lines="2" />
+        <EmptyState v-else-if="!computeStatus" compact icon="computer" title="读取计算域状态失败" hint="设备未响应 compute.status" action-text="重试" @action="compute.refresh()" />
+        <template v-else>
+          <div class="compute-head">
+            <span class="space-icon"><UiIcon :name="computeStatus.linked ? 'link' : 'link_off'" :size="20" /></span>
+            <div class="space-id">
+              <div class="space-free">计算域 <span class="tag" :class="computeLink.tone">{{ computeLink.text }}</span></div>
+              <div class="muted compute-sub">运行模型的 Linux 一侧；上传完成的文件由它按需从这里取走</div>
+            </div>
+          </div>
+          <div class="caps" aria-label="计算域能力">
+            <span v-for="c in computeStatus.capabilities" :key="c" class="cap" :title="c">{{ capabilityLabel(c) }}<span class="mono cap-id">{{ c }}</span></span>
+            <span v-if="!computeStatus.capabilities.length" class="muted line">{{ computeStatus.linked ? '计算域没有报告任何能力' : '连接后显示能力' }}</span>
+          </div>
+          <div v-if="computeTransfer" class="compute-transfer" role="status">
+            <div class="bar" :class="{ busy: !computeStatus.blob.active || computeStatus.blob.size <= 0 }" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+              :aria-valuenow="blobPercent(computeStatus.blob)" aria-label="计算域搬运进度"><span :style="{ width: blobPercent(computeStatus.blob) + '%' }" /></div>
+            <p class="line task-text">{{ computeTransfer }}<template v-if="computeStatus.blob.active && computeStatus.blob.size"> · {{ fmtBytes(computeStatus.blob.offset) }} / {{ fmtBytes(computeStatus.blob.size) }}</template></p>
+          </div>
+          <p v-else class="muted line" style="margin-top: 10px">当前没有文件在搬运。</p>
+          <p class="line compute-llm">本机语言模型：<span class="tag" :class="llmStatusTone(computeStatus)">{{ llmStatusText(computeStatus) }}</span>
+            <RouterLink :to="{ name: 'agent', params: { key: $route.params.key }, query: { tab: 'config' } }">在 Nyabot「配置」里管理</RouterLink></p>
+          <p v-if="computeStatus.lastError" class="line warn-text">最近一次错误：{{ computeStatus.lastError }}</p>
+          <p v-if="computeStatus.generationChanges || computeStatus.droppedFrames" class="muted line">本次开机以来计算域重启 {{ computeStatus.generationChanges }} 次 · 丢弃帧 {{ computeStatus.droppedFrames }}</p>
+        </template>
+      </MdCard>
+
       <MdCard v-if="uploads.tasks.length" title="上传队列">
         <ul class="tasks">
           <li v-for="t in uploads.tasks" :key="t.id" class="task" :class="t.phase">
@@ -357,6 +409,17 @@ onBeforeUnmount(() => {
 .bar > span.full { background: var(--md-error); }
 .bar.busy > span { width: 100% !important; animation: models-pulse 1.2s ease-in-out infinite; }
 @keyframes models-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+
+.compute-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.compute-sub { font-size: 12.5px; line-height: 1.5; }
+.caps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.cap {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: var(--radius-s);
+  border: 1px solid var(--md-outline-variant); font-size: 12.5px; font-weight: 600; color: var(--md-on-surface);
+}
+.cap-id { font-size: 11px; font-weight: 400; color: var(--md-on-surface-variant); }
+.compute-llm { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.compute-llm .tag { white-space: normal; overflow-wrap: anywhere; }
 
 .tasks, .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .tasks { gap: 14px; }

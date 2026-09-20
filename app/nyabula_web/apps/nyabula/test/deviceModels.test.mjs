@@ -45,7 +45,10 @@ test('destination: expected name for the name itself or a known alias, own name 
   assert.equal(destinationFor('asr', 'tokens.txt').renamed, false);
   assert.equal(destinationFor('asr', 'TOKENS.TXT').path, 'asr/tokens.txt');
   assert.equal(destinationFor('llm', 'MiniCPM5-1B-w4a16.rkllm').path, 'llm/model.rkllm');
-  assert.equal(destinationFor('llm', 'tokenizer.json').path, 'llm/tokenizer/tokenizer.json');
+  // Beside the model: compute.llm.load opens llm/tokenizer.json, and refuses to load without it.
+  assert.deepEqual(destinationFor('llm', 'tokenizer.json'), { path: 'llm/tokenizer.json', spec: kindSpec('llm').files[1], renamed: false });
+  assert.equal(kindSpec('llm').files[1].required, true);
+  assert.equal(destinationFor('llm', 'tokenizer_config.json').path, 'llm/tokenizer/tokenizer_config.json');
   assert.equal(destinationFor('tts', 'jieba.dict.utf8').path, 'tts/dict/jieba.dict.utf8');
   assert.equal(destinationFor('tts', 'vocoder128.rknn').path, 'tts/vocoder.rknn');
   assert.equal(destinationFor('face', 'face_recognition_sface_2021dec.onnx').path, 'face/sface.onnx');
