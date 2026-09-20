@@ -1,0 +1,23 @@
+#!/bin/sh
+# Mount the read-only model partition when this domain owns the SD card.
+#
+# This only finds anything with a device tree that leaves the SD controller to
+# Linux (the bring-up profile).  In the product split openvela owns SD and
+# eMMC, no mmcblk device ever appears, and the loop simply gives up; models
+# then arrive in /tmp/models through the blob service instead.  It is started
+# "once" from inittab rather than from /init so the wait never delays nyampd.
+B=/bin/busybox
+sddev=
+for n in $($B seq 1 20); do
+  for block in /sys/block/mmcblk*; do
+    if [ "$($B cat "$block/device/type" 2>/dev/null)" = SD ]; then
+      sddev=/dev/$($B basename "$block")
+    fi
+  done
+  [ -b "${sddev}p8" ] && break
+  $B sleep 1
+done
+$B mkdir -p /data
+if [ -b "${sddev}p8" ]; then
+  $B mount -t vfat -o ro "${sddev}p8" /data
+fi
