@@ -33,7 +33,6 @@
 
 #define NY_WEATHER_BODY_LIMIT    65536
 #define NY_WEATHER_POLL_MS       600000ULL
-#define NY_WEATHER_CLOCK_MIN     1577836800000ULL
 #define NY_WEATHER_SECTION_COUNT 4
 
 static mutex_t g_weather_lock = NXMUTEX_INITIALIZER;
@@ -167,8 +166,7 @@ static cJSON *ny_weather_status(void)
       cJSON_AddNumberToObject(root, "last_error", g_weather_error) &&
       cJSON_AddNumberToObject(root, "poll_minutes",
                               NY_WEATHER_POLL_MS / 60000) &&
-      cJSON_AddBoolToObject(root, "clock_valid",
-                            ny_product_time_ms(false) >= NY_WEATHER_CLOCK_MIN);
+      cJSON_AddBoolToObject(root, "clock_valid", ny_product_clock_valid());
   for (int i = 0; ok && i < NY_WEATHER_SECTION_COUNT; i++)
     ok = cJSON_AddNumberToObject(errors, g_weather_sections[i],
                                  g_weather_errors[i]) != NULL;
@@ -640,8 +638,7 @@ int ny_product_weather_tick(void)
   if (ret < 0)
     return ret;
   ret = ny_weather_load();
-  if (!ret && !g_weather_running &&
-      ny_product_time_ms(false) >= NY_WEATHER_CLOCK_MIN &&
+  if (!ret && !g_weather_running && ny_product_clock_valid() &&
       ny_product_time_ms(true) >= g_weather_next &&
       cJSON_IsTrue(
           cJSON_GetObjectItemCaseSensitive(g_weather_config, "enabled")))

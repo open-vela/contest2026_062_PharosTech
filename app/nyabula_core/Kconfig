@@ -419,3 +419,39 @@ config NYABULA_CORE_NETWORK_IFNAME
 	string "Wi-Fi interface name"
 	default "wlan0"
 	depends on NYABULA_CORE_NETWORK
+
+config NYABULA_CORE_TIMESYNC
+	bool "Set the clock from network time servers (SNTP)"
+	default y
+	depends on NYABULA_CORE_NETWORK && NET_UDP && NETDB_DNSCLIENT
+	---help---
+		Ask a time server as soon as the station has an address, then
+		every six hours, retrying after 15 s, 60 s and then every 5 min
+		while none has answered.  The answer sets the system clock and,
+		through it, the RTC.  Without this the clock is only ever set by
+		the owner's panel.
+
+config NYABULA_CORE_TIMESYNC_SERVERS
+	string "Time servers, in the order they are asked"
+	default "ntp.aliyun.com;ntp.tencent.com;cn.pool.ntp.org;pool.ntp.org"
+	depends on NYABULA_CORE_TIMESYNC
+	---help---
+		Host names or IPv4 addresses separated by semicolons.  The
+		defaults answer from inside mainland China, with the global pool
+		last for everywhere else.
+
+config NYABULA_CORE_TIMESYNC_STACKSIZE
+	int "Stack of the thread that asks the time servers"
+	default 16384
+	depends on NYABULA_CORE_TIMESYNC
+	---help---
+		The thread lives for one round of questions.  Most of what it
+		needs is the resolver's.
+
+config NYABULA_CORE_CLOCK_RTC_PATH
+	string "RTC that keeps the time across a power cycle"
+	default "/dev/rtc0"
+	depends on NYABULA_CORE_PRODUCT && RTC_DRIVER
+	---help---
+		Read at start to decide whether the clock can be believed, and
+		checked -- written, if need be -- whenever the clock is set.

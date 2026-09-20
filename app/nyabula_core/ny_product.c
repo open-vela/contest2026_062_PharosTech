@@ -34,10 +34,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/utsname.h>
+#include <syslog.h>
 #include <time.h>
-
-#define NY_PRODUCT_TIME_MIN 1577836800000.0
-#define NY_PRODUCT_TIME_MAX 4102444800000.0
 
 static int ny_product_system(const struct ny_product_caller_s *caller,
                              const char *topic, const cJSON *data,
@@ -63,51 +61,89 @@ static int ny_product_system(const struct ny_product_caller_s *caller,
                              cJSON **result)
 {
   bool set_time = strcmp(topic, "system.time.set") == 0;
-  if (!set_time && strcmp(topic, "system.time.get") != 0 &&
+  bool sync_time = strcmp(topic, "system.time.sync") == 0;
+  bool applied = false;
+  if (!set_time && !sync_time && strcmp(topic, "system.time.get") != 0 &&
       strcmp(topic, "sys.info") != 0)
     {
       return -ENOSYS;
     }
 
+  if ((set_time || sync_time) && caller->role != NY_PRODUCT_OWNER)
+    {
+      return -EACCES;
+    }
+
+  if (sync_time)
+    {
+#ifdef CONFIG_NYABULA_CORE_TIMESYNC
+      ny_product_timesync_request();
+#else
+      return -ENOTSUP;
+#endif
+    }
+
   if (set_time)
     {
       const cJSON *value = cJSON_GetObjectItemCaseSensitive(data, "unix_ms");
-      struct timespec now;
-      if (caller->role != NY_PRODUCT_OWNER)
-        {
-          return -EACCES;
-        }
-
       if (!cJSON_IsNumber(value) || !isfinite(value->valuedouble) ||
-          value->valuedouble < NY_PRODUCT_TIME_MIN ||
-          value->valuedouble > NY_PRODUCT_TIME_MAX ||
+          value->valuedouble < (double)ny_product_clock_floor_ms() ||
+          value->valuedouble > (double)NY_PRODUCT_CLOCK_MAX_MS ||
           floor(value->valuedouble) != value->valuedouble)
         {
           return -EINVAL;
         }
 
-      now.tv_sec = (time_t)(value->valuedouble / 1000);
-      now.tv_nsec = (long)((uint64_t)value->valuedouble % 1000) * 1000000;
-      if (clock_settime(CLOCK_REALTIME, &now) < 0)
+      /* A panel pushes its own idea of the time whenever it connects, and
+       * that is a phone's or a computer's clock.  Once a time server has
+       * been heard in this boot the device knows better, and being handed
+       * a worse time must not undo that; the reply says which it was.
+       */
+
+      if (ny_product_clock_source() == NY_PRODUCT_CLOCK_SNTP)
         {
-          return -errno;
+          syslog(LOG_INFO,
+                 "nyclock: panel time from %s not applied, "
+                 "a time server has set the clock (it differs by %lld ms)\n",
+                 caller->id,
+                 (long long)((int64_t)value->valuedouble -
+                             (int64_t)ny_product_time_ms(false)));
+        }
+      else
+        {
+          int ret = ny_product_clock_set((uint64_t)value->valuedouble,
+                                         NY_PRODUCT_CLOCK_PANEL, caller->id);
+          if (ret < 0)
+            {
+              return ret;
+            }
+
+          applied = true;
         }
     }
 
   cJSON *root = cJSON_CreateObject();
-  uint64_t wall = ny_product_time_ms(false);
   if (root == NULL)
     {
       return -ENOMEM;
     }
 
-  if (!cJSON_AddNumberToObject(root, "unix_ms", wall) ||
+  if (!cJSON_AddNumberToObject(root, "unix_ms", ny_product_time_ms(false)) ||
       !cJSON_AddNumberToObject(root, "uptime_ms", ny_product_time_ms(true)) ||
-      !cJSON_AddBoolToObject(root, "clock_valid", wall >= NY_PRODUCT_TIME_MIN))
+      !ny_product_clock_describe(root) ||
+      (set_time && !cJSON_AddBoolToObject(root, "applied", applied)))
     {
       cJSON_Delete(root);
       return -ENOMEM;
     }
+
+#ifdef CONFIG_NYABULA_CORE_TIMESYNC
+  if (strcmp(topic, "sys.info") != 0 && !ny_product_timesync_describe(root))
+    {
+      cJSON_Delete(root);
+      return -ENOMEM;
+    }
+#endif
 
   if (strcmp(topic, "sys.info") == 0)
     {

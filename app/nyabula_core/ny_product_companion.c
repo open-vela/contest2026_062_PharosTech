@@ -29,8 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define NY_COMPANION_CLOCK_MIN 1577836800000ULL
-#define NY_COMPANION_TICK_MS   1000
+#define NY_COMPANION_TICK_MS 1000
 static mutex_t g_companion_lock = NXMUTEX_INITIALIZER;
 static uint64_t g_companion_tick;
 
@@ -183,7 +182,7 @@ static cJSON *ny_companion_public(const cJSON *root, uint64_t revision,
   cJSON_DeleteItemFromObjectCaseSensitive(copy, "owner");
   if (!cJSON_AddNumberToObject(copy, "revision", revision) ||
       !cJSON_AddBoolToObject(copy, "quiet_now",
-                             now >= NY_COMPANION_CLOCK_MIN &&
+                             ny_product_clock_valid() &&
                                  ny_companion_quiet(root, now)))
     {
       cJSON_Delete(copy);
@@ -262,7 +261,7 @@ int ny_product_companion_request(const struct ny_product_caller_s *caller,
           ny_companion_set_number(root, "daily_limit", fields[4]) &&
           ny_companion_set_string(root, "owner", caller->id) &&
           ny_companion_set_number(root, "next_at",
-                                  enabled && now >= NY_COMPANION_CLOCK_MIN
+                                  enabled && ny_product_clock_valid()
                                       ? now + (uint64_t)fields[3] * 60000
                                       : 0);
       ret = ok ? ny_product_store_write("companion", root, revision, &revision)
@@ -281,7 +280,7 @@ int ny_product_companion_request(const struct ny_product_caller_s *caller,
         }
       ny_companion_roll_day(root, now);
       if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "enabled")) ||
-          now < NY_COMPANION_CLOCK_MIN || ny_companion_quiet(root, now) ||
+          !ny_product_clock_valid() || ny_companion_quiet(root, now) ||
           ny_companion_number(root, "daily_count") >=
               ny_companion_number(root, "daily_limit") ||
           ny_companion_text(root, "pending_run")[0])
@@ -325,7 +324,7 @@ int ny_product_companion_tick(void)
   uint64_t revision;
   uint64_t now = ny_product_time_ms(false);
   ret = ny_companion_load(&root, &revision);
-  if (ret < 0 || now < NY_COMPANION_CLOCK_MIN)
+  if (ret < 0 || !ny_product_clock_valid())
     goto out;
   bool rolled = ny_companion_roll_day(root, now);
   const char *pending = ny_companion_text(root, "pending_run");
