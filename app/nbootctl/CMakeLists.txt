@@ -20,10 +20,18 @@
 # ##############################################################################
 
 if(CONFIG_SYSTEM_NBOOTCTL)
+  set(NBOOTCTL_SRCS nbootctl_main.c nbootctl_bootctrl.c nbootctl_part.c)
+
+  # The formatter is mkfatfs's.  A configuration without it keeps every other
+  # command and leaves the board's weak format hook answering -ENOSYS.
+  if(CONFIG_FSUTILS_MKFATFS)
+    list(APPEND NBOOTCTL_SRCS nbootctl_format.c)
+  endif()
+
   nuttx_add_application(
     MODULE ${CONFIG_SYSTEM_NBOOTCTL}
     NAME ${CONFIG_SYSTEM_NBOOTCTL_PROGNAME}
-    SRCS nbootctl_main.c nbootctl_bootctrl.c
+    SRCS ${NBOOTCTL_SRCS}
     STACKSIZE ${CONFIG_SYSTEM_NBOOTCTL_STACKSIZE}
     HEAPSIZE ${CONFIG_SYSTEM_NBOOTCTL_HEAPSIZE}
     PRIORITY ${CONFIG_SYSTEM_NBOOTCTL_PRIORITY})
