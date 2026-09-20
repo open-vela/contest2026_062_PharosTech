@@ -1,0 +1,68 @@
+diff -ruN a/system/adb/microADB/tcp_service.c b/system/adb/microADB/tcp_service.c
+--- a/system/adb/microADB/tcp_service.c	2026-09-20 12:56:11.663317978 +0800
++++ b/system/adb/microADB/tcp_service.c	2026-09-20 12:56:11.711318978 +0800
+@@ -21,6 +21,7 @@
+ #include <stdlib.h>
+ #include <unistd.h>
+ #include <stdint.h>
++#include <stdbool.h>
+ #include <stdarg.h>
+ 
+ #include "adb.h"
+@@ -41,6 +42,9 @@
+     adb_client_t *client;
+     adb_tcp_socket_t socket;
+     enum stream_state state;
++    /* Set once the socket has been handed to uv_close(): callbacks that
++     * libuv still delivers for it must not start a second teardown. */
++    bool closing;
+ } adb_stream_service_t;
+ 
+ typedef struct atcp_fstream_service_s {
+@@ -191,18 +195,33 @@
+     adb_stream_service_t *svc =
+         container_of(service, adb_stream_service_t, service);
+ 
+-    if (svc->state > F_NOT_CONNECTED) {
+-        adb_hal_socket_close(&svc->socket, atcp_stream_release);
+-    }
+-    else {
+-        atcp_stream_release(&svc->socket);
++    if (svc->closing) {
++        return;
+     }
++
++    /* The socket was initialised by tcp_forward_service() before the service
++     * existed, so libuv holds it in every state -- including a connect that
++     * has not completed and one that failed.  Freeing the service without
++     * closing the handle left the pending connect request pointing into
++     * freed memory: when the host closed a stream before the local connect
++     * finished, connect_cb later called a function pointer read from the
++     * heap and the whole system went down with it.  uv_close() cancels the
++     * request first and frees in its close callback.
++     */
++    svc->closing = true;
++    adb_hal_socket_close(&svc->socket, atcp_stream_release);
+ }
+ 
+ static void tcp_stream_on_connect_cb(adb_tcp_socket_t *socket, int status) {
+     adb_stream_service_t *svc =
+         container_of(socket, adb_stream_service_t, socket);
+ 
++    if (svc->closing) {
++        /* The connect was cancelled by our own uv_close(); the close
++         * callback releases the service. */
++        return;
++    }
++
+     if (status || svc->state != F_NOT_CONNECTED) {
+         adb_err("connect failed (%d)\n", status);
+         svc->state = F_ERROR_CLOSE;
+@@ -237,6 +256,7 @@
+ 
+     fsvc->stream_service.client = client;
+     fsvc->stream_service.state = F_NOT_CONNECTED;
++    fsvc->stream_service.closing = false;
+ 
+     adb_log("connect to port %d\n", port);
+     ret = adb_hal_socket_connect(client,
