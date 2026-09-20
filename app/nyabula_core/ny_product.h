@@ -121,6 +121,11 @@ int ny_product_audio_request(const struct ny_product_caller_s *caller,
                              cJSON **result);
 int ny_product_audio_tick(void);
 #endif
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+/* Implemented in ny_compute.c; the rest of that interface is ny_compute.h. */
+int ny_compute_request(const struct ny_product_caller_s *caller,
+                       const char *topic, const cJSON *data, cJSON **result);
+#endif
 int ny_product_eyes_request(const struct ny_product_caller_s *caller,
                             const char *topic, const cJSON *data,
                             cJSON **result);

@@ -25,6 +25,10 @@
  * owned by nyampctl_main.c; these entry points borrow the open descriptor so
  * every subcommand shares one discovery and bind path.
  *
+ * When the Nyabula Core compute service is running it owns the endpoint
+ * instead, the command goes through one of its ports, and `fd` is -1; the
+ * helpers in nyampctl_io.h hide the difference.
+ *
  ****************************************************************************/
 
 #include <stdbool.h>
@@ -41,6 +45,25 @@ int nyampctl_llm_unload(int fd);
  */
 int nyampctl_llm_generate(int fd, const char *source, uint32_t max_new_tokens,
                           bool inline_ids);
+
+/* Ask the compute domain to measure the link: `rounds` message round trips,
+ * then pattern fills of a `window_bytes` window of the shared arena (0 = the
+ * whole granted slot).  These are the numbers the blob window size has to be
+ * tuned against, and they can only be taken on a board.
+ */
+int nyampctl_blob_bench(int fd, uint32_t rounds, uint32_t window_bytes);
+
+/* Ask the compute domain to pull `name` (a file or a directory under
+ * /data/models) into its tmpfs, exactly as a model load would, without
+ * loading anything.  Requires the Core compute service on this side: it is
+ * what answers the pull.
+ */
+int nyampctl_blob_pull(int fd, const char *name);
+
+/* Print the Core compute service's view of the link.  Fails with -ENOSYS in
+ * a build that does not contain that service.
+ */
+int nyampctl_status(void);
 
 /* Write a pattern across the shared region and read it back, so a size or
  * mapping disagreement with the compute domain is caught here rather than

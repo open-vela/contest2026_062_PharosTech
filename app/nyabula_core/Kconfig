@@ -322,6 +322,32 @@ config NYABULA_CORE_MEDIA_DEVICE
 	default "/dev/audio/pcm0"
 	depends on NYABULA_CORE_MEDIA
 
+config NYABULA_CORE_COMPUTE
+	bool "AMP compute-domain link and model delivery"
+	default n
+	depends on NYABULA_CORE_PRODUCT && RPMSG_CHAR && RK3576_SHMEM
+	depends on !DISABLE_MOUNTPOINT && !DISABLE_PTHREAD
+	select CRYPTO
+	---help---
+		Own the RPMsg endpoint to the Linux compute domain for as long
+		as the product runs: track its generation, route responses and
+		events to local requesters, and serve the BLOB service, through
+		which the compute domain (which has no storage of its own) pulls
+		model files out of /data/models into windows of the shared
+		arena.  Adds the compute.status topic.  When this is enabled the
+		nyampctl diagnostic talks through it instead of opening the
+		endpoint itself.
+
+config NYABULA_CORE_COMPUTE_BOUNCE
+	bool "Copy blob windows through a bounce buffer"
+	default n
+	depends on NYABULA_CORE_COMPUTE
+	---help---
+		Read model files into an ordinary buffer and copy that into the
+		shared arena, instead of letting pread() write into the arena
+		directly.  Slower; only for a storage driver that cannot
+		transfer into the non-cacheable shared region.
+
 config NYABULA_CORE_AUDIO
 	bool "ES8388 codec control (routes, volume, microphone)"
 	default y

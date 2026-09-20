@@ -114,6 +114,23 @@ endif
 endif
 endif
 
+ifeq ($(CONFIG_NYABULA_CORE_COMPUTE),y)
+# The wire codec is shared with the Linux half of the link and lives with it
+# in the team repository.  This directory is reached through the manifest's
+# symbolic link, so the path is taken from the resolved location.
+NYCORE_NYAMP_DIR = $(realpath $(CURDIR))/../../tools/amp/protocol
+CSRCS += ny_compute.c
+CFLAGS += ${INCDIR_PREFIX}$(NYCORE_NYAMP_DIR)
+# A flat build links every built-in application into one image: when the
+# nyampctl diagnostic is built in, its copy of the codec already provides
+# these symbols.
+ifneq ($(CONFIG_EXAMPLES_NYAMPCTL),y)
+CSRCS += nyamp_protocol.c
+VPATH += :$(NYCORE_NYAMP_DIR)
+DEPPATH += --dep-path $(NYCORE_NYAMP_DIR)
+endif
+endif
+
 ifeq ($(CONFIG_NYABULA_CORE_HTTP),y)
 CSRCS += ny_http.c ny_broker_http.c
 endif
