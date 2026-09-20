@@ -19,7 +19,9 @@ export const useCompanionStore = defineStore('companion', () => {
   async function refresh(): Promise<void> {
     if (!available.value) return;
     const current = generation;
-    try { const value = await session.request('companion.get'); if (current === generation) state.value = value as unknown as CompanionState; }
+    /* A reading that arrives answers whatever failed before it: otherwise
+     * one refused write left its banner over a page that was working. */
+    try { const value = await session.request('companion.get'); if (current === generation) { state.value = value as unknown as CompanionState; error.value = ''; } }
     catch (e) { if (current === generation) error.value = e instanceof Error ? e.message : String(e); }
   }
   async function act(operation:'configure'|'run', data:Record<string,unknown>): Promise<boolean> {

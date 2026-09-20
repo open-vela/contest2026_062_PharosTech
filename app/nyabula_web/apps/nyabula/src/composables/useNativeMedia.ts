@@ -33,7 +33,12 @@ const useNativeMediaStore = defineStore('native-media', () => {
     refreshing = true;
     try {
       const data = await session.request('music.status', {});
-      if (current === generation) accept(data);
+      /* A reading that arrives is also the answer to whatever failed before:
+       * without this the banner of one refused play stayed on the page (and,
+       * the store being shared, on the audio page too) until the next
+       * successful button press.
+       */
+      if (current === generation) { accept(data); error.value = ''; }
     } catch (cause) { if (current === generation) error.value = String(cause); }
     finally { if (current === generation) refreshing = false; }
   }
