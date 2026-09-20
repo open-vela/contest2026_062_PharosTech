@@ -467,7 +467,7 @@ config NYABULA_CORE_VOICE_BARGE_IN
 
 config NYABULA_CORE_VOICE_VAD_GATE
 	bool "Do not stream silence to the wake word service"
-	default y
+	default n
 	---help---
 		An energy gate with an adaptive noise floor and a two second
 		hang-over; when it opens, the last 1.5 s are streamed first, so
