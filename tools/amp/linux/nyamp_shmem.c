@@ -85,6 +85,17 @@ static int nyamp_shmem_mmap(struct file *file, struct vm_area_struct *vma)
    */
   vm_flags_set(vma, VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP);
 
+  /* The userspace mapping has to be non-cacheable too, not just the kernel's
+   * ioremap.  The control domain runs on the other CPU cluster and maps these
+   * pages non-cacheable, so its writes reach DRAM without the interconnect
+   * invalidating anything in this cluster's caches: a cacheable mapping here
+   * keeps serving the previous contents of a window that is reused at the
+   * same address, which is exactly what a model pull does 835 times in a
+   * row.  Write-combine is Normal non-cacheable memory, so unlike a Device
+   * mapping it stays legal for the unaligned and block accesses memcpy makes.
+   */
+  vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+
   return remap_pfn_range(vma, vma->vm_start,
                          (shmem->phys + offset) >> PAGE_SHIFT, length,
                          vma->vm_page_prot);
@@ -215,29 +226,17 @@ static int nyamp_shmem_probe(struct platform_device *pdev)
    * The magic goes in last: the control domain polls it, and must not see a
    * valid magic in front of a size or generation that is still stale.
    */
+  magic = readl(shmem->base + NYAMP_ARENA_MAGIC_OFFSET);
   if (magic != 0 && magic != NYAMP_SHMEM_MAGIC)
     {
       dev_info(&pdev->dev, "replacing stale arena magic %#x\n", magic);
     }
 
-  if (magic == 0)
-    {
-      /* First claim: publish the arena header so the control domain can
-       * validate its own view of the region against ours.  The generation
-       * identifies this claim; a later one means every previous grant is
-       * void, which is how a restarted daemon invalidates stale references.
-       */
-      writel(NYAMP_SHMEM_MAGIC, shmem->base + NYAMP_ARENA_MAGIC_OFFSET);
-      writel(NYAMP_SHMEM_VERSION, shmem->base + NYAMP_ARENA_VERSION_OFFSET);
-      writel((u32)shmem->size, shmem->base + NYAMP_ARENA_SIZE_OFFSET);
-      writel(shmem->generation, shmem->base + NYAMP_ARENA_GENERATION_OFFSET);
-    }
-  else if (readl(shmem->base + NYAMP_ARENA_SIZE_OFFSET) != (u32)shmem->size)
-    {
-      dev_err(&pdev->dev, "arena size %u, driver expects %u\n",
-              readl(shmem->base + NYAMP_ARENA_SIZE_OFFSET), (u32)shmem->size);
-      return -EINVAL;
-    }
+  writel(0, shmem->base + NYAMP_ARENA_MAGIC_OFFSET);
+  writel(NYAMP_SHMEM_VERSION, shmem->base + NYAMP_ARENA_VERSION_OFFSET);
+  writel((u32)shmem->size, shmem->base + NYAMP_ARENA_SIZE_OFFSET);
+  writel(shmem->generation, shmem->base + NYAMP_ARENA_GENERATION_OFFSET);
+  writel(NYAMP_SHMEM_MAGIC, shmem->base + NYAMP_ARENA_MAGIC_OFFSET);
 
   shmem->misc.name = NYAMP_SHMEM_DEVICE_NAME;
   shmem->misc.minor = MISC_DYNAMIC_MINOR;
