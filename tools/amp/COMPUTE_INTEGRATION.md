@@ -68,6 +68,12 @@ nyampctl info
 下一阶段先确定共享对象 ID、generation、offset、length、格式、归还时机，再开放业务 RPC。
 协议定义见 [protocol/README.md](protocol/README.md)。
 
+2026-09-20 补充：NYBS 描述符、LLM(service 8) 与 BLOB(service 9，模型按需交付) 已有编解码与
+主机单测；BLOB 是唯一由 Linux 发起请求的服务，方向、request_id 与 generation 规则见上述
+README 的「请求方向」一节。LLM LOAD 现在接受逻辑名（相对路径，如 `llm/model.rkllm` 或目录
+`asr`）：nyampd 先经 BLOB 从 `/data/models` 拉到 tmpfs `/tmp/models/` 并校验 SHA-256，再把
+本地路径交给后端；绝对路径保持原行为（SD 时代的测试不变）。上板未验证。
+
 ## 4. LLM 接入
 
 ### 已测配置
