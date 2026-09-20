@@ -272,6 +272,8 @@ subprocess.run(
      "-I", str(nyampd), "-I", str(models), "-I", str(protocol),
      str(root / "harness.cpp"), str(root / "backend.cpp"),
      str(nyampd / "nyampd_core.cpp"), str(nyampd / "nyampd_llm.cpp"),
+     str(nyampd / "nyampd_frame.cpp"), str(nyampd / "nyampd_sha256.cpp"),
+     str(nyampd / "nyampd_blob.cpp"), str(nyampd / "nyampd_provision.cpp"),
      str(models / "nyamp_models.cpp"),
      str(protocol / "nyamp_protocol.c"),
      "-o", str(root / "harness"), "-lpthread"],

@@ -17,7 +17,9 @@ set(NYAMP_RKLLM_ROOT "" CACHE PATH "Directory containing external rkllm.h and li
 add_subdirectory(../protocol protocol)
 add_subdirectory(../models models)
 
-add_library(nyampd_core STATIC nyampd_core.cpp nyampd_llm.cpp)
+add_library(nyampd_core STATIC nyampd_core.cpp nyampd_llm.cpp nyampd_frame.cpp
+                               nyampd_sha256.cpp nyampd_blob.cpp
+                               nyampd_provision.cpp)
 target_include_directories(
   nyampd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../models
                      ${CMAKE_CURRENT_SOURCE_DIR}/../linux)
@@ -26,6 +28,10 @@ target_compile_options(nyampd_core PRIVATE -Wall -Wextra -Werror)
 
 add_executable(nyampd nyampd_main.cpp)
 target_link_libraries(nyampd PRIVATE nyampd_core)
+# The arena layout is the control domain's header; the daemon grants windows
+# out of it, so it reads the same file instead of repeating the offsets.
+target_include_directories(
+  nyampd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../chips/rk3576/include)
 target_compile_options(nyampd PRIVATE -Wall -Wextra -Werror)
 
 # Link the backend only when the models subdirectory actually produced it.
@@ -38,8 +44,15 @@ add_executable(nyampd_core_test nyampd_core_test.cpp)
 target_link_libraries(nyampd_core_test PRIVATE nyampd_core)
 target_compile_options(nyampd_core_test PRIVATE -Wall -Wextra -Werror)
 
+# Blob delivery against an in-process control-domain responder: reassembly,
+# digest and size rejection, short reads, stale generation, cancellation.
+add_executable(nyampd_blob_test nyampd_blob_test.cpp)
+target_link_libraries(nyampd_blob_test PRIVATE nyampd_core)
+target_compile_options(nyampd_blob_test PRIVATE -Wall -Wextra -Werror)
+
 enable_testing()
 add_test(NAME nyampd_core_test COMMAND nyampd_core_test)
+add_test(NAME nyampd_blob_test COMMAND nyampd_blob_test)
 
 # Self-test for the shared region.  It only touches the driver, so it runs
 # standalone: a mapping or geometry disagreement is found here rather than
