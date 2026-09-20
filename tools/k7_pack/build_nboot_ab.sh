@@ -161,6 +161,13 @@ chmod -R u+w "$RKBIN_WORK"
 (cd "$RKBIN_WORK" && ./tools/boot_merger RKBOOT/RK3576MINIALL.ini >/dev/null)
 (cd "$RKBIN_WORK" && ./tools/trust_merger RKTRUST/RK3576TRUST.ini >/dev/null)
 cp "$RKBIN_WORK"/rk3576_idblock_*.img "$WORK/idbloader.img"
+# boot_merger writes two things.  The idblock image is what sits on the
+# medium (the SD image below dd's it into place); the merged loader, with
+# the "LDR " header and usbplug inside, is what RKDevTool is given as the
+# Loader.  Handing it the idblock instead -- as this script did -- leaves a
+# package that cannot be flashed at all.
+cp "$RKBIN_WORK"/rk3576_spl_loader_*.bin "$WORK/loader.bin"
+[ "$(head -c 4 "$WORK/loader.bin")" = "LDR " ] || die "boot_merger did not produce a merged loader"
 cp "$RKBIN_WORK/trust.img" "$WORK/trust.img"
 
 # An AMP image that is packed but not recorded here has priority 0: N-Boot
@@ -181,7 +188,7 @@ if [ "$TARGET" = emmc ]; then
 
   rm -rf "$PACKAGE"
   mkdir -p "$IMAGE_DIR"
-  cp "$WORK/idbloader.img" "$IMAGE_DIR/MiniLoaderAll.bin"
+  cp "${LOADER_BIN:-$WORK/loader.bin}" "$IMAGE_DIR/MiniLoaderAll.bin"
   cp "$OUT/nboot.img" "$IMAGE_DIR/uboot.img"
   cp "$WORK/trust.img" "$IMAGE_DIR/trust.img"
   cp "$WORK/bootctrl.bin" "$IMAGE_DIR/bootctrl.img"
