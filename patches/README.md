@@ -9,6 +9,7 @@
 | `packages-ai_agent-nyabot.patch` | `packages/ai_agent`（openvela.xml `packages_ai_agent`，2026-06-30 基线） | Nyabot 适配：`tool_registry_init_empty`、`context_set_provider`、`agent_loop_status`、`agent_msg_t.interim/request_id`、`http_response.c`、Feishu/WeChat/MQTT/Node 通道改造、skills loader（对应 nyabot-*-20260912 系列） |
 | `packages-ai_agent-on-device-llm.patch` | `packages/ai_agent`（在 nyabot 补丁之后应用，按文件名排序自然满足） | `llm_set_local_transport()`：为某个后端 host 注册本机传输，路由到该 host 的请求原样交给回调而不走 HTTPS；端侧模型因此复用云端后端的路由、重试、工具解析与用量统计（`app/nyabula_core/ny_agent_local.c`） |
 | `apps-nxplayer.patch` | `apps/system/nxplayer` + `apps/include/system/nxplayer.h` | `NXPLAYER_STATE_*`、`nxplayer_getstate()`、`nxplayer_playpcmfd()` |
+| `apps-microadb-forward-close.patch` | `apps/system/adb/microADB/tcp_service.c` | 修复 `adb forward` 流的拆除：连接尚未完成（或失败）时主机关流，原代码直接 free 服务结构却不 `uv_close()` 已注册的 TCP 句柄，随后 `connect_cb` 从已释放内存取函数指针 → adbd 任务 panic、整机复位。改为任何状态都经 `uv_close()` 释放，并防重入 |
 
 手动应用：
 
