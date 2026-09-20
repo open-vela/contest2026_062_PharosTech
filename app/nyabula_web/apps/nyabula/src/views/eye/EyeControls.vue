@@ -76,6 +76,7 @@ function pickStyle(v: string) {
       </div>
       <p class="light-hint"><span v-if="!eye.ambientOnDevice" class="contract-only">仅本地预览</span> 暗 → 散瞳 · 亮 → 竖瞳{{ eye.ambientOnDevice ? '；设备与预览同步变化' : '' }}</p>
     </MdCard>
+    <LightCalibrationCard v-if="(!only || only === 'light') && eye.ambientOnDevice" />
   </div>
 </template>
 
