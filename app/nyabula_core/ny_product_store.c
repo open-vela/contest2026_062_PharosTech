@@ -55,7 +55,7 @@ static int ny_product_store_key(const char *domain, char *key, size_t capacity)
     "mcp-out",        "mcp-in",         "agent-profile",  "media",
     "weather-config", "weather",        "notifications",  "weather-now",
     "weather-daily",  "weather-hourly", "weather-alerts", "wifi",
-    "bluetooth",      "voice"
+    "bluetooth",      "voice",          "light",          "eyes"
   };
 
   if (domain == NULL)
