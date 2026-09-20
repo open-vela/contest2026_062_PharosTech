@@ -4,6 +4,8 @@
 import { MdCard, MdChip, MdButton, MdSlider, UiIcon, SegmentedTabs } from '@nyabula/ui';
 import { ref } from 'vue';
 import type { useEyePage } from './eye.logic';
+import IrisCard from './IrisCard.vue';
+import LightCalibrationCard from './LightCalibrationCard.vue';
 
 const props = defineProps<{
   page: ReturnType<typeof useEyePage>;
@@ -41,6 +43,8 @@ function pickStyle(v: string) {
         </button>
       </div>
     </MdCard>
+
+    <IrisCard v-if="!only || only === 'modes'" />
 
     <MdCard v-if="!only || only === 'scenes'" title="场景">
       <div class="scene-head">
