@@ -16,14 +16,18 @@ set(NYAMP_RKLLM_ROOT "" CACHE PATH "Directory containing external rkllm.h and li
 
 add_subdirectory(../protocol protocol)
 add_subdirectory(../models models)
+# Chat front end (template, tokenizer, output parser).  It stays buildable on
+# its own; pulled in as a subdirectory it contributes only its library.
+add_subdirectory(../chat chat)
 
 add_library(nyampd_core STATIC nyampd_core.cpp nyampd_llm.cpp nyampd_frame.cpp
                                nyampd_sha256.cpp nyampd_blob.cpp
-                               nyampd_provision.cpp)
+                               nyampd_provision.cpp nyampd_chat.cpp)
 target_include_directories(
   nyampd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../models
                      ${CMAKE_CURRENT_SOURCE_DIR}/../linux)
-target_link_libraries(nyampd_core PUBLIC nyamp_protocol nyamp_models)
+target_link_libraries(nyampd_core PUBLIC nyamp_protocol nyamp_models
+                                         nyamp_chat)
 target_compile_options(nyampd_core PRIVATE -Wall -Wextra -Werror)
 
 add_executable(nyampd nyampd_main.cpp)
@@ -50,8 +54,17 @@ add_executable(nyampd_blob_test nyampd_blob_test.cpp)
 target_link_libraries(nyampd_blob_test PRIVATE nyampd_core)
 target_compile_options(nyampd_blob_test PRIVATE -Wall -Wextra -Werror)
 
+# Chat completions end to end against a scripted backend.  The vocabulary is
+# replaced by a byte codec; the chat template and the output parser are the
+# real ones.  Set NYAMP_TOKENIZER_JSON in the environment to also run the
+# checks that need the model's tokenizer.json (never in the repository).
+add_executable(nyampd_chat_test nyampd_chat_test.cpp)
+target_link_libraries(nyampd_chat_test PRIVATE nyampd_core)
+target_compile_options(nyampd_chat_test PRIVATE -Wall -Wextra -Werror)
+
 enable_testing()
 add_test(NAME nyampd_core_test COMMAND nyampd_core_test)
+add_test(NAME nyampd_chat_test COMMAND nyampd_chat_test)
 add_test(NAME nyampd_blob_test COMMAND nyampd_blob_test)
 
 # Self-test for the shared region.  It only touches the driver, so it runs

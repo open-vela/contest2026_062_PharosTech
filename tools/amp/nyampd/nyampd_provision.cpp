@@ -49,6 +49,20 @@ bool ModelProvisioner::IsLogicalName(const std::string &name)
   return nyamp_blob_name_check(name.data(), name.size()) == NYAMP_OK;
 }
 
+bool ModelProvisioner::IsDirectory(const std::string &name)
+{
+  std::vector<BlobEntry> entries;
+
+  if (client_ == nullptr || !IsLogicalName(name) || !client_->Acquire())
+    {
+      return false;
+    }
+
+  const BlobResult result = client_->List(name, &entries);
+  client_->Release();
+  return result == BlobResult::kOk;
+}
+
 void ModelProvisioner::Cancel()
 {
   if (client_ != nullptr)

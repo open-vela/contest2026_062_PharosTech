@@ -357,10 +357,12 @@ std::size_t ModelInfo(char *output, std::size_t capacity,
   struct stat information;
   int size;
 
-  size = std::snprintf(output, capacity, "data=%s model=%s last_load=%d\n",
+  size = std::snprintf(output, capacity,
+                       "data=%s model=%s last_load=%d chat=%s\n",
                        stat("/data", &information) == 0 ? "mounted" : "absent",
                        directory != nullptr ? directory : "(none)",
-                       static_cast<int>(llm.LastLoadStatus()));
+                       static_cast<int>(llm.LastLoadStatus()),
+                       llm.ChatState().c_str());
   if (size < 0 || static_cast<std::size_t>(size) >= capacity)
     {
       return 0;
@@ -543,33 +545,52 @@ bool WriteAll(int fd, const std::uint8_t *data, std::size_t size)
  * Name: DrainEvents
  *
  * Description:
- *   Flush every queued LLM event to the peer.  Returns false when the
- *   transport failed, which the caller treats as a fatal error so PID1 can
- *   restart the daemon with a fresh generation.
+ *   Flush every queued frame to the peer.  Returns false when the transport
+ *   failed, which the caller treats as a fatal error so PID1 can restart the
+ *   daemon with a fresh generation.
+ *
+ *   A full transmit ring is not a failure.  A chat result is a burst of
+ *   frames and the endpoint is non-blocking, so the ring can momentarily run
+ *   out of buffers; the frame that did not fit is kept and sent on the next
+ *   pass, in order, instead of taking the daemon down mid-answer.
  *
  ****************************************************************************/
 
+struct Backlog
+{
+  nyamp::Frame frame;
+  bool held = false;
+};
+
 bool DrainEvents(int fd, nyamp::LlmService &llm, nyamp::BlobService &blob,
-                 Outbox &outbox)
+                 Outbox &outbox, Backlog &backlog)
 {
   for (;;)
     {
-      nyamp::Frame frame;
-
       /* Blob requests first: a transfer in flight is latency bound, and each
        * queued request is the only thing its worker is waiting for.
        */
-      if (!outbox.Poll(&frame) && !llm.Poll(&frame) && !blob.Poll(&frame))
+      if (!backlog.held && !outbox.Poll(&backlog.frame) &&
+          !llm.Poll(&backlog.frame) && !blob.Poll(&backlog.frame))
         {
           return true;
         }
 
-      if (!WriteAll(fd, frame.data, frame.size))
+      backlog.held = true;
+      if (WriteAll(fd, backlog.frame.data, backlog.frame.size))
         {
-          std::fprintf(stderr, "nyampd: event write failed: %s\n",
-                       std::strerror(errno));
-          return false;
+          backlog.held = false;
+          continue;
         }
+
+      if (errno == EAGAIN || errno == ENOMEM)
+        {
+          return true;
+        }
+
+      std::fprintf(stderr, "nyampd: event write failed: %s\n",
+                   std::strerror(errno));
+      return false;
     }
 }
 
@@ -625,6 +646,7 @@ int Run(const char *requested_device)
   nyamp::BlobClient blob_client(generation, &outbox, &window, blob_options);
   nyamp::ModelProvisioner provisioner(&blob_client);
   nyamp::BlobService blob(generation, &provisioner);
+  Backlog backlog;
 
   /* The service is always constructed so a client can learn from the health
    * capability mask whether an LLM backend was compiled in.  Without the
@@ -686,7 +708,7 @@ int Run(const char *requested_device)
 
           if (received < 0 && (errno == EINTR || errno == EAGAIN))
             {
-              if (!DrainEvents(fd, llm, blob, outbox))
+              if (!DrainEvents(fd, llm, blob, outbox, backlog))
                 {
                   close(fd);
                   return 1;
@@ -728,7 +750,7 @@ int Run(const char *requested_device)
                                       request + NYAMP_WIRE_HEADER_SIZE);
                 }
 
-              if (!DrainEvents(fd, llm, blob, outbox))
+              if (!DrainEvents(fd, llm, blob, outbox, backlog))
                 {
                   close(fd);
                   return 1;
@@ -783,7 +805,7 @@ int Run(const char *requested_device)
             }
         }
 
-      if (!DrainEvents(fd, llm, blob, outbox))
+      if (!DrainEvents(fd, llm, blob, outbox, backlog))
         {
           close(fd);
           return 1;
