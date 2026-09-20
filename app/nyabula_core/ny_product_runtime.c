@@ -26,6 +26,12 @@
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
 #include "ny_compute.h"
 #endif
+#ifdef CONFIG_NYABULA_CORE_BT
+#include "ny_product_bt.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_OTA
+#include "nbootctl_bootctrl.h"
+#endif
 #include <errno.h>
 #include <nuttx/config.h>
 #include <nuttx/mutex.h>
@@ -129,7 +135,18 @@ static int ny_product_worker(int argc, char **argv)
 
 int ny_product_start(void)
 {
-  int ret = nxmutex_lock(&g_product_runtime_lock);
+  int ret;
+
+#ifdef CONFIG_NYABULA_CORE_OTA
+  /* Keep this boot's N-Boot handoff from the first moment the product runs.
+   * Under AMP the registers it lives in sit in a block Linux can reach too;
+   * every later reader gets the copy taken here.
+   */
+
+  nbootctl_handoff_read(NULL, NULL, NULL, NULL, NULL);
+#endif
+
+  ret = nxmutex_lock(&g_product_runtime_lock);
   if (ret < 0)
     {
       return ret;

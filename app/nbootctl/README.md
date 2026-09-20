@@ -32,8 +32,20 @@ clears a request through the redundant-copy update before acting on it. This
 requires the N-Boot version supporting persistent one-shot requests; PMU1
 OS_REG12 did not survive the tested loader reset chain reliably.
 
+The handoff also says which bootctrl domain the running image belongs to
+(header bits 3:2: 0 = a NuttX slot, 1 = the control domain of an AMP slot) and
+`status` prints it as `domain=`. Under AMP `slot=` is the AMP slot and no NuttX
+slot is running. An AMP image that N-Boot started from RAM reports
+`slot=none reason=ram`: it has a medium, so bootctrl can be found, and no slot
+to protect. The first valid handoff is kept in memory for the life of the
+image, so later readers do not depend on registers the other AMP domain can
+reach. This needs an N-Boot that publishes the handoff from `bootamp`; with an
+older one the AMP control domain still reports `no valid N-Boot handoff`.
+
 `verify`, `set-active`, `mark-successful`, `stage`, and `clone` operate on
-either the `nuttx` or `amp` domain. `stage` writes the inactive slot, verifies
+either the `nuttx` or `amp` domain. `stage` never writes the slot the running
+image came from: it writes the other slot of that domain, and for the domain
+nothing runs from, the slot that is not active. It verifies
 its SHA-256 from media, records the new metadata, and activates it. `clone`
 copies one verified slot to the other without activating it. Boot-control
 mutations update the older redundant copy first, verify it, and then update the
