@@ -231,6 +231,27 @@ struct nyamp_buffer_s
  * transducer decoder may rewrite earlier tokens, so a delta is not always a
  * suffix of the previous text; when it is not, the RESYNC flag says the text
  * is a full replacement instead.
+ *
+ * The grant BEGIN returns covers the whole capture slot and lives as long as
+ * the request.  A PUSH names a sub-range of it (offset/length inside the
+ * grant, the grant's lease) and the range may be rewritten as soon as the
+ * response to that PUSH has arrived: the response is sent after the samples
+ * were copied out, before they are decoded.  So the control domain is free to
+ * use one window or to ping-pong between two, and no per-window RELEASE is
+ * needed.  RELEASE returns the grant as a whole and is implied by the end of
+ * the request (FINISH, CANCEL, UNLOAD).
+ *
+ * A request ends when the control domain says so: a PUSH whose descriptor
+ * carries NYAMP_BUFFER_LAST (its length may be zero), or ASR_END.  The
+ * service then flushes the decoder, sends the final text (PARTIAL_FINAL) and
+ * EVENT_FINISH.  Endpointing is the control domain's decision; the decoder's
+ * own opinion is only reported (PARTIAL_ENDPOINT).
+ *
+ * BEGIN with NYAMP_ASR_BEGIN_ATTACH_KWS is the second way to feed a request:
+ * instead of being pushed audio it reads the stream the KWS service already
+ * receives, from an absolute sample offset (see the KWS service below).  The
+ * payload is then NYAMP_ASR_ATTACH_SIZE bytes, no grant is returned, PUSH is
+ * refused, and the request ends with ASR_END naming the last sample.
  */
 
 #define NYAMP_ASR_LOAD          1U
@@ -239,11 +260,45 @@ struct nyamp_buffer_s
 #define NYAMP_ASR_PUSH          4U
 #define NYAMP_ASR_RELEASE       5U
 #define NYAMP_ASR_CANCEL        6U
+#define NYAMP_ASR_END           7U
 #define NYAMP_ASR_EVENT_PARTIAL 0x80U
 #define NYAMP_ASR_EVENT_FINISH  0x81U
 
-/* sample_rate, channels, flags, max_samples. */
+/* sample_rate, channels, flags, max_samples.  KWS_BEGIN has the same shape
+ * with the window size in the last field, so one codec serves both.
+ */
 #define NYAMP_ASR_BEGIN_SIZE 16U
+
+/* BEGIN flags (ASR and KWS).  Windows are float32 unless S16 is asked for;
+ * S16 is what the capture device produces and halves the bytes that cross
+ * the uncached region.
+ */
+#define NYAMP_AUDIO_BEGIN_S16      (1U << 0)
+#define NYAMP_ASR_BEGIN_ATTACH_KWS (1U << 1)
+#define NYAMP_AUDIO_BEGIN_ALL \
+  (NYAMP_AUDIO_BEGIN_S16 | NYAMP_ASR_BEGIN_ATTACH_KWS)
+
+/* The 16 bytes above followed by u64 start_sample. */
+#define NYAMP_ASR_ATTACH_SIZE 24U
+
+/* u64 end_sample.  NYAMP_STREAM_SAMPLE_NOW means "everything received so
+ * far", which is also the only value a pushed (non-attached) request takes.
+ */
+#define NYAMP_ASR_END_SIZE      8U
+#define NYAMP_STREAM_SAMPLE_NOW UINT64_MAX
+
+/* EVENT_PARTIAL flags.  The receiver keeps one string: RESYNC replaces it
+ * with the frame's text, anything else appends.  A replacement longer than
+ * one frame is a RESYNC frame followed by appending frames.  Partials are
+ * advisory and may be shed under back-pressure; the frame after a shed one
+ * is always a RESYNC, and the final text is always sent as one.
+ */
+#define NYAMP_ASR_PARTIAL_RESYNC   (1U << 0)
+#define NYAMP_ASR_PARTIAL_ENDPOINT (1U << 1) /* Decoder saw an endpoint.    */
+#define NYAMP_ASR_PARTIAL_FINAL    (1U << 2) /* Last text frame of request. */
+#define NYAMP_ASR_PARTIAL_ALL                               \
+  (NYAMP_ASR_PARTIAL_RESYNC | NYAMP_ASR_PARTIAL_ENDPOINT | \
+   NYAMP_ASR_PARTIAL_FINAL)
 
 /* buffer descriptor, sequence, flags, total_samples, consumed_samples. */
 #define NYAMP_ASR_PUSH_HEADER_SIZE (NYAMP_BUFFER_SIZE + 16U)
@@ -259,13 +314,34 @@ struct nyamp_buffer_s
 
 /* TTS service opcodes.
  *
- * SYNTH takes phoneme and tone ids, not text: the model layer has no
- * grapheme-to-phoneme front end, so accepting text here would be pretending to
- * a capability that does not exist.
+ * SYNTH_TEXT takes UTF-8 text.  The compute domain owns the text front end
+ * (tools/amp/g2p: normalisation, segmentation, grapheme-to-phoneme, sentence
+ * splitting) because it needs the model's 7 MB lexicon, which lives with the
+ * model.  The text arrives in ordered chunks that share one request_id, each
+ * acknowledged by a response, the last one starting the run -- the framing
+ * CHAT uses.  The parameters travel in every chunk and are taken from the
+ * first.
+ *
+ * The vocoder has one fixed 512-frame bucket (about 5.94 s), so the service
+ * splits the text into units that fit and synthesizes them one after the
+ * other.  Audio is NEVER truncated: a unit the encoder still stretches past
+ * the bucket is split again, and text that cannot be split ends the request
+ * with NYAMP_MODEL_UNSUPPORTED rather than with a clipped sentence.
+ *
+ * SYNTH (phoneme and tone ids from the control domain) predates the front
+ * end and is answered NYAMP_MODEL_UNSUPPORTED by the current service.
  *
  * The synthesized PCM always lands in the shared region because the smallest
  * useful result is already far past the inline limit; EVENT_PCM returns the
- * descriptor rather than the samples.
+ * descriptor rather than the samples.  PCM is float32, mono, 44100 Hz.  One
+ * window is outstanding at a time: the service writes a window, sends
+ * EVENT_PCM, and writes the next one only after RELEASE echoed that window's
+ * descriptor.  `valid_samples` is exact and `length` is valid_samples * 4;
+ * nothing past it is meaningful.  NYAMP_BUFFER_RESYNC on a window marks the
+ * first window of a new unit (a sentence boundary), NYAMP_BUFFER_LAST the
+ * last window of the request.  EVENT_FINISH follows the RELEASE of the last
+ * window, or a CANCEL at once; after a CANCEL the outstanding window is void
+ * and must not be read any more.
  */
 
 #define NYAMP_TTS_LOAD         1U
@@ -273,11 +349,25 @@ struct nyamp_buffer_s
 #define NYAMP_TTS_SYNTH        3U
 #define NYAMP_TTS_RELEASE      4U
 #define NYAMP_TTS_CANCEL       5U
+#define NYAMP_TTS_SYNTH_TEXT   6U
 #define NYAMP_TTS_EVENT_PCM    0x80U
 #define NYAMP_TTS_EVENT_FINISH 0x81U
 
 /* phoneme_count, speaker_id, speed (float bits), bucket_frames. */
 #define NYAMP_TTS_SYNTH_SIZE 16U
+
+/* total, offset, length, speaker_id, speed (float bits), window_samples,
+ * flags; then `length` bytes of UTF-8.  window_samples = 0 selects the
+ * service default (one second); flags are reserved and zero.
+ */
+#define NYAMP_TTS_TEXT_MAX_BODY    16384U
+#define NYAMP_TTS_TEXT_HEADER_SIZE 28U
+#define NYAMP_TTS_TEXT_MAX_CHUNK \
+  (NYAMP_INLINE_MAX - NYAMP_TTS_TEXT_HEADER_SIZE)
+
+#define NYAMP_TTS_SAMPLE_RATE        44100U
+#define NYAMP_TTS_WINDOW_SAMPLES_MIN 4410U
+#define NYAMP_TTS_WINDOW_SAMPLES_MAX 262144U /* The whole 1 MiB slot. */
 
 /* buffer descriptor, sequence, sample_rate, channels, valid_samples. */
 #define NYAMP_TTS_PCM_HEADER_SIZE (NYAMP_BUFFER_SIZE + 16U)
@@ -286,6 +376,84 @@ struct nyamp_buffer_s
 #define NYAMP_TTS_FINISH_SIZE 12U
 
 #define NYAMP_TTS_MAX_PATH    NYAMP_INLINE_MAX
+
+/* KWS service opcodes (NYAMP_SERVICE_KWS): the wake word listener.
+ *
+ * An ASR request is one utterance; a wake word listener has no utterances
+ * and must hear everything, including the moments when no ASR request
+ * exists.  So the always-on capture stream belongs to this service:
+ *
+ *  - BEGIN returns the grant for the capture slot and starts the stream.
+ *    PUSH submits one window of it under the ASR_PUSH rules (a sub-range of
+ *    the grant, reusable once the response has arrived).  END stops it.
+ *  - Every sample has an absolute position, `stream_sample`: a u64 count of
+ *    samples since BEGIN.  At 16 kHz it does not wrap in the life of the
+ *    device.  A PUSH carries the position of its first sample; one that is
+ *    not the position the service expects (a window was lost, capture was
+ *    paused while the robot spoke) is a DISCONTINUITY, not an error: the
+ *    decoder state is dropped and counting continues from the new position.
+ *    The PUSH response returns the position the service expects next.
+ *  - The compute domain keeps the last NYAMP_KWS_RING_SECONDS of the stream
+ *    in its own memory.  An ASR request can attach to it from a sample
+ *    offset (ASR_BEGIN_ATTACH_KWS), normally `end_sample` of the DETECTED
+ *    event, so the command that follows the wake word is neither lost nor
+ *    sent twice.  The ring belongs to the stream: END, UNLOAD, a CANCEL of
+ *    the BEGIN, or a new generation close it, and an attached ASR request
+ *    then finishes with the audio it got, as if ASR_END had named that point.
+ *    A reader that falls more than the ring behind loses the overwritten
+ *    samples and carries on from the oldest one still held.
+ *
+ * LOAD names the model directory (encoder.onnx, decoder.onnx, joiner.onnx,
+ * tokens.txt) and the keywords file inside it.  Every keywords line ends in
+ * "@label"; the keyword id is the zero-based index of the label among the
+ * distinct labels in file order, so pronunciation variants share an id.  A
+ * zero parameter selects the evaluated default.
+ *
+ * Events carry the request_id of the BEGIN.  EVENT_FINISH (the ASR_FINISH
+ * layout) is sent once when the stream ends.
+ */
+
+#define NYAMP_KWS_LOAD           1U
+#define NYAMP_KWS_UNLOAD         2U
+#define NYAMP_KWS_BEGIN          3U
+#define NYAMP_KWS_PUSH           4U
+#define NYAMP_KWS_END            6U
+#define NYAMP_KWS_LIST           7U
+#define NYAMP_KWS_EVENT_DETECTED 0x80U
+#define NYAMP_KWS_EVENT_FINISH   0x81U
+
+#define NYAMP_KWS_RING_SECONDS       10U
+#define NYAMP_KWS_WINDOW_SAMPLES_MIN 1600U
+#define NYAMP_KWS_WINDOW_SAMPLES_MAX 16000U
+
+/* threshold, score (float bits), max_active_paths, num_trailing_blanks,
+ * directory length, keywords file length; then the two names.  An empty
+ * keywords name means "keywords.txt".
+ */
+#define NYAMP_KWS_LOAD_HEADER_SIZE 16U
+
+/* sample_rate, channels, flags, window_samples: the ASR_BEGIN layout. */
+#define NYAMP_KWS_BEGIN_SIZE NYAMP_ASR_BEGIN_SIZE
+
+/* buffer descriptor, sequence, flags, reserved, stream_sample. */
+#define NYAMP_KWS_PUSH_SIZE          (NYAMP_BUFFER_SIZE + 16U)
+#define NYAMP_KWS_PUSH_DISCONTINUITY (1U << 0)
+
+/* PUSH response body: u64 next expected stream_sample. */
+#define NYAMP_KWS_PUSH_ACK_SIZE 8U
+
+/* sequence, keyword_id, flags, score (float bits), label length,
+ * start_sample, end_sample, trigger_sample; then the label.
+ */
+#define NYAMP_KWS_DETECTED_HEADER_SIZE 40U
+#define NYAMP_KWS_MAX_LABEL \
+  (NYAMP_INLINE_MAX - NYAMP_KWS_DETECTED_HEADER_SIZE)
+#define NYAMP_KWS_DETECTED_HAS_OFFSETS (1U << 0)
+#define NYAMP_KWS_DETECTED_HAS_SCORE   (1U << 1)
+#define NYAMP_KWS_KEYWORD_UNKNOWN      0xffffU
+
+/* LIST response body: count, reserved; then per label u16 length + UTF-8. */
+#define NYAMP_KWS_LABELS_HEADER_SIZE 4U
 
 /* Response status prefix.
  *
@@ -425,6 +593,12 @@ enum nyamp_service_e
   NYAMP_SERVICE_HOME = 7,
   NYAMP_SERVICE_LLM = 8,
   NYAMP_SERVICE_BLOB = 9, /* Requester: compute.  Responder: control. */
+  NYAMP_SERVICE_KWS = 10,
+
+  /* Reserved for the owner-voiceprint service proposed in
+   * tools/amp/voice/PROTOCOL.md; nothing answers it yet.
+   */
+  NYAMP_SERVICE_SPEAKER = 11,
 };
 
 enum nyamp_result_e
@@ -506,6 +680,50 @@ struct nyamp_llm_chat_finish_s
   uint32_t prefill_ms;    /* Request accepted to first token.        */
   uint32_t decode_ms;     /* First token to last token.              */
   uint32_t context_limit; /* What prompt + max_new_tokens must fit.  */
+};
+
+struct nyamp_tts_text_s
+{
+  uint32_t total;          /* Bytes in the whole text.                 */
+  uint32_t offset;         /* Position of this chunk within it.        */
+  uint32_t length;         /* Bytes carried by this chunk.             */
+  uint32_t speaker_id;
+  float speed;             /* 1.0 = the model's own pace.              */
+  uint32_t window_samples; /* Zero selects the service default.        */
+  uint32_t flags;          /* Reserved, zero.                          */
+};
+
+struct nyamp_kws_load_s
+{
+  float threshold;              /* Zero selects the default.           */
+  float score;                  /* Keyword boost; zero = default.      */
+  uint16_t max_active_paths;    /* Zero = default.                     */
+  uint16_t num_trailing_blanks; /* Zero = default.                     */
+  uint16_t directory_length;
+  uint16_t keywords_length;
+  const char *directory; /* Points into the payload; no NUL.           */
+  const char *keywords;  /* May be empty: "keywords.txt".              */
+};
+
+struct nyamp_kws_push_s
+{
+  struct nyamp_buffer_s buffer;
+  uint32_t sequence; /* +1 per window of this stream.                  */
+  uint16_t flags;    /* NYAMP_KWS_PUSH_*.                              */
+  uint64_t stream_sample;
+};
+
+struct nyamp_kws_detected_s
+{
+  uint32_t sequence;   /* +1 per event of this stream.                 */
+  uint16_t keyword_id; /* NYAMP_KWS_KEYWORD_UNKNOWN if not listed.     */
+  uint16_t flags;      /* NYAMP_KWS_DETECTED_*.                        */
+  float score;         /* Valid only with HAS_SCORE.                   */
+  uint32_t label_length;
+  uint64_t start_sample;   /* First token of the phrase (HAS_OFFSETS). */
+  uint64_t end_sample;     /* One frame past the last token.           */
+  uint64_t trigger_sample; /* Stream position at the trigger; valid.   */
+  const char *label;       /* Points into the payload; no NUL.         */
 };
 
 struct nyamp_blob_info_s
@@ -659,6 +877,25 @@ int nyamp_asr_finish_encode(uint8_t *payload, size_t payload_capacity,
 int nyamp_asr_finish_decode(int32_t *status, uint32_t *sequence,
                             const uint8_t *payload, size_t payload_size);
 
+/* BEGIN with NYAMP_ASR_BEGIN_ATTACH_KWS: the BEGIN fields plus the stream
+ * position recognition starts at.  The encoder sets the flag itself; the
+ * decoder refuses a payload without it.
+ */
+
+int nyamp_asr_attach_encode(uint8_t *payload, size_t payload_capacity,
+                            size_t *payload_size, uint32_t sample_rate,
+                            uint16_t channels, uint16_t flags,
+                            uint32_t max_samples, uint64_t start_sample);
+int nyamp_asr_attach_decode(uint32_t *sample_rate, uint16_t *channels,
+                            uint16_t *flags, uint32_t *max_samples,
+                            uint64_t *start_sample, const uint8_t *payload,
+                            size_t payload_size);
+
+int nyamp_asr_end_encode(uint8_t *payload, size_t payload_capacity,
+                         size_t *payload_size, uint64_t end_sample);
+int nyamp_asr_end_decode(uint64_t *end_sample, const uint8_t *payload,
+                         size_t payload_size);
+
 int nyamp_tts_synth_encode(uint8_t *payload, size_t payload_capacity,
                            size_t *payload_size, uint32_t phoneme_count,
                            uint32_t speaker_id, float speed,
@@ -683,6 +920,64 @@ int nyamp_tts_finish_encode(uint8_t *payload, size_t payload_capacity,
 int nyamp_tts_finish_decode(int32_t *status, uint32_t *sequence,
                             uint32_t *total_samples, const uint8_t *payload,
                             size_t payload_size);
+
+/* A chunk of SYNTH_TEXT.  The decoder returns a pointer into the payload,
+ * as the chat codec does.  A chunk may end inside a UTF-8 sequence; the
+ * text is validated once it is whole.
+ */
+
+int nyamp_tts_text_encode(uint8_t *payload, size_t payload_capacity,
+                          size_t *payload_size,
+                          const struct nyamp_tts_text_s *chunk,
+                          const uint8_t *bytes);
+int nyamp_tts_text_decode(struct nyamp_tts_text_s *chunk,
+                          const uint8_t **bytes, const uint8_t *payload,
+                          size_t payload_size);
+
+/* KWS.  BEGIN and EVENT_FINISH reuse the ASR layouts. */
+
+#define nyamp_kws_begin_encode  nyamp_asr_begin_encode
+#define nyamp_kws_begin_decode  nyamp_asr_begin_decode
+#define nyamp_kws_finish_encode nyamp_asr_finish_encode
+#define nyamp_kws_finish_decode nyamp_asr_finish_decode
+
+int nyamp_kws_load_encode(uint8_t *payload, size_t payload_capacity,
+                          size_t *payload_size,
+                          const struct nyamp_kws_load_s *load);
+int nyamp_kws_load_decode(struct nyamp_kws_load_s *load,
+                          const uint8_t *payload, size_t payload_size);
+
+int nyamp_kws_push_encode(uint8_t *payload, size_t payload_capacity,
+                          size_t *payload_size,
+                          const struct nyamp_kws_push_s *push);
+int nyamp_kws_push_decode(struct nyamp_kws_push_s *push,
+                          const uint8_t *payload, size_t payload_size);
+
+int nyamp_kws_push_ack_encode(uint8_t *body, size_t body_capacity,
+                              size_t *body_size, uint64_t next_sample);
+int nyamp_kws_push_ack_decode(uint64_t *next_sample, const uint8_t *body,
+                              size_t body_size);
+
+int nyamp_kws_detected_encode(uint8_t *payload, size_t payload_capacity,
+                              size_t *payload_size,
+                              const struct nyamp_kws_detected_s *detected);
+int nyamp_kws_detected_decode(struct nyamp_kws_detected_s *detected,
+                              const uint8_t *payload, size_t payload_size);
+
+/* LIST response body.  begin, append until NYAMP_EMSGSIZE, then the reader
+ * validates with _decode and walks with _next from position 0.
+ */
+
+int nyamp_kws_labels_begin(uint8_t *body, size_t body_capacity,
+                           size_t *body_size);
+int nyamp_kws_labels_append(uint8_t *body, size_t body_capacity,
+                            size_t *body_size, const char *label,
+                            size_t label_length);
+int nyamp_kws_labels_decode(uint16_t *count, const uint8_t *body,
+                            size_t body_size);
+int nyamp_kws_labels_next(const char **label, uint16_t *label_length,
+                          size_t *position, const uint8_t *body,
+                          size_t body_size);
 
 /* Response payload = status followed by a body.  The encoder returns where
  * the body must be written; the decoder returns where it starts.

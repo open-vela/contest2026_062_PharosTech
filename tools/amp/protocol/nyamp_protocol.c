@@ -44,6 +44,9 @@ static int nyamp_payload_ready(const uint8_t *payload, size_t payload_size,
 static int nyamp_llm_span_check(uint32_t total, uint32_t offset,
                                 uint32_t length, uint32_t max_total,
                                 uint32_t max_length);
+static uint32_t nyamp_float_bits(float value);
+static float nyamp_bits_float(uint32_t bits);
+static int nyamp_tts_text_check(const struct nyamp_tts_text_s *chunk);
 static int nyamp_blob_text_encode(uint8_t *payload, size_t payload_capacity,
                                   size_t *payload_size, uint32_t first,
                                   const char *text, size_t text_length);
@@ -2149,5 +2152,672 @@ int nyamp_llm_chat_finish_decode(struct nyamp_llm_chat_finish_s *finish,
   finish->prefill_ms = nyamp_get_le32(payload + 16);
   finish->decode_ms = nyamp_get_le32(payload + 20);
   finish->context_limit = nyamp_get_le32(payload + 24);
+  return NYAMP_OK;
+}
+
+/****************************************************************************
+ * Voice chain: ASR attach/end, TTS text, KWS
+ *
+ * Floats travel as their bit pattern, as SYNTH's speed already does.  The
+ * decoders check what a consumer would otherwise have to check again: that a
+ * declared length matches the payload, that no unknown flag is set, and that
+ * a span lies inside the body it claims to belong to.
+ *
+ ****************************************************************************/
+
+static uint32_t nyamp_float_bits(float value)
+{
+  uint32_t bits;
+
+  memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+static float nyamp_bits_float(uint32_t bits)
+{
+  float value;
+
+  memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+int nyamp_asr_attach_encode(uint8_t *payload, size_t payload_capacity,
+                            size_t *payload_size, uint32_t sample_rate,
+                            uint16_t channels, uint16_t flags,
+                            uint32_t max_samples, uint64_t start_sample)
+{
+  if (payload == NULL || payload_size == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if ((flags & ~NYAMP_AUDIO_BEGIN_ALL) != 0)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if (payload_capacity < NYAMP_ASR_ATTACH_SIZE)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  nyamp_put_le32(payload + 0, sample_rate);
+  nyamp_put_le16(payload + 4, channels);
+  nyamp_put_le16(payload + 6, flags | NYAMP_ASR_BEGIN_ATTACH_KWS);
+  nyamp_put_le32(payload + 8, max_samples);
+  nyamp_put_le32(payload + 12, 0);
+  nyamp_put_le64(payload + 16, start_sample);
+
+  *payload_size = NYAMP_ASR_ATTACH_SIZE;
+  return NYAMP_OK;
+}
+
+int nyamp_asr_attach_decode(uint32_t *sample_rate, uint16_t *channels,
+                            uint16_t *flags, uint32_t *max_samples,
+                            uint64_t *start_sample, const uint8_t *payload,
+                            size_t payload_size)
+{
+  int result;
+
+  if (sample_rate == NULL || channels == NULL || flags == NULL ||
+      max_samples == NULL || start_sample == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  result = nyamp_payload_ready(payload, payload_size, NYAMP_ASR_ATTACH_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  if (payload_size != NYAMP_ASR_ATTACH_SIZE)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  *sample_rate = nyamp_get_le32(payload + 0);
+  *channels = nyamp_get_le16(payload + 4);
+  *flags = nyamp_get_le16(payload + 6);
+  *max_samples = nyamp_get_le32(payload + 8);
+  *start_sample = nyamp_get_le64(payload + 16);
+
+  if ((*flags & ~NYAMP_AUDIO_BEGIN_ALL) != 0 ||
+      (*flags & NYAMP_ASR_BEGIN_ATTACH_KWS) == 0 ||
+      nyamp_get_le32(payload + 12) != 0)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  return NYAMP_OK;
+}
+
+int nyamp_asr_end_encode(uint8_t *payload, size_t payload_capacity,
+                         size_t *payload_size, uint64_t end_sample)
+{
+  if (payload == NULL || payload_size == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if (payload_capacity < NYAMP_ASR_END_SIZE)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  nyamp_put_le64(payload, end_sample);
+  *payload_size = NYAMP_ASR_END_SIZE;
+  return NYAMP_OK;
+}
+
+int nyamp_asr_end_decode(uint64_t *end_sample, const uint8_t *payload,
+                         size_t payload_size)
+{
+  int result;
+
+  if (end_sample == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  result = nyamp_payload_ready(payload, payload_size, NYAMP_ASR_END_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  if (payload_size != NYAMP_ASR_END_SIZE)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  *end_sample = nyamp_get_le64(payload);
+  return NYAMP_OK;
+}
+
+static int nyamp_tts_text_check(const struct nyamp_tts_text_s *chunk)
+{
+  /* The negated comparison also refuses a NaN speed. */
+
+  if (chunk->flags != 0 || !(chunk->speed > 0.0f) ||
+      (chunk->window_samples != 0 &&
+       (chunk->window_samples < NYAMP_TTS_WINDOW_SAMPLES_MIN ||
+        chunk->window_samples > NYAMP_TTS_WINDOW_SAMPLES_MAX)))
+    {
+      return NYAMP_EINVAL;
+    }
+
+  return nyamp_llm_span_check(chunk->total, chunk->offset, chunk->length,
+                              NYAMP_TTS_TEXT_MAX_BODY,
+                              NYAMP_TTS_TEXT_MAX_CHUNK);
+}
+
+int nyamp_tts_text_encode(uint8_t *payload, size_t payload_capacity,
+                          size_t *payload_size,
+                          const struct nyamp_tts_text_s *chunk,
+                          const uint8_t *bytes)
+{
+  size_t needed;
+
+  if (payload == NULL || payload_size == NULL || chunk == NULL ||
+      bytes == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if (nyamp_tts_text_check(chunk) != NYAMP_OK)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  needed = NYAMP_TTS_TEXT_HEADER_SIZE + chunk->length;
+  if (payload_capacity < needed)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  nyamp_put_le32(payload + 0, chunk->total);
+  nyamp_put_le32(payload + 4, chunk->offset);
+  nyamp_put_le32(payload + 8, chunk->length);
+  nyamp_put_le32(payload + 12, chunk->speaker_id);
+  nyamp_put_le32(payload + 16, nyamp_float_bits(chunk->speed));
+  nyamp_put_le32(payload + 20, chunk->window_samples);
+  nyamp_put_le32(payload + 24, chunk->flags);
+  memcpy(payload + NYAMP_TTS_TEXT_HEADER_SIZE, bytes, chunk->length);
+  *payload_size = needed;
+  return NYAMP_OK;
+}
+
+int nyamp_tts_text_decode(struct nyamp_tts_text_s *chunk,
+                          const uint8_t **bytes, const uint8_t *payload,
+                          size_t payload_size)
+{
+  int result;
+
+  if (chunk == NULL || bytes == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  result =
+      nyamp_payload_ready(payload, payload_size, NYAMP_TTS_TEXT_HEADER_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  chunk->total = nyamp_get_le32(payload + 0);
+  chunk->offset = nyamp_get_le32(payload + 4);
+  chunk->length = nyamp_get_le32(payload + 8);
+  chunk->speaker_id = nyamp_get_le32(payload + 12);
+  chunk->speed = nyamp_bits_float(nyamp_get_le32(payload + 16));
+  chunk->window_samples = nyamp_get_le32(payload + 20);
+  chunk->flags = nyamp_get_le32(payload + 24);
+
+  if (nyamp_tts_text_check(chunk) != NYAMP_OK)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  if (payload_size != NYAMP_TTS_TEXT_HEADER_SIZE + (size_t)chunk->length)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  *bytes = payload + NYAMP_TTS_TEXT_HEADER_SIZE;
+  return NYAMP_OK;
+}
+
+int nyamp_kws_load_encode(uint8_t *payload, size_t payload_capacity,
+                          size_t *payload_size,
+                          const struct nyamp_kws_load_s *load)
+{
+  size_t needed;
+
+  if (payload == NULL || payload_size == NULL || load == NULL ||
+      load->directory == NULL ||
+      (load->keywords == NULL && load->keywords_length != 0))
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if (load->directory_length == 0 || load->threshold < 0.0f ||
+      load->score < 0.0f || load->threshold != load->threshold ||
+      load->score != load->score)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  needed = NYAMP_KWS_LOAD_HEADER_SIZE + (size_t)load->directory_length +
+           load->keywords_length;
+  if (needed > NYAMP_INLINE_MAX || payload_capacity < needed)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  nyamp_put_le32(payload + 0, nyamp_float_bits(load->threshold));
+  nyamp_put_le32(payload + 4, nyamp_float_bits(load->score));
+  nyamp_put_le16(payload + 8, load->max_active_paths);
+  nyamp_put_le16(payload + 10, load->num_trailing_blanks);
+  nyamp_put_le16(payload + 12, load->directory_length);
+  nyamp_put_le16(payload + 14, load->keywords_length);
+  memcpy(payload + NYAMP_KWS_LOAD_HEADER_SIZE, load->directory,
+         load->directory_length);
+  if (load->keywords_length != 0)
+    {
+      memcpy(payload + NYAMP_KWS_LOAD_HEADER_SIZE + load->directory_length,
+             load->keywords, load->keywords_length);
+    }
+
+  *payload_size = needed;
+  return NYAMP_OK;
+}
+
+int nyamp_kws_load_decode(struct nyamp_kws_load_s *load,
+                          const uint8_t *payload, size_t payload_size)
+{
+  int result;
+
+  if (load == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  result =
+      nyamp_payload_ready(payload, payload_size, NYAMP_KWS_LOAD_HEADER_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  load->threshold = nyamp_bits_float(nyamp_get_le32(payload + 0));
+  load->score = nyamp_bits_float(nyamp_get_le32(payload + 4));
+  load->max_active_paths = nyamp_get_le16(payload + 8);
+  load->num_trailing_blanks = nyamp_get_le16(payload + 10);
+  load->directory_length = nyamp_get_le16(payload + 12);
+  load->keywords_length = nyamp_get_le16(payload + 14);
+
+  if (load->directory_length == 0 || !(load->threshold >= 0.0f) ||
+      !(load->score >= 0.0f))
+    {
+      return NYAMP_EPROTO;
+    }
+
+  if (payload_size != NYAMP_KWS_LOAD_HEADER_SIZE +
+                          (size_t)load->directory_length +
+                          load->keywords_length)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  load->directory = (const char *)(payload + NYAMP_KWS_LOAD_HEADER_SIZE);
+  load->keywords = load->directory + load->directory_length;
+  return NYAMP_OK;
+}
+
+int nyamp_kws_push_encode(uint8_t *payload, size_t payload_capacity,
+                          size_t *payload_size,
+                          const struct nyamp_kws_push_s *push)
+{
+  size_t used = 0;
+  int result;
+
+  if (payload == NULL || payload_size == NULL || push == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if ((push->flags & ~NYAMP_KWS_PUSH_DISCONTINUITY) != 0)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if (payload_capacity < NYAMP_KWS_PUSH_SIZE)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  result = nyamp_buffer_encode(payload, payload_capacity, &used,
+                               &push->buffer);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  nyamp_put_le32(payload + NYAMP_BUFFER_SIZE + 0, push->sequence);
+  nyamp_put_le16(payload + NYAMP_BUFFER_SIZE + 4, push->flags);
+  nyamp_put_le16(payload + NYAMP_BUFFER_SIZE + 6, 0);
+  nyamp_put_le64(payload + NYAMP_BUFFER_SIZE + 8, push->stream_sample);
+
+  *payload_size = NYAMP_KWS_PUSH_SIZE;
+  return NYAMP_OK;
+}
+
+int nyamp_kws_push_decode(struct nyamp_kws_push_s *push,
+                          const uint8_t *payload, size_t payload_size)
+{
+  int result;
+
+  if (push == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  result = nyamp_payload_ready(payload, payload_size, NYAMP_KWS_PUSH_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  if (payload_size != NYAMP_KWS_PUSH_SIZE)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  result = nyamp_buffer_decode(&push->buffer, payload, NYAMP_BUFFER_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  push->sequence = nyamp_get_le32(payload + NYAMP_BUFFER_SIZE + 0);
+  push->flags = nyamp_get_le16(payload + NYAMP_BUFFER_SIZE + 4);
+  push->stream_sample = nyamp_get_le64(payload + NYAMP_BUFFER_SIZE + 8);
+
+  if ((push->flags & ~NYAMP_KWS_PUSH_DISCONTINUITY) != 0 ||
+      nyamp_get_le16(payload + NYAMP_BUFFER_SIZE + 6) != 0)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  return NYAMP_OK;
+}
+
+int nyamp_kws_push_ack_encode(uint8_t *body, size_t body_capacity,
+                              size_t *body_size, uint64_t next_sample)
+{
+  if (body == NULL || body_size == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if (body_capacity < NYAMP_KWS_PUSH_ACK_SIZE)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  nyamp_put_le64(body, next_sample);
+  *body_size = NYAMP_KWS_PUSH_ACK_SIZE;
+  return NYAMP_OK;
+}
+
+int nyamp_kws_push_ack_decode(uint64_t *next_sample, const uint8_t *body,
+                              size_t body_size)
+{
+  int result;
+
+  if (next_sample == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  result = nyamp_payload_ready(body, body_size, NYAMP_KWS_PUSH_ACK_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  if (body_size != NYAMP_KWS_PUSH_ACK_SIZE)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  *next_sample = nyamp_get_le64(body);
+  return NYAMP_OK;
+}
+
+int nyamp_kws_detected_encode(uint8_t *payload, size_t payload_capacity,
+                              size_t *payload_size,
+                              const struct nyamp_kws_detected_s *detected)
+{
+  const uint16_t known =
+      NYAMP_KWS_DETECTED_HAS_OFFSETS | NYAMP_KWS_DETECTED_HAS_SCORE;
+  size_t needed;
+
+  if (payload == NULL || payload_size == NULL || detected == NULL ||
+      (detected->label == NULL && detected->label_length != 0))
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if ((detected->flags & ~known) != 0 ||
+      ((detected->flags & NYAMP_KWS_DETECTED_HAS_OFFSETS) != 0 &&
+       detected->start_sample > detected->end_sample))
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if (detected->label_length > NYAMP_KWS_MAX_LABEL)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  needed = NYAMP_KWS_DETECTED_HEADER_SIZE + detected->label_length;
+  if (payload_capacity < needed)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  nyamp_put_le32(payload + 0, detected->sequence);
+  nyamp_put_le16(payload + 4, detected->keyword_id);
+  nyamp_put_le16(payload + 6, detected->flags);
+  nyamp_put_le32(payload + 8, nyamp_float_bits(detected->score));
+  nyamp_put_le32(payload + 12, detected->label_length);
+  nyamp_put_le64(payload + 16, detected->start_sample);
+  nyamp_put_le64(payload + 24, detected->end_sample);
+  nyamp_put_le64(payload + 32, detected->trigger_sample);
+  if (detected->label_length != 0)
+    {
+      memcpy(payload + NYAMP_KWS_DETECTED_HEADER_SIZE, detected->label,
+             detected->label_length);
+    }
+
+  *payload_size = needed;
+  return NYAMP_OK;
+}
+
+int nyamp_kws_detected_decode(struct nyamp_kws_detected_s *detected,
+                              const uint8_t *payload, size_t payload_size)
+{
+  const uint16_t known =
+      NYAMP_KWS_DETECTED_HAS_OFFSETS | NYAMP_KWS_DETECTED_HAS_SCORE;
+  int result;
+
+  if (detected == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  result = nyamp_payload_ready(payload, payload_size,
+                               NYAMP_KWS_DETECTED_HEADER_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  detected->sequence = nyamp_get_le32(payload + 0);
+  detected->keyword_id = nyamp_get_le16(payload + 4);
+  detected->flags = nyamp_get_le16(payload + 6);
+  detected->score = nyamp_bits_float(nyamp_get_le32(payload + 8));
+  detected->label_length = nyamp_get_le32(payload + 12);
+  detected->start_sample = nyamp_get_le64(payload + 16);
+  detected->end_sample = nyamp_get_le64(payload + 24);
+  detected->trigger_sample = nyamp_get_le64(payload + 32);
+
+  if ((detected->flags & ~known) != 0 ||
+      ((detected->flags & NYAMP_KWS_DETECTED_HAS_OFFSETS) != 0 &&
+       detected->start_sample > detected->end_sample))
+    {
+      return NYAMP_EPROTO;
+    }
+
+  if (detected->label_length > NYAMP_KWS_MAX_LABEL ||
+      payload_size !=
+          NYAMP_KWS_DETECTED_HEADER_SIZE + (size_t)detected->label_length)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  detected->label = (const char *)(payload + NYAMP_KWS_DETECTED_HEADER_SIZE);
+  return NYAMP_OK;
+}
+
+int nyamp_kws_labels_begin(uint8_t *body, size_t body_capacity,
+                           size_t *body_size)
+{
+  if (body == NULL || body_size == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if (body_capacity < NYAMP_KWS_LABELS_HEADER_SIZE)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  nyamp_put_le16(body + 0, 0);
+  nyamp_put_le16(body + 2, 0);
+  *body_size = NYAMP_KWS_LABELS_HEADER_SIZE;
+  return NYAMP_OK;
+}
+
+int nyamp_kws_labels_append(uint8_t *body, size_t body_capacity,
+                            size_t *body_size, const char *label,
+                            size_t label_length)
+{
+  uint16_t count;
+
+  if (body == NULL || body_size == NULL || label == NULL ||
+      *body_size < NYAMP_KWS_LABELS_HEADER_SIZE || label_length == 0 ||
+      label_length > UINT16_MAX)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  if (*body_size > body_capacity ||
+      body_capacity - *body_size < 2U + label_length)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  count = nyamp_get_le16(body);
+  if (count == UINT16_MAX)
+    {
+      return NYAMP_EMSGSIZE;
+    }
+
+  nyamp_put_le16(body + *body_size, (uint16_t)label_length);
+  memcpy(body + *body_size + 2U, label, label_length);
+  *body_size += 2U + label_length;
+  nyamp_put_le16(body, (uint16_t)(count + 1U));
+  return NYAMP_OK;
+}
+
+int nyamp_kws_labels_next(const char **label, uint16_t *label_length,
+                          size_t *position, const uint8_t *body,
+                          size_t body_size)
+{
+  size_t at;
+  uint16_t length;
+
+  if (label == NULL || label_length == NULL || position == NULL ||
+      body == NULL || body_size < NYAMP_KWS_LABELS_HEADER_SIZE)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  at = *position == 0 ? NYAMP_KWS_LABELS_HEADER_SIZE : *position;
+  if (at > body_size || body_size - at < 2U)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  length = nyamp_get_le16(body + at);
+  if (length == 0 || body_size - at - 2U < length)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  *label = (const char *)(body + at + 2U);
+  *label_length = length;
+  *position = at + 2U + length;
+  return NYAMP_OK;
+}
+
+int nyamp_kws_labels_decode(uint16_t *count, const uint8_t *body,
+                            size_t body_size)
+{
+  size_t position = 0;
+  uint16_t index;
+  int result;
+
+  if (count == NULL)
+    {
+      return NYAMP_EINVAL;
+    }
+
+  result =
+      nyamp_payload_ready(body, body_size, NYAMP_KWS_LABELS_HEADER_SIZE);
+  if (result != NYAMP_OK)
+    {
+      return result;
+    }
+
+  if (nyamp_get_le16(body + 2) != 0)
+    {
+      return NYAMP_EPROTO;
+    }
+
+  *count = nyamp_get_le16(body);
+  for (index = 0; index < *count; index++)
+    {
+      const char *label;
+      uint16_t length;
+
+      result = nyamp_kws_labels_next(&label, &length, &position, body,
+                                     body_size);
+      if (result != NYAMP_OK)
+        {
+          return result;
+        }
+    }
+
+  /* Nothing may follow the last label. */
+
+  if ((*count == 0 ? NYAMP_KWS_LABELS_HEADER_SIZE : position) != body_size)
+    {
+      return NYAMP_EPROTO;
+    }
+
   return NYAMP_OK;
 }
