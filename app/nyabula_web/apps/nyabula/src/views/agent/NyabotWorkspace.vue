@@ -20,9 +20,10 @@ const bot = page.bot;
 const route = useRoute();
 const router = useRouter();
 const dialog = useDialogStore();
-async function deleteConversation(): Promise<void> {
-  if (await dialog.confirm('删除当前会话的文本和执行细节，保留请求标识以防重复执行。关联的记忆、待办和计时器不会删除。',
-    { title: '删除设备端会话', danger: true, confirmText: '删除会话' })) await bot.deleteConversation();
+async function deleteConversation(id?: string, title?: string): Promise<void> {
+  const what = title ? `删除会话“${title}”` : '删除当前会话';
+  if (await dialog.confirm(`${what}的文本和执行细节，保留请求标识以防重复执行。关联的记忆、待办和计时器不会删除。`,
+    { title: '删除设备端会话', danger: true, confirmText: '删除会话' })) await bot.deleteConversation(id);
 }
 const sections = [
   { id: 'chat', label: '聊天' }, { id: 'tasks', label: '任务' }, { id: 'memory', label: '记忆' },
@@ -50,10 +51,16 @@ const stateLabel = computed(() => !page.session.connected ? '设备未连接' : 
     <p v-if="bot.error" class="error" role="alert">{{ bot.error }} <button @click="bot.refresh()">重新读取</button></p>
     <div v-if="section === 'chat'" class="chat-layout">
       <aside class="conversations" aria-label="会话列表">
-        <MdButton variant="tonal" @click="bot.newConversation()"><UiIcon name="add" :size="18" />新建会话</MdButton>
-        <button v-for="item in bot.conversations" :key="item.id" class="conversation" :class="{ selected: bot.conversation === item.id }"
-          @click="bot.conversation = item.id">{{ item.title }}</button>
-        <p v-if="!bot.conversations.length" class="muted">尚无设备端会话</p>
+        <MdButton variant="tonal" class="new-conversation" @click="bot.newConversation()"><UiIcon name="add" :size="18" />新建会话</MdButton>
+        <div class="conversation-list">
+          <div v-for="item in bot.conversations" :key="item.id" class="conversation-row" :class="{ selected: bot.conversation === item.id }">
+            <button class="conversation" @click="bot.conversation = item.id">{{ item.title }}</button>
+            <button class="delete" type="button" :aria-label="`删除会话 ${item.title}`" :title="`删除会话 ${item.title}`"
+              :disabled="!page.session.connected || bot.active.some(r => r.conversationId === item.id)"
+              @click.stop="deleteConversation(item.id, item.title)"><UiIcon name="delete" :size="18" /></button>
+          </div>
+          <p v-if="!bot.conversations.length" class="muted">尚无设备端会话</p>
+        </div>
       </aside>
       <section class="chat-content" :class="{ 'awaiting-approval': bot.currentRuns.some(r => r.steps?.some(s => s.state === 'pending')) }" aria-label="当前会话">
         <div class="chat-state"><span>{{ stateLabel }}</span><MdButton v-if="!bot.status?.configured" variant="text" @click="select('config')">模型配置</MdButton>
@@ -131,9 +138,34 @@ const stateLabel = computed(() => !page.session.connected ? '设备未连接' : 
 .section-nav button, .conversation { border: 0; background: transparent; color: var(--md-on-surface-variant); font: 500 15px var(--font-body); cursor: pointer; min-height: 44px; padding: 8px 14px; white-space: nowrap; }
 .section-nav .selected { color: var(--md-primary); border-bottom: 2px solid var(--md-primary); }
 .chat-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; flex: 1; min-height: 560px; }
-.conversations { display: flex; flex-direction: column; gap: 8px; min-width: 0; border-right: 1px solid var(--md-outline-variant); padding-right: 16px; }
-.conversation { text-align: left; overflow: hidden; text-overflow: ellipsis; border-radius: 12px; }
-.conversation.selected { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
+.conversations { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; border-right: 1px solid var(--md-outline-variant); padding-right: 16px; }
+.new-conversation { flex: none; }
+/* The list scrolls on its own so a long history never stretches the page. */
+.conversation-list { display: flex; flex-direction: column; gap: 4px; min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; }
+.conversation-row { display: flex; align-items: center; border-radius: 12px; }
+.conversation-row.selected { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
+.conversation { flex: 1; min-width: 0; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: inherit; }
+.delete {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin-right: 4px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--md-on-surface-variant);
+  cursor: pointer;
+  opacity: 0;
+}
+/* Shown on hover, but never only on hover: focus reaches it by keyboard and
+ * coarse pointers have no hover at all.
+ */
+.conversation-row:hover .delete, .delete:focus-visible { opacity: 1; }
+.delete:hover:not(:disabled) { background: color-mix(in srgb, var(--md-error) 14%, transparent); color: var(--md-error); }
+.delete:disabled { cursor: not-allowed; }
+@media (hover: none) { .delete { opacity: 1; } }
 .chat-content { display: flex; flex-direction: column; gap: 12px; min-width: 0; max-width: 960px; }
 .chat-state, .execution { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; }
 .chat-messages { flex: 1; min-height: 300px; max-height: 60dvh; }
@@ -154,6 +186,8 @@ const stateLabel = computed(() => !page.session.connected ? '设备未连接' : 
   .chat-layout { display: flex; flex-direction: column; gap: 12px; min-height: 520px; }
   .conversations { flex-direction: row; overflow-x: auto; border-right: 0; padding: 0; }
   .conversations > * { flex: none; max-width: 180px; }
+  .conversation-list { flex-direction: row; overflow-x: auto; overflow-y: hidden; max-width: none; }
+  .conversation-row { flex: none; max-width: 200px; }
   .chat-content { flex: 1; }
   .awaiting-approval .chat-messages { flex: none; min-height: 100px; max-height: 180px; }
   .section-nav button { padding: 8px 10px; }
