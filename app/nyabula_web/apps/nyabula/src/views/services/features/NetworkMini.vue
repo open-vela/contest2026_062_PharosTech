@@ -6,6 +6,7 @@ import { UiIcon } from '@nyabula/ui';
 import { useSessionStore } from '../../../stores/session';
 import { useDeviceRuntime } from '../../../composables/useDeviceRuntime';
 import { useAsyncTask } from '../../../composables/useRequest';
+import { parseNetworkStatus, type NetworkStatus } from '../../../lib/wifi';
 import { rssiBars, wifiOf, type SysInfo } from '../../device/sections/sysinfo';
 import { useNetworkScene } from './sceneLinks';
 import type { FeatureMiniProps } from './contract';
@@ -16,9 +17,24 @@ const session = useSessionStore();
 const device = useDeviceRuntime();
 
 const task = useAsyncTask<SysInfo>(() => session.request('sys.info') as Promise<SysInfo>, { immediate: session.connected });
+/* network.status is the only source with a live signal reading; the runtime
+ * snapshot names the interface but carries no RSSI, and sys.info reports one
+ * only on firmware that puts it there.  Taking the snapshot alone left the
+ * card showing a dash on a device that knew its own signal perfectly well.
+ */
+const status = useAsyncTask<NetworkStatus>(
+  async () => parseNetworkStatus(await session.request('network.status')),
+  { immediate: session.connected },
+);
 const wifi = computed(() => {
+  const fromInfo = wifiOf(task.data.value);
+  const live = status.data.value;
   const wireless = device.snapshot?.network.interfaces.find(item => item.ssid);
-  return wireless ? { ssid: wireless.ssid ?? null, rssi: null } : wifiOf(task.data.value);
+  const online = live?.state === 'sta_online';
+  return {
+    ssid: wireless?.ssid ?? (online ? live?.ssid ?? null : null) ?? fromInfo.ssid,
+    rssi: live?.rssi ?? fromInfo.rssi,
+  };
 });
 
 const ssid = computed<string | null>(() => wifi.value.ssid);
