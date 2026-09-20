@@ -100,10 +100,55 @@ export interface UpdateApply {
   error: number;
   /** Device's short word for it: digest / verify / too-large / io / ... */
   reason: string;
+  /** Id of the target the last (or current) apply wrote; '' before the first. */
+  target: string;
+  /** It was written under a mounted filesystem: only a reboot makes it sane. */
+  forced: boolean;
 }
+
+/** How an image reaches the medium: staged into an A/B slot with its
+ *  bootctrl record, the boot loader in place, or a raw partition write. */
+export type TargetKind = 'slot' | 'nboot' | 'partition';
+/** What the device checks a file against before it takes it. */
+export type TargetFormat = 'raw' | 'arm64' | 'fit' | 'bootctrl' | 'fat';
+/** One thing the device can update. The list is the device's: the panel
+ *  renders it and knows no target of its own. */
+export interface UpdateTarget {
+  id: string;
+  label: string;
+  description: string;
+  kind: TargetKind;
+  format: TargetFormat;
+  /** Can leave the device unbootable; update.apply wants `advanced: true`. */
+  advanced: boolean;
+  /** Largest image it takes right now (partition and staging space). */
+  maxBytes: number;
+  /** Size of the partition alone. */
+  capacity: number;
+  /** Slot a staged image would replace; '' for the other kinds. */
+  slot: SlotName | '';
+  /** Whether update.apply would agree right now, and if not, why:
+   *  running / blocked / no-handoff. */
+  available: boolean;
+  reason: string;
+  /** A filesystem is mounted from it: update.apply wants `force: true`. */
+  mounted: boolean;
+}
+
+export const DEFAULT_TARGET = 'nuttx';
+export const AMP_TARGET = 'amp';
+
 export interface UpdateStatus {
   current: { version: string; builtAt: string; slot: SlotName | '' };
   slots: UpdateSlot[];
+  /** Slots of the AMP domain. None of them is ever `running`: the panel talks
+   *  to the image of a NuttX slot. */
+  ampSlots: UpdateSlot[];
+  /** The boot loader will try the AMP domain first at the next start. */
+  ampActive: boolean;
+  /** Everything update.apply can write. A firmware from before there were
+   *  targets gets the one it has. */
+  targets: UpdateTarget[];
   channel: string;
   online: boolean;
   detail: string;
@@ -123,19 +168,20 @@ function slotName(v: unknown): SlotName | '' {
   return s === 'a' || s === 'b' ? s : '';
 }
 
-export function parseUpdateStatus(raw: unknown): UpdateStatus {
-  const d = isRecord(raw) ? raw : {};
-  const cur = isRecord(d.current) ? d.current : {};
-  const running = slotName(cur.slot);
+const TARGET_KINDS: readonly string[] = ['slot', 'nboot', 'partition'];
+const TARGET_FORMATS: readonly string[] = ['raw', 'arm64', 'fit', 'bootctrl', 'fat'];
+
+function parseSlots(raw: unknown, running: SlotName | '' | null): UpdateSlot[] {
   const slots: UpdateSlot[] = [];
-  for (const s of records(d.slots)) {
+  for (const s of records(raw)) {
     const name = slotName(s.name);
     if (!name || slots.some((x) => x.name === name)) continue;
     slots.push({
       name,
       active: s.active === true,
       // Older firmware reported no `running`; the current slot says the same.
-      running: typeof s.running === 'boolean' ? s.running : name === running,
+      // `null` = a domain without a running slot (AMP): never inferred.
+      running: typeof s.running === 'boolean' ? s.running : running !== null && name === running,
       bootable: s.bootable === true,
       successful: s.successful === true,
       priority: size(s.priority),
@@ -143,24 +189,107 @@ export function parseUpdateStatus(raw: unknown): UpdateStatus {
       size: size(s.size),
     });
   }
+  return slots;
+}
+
+function parseTargets(raw: unknown): UpdateTarget[] {
+  const targets: UpdateTarget[] = [];
+  for (const t of records(raw)) {
+    const id = str(t.id);
+    if (!id || targets.some((x) => x.id === id)) continue;
+    const kind = str(t.kind);
+    const format = str(t.format);
+    const maxBytes = size(t.maxBytes);
+    targets.push({
+      id,
+      label: str(t.label) || id,
+      description: str(t.description),
+      // An unknown kind is treated as the most dangerous one it could be.
+      kind: TARGET_KINDS.includes(kind) ? (kind as TargetKind) : 'partition',
+      format: TARGET_FORMATS.includes(format) ? (format as TargetFormat) : 'raw',
+      // Only the two the panel knows as ordinary may ever count as ordinary.
+      advanced: t.advanced === true || (id !== DEFAULT_TARGET && id !== AMP_TARGET),
+      maxBytes,
+      capacity: size(t.capacity) || maxBytes,
+      slot: slotName(t.slot),
+      available: t.available !== false,
+      reason: str(t.reason),
+      mounted: t.mounted === true,
+    });
+  }
+  return targets;
+}
+
+export function parseUpdateStatus(raw: unknown): UpdateStatus {
+  const d = isRecord(raw) ? raw : {};
+  const cur = isRecord(d.current) ? d.current : {};
+  const running = slotName(cur.slot);
+  const slots = parseSlots(d.slots, running);
   const ap = isRecord(d.apply) ? d.apply : {};
   const upload = d.upload === true;
   const target = slotName(d.target) || (upload && running ? (running === 'a' ? 'b' : 'a') : '');
+  const maxBytes = upload ? size(d.maxBytes) : 0;
+  let targets = upload ? parseTargets(d.targets) : [];
+  if (upload && !targets.length) {
+    // Firmware from before there were targets: it takes the NuttX image.
+    targets = [{
+      id: DEFAULT_TARGET, label: 'openvela 固件', description: '', kind: 'slot', format: 'arm64', advanced: false,
+      maxBytes, capacity: maxBytes, slot: target, available: true, reason: '', mounted: false,
+    }];
+  }
   return {
     current: { version: str(cur.version), builtAt: str(cur.builtAt), slot: running },
     slots,
+    ampSlots: parseSlots(d.ampSlots, null),
+    ampActive: d.ampActive === true,
+    targets,
     channel: str(d.channel) || 'manual',
     online: d.online === true,
     detail: str(d.detail),
     upload,
-    maxBytes: upload ? size(d.maxBytes) : 0,
+    maxBytes,
     target,
     apply: {
       state: typeof ap.state === 'string' && APPLY_STATES.includes(ap.state) ? (ap.state as ApplyState) : 'idle',
       error: size(ap.error),
       reason: str(ap.reason),
+      target: str(ap.target),
+      forced: ap.forced === true,
     },
   };
+}
+
+/** What the device said a forced write means (answer of update.apply). */
+export function applyNotice(raw: unknown): string {
+  return isRecord(raw) ? str(raw.notice) : '';
+}
+
+export function findTarget(status: UpdateStatus | null, id: string): UpdateTarget | null {
+  return status?.targets.find((t) => t.id === id) ?? null;
+}
+
+/** An AMP image is in place and active, but nobody has said it works yet. */
+export function needsAmpConfirm(status: UpdateStatus): boolean {
+  return status.upload && status.ampSlots.some((s) => s.active && s.bootable && s.size > 0 && !s.successful);
+}
+
+/** The last apply wrote something the slot table does not show, and it only
+ *  takes effect after a restart: its target, else null. The NuttX firmware is
+ *  left to `pendingReboot`, which reads the same from the slots and survives
+ *  a page that was opened later. */
+export function appliedTarget(status: UpdateStatus): UpdateTarget | null {
+  if (status.apply.state !== 'done' || !status.apply.target || status.apply.target === DEFAULT_TARGET) return null;
+  return findTarget(status, status.apply.target);
+}
+
+const UNAVAILABLE: Record<string, string> = {
+  running: '正在运行的固件就在这个分区里，不能覆盖',
+  blocked: '不能从面板写入',
+  'no-handoff': '设备不是由 N-Boot 启动的，无法确定启动介质',
+};
+
+export function unavailableText(target: UpdateTarget): string {
+  return target.available ? '' : UNAVAILABLE[target.reason] ?? '当前不可写入';
 }
 
 /** The running slot has booted but nobody has said it works yet. */
@@ -190,9 +319,83 @@ export function otaEndpoint(deviceKey: string | null, loc: { protocol: string; h
   return { url: `${loc.protocol}//${loc.host}/ota/upload`, tokenSlot: `nyalink.token:${ws}` };
 }
 
+/** The upload URL for one target. The default target goes without a query, so
+ *  the request is the one a firmware from before there were targets knows. */
+export function otaUploadUrl(url: string, targetId: string): string {
+  return !targetId || targetId === DEFAULT_TARGET ? url : `${url}?target=${encodeURIComponent(targetId)}`;
+}
+
 /** arm64 Image header: "ARM\x64" at byte 56. The device checks the same. */
 export function isFirmwareImage(head: Uint8Array): boolean {
   return head.length >= 60 && head[56] === 0x41 && head[57] === 0x52 && head[58] === 0x4d && head[59] === 0x64;
+}
+
+/** How much of a file `imageFormatOk` wants to see. */
+export const IMAGE_HEAD_BYTES = 512;
+
+function startsWith(head: Uint8Array, at: number, bytes: readonly number[]): boolean {
+  return head.length >= at + bytes.length && bytes.every((b, i) => head[at + i] === b);
+}
+
+/** The magic the device checks for a target, on the first bytes of the file.
+ *  Failing here saves the whole transfer; passing proves nothing more than
+ *  that the file is the right kind of thing. */
+export function imageFormatOk(format: TargetFormat, head: Uint8Array): boolean {
+  switch (format) {
+    case 'arm64': return isFirmwareImage(head);
+    case 'fit': return startsWith(head, 0, [0xd0, 0x0d, 0xfe, 0xed]);
+    case 'bootctrl': return startsWith(head, 0, [0x4b, 0x37, 0x41, 0x42, 0x43, 0x54, 0x52, 0x4c]); // "K7ABCTRL"
+    case 'fat': return startsWith(head, 510, [0x55, 0xaa]);
+    default: return head.length > 0;
+  }
+}
+
+const FORMAT_HINTS: Record<TargetFormat, string> = {
+  arm64: '这不是 NuttX 固件镜像（缺少 arm64 Image 头）。请选择构建产出的 nuttx.bin。',
+  fit: '这不是 FIT 镜像（开头不是 d00dfeed）。',
+  bootctrl: '这不是 bootctrl 记录（开头不是 K7ABCTRL）。',
+  fat: '这不是 FAT 文件系统镜像（首扇区缺少 55AA 签名）。',
+  raw: '文件是空的。',
+};
+
+export function formatHint(format: TargetFormat): string {
+  return FORMAT_HINTS[format];
+}
+
+const FORMAT_NAMES: Record<TargetFormat, string> = {
+  arm64: 'arm64 Image（nuttx.bin）', fit: 'FIT 镜像（.itb / .img）', bootctrl: 'bootctrl 记录', fat: 'FAT 文件系统镜像', raw: '原始镜像，设备不检查内容',
+};
+
+export function formatName(format: TargetFormat): string {
+  return FORMAT_NAMES[format];
+}
+
+/** "9f86d081…0f00a08" for a place too narrow for 64 digits. */
+export function shortDigest(hex: string): string {
+  return hex.length > 20 ? `${hex.slice(0, 8)}…${hex.slice(-8)}` : hex;
+}
+
+/** The payload of update.apply. `advanced` and `force` are only ever sent as
+ *  `true`: leaving them out is how a request says no. */
+export function applyRequest(target: UpdateTarget, sha256: string, force: boolean): Record<string, unknown> {
+  const req: Record<string, unknown> = { sha256, target: target.id };
+  if (target.advanced) req.advanced = true;
+  if (force) req.force = true;
+  return req;
+}
+
+/* ---- advanced targets gate ---- */
+
+const UNLOCK_FALLBACK = '我已了解风险';
+
+/** What the owner has to type before the advanced targets are shown: the
+ *  device's name, so that it is this device they are thinking of. */
+export function unlockPhrase(deviceName: string | null | undefined): string {
+  return (deviceName ?? '').trim() || UNLOCK_FALLBACK;
+}
+
+export function unlockMatches(input: string | null, phrase: string): boolean {
+  return input !== null && phrase !== '' && input.trim() === phrase;
 }
 
 export interface UploadReply {
@@ -232,28 +435,61 @@ const UPLOAD_ERRORS: Record<number, string> = {
   409: '设备正在处理另一次上传或写入，请稍后再试',
   411: '浏览器没有发送文件大小，无法上传',
   413: '文件太大，或设备 /data 剩余空间不足',
-  415: '这不是 NuttX 固件镜像（缺少 arm64 Image 头）',
+  415: '设备认为这个文件不是所选目标需要的镜像，已丢弃',
   422: '设备收到的数据与本机校验值不一致，已丢弃，请重试',
   507: '设备存储空间不足',
 };
 
+/** The device's own word says more than the status it came with. */
+const UPLOAD_WORDS: Record<string, string> = {
+  ETARGET: '此固件不认识所选的更新目标',
+  EBLOCKED: '这个目标不能从面板写入',
+  ETOOLARGE: '文件比目标分区大',
+  ENOSPACE: '设备 /data 剩余空间不足，放不下这个文件',
+};
+
 export function uploadErrorText(httpStatus: number, reply: UploadReply): string {
   if (reply.error === 'ENOTJSON' && httpStatus === 200) return UPLOAD_ERRORS[404]!;
-  return UPLOAD_ERRORS[httpStatus] ?? `上传失败（HTTP ${httpStatus}${reply.error ? ` ${reply.error}` : ''}）`;
+  return UPLOAD_WORDS[reply.error] ?? UPLOAD_ERRORS[httpStatus] ?? `上传失败（HTTP ${httpStatus}${reply.error ? ` ${reply.error}` : ''}）`;
 }
 
 const APPLY_REASONS: Record<string, string> = {
-  digest: '暂存的固件与确认时的校验值不一致，已丢弃',
-  verify: '写入后从存储回读的内容不一致，新槽位保持不可启动',
-  'too-large': '固件比槽位分区大',
+  digest: '暂存的文件与确认时的校验值不一致，已丢弃',
+  verify: '写入后从存储回读的内容不一致',
+  'too-large': '文件比目标分区大',
+  format: '暂存的文件不是这个目标需要的镜像',
   io: '读写存储失败',
-  'staged-file': '读不到已上传的固件，请重新上传',
+  'staged-file': '读不到已上传的文件，请重新上传',
   memory: '设备内存不足，无法开始写入',
 };
 
 export function applyErrorText(apply: UpdateApply): string {
   const text = APPLY_REASONS[apply.reason] ?? '写入失败';
   return apply.error ? `${text}（错误码 ${apply.error}）` : text;
+}
+
+/** Refusals of update.apply that ask something particular of the owner.
+ *  ENOTFOUND is not here on purpose: that one means a firmware without the
+ *  topic, and the caller says so. */
+const APPLY_REFUSALS: Record<string, string> = {
+  EADVANCED: '这是高级目标，需要先在「高级选项」中确认风险',
+  ERUNNING: '正在运行的固件就在这个分区里，设备拒绝覆盖它',
+  EMOUNTED: '这个分区的文件系统正在使用中，需要确认强制写入',
+  EBLOCKED: '这个目标不能从面板写入',
+  ENOTIMAGE: '已上传的文件不是这个目标需要的镜像，请重新选择文件',
+  ETOOLARGE: '已上传的文件比目标分区大',
+  ENOTCONFIGURED: '设备上没有已上传的文件，请重新上传',
+  EUNAVAILABLE: '设备不是由 N-Boot 启动的，无法确定写入位置',
+  EBUSY: '设备正在处理另一次上传或写入，请稍后再试',
+};
+
+/** Text for a refused update.apply, or '' when the code is not one of its own. */
+export function applyRefusalText(e: unknown): string {
+  return isRecord(e) && typeof e.code === 'string' ? APPLY_REFUSALS[e.code] ?? '' : '';
+}
+
+export function isMountedRefusal(e: unknown): boolean {
+  return isRecord(e) && e.code === 'EMOUNTED';
 }
 
 /* ---- logs.tail ---- */

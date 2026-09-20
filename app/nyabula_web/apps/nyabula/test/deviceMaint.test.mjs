@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { applyErrorText, cleanLogText, fmtBytes, isFirmwareImage, isUnsupportedError, mergeLogLines, needsConfirm, otaEndpoint, parseCloudStatus, parseLogsTail, parseStorageStatus, parseUpdateStatus, parseUploadReply, pendingReboot, uploadErrorText } from '../src/lib/deviceMaint.ts';
+import {
+  appliedTarget, applyErrorText, applyNotice, applyRefusalText, applyRequest, cleanLogText, findTarget, fmtBytes, formatHint, imageFormatOk,
+  isFirmwareImage, isMountedRefusal, isUnsupportedError, mergeLogLines, needsAmpConfirm, needsConfirm, otaEndpoint, otaUploadUrl, parseCloudStatus,
+  parseLogsTail, parseStorageStatus, parseUpdateStatus, parseUploadReply, pendingReboot, shortDigest, unavailableText, unlockMatches, unlockPhrase,
+  uploadErrorText,
+} from '../src/lib/deviceMaint.ts';
 import { createSha256, sha256Hex } from '../src/lib/sha256.ts';
 
 test('byte formatting', () => {
@@ -49,13 +54,13 @@ test('update.status: slots and current', () => {
   ]);
   assert.equal('triesRemaining' in u.slots[0], false);
   assert.deepEqual([u.online, u.upload, u.maxBytes, u.target, u.channel], [false, true, 64 * 1024 * 1024, 'a', 'upload']);
-  assert.deepEqual(u.apply, { state: 'failed', error: 74, reason: 'verify' });
-  assert.equal(applyErrorText(u.apply), '写入后从存储回读的内容不一致，新槽位保持不可启动（错误码 74）');
+  assert.deepEqual(u.apply, { state: 'failed', error: 74, reason: 'verify', target: '', forced: false });
+  assert.equal(applyErrorText(u.apply), '写入后从存储回读的内容不一致（错误码 74）');
   assert.equal(needsConfirm(u), true);
   assert.equal(pendingReboot(u), '');
   assert.deepEqual(parseUpdateStatus(undefined), {
-    current: { version: '', builtAt: '', slot: '' }, slots: [], channel: 'manual', online: false, detail: '',
-    upload: false, maxBytes: 0, target: '', apply: { state: 'idle', error: 0, reason: '' },
+    current: { version: '', builtAt: '', slot: '' }, slots: [], ampSlots: [], ampActive: false, targets: [], channel: 'manual', online: false,
+    detail: '', upload: false, maxBytes: 0, target: '', apply: { state: 'idle', error: 0, reason: '', target: '', forced: false },
   });
 });
 
@@ -79,6 +84,135 @@ test('update.status: older shape, staged update, unknown apply state', () => {
   const writing = parseUpdateStatus({ current: { slot: 'a' }, upload: true, apply: { state: 'writing' }, slots: [{ name: 'a', active: true, running: true, bootable: true }, { name: 'b', bootable: false }] });
   assert.equal(pendingReboot(writing), '');
   assert.equal(parseUpdateStatus({ apply: { state: 'exploded' } }).apply.state, 'idle');
+});
+
+test('update.status: targets, AMP slots, what an apply left behind', () => {
+  const MiB = 1024 * 1024;
+  const u = parseUpdateStatus({
+    current: { slot: 'a' }, upload: true, maxBytes: 64 * MiB, target: 'b',
+    slots: [{ name: 'a', active: true, running: true, bootable: true, successful: true, size: 9 }, { name: 'b' }],
+    ampSlots: [{ name: 'a', bootable: false }, { name: 'b', active: true, bootable: true, successful: false, priority: 15, version: 2, size: 40 * MiB }],
+    ampActive: true, ampTarget: 'a', stagingFree: 300 * MiB,
+    targets: [
+      { id: 'nuttx', label: 'openvela 固件', description: 'd', kind: 'slot', format: 'arm64', advanced: false, maxBytes: 64 * MiB, capacity: 64 * MiB, slot: 'b', available: true, reason: '', mounted: false },
+      { id: 'amp', label: 'AMP 计算域镜像', kind: 'slot', format: 'fit', advanced: false, maxBytes: 300 * MiB, capacity: 512 * MiB, slot: 'a', available: true },
+      { id: 'nboot', label: 'N-Boot', kind: 'nboot', format: 'fit', advanced: true, maxBytes: 4 * MiB, capacity: 4 * MiB },
+      { id: 'partition:nuttx_a', kind: 'partition', format: 'arm64', advanced: true, maxBytes: 64 * MiB, available: false, reason: 'running' },
+      { id: 'partition:config', kind: 'partition', format: 'fat', advanced: true, maxBytes: 32 * MiB, mounted: true },
+      // A target this panel has never heard of, claiming to be harmless.
+      { id: 'partition:mystery', kind: 'teleport', format: 'hologram', advanced: false, maxBytes: 1 },
+      { id: 'nuttx', label: 'duplicate' }, { label: 'no id' }, 'junk',
+    ],
+    apply: { state: 'done', error: 0, reason: '', target: 'amp', forced: false },
+  });
+  assert.deepEqual(u.targets.map((t) => t.id), ['nuttx', 'amp', 'nboot', 'partition:nuttx_a', 'partition:config', 'partition:mystery']);
+  assert.deepEqual(u.targets.map((t) => t.advanced), [false, false, true, true, true, true]);
+  assert.deepEqual(findTarget(u, 'amp'), {
+    id: 'amp', label: 'AMP 计算域镜像', description: '', kind: 'slot', format: 'fit', advanced: false, maxBytes: 300 * MiB, capacity: 512 * MiB,
+    slot: 'a', available: true, reason: '', mounted: false,
+  });
+  const mystery = findTarget(u, 'partition:mystery');
+  assert.deepEqual([mystery.kind, mystery.format, mystery.label, mystery.capacity], ['partition', 'raw', 'partition:mystery', 1]);
+  assert.equal(findTarget(u, 'partition:data'), null);
+  assert.equal(findTarget(null, 'nuttx'), null);
+  assert.match(unavailableText(findTarget(u, 'partition:nuttx_a')), /正在运行/);
+  assert.equal(unavailableText(findTarget(u, 'amp')), '');
+  assert.equal(findTarget(u, 'partition:config').mounted, true);
+
+  // AMP slots never run as seen from here, whatever the current slot is.
+  assert.deepEqual(u.ampSlots.map((s) => [s.name, s.running, s.active]), [['a', false, false], ['b', false, true]]);
+  assert.equal(u.ampActive, true);
+  assert.equal(needsAmpConfirm(u), true);
+  assert.equal(needsAmpConfirm(parseUpdateStatus({ upload: true, ampSlots: [{ name: 'a', active: true, bootable: true, successful: true, size: 1 }] })), false);
+  // An active slot that was never filled has nothing to vouch for.
+  assert.equal(needsAmpConfirm(parseUpdateStatus({ upload: true, ampSlots: [{ name: 'a', active: true, bootable: true }] })), false);
+
+  // The AMP write shows in no NuttX slot: the apply record is what says "reboot".
+  assert.equal(pendingReboot(u), '');
+  assert.equal(appliedTarget(u).id, 'amp');
+  assert.equal(appliedTarget(parseUpdateStatus({ upload: true, apply: { state: 'done', target: 'nuttx' } })), null);
+  assert.equal(appliedTarget(parseUpdateStatus({ upload: true, targets: [{ id: 'amp' }], apply: { state: 'failed', target: 'amp' } })), null);
+
+  // Firmware from before there were targets: the one it has, from what it said.
+  const old = parseUpdateStatus({ current: { slot: 'b' }, upload: true, maxBytes: 100 });
+  assert.deepEqual(old.targets, [{
+    id: 'nuttx', label: 'openvela 固件', description: '', kind: 'slot', format: 'arm64', advanced: false, maxBytes: 100, capacity: 100, slot: 'a',
+    available: true, reason: '', mounted: false,
+  }]);
+  assert.deepEqual(parseUpdateStatus({ targets: [{ id: 'nuttx' }] }).targets, []);
+});
+
+test('update.apply: request, refusals, forced notice', () => {
+  const sha = 'cd'.repeat(32);
+  const nuttx = { id: 'nuttx', advanced: false };
+  const config = { id: 'partition:config', advanced: true };
+  assert.deepEqual(applyRequest(nuttx, sha, false), { sha256: sha, target: 'nuttx' });
+  assert.deepEqual(applyRequest(config, sha, false), { sha256: sha, target: 'partition:config', advanced: true });
+  assert.deepEqual(applyRequest(config, sha, true), { sha256: sha, target: 'partition:config', advanced: true, force: true });
+
+  const err = (code) => Object.assign(new Error(code), { code });
+  for (const code of ['EADVANCED', 'ERUNNING', 'EMOUNTED', 'EBLOCKED', 'ENOTIMAGE', 'ETOOLARGE', 'ENOTCONFIGURED', 'EUNAVAILABLE', 'EBUSY']) {
+    assert.notEqual(applyRefusalText(err(code)), '', code);
+  }
+  // Not one of its own: the caller decides (ENOTFOUND stays "unsupported").
+  for (const e of [err('ENOTFOUND'), err('EINVAL'), null, 'EMOUNTED']) assert.equal(applyRefusalText(e), '');
+  assert.equal(isMountedRefusal(err('EMOUNTED')), true);
+  assert.equal(isMountedRefusal(err('EBUSY')), false);
+  assert.equal(isUnsupportedError(err('ENOTFOUND')), true);
+
+  assert.equal(applyNotice({ started: true, notice: '写完立即重启' }), '写完立即重启');
+  assert.equal(applyNotice({ started: true }), '');
+  assert.equal(applyNotice(null), '');
+  assert.match(applyErrorText({ state: 'failed', error: 8, reason: 'format', target: 'amp', forced: false }), /不是这个目标需要的镜像（错误码 8）/);
+});
+
+test('advanced gate: the device name has to be typed', () => {
+  assert.equal(unlockPhrase('  客厅的 Nya '), '客厅的 Nya');
+  for (const none of ['', '   ', null, undefined]) assert.equal(unlockPhrase(none), '我已了解风险');
+  assert.equal(unlockMatches(' 客厅的 Nya ', '客厅的 Nya'), true);
+  assert.equal(unlockMatches('客厅的 nya', '客厅的 Nya'), false);
+  assert.equal(unlockMatches('', '客厅的 Nya'), false);
+  assert.equal(unlockMatches(null, '客厅的 Nya'), false);
+  assert.equal(unlockMatches('', ''), false);
+});
+
+test('ota: per-target url, magic and digest display', () => {
+  const url = 'http://192.168.4.1/ota/upload';
+  assert.equal(otaUploadUrl(url, 'nuttx'), url);
+  assert.equal(otaUploadUrl(url, ''), url);
+  assert.equal(otaUploadUrl(url, 'amp'), `${url}?target=amp`);
+  assert.equal(otaUploadUrl(url, 'partition:trust'), `${url}?target=partition%3Atrust`);
+
+  const head = (at, bytes) => {
+    const h = new Uint8Array(512);
+    h.set(bytes, at);
+    return h;
+  };
+  const arm = head(56, [0x41, 0x52, 0x4d, 0x64]);
+  const fit = head(0, [0xd0, 0x0d, 0xfe, 0xed]);
+  const ctrl = head(0, Array.from('K7ABCTRL', (c) => c.charCodeAt(0)));
+  const fat = head(510, [0x55, 0xaa]);
+  const formats = ['arm64', 'fit', 'bootctrl', 'fat'];
+  [arm, fit, ctrl, fat].forEach((h, i) => {
+    // Each header passes as its own format and as no other.
+    assert.deepEqual(formats.map((f) => imageFormatOk(f, h)), formats.map((_, j) => i === j), formats[i]);
+    assert.equal(imageFormatOk('raw', h), true);
+  });
+  assert.equal(imageFormatOk('fat', fat.subarray(0, 511)), false);
+  assert.equal(imageFormatOk('fit', fit.subarray(0, 3)), false);
+  assert.equal(imageFormatOk('raw', new Uint8Array(0)), false);
+  for (const f of [...formats, 'raw']) assert.notEqual(formatHint(f), '');
+
+  const sha = '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08';
+  assert.equal(shortDigest(sha), '9f86d081…b0f00a08');
+  assert.equal(shortDigest(''), '');
+
+  const reply = (status, error) => uploadErrorText(status, parseUploadReply(status, JSON.stringify({ error })));
+  assert.match(reply(400, 'ETARGET'), /不认识/);
+  assert.match(reply(403, 'EBLOCKED'), /不能从面板写入/);
+  assert.match(reply(413, 'ETOOLARGE'), /比目标分区大/);
+  assert.match(reply(413, 'ENOSPACE'), /剩余空间不足/);
+  assert.match(reply(415, 'ENOTIMAGE'), /不是所选目标需要的镜像/);
 });
 
 test('ota: endpoint, image magic, upload replies', () => {
