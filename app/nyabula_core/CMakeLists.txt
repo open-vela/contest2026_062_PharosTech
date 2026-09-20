@@ -66,10 +66,12 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
       set(NYCORE_NBOOTCTL_DIR ${NUTTX_APPS_DIR}/system/nbootctl)
       list(APPEND NYABULA_CORE_SRCS ny_web_ota.c)
       # A flat build links every built-in application into one image, so when
-      # the nbootctl command is built in, its bootctrl object already provides
-      # these symbols.  Compiling it again here would define them twice.
+      # the nbootctl command is built in, its bootctrl and partition objects
+      # already provide these symbols.  Compiling them again here would define
+      # them twice.
       if(NOT "${CONFIG_SYSTEM_NBOOTCTL}" STREQUAL "y")
-        list(APPEND NYABULA_CORE_SRCS ${NYCORE_NBOOTCTL_DIR}/nbootctl_bootctrl.c)
+        list(APPEND NYABULA_CORE_SRCS ${NYCORE_NBOOTCTL_DIR}/nbootctl_bootctrl.c
+             ${NYCORE_NBOOTCTL_DIR}/nbootctl_part.c)
       endif()
     endif()
   endif()
