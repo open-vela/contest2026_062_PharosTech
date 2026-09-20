@@ -11,9 +11,12 @@ import { useCompanionStore } from '../../../stores/companion';
 import { useWeatherStore, weatherKind } from '../../../stores/weather';
 import type { useNativeMedia } from '../../../composables/useNativeMedia';
 import type { useDeviceRuntime } from '../../../composables/useDeviceRuntime';
+import type { useAudioControl } from '../../../composables/useAudioControl';
+import { activeOutputLabel, sceneAudioRoute } from '../../../lib/audioControl';
 
 type Media = ReturnType<typeof useNativeMedia>;
 type Device = ReturnType<typeof useDeviceRuntime>;
+type Audio = ReturnType<typeof useAudioControl>;
 
 const BRIEFING_SOURCE: Record<string, string> = {
   QWeather: '和风天气', calendar: '设备日程', tasks: '设备待办', memory: '保存的记忆', device: '设备',
@@ -50,8 +53,13 @@ export function useMusicScene(type: string, media: Media, lyrics?: () => { prev:
   });
 }
 
-export function useAudioScene(type: string, media: Media) {
+/** The codec service says where sound really comes out; a firmware without it only knows the player's volume. */
+export function useAudioScene(type: string, media: Media, audio?: Audio) {
   return useEyeScene(type, () => {
+    const live = audio?.status;
+    if (live?.available) {
+      return audioScene({ volume: live.output.volume, muted: live.output.muted, device: '', route: sceneAudioRoute(live.output), title: activeOutputLabel(live.output) });
+    }
     const s = media.state;
     return s ? audioScene({ volume: s.volume, muted: s.muted, device: s.device }) : null;
   });
