@@ -438,13 +438,508 @@ static int test_tts_messages(void)
   return 0;
 }
 
+static int test_status_prefix(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  uint8_t *body = NULL;
+  const uint8_t *decoded_body = NULL;
+  size_t capacity = 0;
+  size_t size = 0;
+  int32_t status = 0;
+
+  CHECK(nyamp_status_encode(payload, sizeof(payload),
+                            NYAMP_MODEL_STALE_GENERATION, &body,
+                            &capacity) == NYAMP_OK);
+  CHECK(body == payload + NYAMP_STATUS_SIZE);
+  CHECK(capacity == sizeof(payload) - NYAMP_STATUS_SIZE);
+  CHECK(capacity == NYAMP_BLOB_LIST_BODY_MAX);
+
+  CHECK(nyamp_status_decode(&status, &decoded_body, &size, payload,
+                            NYAMP_STATUS_SIZE + 7) == NYAMP_OK);
+  CHECK(status == NYAMP_MODEL_STALE_GENERATION && size == 7 &&
+        decoded_body == payload + NYAMP_STATUS_SIZE);
+
+  /* A response too short to hold a status is not a success. */
+  CHECK(nyamp_status_decode(&status, &decoded_body, &size, payload, 3) ==
+        NYAMP_EMSGSIZE);
+  CHECK(nyamp_status_encode(payload, 3, 0, &body, &capacity) ==
+        NYAMP_EMSGSIZE);
+  return 0;
+}
+
+static int test_blob_names(void)
+{
+  static const char *const good[] = {
+    "llm/model.rkllm", "asr", "asr/ENC.ONX", "a/b/c/d.bin", "tts/zh_en v2.onnx",
+    "..a", "a..", "...",
+  };
+  static const char *const bad[] = {
+    "",       "/abs",      "a//b",   "a/",   ".",         "..",
+    "../x",   "a/../b",    "a/./b",  "a/..", "a\\b",      "a/\x01" "b",
+    "a\x7f",
+  };
+  char longest[NYAMP_BLOB_MAX_NAME + 2];
+  size_t index;
+
+  for (index = 0; index < sizeof(good) / sizeof(good[0]); index++)
+    {
+      CHECK(nyamp_blob_name_check(good[index], strlen(good[index])) ==
+            NYAMP_OK);
+    }
+
+  for (index = 0; index < sizeof(bad) / sizeof(bad[0]); index++)
+    {
+      CHECK(nyamp_blob_name_check(bad[index], strlen(bad[index])) ==
+            NYAMP_EINVAL);
+    }
+
+  /* An embedded NUL would truncate the path the responder builds, turning
+   * "ok\0/../../etc" into something the component check never saw.
+   */
+  CHECK(nyamp_blob_name_check("ok\0/x", 5) == NYAMP_EINVAL);
+  CHECK(nyamp_blob_name_check(NULL, 3) == NYAMP_EINVAL);
+
+  memset(longest, 'a', sizeof(longest));
+  CHECK(nyamp_blob_name_check(longest, NYAMP_BLOB_MAX_NAME) == NYAMP_OK);
+  CHECK(nyamp_blob_name_check(longest, NYAMP_BLOB_MAX_NAME + 1) ==
+        NYAMP_EINVAL);
+  return 0;
+}
+
+static int test_blob_open(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  size_t size = 0;
+  uint32_t flags = 1;
+  const char *name = NULL;
+  size_t name_length = 0;
+  struct nyamp_blob_info_s info;
+  struct nyamp_blob_info_s decoded;
+  unsigned int index;
+
+  CHECK(nyamp_blob_open_encode(payload, sizeof(payload), &size, 0,
+                               "llm/model.rkllm", 15) == NYAMP_OK);
+  CHECK(size == NYAMP_BLOB_OPEN_HEADER_SIZE + 15);
+  CHECK(nyamp_blob_open_decode(&flags, &name, &name_length, payload, size) ==
+        NYAMP_OK);
+  CHECK(flags == 0 && name_length == 15 &&
+        memcmp(name, "llm/model.rkllm", 15) == 0);
+
+  /* The requester may not even send a traversal, and no flag is defined. */
+  CHECK(nyamp_blob_open_encode(payload, sizeof(payload), &size, 0, "../etc",
+                               6) == NYAMP_EINVAL);
+  CHECK(nyamp_blob_open_encode(payload, sizeof(payload), &size, 1, "asr", 3) ==
+        NYAMP_EINVAL);
+
+  /* A responder must refuse one that was forged past the encoder. */
+  CHECK(nyamp_blob_open_encode(payload, sizeof(payload), &size, 0, "aa/bb",
+                               5) == NYAMP_OK);
+  payload[NYAMP_BLOB_OPEN_HEADER_SIZE + 0] = '.';
+  payload[NYAMP_BLOB_OPEN_HEADER_SIZE + 1] = '.';
+  CHECK(nyamp_blob_open_decode(&flags, &name, &name_length, payload, size) ==
+        NYAMP_EPROTO);
+
+  /* The declared length and the frame length must agree exactly. */
+  CHECK(nyamp_blob_open_encode(payload, sizeof(payload), &size, 0, "aa/bb",
+                               5) == NYAMP_OK);
+  CHECK(nyamp_blob_open_decode(&flags, &name, &name_length, payload,
+                               size - 1) == NYAMP_EPROTO);
+  CHECK(nyamp_blob_open_decode(&flags, &name, &name_length, payload,
+                               size + 1) == NYAMP_EPROTO);
+  CHECK(nyamp_blob_open_decode(&flags, &name, &name_length, payload, 7) ==
+        NYAMP_EMSGSIZE);
+
+  memset(&info, 0, sizeof(info));
+  info.blob_id = 0x01020304;
+  info.size = 875760324ULL;
+  info.mtime = 1789000000ULL;
+  for (index = 0; index < NYAMP_BLOB_SHA256_SIZE; index++)
+    {
+      info.sha256[index] = (uint8_t)(0xa0 + index);
+    }
+
+  CHECK(nyamp_blob_info_encode(payload, sizeof(payload), &size, &info) ==
+        NYAMP_OK);
+  CHECK(size == NYAMP_BLOB_INFO_SIZE);
+  CHECK(size + NYAMP_STATUS_SIZE <= NYAMP_INLINE_MAX);
+  memset(&decoded, 0, sizeof(decoded));
+  CHECK(nyamp_blob_info_decode(&decoded, payload, size) == NYAMP_OK);
+  CHECK(decoded.blob_id == info.blob_id && decoded.size == info.size &&
+        decoded.mtime == info.mtime &&
+        memcmp(decoded.sha256, info.sha256, NYAMP_BLOB_SHA256_SIZE) == 0);
+
+  /* A size above 4 GiB must survive: the offset and size are 64-bit because
+   * a model already approaches 1 GiB.
+   */
+  info.size = 0x123456789aULL;
+  CHECK(nyamp_blob_info_encode(payload, sizeof(payload), &size, &info) ==
+        NYAMP_OK);
+  CHECK(nyamp_blob_info_decode(&decoded, payload, size) == NYAMP_OK);
+  CHECK(decoded.size == 0x123456789aULL);
+
+  /* Zero is "no blob" on both sides and can never be granted. */
+  info.blob_id = 0;
+  CHECK(nyamp_blob_info_encode(payload, sizeof(payload), &size, &info) ==
+        NYAMP_EINVAL);
+  memset(payload, 0, 4);
+  CHECK(nyamp_blob_info_decode(&decoded, payload, NYAMP_BLOB_INFO_SIZE) ==
+        NYAMP_EPROTO);
+  CHECK(nyamp_blob_info_decode(&decoded, payload, NYAMP_BLOB_INFO_SIZE - 1) ==
+        NYAMP_EMSGSIZE);
+  return 0;
+}
+
+static int test_blob_read_close(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  size_t size = 0;
+  uint32_t blob_id = 0;
+  struct nyamp_blob_read_s read = {
+    .blob_id = 7,
+    .flags = 0,
+    .file_offset = 0x100000000ULL + 4096,
+    .buffer = {
+      .magic = NYAMP_BUFFER_MAGIC,
+      .version = NYAMP_BUFFER_VERSION,
+      .flags = NYAMP_BUFFER_IN_SHMEM,
+      .offset = 0x1000,
+      .length = 0,
+      .capacity = 0x100000,
+      .format = NYAMP_FORMAT_BYTES,
+      .lease = 0x0000002a00000001ULL,
+      .generation = 42,
+    },
+  };
+  struct nyamp_blob_read_s decoded;
+
+  CHECK(nyamp_blob_read_encode(payload, sizeof(payload), &size, &read) ==
+        NYAMP_OK);
+  CHECK(size == NYAMP_BLOB_READ_SIZE);
+  CHECK(size + NYAMP_STATUS_SIZE <= NYAMP_INLINE_MAX);
+  CHECK(nyamp_blob_read_decode(&decoded, payload, size) == NYAMP_OK);
+  CHECK(decoded.blob_id == 7 && decoded.flags == 0 &&
+        decoded.file_offset == 0x100000000ULL + 4096);
+  CHECK(decoded.buffer.offset == 0x1000 && decoded.buffer.capacity == 0x100000 &&
+        decoded.buffer.lease == 0x0000002a00000001ULL &&
+        decoded.buffer.generation == 42 &&
+        decoded.buffer.format == NYAMP_FORMAT_BYTES);
+
+  /* The response reuses the layout: bytes filled travel in `length`, and the
+   * last window is marked.
+   */
+  read.flags = NYAMP_BLOB_READ_EOF;
+  read.buffer.length = 12345;
+  read.buffer.flags |= NYAMP_BUFFER_LAST;
+  CHECK(nyamp_blob_read_encode(payload, sizeof(payload), &size, &read) ==
+        NYAMP_OK);
+  CHECK(nyamp_blob_read_decode(&decoded, payload, size) == NYAMP_OK);
+  CHECK(decoded.flags == NYAMP_BLOB_READ_EOF &&
+        decoded.buffer.length == 12345 &&
+        (decoded.buffer.flags & NYAMP_BUFFER_LAST) != 0);
+
+  /* More bytes than the window holds is impossible by construction. */
+  read.buffer.length = read.buffer.capacity + 1;
+  CHECK(nyamp_blob_read_encode(payload, sizeof(payload), &size, &read) ==
+        NYAMP_EINVAL);
+  read.buffer.length = 0;
+
+  /* A window outside the shared region cannot carry file bytes. */
+  read.buffer.flags = 0;
+  CHECK(nyamp_blob_read_encode(payload, sizeof(payload), &size, &read) ==
+        NYAMP_EINVAL);
+  read.buffer.flags = NYAMP_BUFFER_IN_SHMEM;
+  read.buffer.capacity = 0;
+  CHECK(nyamp_blob_read_encode(payload, sizeof(payload), &size, &read) ==
+        NYAMP_EINVAL);
+  read.buffer.capacity = 0x100000;
+
+  read.flags = 2;
+  CHECK(nyamp_blob_read_encode(payload, sizeof(payload), &size, &read) ==
+        NYAMP_EINVAL);
+  read.flags = 0;
+  read.blob_id = 0;
+  CHECK(nyamp_blob_read_encode(payload, sizeof(payload), &size, &read) ==
+        NYAMP_EINVAL);
+  read.blob_id = 7;
+
+  /* Forged frames: a corrupted descriptor magic and a cleared shmem flag. */
+  CHECK(nyamp_blob_read_encode(payload, sizeof(payload), &size, &read) ==
+        NYAMP_OK);
+  payload[16] ^= 1;
+  CHECK(nyamp_blob_read_decode(&decoded, payload, size) == NYAMP_EPROTO);
+  payload[16] ^= 1;
+  payload[16 + 6] = 0;
+  CHECK(nyamp_blob_read_decode(&decoded, payload, size) == NYAMP_EPROTO);
+  CHECK(nyamp_blob_read_decode(&decoded, payload, size - 1) ==
+        NYAMP_EMSGSIZE);
+
+  CHECK(nyamp_blob_close_encode(payload, sizeof(payload), &size, 7) ==
+        NYAMP_OK);
+  CHECK(size == NYAMP_BLOB_CLOSE_SIZE);
+  CHECK(nyamp_blob_close_decode(&blob_id, payload, size) == NYAMP_OK);
+  CHECK(blob_id == 7);
+  CHECK(nyamp_blob_close_encode(payload, sizeof(payload), &size, 0) ==
+        NYAMP_EINVAL);
+  payload[4] = 1;
+  CHECK(nyamp_blob_close_decode(&blob_id, payload, size) == NYAMP_EPROTO);
+  return 0;
+}
+
+static int test_blob_list(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  uint8_t body[NYAMP_BLOB_LIST_BODY_MAX];
+  size_t size = 0;
+  size_t position = 0;
+  uint32_t cursor = 0;
+  uint32_t next = 0;
+  uint32_t count = 0;
+  const char *prefix = NULL;
+  size_t prefix_length = 0;
+  struct nyamp_blob_entry_s entry;
+  char name[64];
+  unsigned int appended = 0;
+
+  CHECK(nyamp_blob_list_encode(payload, sizeof(payload), &size, 9, "asr", 3) ==
+        NYAMP_OK);
+  CHECK(nyamp_blob_list_decode(&cursor, &prefix, &prefix_length, payload,
+                               size) == NYAMP_OK);
+  CHECK(cursor == 9 && prefix_length == 3 && memcmp(prefix, "asr", 3) == 0);
+
+  /* The empty prefix is the blob root; a traversal is still refused. */
+  CHECK(nyamp_blob_list_encode(payload, sizeof(payload), &size, 0, NULL, 0) ==
+        NYAMP_OK);
+  CHECK(size == NYAMP_BLOB_LIST_HEADER_SIZE);
+  CHECK(nyamp_blob_list_decode(&cursor, &prefix, &prefix_length, payload,
+                               size) == NYAMP_OK);
+  CHECK(cursor == 0 && prefix_length == 0);
+  CHECK(nyamp_blob_list_encode(payload, sizeof(payload), &size, 0, "..", 2) ==
+        NYAMP_EINVAL);
+
+  /* Fill a page until the encoder says the next entry does not fit. */
+  CHECK(nyamp_blob_list_body_begin(body, sizeof(body), &size) == NYAMP_OK);
+  for (;;)
+    {
+      int result;
+
+      snprintf(name, sizeof(name), "encoder-epoch-99-avg-1.int8.%03u.onnx",
+               appended);
+      entry.size = 1000000ULL * (appended + 1);
+      entry.flags = 0;
+      entry.name = name;
+      entry.name_length = (uint16_t)strlen(name);
+      result = nyamp_blob_list_body_append(body, sizeof(body), &size, &entry);
+      if (result == NYAMP_EMSGSIZE)
+        {
+          break;
+        }
+
+      CHECK(result == NYAMP_OK);
+      appended++;
+    }
+
+  CHECK(appended >= 8 && size <= sizeof(body));
+  CHECK(nyamp_blob_list_body_finish(body, size, appended) == NYAMP_OK);
+  CHECK(nyamp_blob_list_body_decode(&next, &count, body, size) == NYAMP_OK);
+  CHECK(next == appended && count == appended);
+
+  for (cursor = 0; cursor < count; cursor++)
+    {
+      CHECK(nyamp_blob_list_body_next(&entry, &position, body, size) ==
+            NYAMP_OK);
+      snprintf(name, sizeof(name), "encoder-epoch-99-avg-1.int8.%03u.onnx",
+               (unsigned int)cursor);
+      CHECK(entry.size == 1000000ULL * (cursor + 1) &&
+            entry.name_length == strlen(name) &&
+            memcmp(entry.name, name, entry.name_length) == 0);
+    }
+
+  CHECK(nyamp_blob_list_body_next(&entry, &position, body, size) ==
+        NYAMP_EMSGSIZE);
+
+  /* Truncation, trailing bytes and a nested name are all refused. */
+  CHECK(nyamp_blob_list_body_decode(&next, &count, body, size - 1) ==
+        NYAMP_EPROTO);
+  CHECK(nyamp_blob_list_body_decode(&next, &count, body, size + 1) ==
+        NYAMP_EPROTO);
+  body[NYAMP_BLOB_LIST_BODY_HEADER_SIZE + NYAMP_BLOB_LIST_ENTRY_HEADER_SIZE] =
+      '/';
+  CHECK(nyamp_blob_list_body_decode(&next, &count, body, size) ==
+        NYAMP_EPROTO);
+
+  entry.name = "a/b";
+  entry.name_length = 3;
+  CHECK(nyamp_blob_list_body_begin(body, sizeof(body), &size) == NYAMP_OK);
+  CHECK(nyamp_blob_list_body_append(body, sizeof(body), &size, &entry) ==
+        NYAMP_EINVAL);
+
+  /* An empty last page is legal; an empty page that promises more is a loop.
+   */
+  CHECK(nyamp_blob_list_body_finish(body, size, 0) == NYAMP_OK);
+  CHECK(nyamp_blob_list_body_decode(&next, &count, body, size) == NYAMP_OK);
+  CHECK(next == 0 && count == 0);
+  CHECK(nyamp_blob_list_body_finish(body, size, 5) == NYAMP_OK);
+  CHECK(nyamp_blob_list_body_decode(&next, &count, body, size) ==
+        NYAMP_EPROTO);
+  return 0;
+}
+
+static int test_blob_bench_and_reports(void)
+{
+  uint8_t payload[NYAMP_INLINE_MAX];
+  size_t size = 0;
+  uint32_t rounds = 0;
+  uint32_t window = 0;
+  struct nyamp_blob_bench_s bench = { .mode = NYAMP_BLOB_BENCH_ECHO,
+                                      .seed = 0xdeadbeef };
+  struct nyamp_blob_bench_s decoded;
+  struct nyamp_blob_bench_report_s report = {
+    .rounds = 200,
+    .window_bytes = 1048576,
+    .rtt_min_us = 180,
+    .rtt_avg_us = 240,
+    .rtt_max_us = 1900,
+    .fill_kib_per_s = 400000,
+    .copy_kib_per_s = 600000,
+    .pattern_errors = 0,
+  };
+  struct nyamp_blob_bench_report_s report_out;
+  struct nyamp_blob_pull_report_s pull = {
+    .bytes = 875760324ULL, .elapsed_ms = 21000, .files = 1, .reused = 0
+  };
+  struct nyamp_blob_pull_report_s pull_out;
+  struct nyamp_blob_progress_s progress = {
+    .done = 1048576, .total = 875760324ULL, .bytes_per_second = 41943040
+  };
+  struct nyamp_blob_progress_s progress_out;
+
+  CHECK(nyamp_blob_bench_encode(payload, sizeof(payload), &size, &bench) ==
+        NYAMP_OK);
+  CHECK(size == NYAMP_BLOB_BENCH_ECHO_SIZE);
+  CHECK(nyamp_blob_bench_decode(&decoded, payload, size) == NYAMP_OK);
+  CHECK(decoded.mode == NYAMP_BLOB_BENCH_ECHO && decoded.seed == 0xdeadbeef);
+
+  bench.mode = NYAMP_BLOB_BENCH_FILL;
+  CHECK(nyamp_blob_bench_encode(payload, sizeof(payload), &size, &bench) ==
+        NYAMP_EINVAL);
+  bench.buffer.magic = NYAMP_BUFFER_MAGIC;
+  bench.buffer.version = NYAMP_BUFFER_VERSION;
+  bench.buffer.flags = NYAMP_BUFFER_IN_SHMEM;
+  bench.buffer.offset = 0x1000;
+  bench.buffer.capacity = 0x100000;
+  bench.buffer.format = NYAMP_FORMAT_BYTES;
+  bench.buffer.lease = 5;
+  bench.buffer.generation = 3;
+  CHECK(nyamp_blob_bench_encode(payload, sizeof(payload), &size, &bench) ==
+        NYAMP_OK);
+  CHECK(size == NYAMP_BLOB_BENCH_FILL_SIZE);
+  CHECK(nyamp_blob_bench_decode(&decoded, payload, size) == NYAMP_OK);
+  CHECK(decoded.mode == NYAMP_BLOB_BENCH_FILL &&
+        decoded.buffer.capacity == 0x100000 && decoded.buffer.lease == 5);
+
+  /* An echo may not smuggle a descriptor, and a fill may not omit one. */
+  CHECK(nyamp_blob_bench_decode(&decoded, payload,
+                                NYAMP_BLOB_BENCH_ECHO_SIZE) == NYAMP_EPROTO);
+  payload[0] = NYAMP_BLOB_BENCH_ECHO;
+  CHECK(nyamp_blob_bench_decode(&decoded, payload, size) == NYAMP_EPROTO);
+  payload[0] = 9;
+  CHECK(nyamp_blob_bench_decode(&decoded, payload, size) == NYAMP_EPROTO);
+
+  /* The pattern is position dependent and can be produced block by block. */
+  {
+    uint8_t whole[32];
+    uint8_t tail[16];
+
+    nyamp_blob_bench_pattern(whole, 8, 0x12345678, 0);
+    nyamp_blob_bench_pattern(tail, 4, 0x12345678, 4);
+    CHECK(memcmp(whole + 16, tail, sizeof(tail)) == 0);
+    CHECK(whole[0] == 0x78 && whole[1] == 0x56 && whole[2] == 0x34 &&
+          whole[3] == 0x12);
+    CHECK(memcmp(whole, whole + 4, 4) != 0);
+  }
+
+  CHECK(nyamp_blob_bench_run_encode(payload, sizeof(payload), &size, 200,
+                                    1048576) == NYAMP_OK);
+  CHECK(nyamp_blob_bench_run_decode(&rounds, &window, payload, size) ==
+        NYAMP_OK);
+  CHECK(rounds == 200 && window == 1048576);
+  CHECK(nyamp_blob_bench_run_decode(&rounds, &window, payload, size + 1) ==
+        NYAMP_EPROTO);
+
+  CHECK(nyamp_blob_bench_report_encode(payload, sizeof(payload), &size,
+                                       &report) == NYAMP_OK);
+  CHECK(size == NYAMP_BLOB_BENCH_REPORT_SIZE);
+  CHECK(nyamp_blob_bench_report_decode(&report_out, payload, size) ==
+        NYAMP_OK);
+  CHECK(memcmp(&report, &report_out, sizeof(report)) == 0);
+
+  CHECK(nyamp_blob_pull_report_encode(payload, sizeof(payload), &size,
+                                      &pull) == NYAMP_OK);
+  CHECK(size == NYAMP_BLOB_PULL_REPORT_SIZE);
+  CHECK(nyamp_blob_pull_report_decode(&pull_out, payload, size) == NYAMP_OK);
+  CHECK(pull_out.bytes == pull.bytes && pull_out.elapsed_ms == 21000 &&
+        pull_out.files == 1 && pull_out.reused == 0);
+
+  CHECK(nyamp_blob_progress_encode(payload, sizeof(payload), &size,
+                                   &progress) == NYAMP_OK);
+  CHECK(size == NYAMP_BLOB_PROGRESS_SIZE);
+  CHECK(nyamp_blob_progress_decode(&progress_out, payload, size) ==
+        NYAMP_OK);
+  CHECK(progress_out.done == 1048576 &&
+        progress_out.total == 875760324ULL &&
+        progress_out.bytes_per_second == 41943040);
+
+  /* Progress past the total would render as more than 100 percent. */
+  progress.done = progress.total + 1;
+  CHECK(nyamp_blob_progress_encode(payload, sizeof(payload), &size,
+                                   &progress) == NYAMP_EINVAL);
+  return 0;
+}
+
+static int test_blob_request_header(void)
+{
+  uint8_t wire[NYAMP_RPMSG_MTU];
+  struct nyamp_header_s header = {
+    .service = NYAMP_SERVICE_BLOB,
+    .opcode = NYAMP_BLOB_READ,
+    .flags = NYAMP_FLAG_REQUEST,
+    .request_id = NYAMP_REQUEST_ID_COMPUTE | 17,
+    .deadline_ms = 0,
+    .generation = 42,
+    .payload_size = NYAMP_BLOB_READ_SIZE,
+  };
+  struct nyamp_header_s decoded;
+
+  /* The origin bit is part of an ordinary 64-bit id; the header codec must
+   * carry it untouched in both directions.
+   */
+  CHECK(nyamp_header_encode(wire, sizeof(wire), &header) == NYAMP_OK);
+  CHECK(nyamp_header_decode(&decoded, wire,
+                            NYAMP_WIRE_HEADER_SIZE + header.payload_size) ==
+        NYAMP_OK);
+  CHECK(decoded.service == NYAMP_SERVICE_BLOB &&
+        decoded.request_id == (NYAMP_REQUEST_ID_COMPUTE | 17) &&
+        (decoded.request_id & NYAMP_REQUEST_ID_COMPUTE) != 0);
+
+  /* Aborting an OPEN is an ordinary payload-free cancel. */
+  header.flags = NYAMP_FLAG_CANCEL;
+  header.opcode = NYAMP_BLOB_OPEN;
+  header.payload_size = 0;
+  CHECK(nyamp_header_encode(wire, sizeof(wire), &header) == NYAMP_OK);
+  return 0;
+}
+
 int main(void)
 {
   if (test_round_trip() != 0 || test_rejections() != 0 ||
       test_malformed_inputs() != 0 || test_llm_chunk() != 0 ||
       test_llm_token() != 0 || test_llm_finish() != 0 ||
       test_cancel_has_no_payload() != 0 || test_buffer_descriptor() != 0 ||
-      test_asr_messages() != 0 || test_tts_messages() != 0)
+      test_asr_messages() != 0 || test_tts_messages() != 0 ||
+      test_status_prefix() != 0 || test_blob_names() != 0 ||
+      test_blob_open() != 0 || test_blob_read_close() != 0 ||
+      test_blob_list() != 0 || test_blob_bench_and_reports() != 0 ||
+      test_blob_request_header() != 0)
     {
       return 1;
     }
