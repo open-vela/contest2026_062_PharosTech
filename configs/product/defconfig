@@ -265,6 +265,12 @@ CONFIG_DRIVERS_AUDIO=y
 CONFIG_I2S=y
 CONFIG_RK3576_SAI=y
 CONFIG_KICKPI_K7_AUDIO=y
+# What a device that was never configured plays and records at: 75 % out,
+# 18 dB in.  At the driver defaults (40 % / 24 dB) speech was too quiet to
+# hear and close talk clipped; at 12 dB the converter noise, not the room,
+# set the floor (RMS 267 / 330 / 668 at 12 / 18 / 24 dB).
+CONFIG_ES8388_OUTPUT_INITVOLUME=750
+CONFIG_ES8388_INPUT_INITVOLUME=750
 CONFIG_SYSTEM_AUDIOCTL=y
 CONFIG_SYSTEM_NXPLAYER=y
 CONFIG_SYSTEM_NXRECORDER=y
