@@ -511,9 +511,16 @@ onBeforeUnmount(() => {
             </div>
             <ul class="adv-list" role="radiogroup" aria-label="高级更新目标">
               <li v-for="t in advancedTargets" :key="t.id">
-                <button
-                  type="button" class="adv-row" role="radio" :aria-checked="selected?.id === t.id"
-                  :class="{ on: selected?.id === t.id }" :disabled="targetLocked || !t.available" @click="select(t)"
+                <!-- A div, not a button: with the row as a <button> the text column
+                     rendered empty in Chromium on the device page (only the radio
+                     dot showed), whatever the styles said. -->
+                <div
+                  class="adv-row" role="radio" :aria-checked="selected?.id === t.id"
+                  :aria-disabled="targetLocked || !t.available" :tabindex="targetLocked || !t.available ? -1 : 0"
+                  :class="{ on: selected?.id === t.id, off: targetLocked || !t.available }"
+                  @click="!(targetLocked || !t.available) && select(t)"
+                  @keydown.enter.prevent="!(targetLocked || !t.available) && select(t)"
+                  @keydown.space.prevent="!(targetLocked || !t.available) && select(t)"
                 >
                   <span class="radio" aria-hidden="true" />
                   <span class="adv-text">
@@ -525,7 +532,7 @@ onBeforeUnmount(() => {
                     <span class="adv-desc">{{ t.description }}</span>
                     <span class="adv-desc">{{ t.available ? `${formatName(t.format)}，分区 ${fmtBytes(t.capacity)}` : unavailableText(t) }}</span>
                   </span>
-                </button>
+                </div>
               </li>
             </ul>
           </template>
@@ -595,6 +602,11 @@ onBeforeUnmount(() => {
 .notice.warn > .ui-icon { color: var(--md-warning); }
 .notice p { margin: 0 0 8px; font-size: 13.5px; line-height: 1.65; color: var(--md-on-surface); }
 .notice p:last-child { margin-bottom: 0; }
+/* A notice with an action: the sentence and its button share a row; when the
+   button has to wrap it sits at the right edge, under the end of the text. */
+.notice > div { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.notice > div > p { flex: 1 1 320px; margin: 0; }
+.notice > div > :not(p) { flex: none; margin-left: auto; }
 .notice .detail, .detail { font-size: 12.5px; color: var(--md-on-surface-variant); word-break: break-word; }
 .target { border: 1.5px solid transparent; transition: border-color var(--dur-fast); }
 .target.selected { border-color: var(--md-primary); }
@@ -622,13 +634,13 @@ onBeforeUnmount(() => {
   cursor: pointer;
   transition: border-color var(--dur-fast), background var(--dur-fast);
 }
-.adv-row:disabled { cursor: default; opacity: 0.55; }
+.adv-row.off { cursor: default; opacity: 0.55; }
 .adv-row.on { border-color: var(--md-primary); }
 .adv-row:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 2px; }
 .radio { flex: none; width: 18px; height: 18px; margin-top: 2px; border-radius: 50%; border: 2px solid var(--md-outline); display: grid; place-items: center; }
 .adv-row.on .radio { border-color: var(--md-primary); }
 .adv-row.on .radio::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--md-primary); }
-.adv-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.adv-text { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .adv-name { font-size: 14px; font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .adv-desc { font-size: 12.5px; line-height: 1.55; color: var(--md-on-surface-variant); }
 .progress-block { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
