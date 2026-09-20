@@ -21,9 +21,12 @@ provide(featureHeaderKey, (render) => {
 
 <template>
   <div class="frame">
-    <EmptyState v-if="def && planned" :icon="def.icon" :title="def.label + ' · 规划中'"
-      :hint="(def.needs ?? '等待硬件与驱动接入') + '。接入前这里不会向设备发送任何内容。'" action-text="返回功能列表" @action="detail.back()" />
-    <template v-else-if="def">
+    <template v-if="def">
+      <!-- Planned: the page is shown, with a line saying what it is. -->
+      <p v-if="planned" class="preview" role="note">
+        <strong>{{ def.label }} · 规划中</strong>
+        {{ (def.needs ?? '等待硬件与驱动接入') + '。以下为界面预览，设备端尚未接入。' }}
+      </p>
       <component :is="header" v-if="header" />
       <NkHeader v-else :icon="def.icon" :title="def.label" :subtitle="def.blurb" />
       <Suspense>
@@ -43,4 +46,15 @@ provide(featureHeaderKey, (render) => {
 <style scoped>
 .frame { display: flex; flex-direction: column; gap: 18px; }
 .loading { display: flex; flex-direction: column; gap: 14px; }
+.preview {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-l);
+  border: 1px dashed var(--md-outline-variant);
+  background: var(--md-surface-container);
+  color: var(--md-on-surface-variant);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.preview strong { display: block; color: var(--md-on-surface); margin-bottom: 2px; }
 </style>
