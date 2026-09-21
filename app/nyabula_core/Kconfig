@@ -74,6 +74,30 @@ config NYABULA_CORE_WEB
 	select NETUTILS_CODECS
 	select CODECS_BASE64
 
+config NYABULA_CORE_WEB_EYEPROBE
+	bool "Show the eye screens at /eyeprobe without signing in"
+	default y if NYABULA_DISPLAY_TE_SW
+	default n
+	depends on NYABULA_CORE_WEB
+	---help---
+		GET /eyeprobe answers with a page that shows what the two eye
+		panels show, and GET /eyeprobe/stream with the pages themselves,
+		to anyone who can reach the Web service.  This is for a board
+		that has no panels attached: the eyes are where the device shows
+		the codes that pair a browser with it, so without them nobody
+		could get in at all.
+
+		It follows the software frame clock (NYABULA_DISPLAY_TE_SW),
+		which is what a board without panels has to be built with: the
+		panel TE pins are what paces rendering otherwise, and with no
+		panel to drive them nothing would ever be drawn.
+
+		It also means that those codes, the pair token included, can be
+		read by whoever is on the same network instead of only by whoever
+		stands in front of the device.  Leave it off for a device that has
+		its panels.  The stream the control panel uses (/eyes/stream)
+		asks for credentials either way.
+
 config NYABULA_CORE_WEB_PORT
 	int "Port of the product Web service"
 	default 80
