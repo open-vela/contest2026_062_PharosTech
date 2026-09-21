@@ -6,6 +6,7 @@ import { ref } from 'vue';
 import type { useEyePage } from './eye.logic';
 import IrisCard from './IrisCard.vue';
 import LightCalibrationCard from './LightCalibrationCard.vue';
+import EyeMirrorCard from './EyeMirrorCard.vue';
 
 const props = defineProps<{
   page: ReturnType<typeof useEyePage>;
@@ -28,6 +29,7 @@ function pickStyle(v: string) {
 
 <template>
   <div class="controls" :class="{ dense }">
+    <EyeMirrorCard v-if="!only || only === 'modes'" />
     <MdCard v-if="!only || only === 'modes'" title="表情">
       <div class="mode-grid">
         <button
