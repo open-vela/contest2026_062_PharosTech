@@ -42,6 +42,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -1348,6 +1349,73 @@ static cJSON *ny_net_eye_pairing(const char *ssid, const char *psk)
  * longer listening.
  */
 
+/* Say on the console what the eyes say with their codes.
+ *
+ * A board without its panels has no other way to tell the person in front
+ * of it which network to join and which address to open.  The console is
+ * a wire into the board, the same physical access the panels stand for, so
+ * the link carries the token as the code on the eyes does.  It goes to the
+ * console only: the system log is kept and can be read back later.
+ */
+
+static void ny_net_console_announce(enum ny_net_state_e state,
+                                    const char *ssid, const char *psk,
+                                    const char *ipv4)
+{
+  static enum ny_net_state_e announced = NY_NET_IDLE;
+  static char announced_ipv4[INET_ADDRSTRLEN];
+  const char *host = state == NY_NET_AP_PROVISION ? NY_NET_AP_ADDR : ipv4;
+  char token[80];
+  int fd;
+
+  if (state != NY_NET_AP_PROVISION && state != NY_NET_STA_ONLINE)
+    {
+      announced = NY_NET_IDLE;
+      return;
+    }
+
+  if (state == announced && strcmp(announced_ipv4, host) == 0)
+    {
+      return;
+    }
+
+  if (host[0] == '\0' || ny_web_product_token(token, sizeof(token)) != 0)
+    {
+      return; /* Not known yet: the next pass will do */
+    }
+
+  fd = open("/dev/console", O_WRONLY | O_CLOEXEC);
+  if (fd >= 0)
+    {
+      dprintf(fd, "\n==== Nyabula ====\n");
+      if (state == NY_NET_AP_PROVISION)
+        {
+          dprintf(fd,
+                  "  Wi-Fi hotspot : %s\n"
+                  "  Password      : %s\n"
+                  "  Set up        : http://%s/#/provision?token=%s\n",
+                  ssid, psk, host, token);
+        }
+      else
+        {
+          dprintf(fd,
+                  "  Address       : %s\n"
+                  "  Control panel : http://%s/#/?token=%s\n",
+                  host, host, token);
+        }
+
+#ifdef CONFIG_NYABULA_CORE_WEB_EYEPROBE
+      dprintf(fd, "  Eye screens   : http://%s/eyeprobe\n", host);
+#endif
+      dprintf(fd, "=================\n");
+      close(fd);
+      announced = state;
+      strlcpy(announced_ipv4, host, sizeof(announced_ipv4));
+    }
+
+  memset(token, 0, sizeof(token));
+}
+
 static void ny_net_eye_sync(void)
 {
   static enum ny_net_state_e shown = NY_NET_IDLE;
@@ -1368,6 +1436,7 @@ static void ny_net_eye_sync(void)
   strcpy(psk, g_net.ap_psk);
   strcpy(ipv4, g_net.sta_ipv4);
   nxmutex_unlock(&g_net_lock);
+  ny_net_console_announce(state, ssid, psk, ipv4);
 
   /* The codes are an invitation, and once somebody has a panel open the
    * invitation has been taken up: the eyes go back to being eyes.  On the
