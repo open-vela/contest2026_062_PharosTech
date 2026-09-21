@@ -9,6 +9,7 @@ if(CONFIG_NYABULA_EYE_ENGINE)
     src/nyabula_eye_engine.c src/nyabula_eye_renderer_lvgl.c
     src/nyabula_core.cxx src/nyabula_eye_service.c src/nyabula_eye_json.c
     src/nyabula_eye_wire.c
+    src/nyabula_eye_mirror.c src/nyabula_eye_mirror_codec.c
     src/generated/nyabula_eye_icons.c ${NYABULA_FONT_SRCS})
   target_include_directories(nyabula_eye PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
   target_link_libraries(nyabula_eye PUBLIC lvgl)

@@ -43,6 +43,7 @@
 #include "generated/fonts/nyabula_eye_fonts.h"
 #include "generated/nyabula_eye_icons.h"
 #include "nyabula_eye_internal.h"
+#include "nyabula_eye_mirror.h"
 
 #define W 360
 #define H 360
@@ -5201,6 +5202,13 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
     }
 
   debug_dump_poll(r, id);
+  if (nyabula_eye_mirror_wants(id))
+    {
+      /* A viewer just attached and has nothing to show for this eye. */
+
+      r->last_frame_valid[id] = false;
+    }
+
   if (frame_pixels_unchanged(r, frame, id))
     {
       r->reused_eyes++;
@@ -5333,6 +5341,8 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
   graphics_trace_endex("raster");
   r->raster_total += lv_tick_elaps(stage_start);
   debug_dump(r->draw, id);
+  nyabula_eye_mirror_publish(id, r->draw->data, r->draw->header.w,
+                             r->draw->header.h, r->draw->header.stride);
   stage_start = lv_tick_get();
   lv_obj_invalidate(r->canvas[id]);
   r->flush_total += lv_tick_elaps(stage_start);
