@@ -47,7 +47,8 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
         ${NUTTX_APPS_DIR}/netutils/cjson/cJSON)
   endif()
   if(CONFIG_NYABULA_CORE_WEB)
-    list(APPEND NYABULA_CORE_SRCS ny_web.c ny_web_auth.c ny_web_http.c ny_websocket.c)
+    list(APPEND NYABULA_CORE_SRCS ny_web.c ny_web_auth.c ny_web_http.c ny_websocket.c
+         ny_web_mirror.c)
   endif()
   if(CONFIG_NYABULA_CORE_PRODUCT)
     list(APPEND NYABULA_CORE_SRCS ny_product_store.c ny_product_records.c

@@ -34,6 +34,7 @@
  */
 
 #include "ny_web.h"
+#include "ny_web_mirror.h"
 #include "ny_web_models.h"
 #include "ny_web_ota.h"
 #include "ny_websocket.h"
@@ -359,6 +360,15 @@ int ny_web_http_serve(int fd, const char *head, const void *body,
   bool gzip = false;
   int file;
   int ret;
+
+  /* The eye mirror keeps its connection for as long as somebody watches,
+   * and checks the credentials itself.
+   */
+
+  if (ny_web_mirror_claims(head))
+    {
+      return ny_web_mirror_serve(fd, head, pair_token);
+    }
 
 #ifdef CONFIG_NYABULA_CORE_MODELS
   /* Model files are larger still and arrive in pieces.  Like the firmware
