@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "sample_rate": 48000,
+  "crossover_hz": 500,
+  "master_gain_db": -6,
+  "ceiling": 0.9,
+  "bypass": false,
+  "eq": [],
+  "outputs": {
+    "left": {
+      "gain_db": 0,
+      "polarity": 1,
+      "delay_frames": 0,
+      "eq": []
+    },
+    "right": {
+      "gain_db": 0,
+      "polarity": 1,
+      "delay_frames": 0,
+      "eq": []
+    },
+    "bass": {
+      "gain_db": 0,
+      "polarity": 1,
+      "delay_frames": 0,
+      "eq": []
+    }
+  }
+}
