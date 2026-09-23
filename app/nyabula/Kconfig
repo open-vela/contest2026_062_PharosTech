@@ -7,12 +7,22 @@ config NYABULA_EYE_ENGINE
 	select LV_USE_VECTOR_GRAPHIC
 	select LV_USE_THORVG
 	select LV_USE_CANVAS
+	select LV_USE_QRCODE
 	select NETUTILS_CJSON
 	---help---
 		Build the existing expression/scene engine as a library. A display
 		owner attaches two LVGL roots and drains the bounded command queue.
 
 if NYABULA_EYE_ENGINE
+
+config NYABULA_EYE_WS
+	bool "Legacy Nyabula Eye WebSocket command"
+	default n
+	depends on NYABULA_CORE_EYE && NET_TCP && NET_IPv4
+	select NYABULA_CORE_WEB
+	---help---
+		Keep the nyabula_eye_ws command as an alias for the Core-owned
+		WebSocket service. New integrations use nyabula_web.
 
 config NYABULA_EYE_DISPLAY
 	bool "Nyabula Eye display owner application"

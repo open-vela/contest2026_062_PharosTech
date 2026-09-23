@@ -21,6 +21,23 @@ FONT_MATRIX = {
     "english": ("Tinos-Bold.ttf", (18, 42, 72, 96, 119)),
 }
 
+# Text that arrives at run time -- a reply, a track name, an alarm label, a
+# notification -- is drawn in these sizes, and no scan of the sources can know
+# which characters it will need.  They carry both levels of GB 2312 (6763
+# characters) instead.  42 px only shows the fixed words of the scenes.
+RUNTIME_TEXT = {
+    ("body", 14): 2, ("body", 18): 2, ("title", 20): 2, ("title", 28): 2,
+}
+# A glyph a table lacks is taken from the next one rather than drawn as a box:
+# a title in the wrong weight still reads, a row of boxes does not.  The chain
+# ends at body 18, the widest table of the widest font.
+FALLBACK = {
+    ("title", 42): ("title", 28), ("title", 28): ("body", 18),
+    ("title", 20): ("body", 18), ("body", 14): ("body", 18),
+}
+# CJK punctuation and the full-width forms, as ranges.
+RUNTIME_RANGES = ("0x2010-0x2027", "0x3000-0x303f", "0xff01-0xff5e")
+
 NOTO_FILENAME = "NotoSansCJKsc-Bold.otf"
 NOTO_REVISION = "f8d157532fbfaeda587e826d4cd5b21a49186f7c"
 NOTO_URL = (
@@ -74,6 +91,19 @@ def collect_symbols(paths):
     }))
 
 
+def gb2312(levels):
+    """The hanzi of GB 2312: level 1 is rows 16-55, level 2 rows 56-87."""
+    last = 0xD7 if levels == 1 else 0xF7
+    chars = []
+    for high in range(0xB0, last + 1):
+        for low in range(0xA1, 0xFF):
+            try:
+                chars.append(bytes((high, low)).decode("gb2312"))
+            except UnicodeDecodeError:
+                pass  # The five unassigned cells at the end of row 55.
+    return "".join(chars)
+
+
 def sanitize_metadata(output):
     lines = output.read_text(encoding="utf-8").splitlines()
     while lines and not lines[-1]:
@@ -100,6 +130,11 @@ def generate(font_dir, output_dir, fallback, html=None):
     manifest = {
         "converter": CONVERTER,
         "symbols_sha256": hashlib.sha256(symbols.encode()).hexdigest(),
+        "runtime_text": {f"{family}_{size}": levels
+                         for (family, size), levels in RUNTIME_TEXT.items()},
+        "runtime_ranges": list(RUNTIME_RANGES),
+        "fallback": {f"{a}_{b}": f"{c}_{d}"
+                     for (a, b), (c, d) in FALLBACK.items()},
         "fonts": {
             family: {"file": path.name, "sha256": sha256(path),
                      "sizes": list(FONT_MATRIX[family][1])}
@@ -113,9 +148,18 @@ def generate(font_dir, output_dir, fallback, html=None):
         if json.loads(manifest_path.read_text(encoding="utf-8")) == manifest:
             print("Eye glyph tables are up to date")
             return
-    converter = shutil.which("npx.cmd") or shutil.which("npx")
-    if converter is None:
-        raise FileNotFoundError("npx")
+    # npx.cmd runs through cmd.exe, whose 8191 character command line cannot
+    # carry a GB 2312 symbol list.  An installed lv_font_conv.js is started
+    # with node directly instead, which has the 32 K limit of CreateProcess.
+    local = os.environ.get("NYABULA_LV_FONT_CONV")
+    if local:
+        prefix = [shutil.which("node") or "node", local]
+    else:
+        converter = shutil.which("npx.cmd") or shutil.which("npx")
+        if converter is None:
+            raise FileNotFoundError("npx")
+        prefix = [converter, "--yes",
+                  "--registry=https://registry.npmjs.org/", CONVERTER]
     converter_env = os.environ.copy()
     converter_env.setdefault("NODE_OPTIONS", "--max-old-space-size=512")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -125,16 +169,23 @@ def generate(font_dir, output_dir, fallback, html=None):
         for size in sizes:
             name = f"nyabula_font_{family}_{size}"
             output = output_dir / f"{name}.c"
-            command = [
-                converter, "--yes", "--registry=https://registry.npmjs.org/",
-                CONVERTER,
+            command = prefix + [
                 "--font", str(font),
                 "-r", "0x20-0x7e",
             ]
-            if family != "english":
+            if (family, size) in RUNTIME_TEXT:
+                wide = "".join(sorted(
+                    set(symbols) | set(gb2312(RUNTIME_TEXT[(family, size)]))))
+                for span in RUNTIME_RANGES:
+                    command.extend(["-r", span])
+                command.extend(["--symbols", wide])
+            elif family != "english":
                 command.extend(["--symbols", symbols])
             else:
                 command.extend(["--symbols", "°"])
+            if (family, size) in FALLBACK:
+                command.extend(["--lv-fallback", "nyabula_font_%s_%d"
+                                % FALLBACK[(family, size)]])
             command.extend([
                 "--size", str(size),
                 "--bpp", "4",

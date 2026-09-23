@@ -9,12 +9,16 @@ if [[ $# != 1 ]]; then
 fi
 
 source_dir=$(realpath "$1")
-patch_file=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/gicv2-amp.patch
+patch_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-if git -C "$source_dir" apply --reverse --check "$patch_file" 2>/dev/null; then
-  echo "NuttX GICv2 AMP patch is already applied"
-else
-  git -C "$source_dir" apply --check "$patch_file"
-  git -C "$source_dir" apply "$patch_file"
-  echo "Applied NuttX GICv2 AMP patch to $source_dir"
-fi
+# Order matters: the self-routing change sits on top of the base AMP patch.
+for patch_file in "$patch_dir/gicv2-amp.patch"                   "$patch_dir/gicv2-amp-selfroute.patch"; do
+  name=$(basename -- "$patch_file")
+  if git -C "$source_dir" apply --reverse --check "$patch_file" 2>/dev/null; then
+    echo "$name is already applied"
+  else
+    git -C "$source_dir" apply --check "$patch_file"
+    git -C "$source_dir" apply "$patch_file"
+    echo "Applied $name to $source_dir"
+  fi
+done

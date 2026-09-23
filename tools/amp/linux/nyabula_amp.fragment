@@ -33,6 +33,10 @@ CONFIG_RPMSG_ROCKCHIP_MBOX=y
 CONFIG_RPMSG_VIRTIO=y
 CONFIG_RPMSG_CHAR=y
 CONFIG_RPMSG_CTRL=y
+
+# Shared audio region between the two domains.  Messages carry only a
+# descriptor; the samples live here, mapped non-cacheable by both sides.
+CONFIG_NYAMP_SHMEM=y
 # CONFIG_RPMSG_TTY is not set
 # CONFIG_RPMSG_ROCKCHIP_TEST is not set
 # CONFIG_ROCKCHIP_MBOX_DEMO is not set

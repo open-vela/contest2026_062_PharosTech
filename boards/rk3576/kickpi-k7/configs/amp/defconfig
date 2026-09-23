@@ -67,7 +67,29 @@ CONFIG_RAW_BINARY=y
 CONFIG_READLINE_CMD_HISTORY=y
 CONFIG_RK3576_MAILBOX=y
 CONFIG_RK3576_RPTUN=y
+CONFIG_RK3576_SHMEM=y
 CONFIG_RPMSG_CHAR=y
+
+# On-board ES8388 audio.  The codec is the only way the control domain can
+# hear or speak, so ASR and TTS are unreachable without it.  SAI1 carries the
+# samples and I2C the codec's registers; both are owned by this domain in the
+# AMP split, and the Linux side disables them in the shared device tree.
+# RK3576_DMA_ALLOC stays off: it carves a dedicated heap out of the region
+# the AMP layout has already accounted for, and the layout check rejects it.
+
+CONFIG_RK3576_GPIO=y
+CONFIG_RK3576_I2C=y
+CONFIG_RK3576_SAI=y
+CONFIG_RK3576_DMA=y
+CONFIG_DEV_GPIO=y
+CONFIG_KICKPI_K7_AUDIO=y
+CONFIG_AUDIO=y
+CONFIG_DRIVERS_AUDIO=y
+CONFIG_I2S=y
+CONFIG_SYSTEM_AUDIOCTL=y
+CONFIG_SYSTEM_NXPLAYER=y
+CONFIG_SYSTEM_NXRECORDER=y
+CONFIG_SCHED_LPWORK=y
 CONFIG_EXAMPLES_NYAMPCTL=y
 CONFIG_RR_INTERVAL=200
 CONFIG_SCHED_BACKTRACE=y

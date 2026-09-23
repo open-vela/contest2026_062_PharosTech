@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "comment": "Eye Engine 参数唯一真源。TS/Dart/设备端渲染器共用；改此文件 = 改所有端。来源 cat_eyes_demo.html。",
+  "params": {
+    "pupilW": { "default": 0.35, "min": 0.1, "max": 1.0, "speed": 8 },
+    "pupilH": { "default": 0.78, "min": 0.1, "max": 1.0, "speed": 8 },
+    "lidTop": { "default": 0.0, "min": 0.0, "max": 1.0, "speed": 22 },
+    "lidBot": { "default": 0.0, "min": 0.0, "max": 1.0, "speed": 22 },
+    "lidSlant": { "default": 0.0, "min": -1.0, "max": 1.0, "speed": 6 },
+    "botCurve": { "default": 0.0, "min": 0.0, "max": 1.0, "speed": 6 },
+    "gazeX": { "default": 0.0, "min": -1.0, "max": 1.0, "speed": 10 },
+    "gazeY": { "default": 0.0, "min": -1.0, "max": 1.0, "speed": 10 },
+    "irisScale": { "default": 1.0, "min": 0.5, "max": 1.5, "speed": 7 },
+    "glow": { "default": 0.5, "min": 0.0, "max": 1.0, "speed": 4 },
+    "overlay": { "default": 0.0, "min": 0.0, "max": 1.0, "speed": 6 },
+    "squint": { "default": 0.0, "min": 0.0, "max": 1.0, "speed": 8 },
+    "derp": { "default": 0.0, "min": 0.0, "max": 1.0, "speed": 5 }
+  },
+  "interpolation": "cur = lerp(cur, tgt, 1 - exp(-speed * dt))",
+  "modes": ["idle", "curious", "happy", "processing", "star", "heart", "sleepy", "sleep", "angry", "sad", "surprise", "dizzy", "derp"],
+  "scenes": ["music", "timer", "weather", "battery", "alarm", "call", "task", "stopwatch", "calendar", "sleep-timer", "network", "audio", "eq", "caption", "briefing", "privacy", "identity", "memory", "devices", "system", "health", "presence", "companion", "home", "subwoofer", "pairing"],
+  "sceneStyles": ["full", "minimal"],
+  "timing": {
+    "blinkSpeed": 4.2,
+    "blinkClosePortion": 0.46,
+    "blinkIntervalMin": 2.2,
+    "blinkIntervalRand": 4.5,
+    "doubleBlinkChance": 0.18,
+    "doubleBlinkDelay": 0.35,
+    "saccadeIntervalMin": 1.2,
+    "saccadeIntervalRand": 2.8,
+    "saccadeAmpX": 0.55,
+    "saccadeAmpY": 0.35,
+    "saccadeRecenterChance": 0.3,
+    "lookHoldDefault": 2.2,
+    "sceneCloseTime": 0.38,
+    "sceneOpenTime": 0.52,
+    "sceneFadeTime": 0.32,
+    "sceneEase": [0.08, 0.92],
+    "sleepCloseDuration": 1.8,
+    "lightConstrictSpeed": 4,
+    "lightDilateSpeed": 2
+  },
+  "appearance": {
+    "irisDefault": "#38e06e",
+    "pupilBase": "0~1 由环境光: dil=1-light; pupilW=lerp(0.10, 0.95, dil*dil*0.3 + dil*0.7); light 本身先按 lightConstrictSpeed(变亮)/lightDilateSpeed(变暗) 缓动，首个值直接采用"
+  },
+  "geometry": {
+    "comment": "Device panel geometry, from nyabula_eye_renderer_lvgl.c (W/H 360, R 178, eye_globe_radius = R - 2). The C side hardcodes these; keep both in step.",
+    "panelSizePx": 360,
+    "eyeRadiusPx": 178,
+    "globeInsetPx": 2
+  },
+  "layout": {
+    "panelRadius": "P = min(W*0.16, H*0.30)",
+    "eyeRadius": "R = P * eyeRadiusPx / (panelSizePx / 2)",
+    "gap": "P*2.7",
+    "centerY": "H*0.46"
+  }
+}

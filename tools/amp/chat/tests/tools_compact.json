@@ -1,0 +1,56 @@
+[
+  {
+    "name": "nyabula_read",
+    "description": "Read Core data, no side effects.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string",
+          "description": "sys.info system.time.get memory.list task.list calendar.list timer.list alarm.list eyes.status device.status music.status music.library weather.get"
+        }
+      }
+    }
+  },
+  {
+    "name": "nyabula_action",
+    "description": "Request a Core write; owner approves first.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string",
+          "description": "memory.create task.create calendar.create timer.create"
+        },
+        "arguments": {"type": "object"}
+      }
+    }
+  },
+  {
+    "name": "nyabula_expression",
+    "description": "Set cat eye expression.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "expression": {
+          "type": "string",
+          "description": "idle curious happy processing star heart sleepy sleep angry sad surprise dizzy derp"
+        }
+      }
+    }
+  },
+  {
+    "name": "nyabula_music",
+    "description": "Local audio. play {name}; volume {volume:0-100,muted}; output {device}; others {}.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string",
+          "description": "music.play music.pause music.resume music.stop music.volume music.output"
+        },
+        "arguments": {"type": "object"}
+      }
+    }
+  }
+]

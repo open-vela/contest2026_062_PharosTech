@@ -50,6 +50,9 @@
 
 #ifdef CONFIG_RK3576_RPTUN
 #include "rk3576_rptun.h"
+#ifdef CONFIG_RK3576_SHMEM
+#include <arch/chip/rk3576_shmem.h>
+#endif
 #endif
 
 #ifdef CONFIG_RK3576_SDMMC
@@ -543,6 +546,22 @@ void board_late_initialize(void)
     {
       syslog(LOG_ERR, "ERROR: rk3576_rptun_init failed\n");
     }
+#endif
+
+#ifdef CONFIG_RK3576_SHMEM
+  /* Note the shared audio region's state at bring-up.  The compute domain
+   * claims it asynchronously, so an absent header here is expected rather
+   * than an error: the region is only needed once audio actually moves, and
+   * the caller checks readiness at that point.
+   */
+
+  {
+    int ret = rk3576_shmem_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_INFO, "rk3576_shmem: not claimed yet (%d)\n", ret);
+      }
+  }
 #endif
 }
 #endif /* CONFIG_BOARD_LATE_INITIALIZE */

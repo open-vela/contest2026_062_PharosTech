@@ -141,6 +141,25 @@ config RK3576_RPTUN
 		addresses are fixed by Rockchip's rk3576-amp.dtsi and compiled in
 		(see rk3576_rptun.c).
 
+config RK3576_SHMEM
+	bool "AMP shared-memory region"
+	default n
+	depends on RK3576_RPTUN
+	---help---
+		Map the reserved shared region at 0x47c00000 non-cacheable and
+		validate its arena header against the compute domain.
+
+		Audio payloads do not fit the RPMsg inline limit, so they travel
+		through this region while the messages carry only a descriptor.
+		Both domains must agree on the region's size: a disagreement would
+		shift every slot and corrupt data silently, so bring-up reports a
+		mismatch instead of adapting to it.
+
+		The region lies inside DRAM0_BANK1, which is otherwise mapped
+		cacheable.  It is remapped because the peer maps the same pages
+		with plain ioremap, and one physical page shared under two
+		cacheabilities is undefined behaviour.
+
 config RK3576_GPIO
 	bool "GPIO"
 	default n
@@ -357,5 +376,21 @@ config RK3576_DMA_HEAP_SIZE_MB
 endif # RK3576_DMA_ALLOC
 
 endmenu # Rockchip RK3576 DMA allocator
+
+config RK3576_RAMBANK2_ADDR
+	hex "Second heap region base (0 = everything after OP-TEE)"
+	default 0x0
+	---help---
+		By default the second heap region runs from the end of the OP-TEE
+		reservation (and of the DMA heap, if enabled) to the end of DDR,
+		which is right when openvela owns the whole board.  Under AMP
+		most of that memory belongs to the peer OS: set this to the base
+		of the region the peer's device tree reserves for openvela's
+		heap, and RK3576_RAMBANK2_SIZE_MB to its size.
+
+config RK3576_RAMBANK2_SIZE_MB
+	int "Second heap region size in MiB"
+	default 0
+	depends on RK3576_RAMBANK2_ADDR != 0x0
 
 endif # ARCH_CHIP_RK3576

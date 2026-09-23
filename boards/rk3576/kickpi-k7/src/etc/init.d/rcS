@@ -26,3 +26,22 @@
 #ifdef CONFIG_SYSTEM_ADBD
 adbd &
 #endif
+
+/* The eyes are the product's face, so they come up with the system rather
+ * than waiting for something to ask.  The engine owns LVGL and both panels
+ * and never returns, hence the background start.
+ */
+
+#ifdef CONFIG_NYABULA_EYE_DISPLAY
+nyabula_eye &
+#endif
+
+/* Started with no arguments the Web service runs as the product's front
+ * door: it waits for the stores, brings up the product worker -- timers,
+ * media, and the network state machine that opens the provisioning AP on a
+ * device with no network -- and serves whatever address the device has.
+ */
+
+#ifdef CONFIG_NYABULA_CORE_WEB
+nyabula_web &
+#endif

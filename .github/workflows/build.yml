@@ -62,10 +62,16 @@ jobs:
         run: |
           python3 tools/amp/test_amp_topology.py
           python3 tools/amp/test_manifest_layout.py
+          python3 tools/amp/test_shmem_layout.py
           cmake -S tools/amp/nyampd -B out/nyampd
           cmake --build out/nyampd -j2
           ctest --test-dir out/nyampd --output-on-failure
           python3 tools/amp/test_application_pty.py . out/nyampd/nyampd
+          python3 tools/amp/test_llm_flow.py .
+          python3 -m unittest discover -s tools/amp/resources -p 'test_*.py'
+          cmake -S tools/amp/models -B out/models
+          cmake --build out/models -j2
+          ctest --test-dir out/models --output-on-failure
 
   core_build_contract:
     name: Core dependency configuration
@@ -188,8 +194,23 @@ jobs:
         with:
           node-version: '22'
 
+      # configs/product builds nyabula_core against interfaces that live in
+      # patches/ until they are upstream (packages/ai_agent, nxplayer, microADB).
+      - name: Apply dependency patches
+        if: matrix.config == 'configs/product'
+        shell: bash
+        run: |
+          cd "${{ env.OPENVELA_DIR }}"
+          REPO="$PWD/${{ env.REPO_NAME }}"
+          for pf in "$REPO"/patches/apps-*.patch; do
+            patch -d apps -p1 -N < "$pf"
+          done
+          for pf in "$REPO"/patches/packages-ai_agent-*.patch; do
+            patch -d packages/ai_agent -p1 -N < "$pf"
+          done
+
       - name: Generate Eye glyph tables from official Noto Sans
-        if: matrix.config == 'configs/core_eye'
+        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/product'
         run: |
           cd ${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}
           python3 app/nyabula/tools/test_generate_fonts.py

@@ -38,10 +38,25 @@
 		amp-cpu-aff-maskbits = /bits/ 64 <
 			0x0 0x1 0x1 0x2 0x2 0x4 0x3 0x8
 			0x100 0x10 0x101 0x20 0x102 0x40 0x103 0x80>;
+		/* Interrupts owned by this domain.  Linux brings up the GIC
+		 * distributor and routes every SPI to the A72 cluster by default,
+		 * so anything this side needs must be listed here or it never
+		 * arrives: UART0 for the console, MAILBOX3 for the transport, and
+		 * the three the on-board codec needs -- SAI1 for samples, I2C3 for
+		 * the codec's registers, and PL330 dmac0 which moves both.
+		 */
 		amp-irqs = /bits/ 64 <
 			GIC_AMP_IRQ_CFG_ROUTE(108, 0x80,
 				NYABULA_CPU_AFFINITY(0, 0))
 			GIC_AMP_IRQ_CFG_ROUTE(174, 0x80,
+				NYABULA_CPU_AFFINITY(0, 0))
+			GIC_AMP_IRQ_CFG_ROUTE(220, 0x80,
+				NYABULA_CPU_AFFINITY(0, 0))
+			GIC_AMP_IRQ_CFG_ROUTE(123, 0x80,
+				NYABULA_CPU_AFFINITY(0, 0))
+			GIC_AMP_IRQ_CFG_ROUTE(96, 0x80,
+				NYABULA_CPU_AFFINITY(0, 0))
+			GIC_AMP_IRQ_CFG_ROUTE(97, 0x80,
 				NYABULA_CPU_AFFINITY(0, 0))>;
 		status = "okay";
 	};
@@ -50,6 +65,12 @@
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges;
+
+		/* BL32: 2 MiB TEE OS, 12 MiB TA RAM and 2 MiB shared RAM. */
+		optee_reserved: optee@48400000 {
+			reg = <0x0 0x48400000 0x0 0x1000000>;
+			no-map;
+		};
 
 		rpmsg_reserved: rpmsg@47800000 {
 			reg = <0x0 0x47800000 0x0 0x200000>;
@@ -62,6 +83,18 @@
 			no-map;
 		};
 
+		/* Audio and image payloads are far past the RPMsg inline limit, so
+		 * the two domains exchange them through this region and the messages
+		 * carry only a descriptor.  no-map keeps it out of the linear
+		 * mapping and the page allocator; the driver maps it with ioremap
+		 * and the control domain maps the same pages the same way, so
+		 * neither side has to maintain cache state for the other.
+		 *
+		 * Declared without a compatible here on purpose: the kernel only
+		 * instantiates reserved-memory children whose compatible is on its
+		 * own allow-list, and the driver below claims the region by
+		 * referencing it instead.
+		 */
 		amp_shmem_reserved: amp-shmem@47c00000 {
 			reg = <0x0 0x47c00000 0x0 0x400000>;
 			no-map;
@@ -87,9 +120,47 @@
 	fiq-debugger {
 		status = "disabled";
 	};
+
+	/* The shared region's consumer.  It sits at the top level because the
+	 * kernel only creates platform devices for reserved-memory children on
+	 * its own allow-list; referencing the region from a normal node keeps
+	 * the driver out of that list.
+	 */
+	nyamp_shmem: nyamp-shmem {
+		compatible = "nyabula,amp-shmem";
+		memory-region = <&amp_shmem_reserved>;
+		status = "okay";
+	};
 };
 
 &uart0 {
+	status = "disabled";
+};
+
+/* The on-board codec belongs to the control domain in this split, so Linux
+ * must release the whole path to it: the I2S controller that carries samples,
+ * the I2C bus that carries the codec's registers, the DMA controller that
+ * moves both, and the sound card that would otherwise bind them.  Releasing
+ * only the codec would leave Linux driving a controller the other side owns.
+ *
+ * These are addressed by path rather than by label: the labels sai1, i2c3 and
+ * dmac0 exist on other Rockchip parts in the same tree and would resolve to
+ * the wrong node here.
+ */
+
+&{/sai@2a610000} {
+	status = "disabled";
+};
+
+&{/i2c@2ac60000} {
+	status = "disabled";
+};
+
+&{/dma-controller@2ab90000} {
+	status = "disabled";
+};
+
+&{/es8388-sound} {
 	status = "disabled";
 };
 

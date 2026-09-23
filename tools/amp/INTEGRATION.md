@@ -14,3 +14,15 @@ nbootctl与manifest链接；N-Boot保留#7的早期DM、串口恢复与持久一
 
 公共NuttX仓暂不另开PR。GIC补丁随团队仓提供，在CI与独立构建工作区显式应用；
 后续提交公共仓并合入后再移除这项临时依赖。
+
+## 模型交付（BLOB 服务）的方向约定
+
+product 形态下 eMMC 与 `/data` 归 openvela，Linux 计算域无存储。`NYAMP_SERVICE_BLOB = 9`
+因此是唯一「Linux 请求、openvela 应答」的服务。request_id 归发起方（计算域发起的置
+bit 63），generation 仍只属于计算域并由应答回显，RESPONSE/EVENT 永不被应答，共享 arena
+仍只有 Linux 一个分配器。完整规则与 opcode 表见 [protocol/README.md](protocol/README.md)，
+设计与上板步骤见 [../../docs/amp-model-delivery.md](../../docs/amp-model-delivery.md)。
+
+openvela 侧由 `app/nyabula_core/ny_compute.c`（`CONFIG_NYABULA_CORE_COMPUTE`）常驻持有
+`rpmsg-raw` 端点的读端并应答 BLOB；`nyampctl` 在该服务运行时经其 port 收发，未运行或
+最小 AMP profile 下仍按原方式独占端点。

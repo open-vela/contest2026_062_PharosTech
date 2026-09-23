@@ -29,4 +29,11 @@ MODULE    = $(CONFIG_SYSTEM_AUDIOCTL)
 
 MAINSRC = audioctl_main.c
 
+# Volume, mute and microphone gain go through the Nyabula audio service when
+# it is built in (the driver has no readback, the service keeps the record).
+# Its header lives where the manifest links Core, not beside this directory.
+ifeq ($(CONFIG_NYABULA_CORE_AUDIO),y)
+CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/../packages/demos/contest2026_062_nyabula_core
+endif
+
 include $(APPDIR)/Application.mk

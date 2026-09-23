@@ -1,0 +1,105 @@
+diff -ruN a/src/llm/llm_proxy.c b/src/llm/llm_proxy.c
+--- a/src/llm/llm_proxy.c	2026-09-20 10:58:10.922422816 +0800
++++ b/src/llm/llm_proxy.c	2026-09-20 10:58:33.170868645 +0800
+@@ -53,6 +53,11 @@
+ 
+ static pthread_mutex_t s_llm_lock = PTHREAD_MUTEX_INITIALIZER;
+ 
++/* Requests for this host go to the registered transport, not the network. */
++static char s_local_host[128] = { 0 };
++static llm_local_transport_t s_local_transport = NULL;
++static void* s_local_arg = NULL;
++
+ /* Check if host uses OpenAI-compatible max_completion_tokens param */
+ bool is_openai_compat_host(const char* host)
+ {
+@@ -492,9 +497,60 @@
+     return OK;
+ }
+ 
++int llm_set_local_transport(const char* host,
++    llm_local_transport_t transport, void* arg)
++{
++    if (transport != NULL && (host == NULL || host[0] == '\0' || strlen(host) >= sizeof(s_local_host))) {
++        return ERROR;
++    }
++
++    pthread_mutex_lock(&s_llm_lock);
++    s_local_transport = transport;
++    s_local_arg = transport ? arg : NULL;
++    snprintf(s_local_host, sizeof(s_local_host), "%s", transport ? host : "");
++    pthread_mutex_unlock(&s_llm_lock);
++    return OK;
++}
++
+ int llm_http_call(const char* post_data, resp_buf_t* rb,
+     int* out_status)
+ {
++    llm_local_transport_t local = NULL;
++    void* local_arg = NULL;
++
++    pthread_mutex_lock(&s_llm_lock);
++    if (s_local_transport != NULL && strcmp(s_llm_host, s_local_host) == 0) {
++        local = s_local_transport;
++        local_arg = s_local_arg;
++    }
++    pthread_mutex_unlock(&s_llm_lock);
++
++    if (local != NULL) {
++        /* No retry loop here: a local failure is not a flaky network, and
++         * the router's failover is the right place to react to it. */
++        char* body = NULL;
++        int ret = local(post_data, &body, out_status, local_arg);
++
++        if (ret == OK && body != NULL) {
++            size_t len = strlen(body);
++
++            /* The network transports size the buffer themselves; an empty
++             * one would never grow, because growth doubles the capacity. */
++            if (rb->data == NULL) {
++                ret = resp_buf_init(rb, len + 1);
++            }
++
++            if (ret == OK) {
++                ret = resp_buf_append(rb, body, len);
++            }
++        } else if (ret == OK) {
++            ret = ERROR;
++        }
++
++        free(body);
++        return ret;
++    }
++
+     /* Only an explicitly enabled simulator loopback fixture uses HTTP. */
+     int use_tls = 1;
+ #ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
+diff -ruN a/src/llm/llm_proxy.h b/src/llm/llm_proxy.h
+--- a/src/llm/llm_proxy.h	2026-09-20 10:58:10.922422816 +0800
++++ b/src/llm/llm_proxy.h	2026-09-20 10:58:33.170868645 +0800
+@@ -48,6 +48,25 @@
+ int llm_chat(const char* system_prompt, const char* messages_json,
+     char* response_buf, size_t buf_size);
+ 
++/* ── Local transport ──────────────────────────────────────── */
++
++/**
++ * A model that runs on the device itself is not reached over HTTPS.  The
++ * embedding application registers a transport for one backend host name;
++ * requests routed to that host are handed to it verbatim instead of being
++ * sent to the network, and everything around them -- routing, retries, tool
++ * parsing, usage accounting -- stays the code path the cloud backends use.
++ *
++ * The transport receives the OpenAI chat-completions request body and returns
++ * a heap-allocated chat-completions response body (freed by the caller) with
++ * the HTTP status it stands for.  Pass transport == NULL to unregister.
++ */
++typedef int (*llm_local_transport_t)(const char* request_json,
++    char** response_json, int* status, void* arg);
++
++int llm_set_local_transport(const char* host,
++    llm_local_transport_t transport, void* arg);
++
+ /* ── Tool Use ─────────────────────────────────────────────── */
+ 
+ typedef struct {

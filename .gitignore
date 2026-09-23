@@ -8,3 +8,20 @@
 .depend
 .built
 Make.dep
+
+# Third-party binaries take part in the product build on the build machine
+# and nowhere else.  Models, radio firmware, Rockchip boot blobs and the
+# images assembled from them belong to their vendors; this repository
+# carries how to obtain and verify them, never the files.
+/out/
+/product/models/*
+!/product/models/README.md
+/tools/k7_pack/rkbin/
+*.rknn
+*.rkllm
+*.onnx
+*.itb
+*.img
+
+# Python bytecode from tools/amp test helpers
+__pycache__/
