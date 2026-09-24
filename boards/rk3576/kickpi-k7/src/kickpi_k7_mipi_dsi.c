@@ -89,7 +89,33 @@
  * 2 = burst.  The value is passed verbatim through rk3576_dsi_config.
  */
 
+#define KICKPI_K7_DSI_VID_MODE_NON_BURST_SYNC_PULSES (0x0)
 #define KICKPI_K7_DSI_VID_MODE_NON_BURST_SYNC_EVENTS (0x1)
+#define KICKPI_K7_DSI_VID_MODE_BURST                 (0x2)
+
+/* Active selection -- the ONE line to change when running the video-mode
+ * comparison experiment.
+ *
+ * BURST is now the ACTIVE mode, because a runtime sweep over all three
+ * modes x both clock-lane types measured it as the only configuration in
+ * which the PHY actually transmits: with BURST + non-continuous clock the
+ * clock lane cycles between HS and LP-11 (clk_toggles > 0) and the
+ * controller's HS-TX timeout stays CLEAR.  With sync-pulses and
+ * sync-events, err_to_hstx latches instead -- a burst that starts and never
+ * finishes (clock lane pinned out of LP-11) -- and with a continuous clock
+ * nothing is transmitted at all.
+ *
+ * This also matches the mainline Linux ILI9881D panel driver, where the
+ * only 720x1280 / 4-lane / RGB888 / 64 MHz entry
+ * (wanchanglong,w552946aba) is flagged MIPI_DSI_MODE_VIDEO_BURST; no
+ * mainline ILI9881D panel uses sync-events.
+ *
+ * mode_type is reported on the console by enable_video()
+ * ("dsi: VIDEO CFG mode_type=..."), so every captured log states which of
+ * the three was actually programmed.
+ */
+
+#define KICKPI_K7_DSI_VID_MODE KICKPI_K7_DSI_VID_MODE_BURST
 
 /* Panel geometry and link configuration. */
 
@@ -98,9 +124,42 @@
 #define KICKPI_K7_MIPI_DSI_LANES  4
 #define KICKPI_K7_MIPI_DSI_FORMAT MIPI_DSI_FMT_RGB888
 #define KICKPI_K7_MIPI_DSI_PIXCLK 64000000u /* Hz */
-#define KICKPI_K7_MIPI_DSI_HS_RATE         \
-  384000000u /* Hz: pixclk * bpp / lanes = \
-              * 64e6 * 24 / 4 */
+
+/* Link rate implied directly by the pixel stream:
+ *   pixclk * bpp / lanes = 64e6 * 24 / 4 = 384 Mbps per lane.
+ */
+
+#define KICKPI_K7_MIPI_DSI_HS_RATE_RAW 384000000u
+
+/* Burst mode needs link headroom.  Burst transmission time-compresses the
+ * active pixels of each line into one packet sent as fast as possible, so
+ * the link must be able to deliver pixels FASTER than the raw pixel rate,
+ * otherwise the compressed burst cannot fit inside the line's own timing
+ * and every horizontal boundary shifts.  The reference driver applies
+ * exactly this factor (dw_mipi_dsi2_get_lane_mbps():
+ *   "take 1 / 0.9, since Mbps must big than bandwidth of RGB").
+ *
+ * Set the numerator/denominator to 1/1 to run burst at the raw rate -- a
+ * deliberate experiment that isolates "the panel needs burst mode" from
+ * "the panel needs the rate margin on top of burst mode".  The resulting
+ * rate is printed by enable_video() ("dsi: VIDEO CFG ... hs_rate=...").
+ */
+
+#define KICKPI_K7_MIPI_DSI_BURST_HEADROOM_NUM 10u
+#define KICKPI_K7_MIPI_DSI_BURST_HEADROOM_DEN 9u
+
+/* The link rate actually handed to the DSI host, derived from the active
+ * video mode: burst mode takes the headroom above, the non-burst modes use
+ * the raw rate (they preserve the panel timing 1:1, so they need no
+ * compression headroom). */
+
+#if KICKPI_K7_DSI_VID_MODE == KICKPI_K7_DSI_VID_MODE_BURST
+#  define KICKPI_K7_MIPI_DSI_HS_RATE                                    \
+     (KICKPI_K7_MIPI_DSI_HS_RATE_RAW * KICKPI_K7_MIPI_DSI_BURST_HEADROOM_NUM / \
+      KICKPI_K7_MIPI_DSI_BURST_HEADROOM_DEN)
+#else
+#  define KICKPI_K7_MIPI_DSI_HS_RATE KICKPI_K7_MIPI_DSI_HS_RATE_RAW
+#endif
 
 /* Panel timing (porches / sync, in pixels / lines). */
 
@@ -178,8 +237,18 @@ struct kickpi_k7_mipi_dsi_cmd_s
  * bytes that follow the word-count field.
  */
 
+/* NOTE on page-switch timing: every vendor page switch (0xFF 98 81 xx)
+ * MUST carry its own post-command delay.  The panel needs a settle time
+ * after the page register is re-targeted before the following register
+ * writes are latched; with delay_ms = 0 the sequence only worked by
+ * accident, because the debug probe that used to follow the first
+ * page-switch burned a few ms of UART time.  Removing that probe made the
+ * DISPON bit stop sticking (GET_POWER_MODE read back 0x0C instead of
+ * 0x9C).  The delay is therefore explicit below -- never rely on logging
+ * to provide it. */
+
 static const struct kickpi_k7_mipi_dsi_cmd_s g_kickpi_k7_mipi_dsi_init[] = {
-  { KICKPI_K7_PKT_GEN_LONG, 0, _PANEL_INIT(0xFF, 0x98, 0x81, 0x03) },
+  { KICKPI_K7_PKT_GEN_LONG, 5, _PANEL_INIT(0xFF, 0x98, 0x81, 0x03) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x01, 0x00) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x02, 0x00) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x03, 0x73) },
@@ -309,7 +378,7 @@ static const struct kickpi_k7_mipi_dsi_cmd_s g_kickpi_k7_mipi_dsi_init[] = {
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x8A, 0x02) },
 
   /* Page 0x04 register block. */
-  { KICKPI_K7_PKT_GEN_LONG, 0, _PANEL_INIT(0xff, 0x98, 0x81, 0x04) },
+  { KICKPI_K7_PKT_GEN_LONG, 5, _PANEL_INIT(0xff, 0x98, 0x81, 0x04) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x6D, 0x08) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x6F, 0x05) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x70, 0x00) },
@@ -326,7 +395,7 @@ static const struct kickpi_k7_mipi_dsi_cmd_s g_kickpi_k7_mipi_dsi_init[] = {
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x88, 0x33) },
 
   /* Page 0x01 gamma correction block. */
-  { KICKPI_K7_PKT_GEN_LONG, 0, _PANEL_INIT(0xff, 0x98, 0x81, 0x01) },
+  { KICKPI_K7_PKT_GEN_LONG, 5, _PANEL_INIT(0xff, 0x98, 0x81, 0x01) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x22, 0x09) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x31, 0x00) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x53, 0x8a) },
@@ -376,7 +445,7 @@ static const struct kickpi_k7_mipi_dsi_cmd_s g_kickpi_k7_mipi_dsi_init[] = {
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0xD3, 0x39) },
 
   /* Page 0x00 (normal). */
-  { KICKPI_K7_PKT_GEN_LONG, 0, _PANEL_INIT(0xff, 0x98, 0x81, 0x00) },
+  { KICKPI_K7_PKT_GEN_LONG, 5, _PANEL_INIT(0xff, 0x98, 0x81, 0x00) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x35, 0x00) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x36, 0x03) },
   { KICKPI_K7_PKT_DCS_LONG, 120,
@@ -602,12 +671,34 @@ int kickpi_k7_mipi_dsi_initialize(void)
   memset(&dsi_cfg, 0, sizeof(dsi_cfg));
   dsi_cfg.lanes = KICKPI_K7_MIPI_DSI_LANES;
   dsi_cfg.format = KICKPI_K7_MIPI_DSI_FORMAT;
-  dsi_cfg.video_mode = KICKPI_K7_DSI_VID_MODE_NON_BURST_SYNC_EVENTS;
+  dsi_cfg.video_mode = KICKPI_K7_DSI_VID_MODE;
   dsi_cfg.hs_rate = KICKPI_K7_MIPI_DSI_HS_RATE;
 
-  /* ILI9881D's clock lane does a HS-burst per line (THS-EXIT drives the
-   * clock lane to LP-11 after each HS burst, per Table 46), i.e. a
-   * NON-continuous clock lane.  Keep continuous_clk = false (default). */
+  /* CONTINUOUS clock lane, paired with BURST video mode.
+   *
+   * The clock lane stays in HS for the whole frame while the data lanes do
+   * one burst per line -- the classic DSI configuration, and the one the
+   * mainline Linux ILI9881D driver uses for the panel whose geometry is
+   * identical to this board's (wanchanglong,w552946aba:
+   * 720x1280 / 4 lanes / RGB888 / 64 MHz, flagged MIPI_DSI_MODE_VIDEO_BURST
+   * with MIPI_DSI_CLOCK_NON_CONTINUOUS NOT set).
+   *
+   * Rationale for changing this now: the previous "must be non-continuous"
+   * conclusion came from reading the panel spec's THS-EXIT parameter
+   * (~"the clock lane can return to LP-11").  That proves the lane is
+   * CAPABLE of it, not that the panel REQUIRES it.  A runtime sweep later
+   * measured that BURST transmits correctly with EITHER clock type (data
+   * lanes burst per line and err_to_hstx stays clear in both), so the clock
+   * type is genuinely undecided by the controller side -- and the only
+   * external reference we have for this exact panel geometry picks
+   * continuous.
+   *
+   * NOTE: the earlier observation "continuous clock transmits nothing at
+   * all" was made with sync-events video mode and is superseded -- with
+   * BURST it does transmit.
+   */
+
+  dsi_cfg.continuous_clk = true;
 
   host = rk3576_mipi_dsi_initialize(&dsi_cfg);
   if (host == NULL)

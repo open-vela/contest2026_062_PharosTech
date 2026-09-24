@@ -200,6 +200,42 @@
 #define DCPHY_GNR_CON0_ENABLE    (1u << 0)
 #define DCPHY_GNR_CON0_PHY_READY (1u << 1)
 
+/* GNR_CON1 = T_PHY_READY: the PHY_READY handshake timeout, in cycles.
+ * The reference driver (samsung_mipi_dphy_lane_enable) programs 0x2000 on
+ * the clock lane and on every data lane; the reset value 0 is not a state
+ * the handshake is specified for.
+ */
+
+#define RK3576_DCPHY_T_PHY_READY_DEFAULT 0x2000u
+
+/* -----------------------------------------------------------------------
+ * ANA_CON0 (MC_ANA_CON0 @ 0x0308, MD*_ANA_CON0 @ 0x0408/.../0x0708)
+ * -----------------------------------------------------------------------
+ *
+ * Drive-strength / voltage-amplitude select for the HS transmitter:
+ *
+ *   [14:12] EDGE_CON      = 7
+ *   [9]     EDGE_CON_DIR  = 0
+ *   [8]     EDGE_CON_EN   = 1
+ *   [7:4]   RES_UP        = driver-up resistor code
+ *   [3:0]   RES_DN        = driver-down resistor code
+ *
+ * The resistor code is NOT the same for the clock and data lanes:
+ * reference pdata for RK3576 (rk3576_dphy_hs_drv_res_cfg) uses 52 ohm
+ * (code 0x3) for the clock lane but 39 ohm (code 0xe) for the data lanes.
+ * The two encodings therefore differ:
+ *
+ *   clock lane: EDGE_CON(7)|EDGE_CON_EN|RES_UP(3)|RES_DN(3) = 0x7133
+ *   data lane : EDGE_CON(7)|EDGE_CON_EN|RES_UP(e)|RES_DN(e) = 0x71ee
+ *
+ * Using the clock-lane value on the data lanes (52 ohm instead of 39 ohm)
+ * mis-terminates every HS data output, which corrupts the HS eye at the
+ * panel and can keep it from ever locking onto the pixel stream.
+ */
+
+#define RK3576_DCPHY_ANA_CON0_CLK_LANE  0x7133u /* 52 ohm up/down */
+#define RK3576_DCPHY_ANA_CON0_DATA_LANE 0x71eeu /* 39 ohm up/down */
+
 /* -----------------------------------------------------------------------
  * D-PHY TX timing registers (MC_TIME_CON* / MD*_TIME_CON*).
  *

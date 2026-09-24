@@ -70,6 +70,7 @@
 #include "hardware/rk3576_vop.h"
 #include "rk3576_addrenv.h"
 #include "rk3576_dma_alloc.h"
+#include "rk3576_mipi_dsi.h"
 #include "rk3576_vop.h"
 
 #ifdef CONFIG_RK3576_VOP
@@ -528,6 +529,41 @@ static void rk3576_vop_configure_layer(FAR struct rk3576_vop_s *priv)
 }
 
 /****************************************************************************
+ * Name: rk3576_vop_trigger_cfg_done
+ *
+ * Description:
+ *   Fire the mirror->real register load pulses for VP0: the global/system
+ *   groups (SYS_REG_CFG_DONE) and the ESMART0 layer group
+ *   (SYS_WIN_REG_CFG_DONE).  The copies land at the start of the next frame.
+ *
+ *   sw_global_regdone_en (bit 15) MUST be kept set: it is an ordinary data
+ *   bit inside the 16-bit data word, and the hiword write-mask
+ *   (0xffff << 16) enables writes to all of them, so leaving it 0 in the
+ *   data silently disables the global regdone -- after which the VP0 global
+ *   group's load bit stays pending forever (seen in the register readback)
+ *   and only the system group ever latches.  See
+ *   RK3576_VOP_CFG_DONE_GLOBAL_REGDONE_EN in rk3576_vop.h.
+ *
+ *   Called from configure_port(), and AGAIN right after the dclk reset pulse
+ *   (see there) because the dclk reset restarts the VP0 timing generator and
+ *   can swallow an in-flight load.
+ ****************************************************************************/
+
+static void rk3576_vop_trigger_cfg_done(FAR struct rk3576_vop_s *priv)
+{
+  uint32_t sys_base = RK3576_VOP_SYS_CTRL(priv->base);
+
+  rk3576_vop_putreg(priv, sys_base + RK3576_VOP_SYS_REG_CFG_DONE,
+                    RK3576_VOP_CFG_DONE_LOAD_CTRL |
+                        RK3576_VOP_CFG_DONE_GLOBAL_REGDONE_EN |
+                        RK3576_VOP_CFG_DONE_ALL_GROUPS);
+
+  rk3576_vop_putreg(priv, sys_base + RK3576_VOP_SYS_WIN_REG_CFG_DONE,
+                    RK3576_VOP_WIN_CFG_DONE_LOAD_CTRL |
+                        RK3576_VOP_WIN_CFG_DONE_ESMART0);
+}
+
+/****************************************************************************
  * Name: rk3576_vop_configure_port
  *
  * Description:
@@ -600,50 +636,51 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
                            RK3576_VOP_IFACE_REGDONE_IMD_EN,
                        regval);
 
-  /* Fire the register-configure-done pulse (hiword write-mask scheme) to
+  /* Fire the register-configure-done sequence (hiword write-mask scheme) to
    * copy all mirror registers (layer, overlay, POST timing/control) to
-   * their real registers at the start of the next frame.
+   * their real registers at the start of the next frame, and load the
+   * ESMART0 layer mirror set.  See rk3576_vop_trigger_cfg_done().
+   */
+
+  rk3576_vop_trigger_cfg_done(priv);
+
+  /* --- Probe A: immediately read back both cfg_done registers.
    *
-   * Load every group: global0/1/2 (bit0/1/2) + sys0/1/2 (bit4/5/6), so the
-   * POST DSP/timing registers land regardless of which group they live in.
-   */
-
-  rk3576_vop_putreg(priv, sys_base + RK3576_VOP_SYS_REG_CFG_DONE,
-                    RK3576_VOP_CFG_DONE_LOAD_CTRL |
-                        RK3576_VOP_CFG_DONE_ALL_GROUPS);
-
-  /* The ESMART layer registers live in their own mirror set and must be
-   * loaded via SYS_WIN_REG_CFG_DONE's reg_load_esmart0_en (a separate
-   * trigger from the global/system cfg_done above).  Without it every
-   * ESMART register reads back 0.
-   */
-
-  rk3576_vop_putreg(priv, sys_base + RK3576_VOP_SYS_WIN_REG_CFG_DONE,
-                    RK3576_VOP_WIN_CFG_DONE_LOAD_CTRL |
-                        RK3576_VOP_WIN_CFG_DONE_ESMART0);
-
-  /* --- Probe A: immediately read back both cfg_done registers to prove
-   * whether the reg_load_esmart0_en write actually latched (TRM says these
-   * are ordinary RW bits that hold 1 until cleared -- so right after the
-   * write, WIN_CFG_DONE low-16 must show bit4=1 and REG_CFG_DONE must show
-   * bit15(sw_global_regdone_en, reset=1) still set).  If either reads 0
-   * here, the hiword write-mask write is being swallowed. --- */
+   * Readback of the hiword stays 0 (write-mask bits self-clear), so the
+   * useful information is in the low 16 bits:
+   *   REG_CFG_DONE bit15 sw_global_regdone_en must be 1 (it is now written
+   *     as 1; if it ever reads 0 again the load will never complete).
+   *   REG_CFG_DONE bit0/4 and WIN_CFG_DONE bit4 are LOAD REQUEST bits: they
+   *     read 1 until the frame boundary consumes them.
+   * NOTE this sample is taken microseconds after the request, so a
+   * non-zero low word here is EXPECTED, not a fault.  The meaningful
+   * "were the requests consumed?" check is probe-C, several ms later.
+   * --- */
 
   syslog(LOG_INFO,
          "vop-probe-A: after cfg_done REG_CFG_DONE=%08x "
-         "WIN_CFG_DONE=%08x\n",
+         "WIN_CFG_DONE=%08x (requests just posted; nonzero low word is "
+         "expected here)\n",
          rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_REG_CFG_DONE),
          rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_WIN_REG_CFG_DONE));
 
-  /* --- Probe B: read back the ESMART mirror registers right after the
-   * load trigger.  NOTE: reading the *mirror* (unloaded) register shows the
-   * value software wrote; the real-side copy only appears after a frame
-   * boundary.  Compare these against the later "real" dump: if mirror has
-   * the value but real=0, the load never crossed the frame boundary. --- */
+  /* --- Probe B: read back the ESMART registers right after the load
+   * trigger.
+   *
+   * IMPORTANT: these are the REAL registers, and the mirror->real copy only
+   * happens at a FRAME BOUNDARY.  A few microseconds after the request they
+   * are therefore still the OLD (reset) values -- all-zero here proves
+   * nothing at all and was misread as a fault in earlier rounds.  A short
+   * delay is inserted so this sample crosses at least one frame boundary and
+   * becomes meaningful; the authoritative readback is still the later
+   * "vop-dump:" one.
+   * --- */
+
+  up_mdelay(20); /* ~1+ frame @60 Hz: cross the mirror->real boundary */
 
   syslog(LOG_INFO,
          "vop-probe-B: ESMART0 CTRL0=%08x REGION0_CTRL=%08x "
-         "YRGB_MST=%08x VIR=%08x (mirror/real ambiguous, compare w/ dump)\n",
+         "YRGB_MST=%08x VIR=%08x (after 20ms = post-frame-boundary)\n",
          rk3576_vop_getreg(priv,
                            esmart_base + RK3576_VOP_ESMART_CTRL0),
          rk3576_vop_getreg(priv,
@@ -652,6 +689,35 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
                            esmart_base + RK3576_VOP_ESMART_REGION0_YRGB_MST),
          rk3576_vop_getreg(priv,
                            esmart_base + RK3576_VOP_ESMART_REGION0_VIR));
+
+  /* Now that at least one frame boundary has passed, the load-request bits
+   * are meaningful: each group's bit must have been CONSUMED (read 0) once
+   * its mirror set was copied to the real registers.  The bits belonging to
+   * video ports that never scan (global1/2 = VP1/VP2, sys1/2) legitimately
+   * stay pending; the VP0 bits (global0 = bit0, sys0 = bit4) and the ESMART0
+   * bit (WIN_CFG_DONE bit4) are the ones that matter here.
+   */
+
+  syslog(LOG_INFO,
+         "vop-probe-B: post-frame REG_CFG_DONE=%08x WIN_CFG_DONE=%08x "
+         "(VP0 load requests: global0 bit0=%u sys0 bit4=%u esmart0 bit4=%u; "
+         "all should be 0 = consumed; global1/2+sys1/2 staying set is "
+         "normal, those VPs never scan)\n",
+         rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_REG_CFG_DONE),
+         rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_WIN_REG_CFG_DONE),
+         (unsigned)(rk3576_vop_getreg(priv,
+                                      sys_base + RK3576_VOP_SYS_REG_CFG_DONE) &
+                    1u),
+         (unsigned)((rk3576_vop_getreg(priv,
+                                       sys_base +
+                                           RK3576_VOP_SYS_REG_CFG_DONE) >>
+                     4) &
+                    1u),
+         (unsigned)((rk3576_vop_getreg(priv,
+                                       sys_base +
+                                           RK3576_VOP_SYS_WIN_REG_CFG_DONE) >>
+                     4) &
+                    1u));
 
   /* Bound the AXI0 outstanding transactions (IMD registers take effect
    * immediately, no cfg_done needed).  The ESMART scan-out DMA goes out on
@@ -687,6 +753,7 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
   {
     uint32_t cru = RK3576_CRU_ADDR + RK3576_CRU_SOFTRST_CON(RK3576_VOP_RST_CON);
     uint32_t vcnt_before;
+    uint32_t vcnt_mid;
     uint32_t vcnt_after;
 
     vcnt_before = rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_STATUS0);
@@ -703,21 +770,45 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
     putreg32(RK3576_VOP_HWM(RK3576_VOP_RST_DRESETN_VP0), cru);
     up_udelay(20);
 
-    /* Probe: dsp_vcnt0 before/after the dclk reset.  A live pixel clock
-     * (VOP scanning) means dsp_vcnt0 keeps advancing; a wedge where the
-     * counter freezes after the pulse would mean the reset stalled the
-     * scan.  A healthy delta (a few lines over the ~30us window) proves the
-     * scan resumed with the re-locked clock. */
+    vcnt_mid = rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_STATUS0);
+
+    /* The dclk reset restarts the VP0 timing generator, so the counter is
+     * expected to WRAP/RESTART here (e.g. 118 -> 1).  Sampling immediately
+     * after the pulse therefore cannot show "advancing"; the previous
+     * `delta = (after - before) & 0x1fff` formulation silently turned the
+     * wrap into a bogus 8075 and always printed "scan resumed".
+     *
+     * Re-post the register load requests: the reset can swallow an
+     * in-flight mirror->real copy, and if the POST/layer config was lost the
+     * VP0 would keep scanning with reset-default timing.  Re-issuing the
+     * pulses costs nothing and guarantees the copy is armed for the next
+     * frame boundary.
+     */
+
+    rk3576_vop_trigger_cfg_done(priv);
+
+    /* Now cross a couple of frame boundaries and then check that the
+     * counter really is ADVANCING (the only valid "scan is alive"
+     * criterion). */
+
+    up_mdelay(2); /* ~2 ms: several lines at 62.5 MHz */
 
     vcnt_after = rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_STATUS0);
 
-    syslog(LOG_INFO,
-           "vop-dclk-rst: dresetn_vp0 pulsed, dsp_vcnt0 %u -> %u "
-           "(delta=%u; >0 = scan resumed)\n",
-           (unsigned)((vcnt_before >> RK3576_VOP_DSP_VCNT0_SHIFT) & 0x1fff),
-           (unsigned)((vcnt_after >> RK3576_VOP_DSP_VCNT0_SHIFT) & 0x1fff),
-           (unsigned)((((vcnt_after - vcnt_before) >>
-                       RK3576_VOP_DSP_VCNT0_SHIFT)) & 0x1fff));
+    {
+      uint32_t v_mid = (vcnt_mid >> RK3576_VOP_DSP_VCNT0_SHIFT) & 0x1fff;
+      uint32_t v_after = (vcnt_after >> RK3576_VOP_DSP_VCNT0_SHIFT) & 0x1fff;
+
+      syslog(LOG_INFO,
+             "vop-dclk-rst: dresetn_vp0 pulsed, dsp_vcnt0 %u -> %u (after "
+             "reset) then %u after 2ms (delta=%u lines/2ms=%u lines/s; the "
+             "post-pulse wrap alone means nothing -- only a nonzero 2ms "
+             "delta proves the scan is advancing)\n",
+             (unsigned)((vcnt_before >> RK3576_VOP_DSP_VCNT0_SHIFT) & 0x1fff),
+             (unsigned)v_mid, (unsigned)v_after,
+             (unsigned)((v_after - v_mid) & 0x1fff),
+             (unsigned)(((v_after - v_mid) & 0x1fff) * 500));
+    }
   }
 }
 
@@ -853,6 +944,46 @@ static int rk3576_vop_enable_clocks(FAR struct rk3576_vop_s *priv)
            g_rk3576_vop_dclk_names[priv->cfg.port], ret);
       return ret;
     }
+
+  /* Hand the ACTUAL pixel-clock rate to the DSI, which derives its IPI
+   * horizontal timing and PHY_IPI_RATIO from it.  64 MHz is only a request:
+   * the CRU can just pick an integer divider from the parent PLL, so the
+   * real dclk is usually slightly off (gpll 1188 MHz / 19 = 62.526 MHz).
+   * Programming the DSI from the nominal 64 MHz instead leaves the
+   * controller comparing the incoming pixel stream against a timing/ratio
+   * that does not match the real clock, pushing the IPI<->PHY CDC handshake
+   * to the edge of tolerance -- which shows up as the same firmware
+   * behaving differently from boot to boot.  This re-syncs it now that the
+   * divider chain has settled (the DSI is already in Video mode; the IPI
+   * timing registers take effect without leaving it).
+   *
+   * Best-effort: if the DSI is not in Video mode (different board/panel
+   * wiring) the call returns an error and is simply ignored here.
+   */
+
+#ifdef CONFIG_RK3576_MIPI_DSI
+  {
+    uint32_t dclk_rate = (uint32_t)clk_get_rate(priv->dclk);
+
+    if (dclk_rate != 0)
+      {
+        int dsi_ret = rk3576_mipi_dsi_update_pixel_clock(dclk_rate);
+
+        if (dsi_ret < 0)
+          {
+            syslog(LOG_INFO,
+                   "vop: DSI pixel-clock sync skipped (%d; DSI not in "
+                   "video mode)\n", dsi_ret);
+          }
+      }
+    else
+      {
+        syslog(LOG_WARNING,
+               "vop: %s rate reads back 0; DSI keeps the nominal pixel "
+               "clock\n", g_rk3576_vop_dclk_names[priv->cfg.port]);
+      }
+  }
+#endif
 
   /* Enable the VOP BIU (bus-interface-unit) clocks.  The ESMART/POST layers
    * reach DDR over the VOP AXI port, which is clocked by aclk_vop_biu /
@@ -1129,7 +1260,9 @@ int rk3576_vop_initialize(FAR const struct rk3576_vop_config *config)
 
     syslog(LOG_INFO,
            "vop-dump: aclk_vop=%lu hclk_vop=%lu dclk_vp%u=%lu "
-           "(expect dclk=64000000)\n",
+           "(nominal request 64000000; actual is what the CRU divider can "
+           "reach -- gpll 1188M/19 = 62526316; the DSI IPI timing + "
+           "PHY_IPI_RATIO are re-synced to the actual value)\n",
            (unsigned long)clk_get_rate(priv->aclk),
            (unsigned long)clk_get_rate(priv->hclk),
            (unsigned int)priv->cfg.port,
@@ -1138,6 +1271,52 @@ int rk3576_vop_initialize(FAR const struct rk3576_vop_config *config)
     syslog(LOG_INFO,
            "vop-dump: fbmem va=%p pa=%p (expect equal) stride=%u fblen=%u\n",
            priv->fbmem, (void *)fb_pa, priv->stride, (unsigned int)priv->fblen);
+
+    /* --- Framebuffer CONTENT check.  "The panel shows black" has two
+     * completely different causes that look identical from the DSI side:
+     * (a) the pixel stream never reaches the panel, or (b) the pixel stream
+     * arrives but every pixel in it is black because the framebuffer itself
+     * is black.  Everything upstream has now been verified (PLL, lanes, IPI
+     * timing, per-line HS bursts), so (b) must be excluded before spending
+     * any more effort on the link.
+     *
+     * Sample the frame sparsely and report how much of it is non-zero plus a
+     * small hash, so a single log line answers "is the source image
+     * actually black?".  Read-only; no behaviour change.
+     */
+
+    {
+      uint32_t nonzero = 0;
+      uint32_t sampled = 0;
+      uint32_t hash = 2166136261u;
+      FAR const uint8_t *fb = (FAR const uint8_t *)priv->fbmem;
+      uint32_t words = (uint32_t)(priv->fblen / 4u);
+      uint32_t step = words > 4096u ? words / 4096u : 1u;
+      uint32_t i;
+
+      for (i = 0; i < words; i += step)
+        {
+          uint32_t w;
+
+          memcpy(&w, fb + (size_t)i * 4u, sizeof(w));
+          sampled++;
+
+          if (w != 0)
+            {
+              nonzero++;
+            }
+
+          hash = (hash ^ w) * 16777619u;
+        }
+
+      syslog(LOG_INFO,
+             "vop-dump: FB content sampled=%u nonzero=%u hash=%08x stride=%u "
+             "(nonzero==0 -> the framebuffer is entirely BLACK, so a black "
+             "screen proves nothing about the link; fill it with white/colour "
+             "before judging the panel)\n",
+             (unsigned)sampled, (unsigned)nonzero, hash,
+             (unsigned)priv->stride);
+    }
 
     /* --- Probe C: read the WIN_CFG_DONE / REG_CFG_DONE a second time (now
      * several ms after configure_port fired them).  TRM says a load bit

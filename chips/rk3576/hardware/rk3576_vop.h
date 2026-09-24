@@ -109,6 +109,25 @@
 #define RK3576_VOP_CFG_DONE_ALL_GROUPS                          \
   ((1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5) | (1 << 6))
 
+/* SYS_REG_CFG_DONE (0x0000) bit 15 = sw_global_regdone_en.
+ *
+ * TRM: reset value 1, "Global regdone enable.  1'b0: Disable  1'b1: Enable".
+ *
+ * It lives inside the ordinary data (low 16 bits), so a write of
+ *   CFG_DONE_LOAD_CTRL | CFG_DONE_ALL_GROUPS
+ * (which enables the hiword write-mask for ALL 16 low bits) also overwrites
+ * bit 15 with whatever the data word carries -- writing 0 there silently
+ * DISABLES the global regdone.  Observed consequence: the VP0 *global*
+ * group's mirror->real copy never latches, i.e. RAW readback of
+ * SYS_REG_CFG_DONE shows bit0 (reg_load_global0_en) still pending while
+ * bit4 (reg_load_sys0_en) has already been consumed by the frame boundary.
+ * Linux keeps this bit set in vop2_cfg_done().
+ *
+ * Always OR this into the cfg_done data word.
+ */
+
+#define RK3576_VOP_CFG_DONE_GLOBAL_REGDONE_EN (1 << 15)
+
 /* SYS_CTRL_SYS_WIN_REG_CFG_DONE (0x000C) layer mirror->real load enables.
  * The ESMART/CLUSTER layer registers are written into mirror registers and
  * only take effect when their per-layer load bit is pulsed here (hiword

@@ -166,6 +166,39 @@ int rk3576_mipi_dsi_enable_video(
 int rk3576_mipi_dsi_disable_video(FAR struct mipi_dsi_host *host);
 
 /****************************************************************************
+ * Name: rk3576_mipi_dsi_update_pixel_clock
+ *
+ * Description:
+ *   Re-derive the IPI horizontal timing (HSA/HBP/HACT/HLINE) and
+ *   PHY_IPI_RATIO from the VOP's REAL pixel clock, once the CRU divider
+ *   chain has settled.
+ *
+ *   The board passes a NOMINAL pixel clock (64 MHz for kickpi-k7) to
+ *   enable_video(), but the CRU can only select an integer divider from the
+ *   parent PLL, so the real dclk_vp0 usually differs slightly (gpll
+ *   1188 MHz / 19 = 62.526 MHz here).  Programming the DSI from the nominal
+ *   value leaves the controller comparing the incoming pixel stream against
+ *   a timing/ratio that does not match the real clock, leaving the
+ *   IPI<->PHY CDC handshake at the edge of its tolerance (intermittent:
+ *   the same firmware behaves differently run to run).
+ *
+ *   Called by rk3576_vop_enable_clocks() right after clk_set_rate(dclk).
+ *   Safe to call at any time once the host is in Video mode: the IPI timing
+ *   registers are plain RW in manual mode and take effect without leaving
+ *   Video mode.
+ *
+ * Input Parameters:
+ *   pixel_clock_hz - Actual VOP pixel clock (crtc clock) in Hz.
+ *
+ * Returned Value:
+ *   OK on success; -EPERM if the host is not in Video mode; -EINVAL on a
+ *   bad clock or timing overflow.
+ *
+ ****************************************************************************/
+
+int rk3576_mipi_dsi_update_pixel_clock(uint32_t pixel_clock_hz);
+
+/****************************************************************************
  * Name: rk3576_mipi_dsi_dump_video_status
  *
  * Description:

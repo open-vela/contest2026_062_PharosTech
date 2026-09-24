@@ -166,6 +166,14 @@
 #define RK3576_DSI2_INT_MASK_CRI   0x0464
 #define RK3576_DSI2_INT_FORCE_CRI  0x0468
 
+/* DSI2_INT_ST_TO (0x0410) is read-clear (RC): it carries the hardware's own
+ * verdict on a PPI transaction that never completed.  err_to_hstxrdy is the
+ * decisive one for video mode -- it is set when the controller requested an
+ * HS transmission and the PHY never asserted PHY_TX_READY for it, i.e.
+ * exactly the "phy_tx_ready_fsm stuck at INIT" hypothesis, reported by the
+ * hardware instead of by our probes.  The individual error bits are defined
+ * at the top of rk3576_mipi_dsi.c. */
+
 /* -----------------------------------------------------------------------
  * DSI2_PWR_UP (0x000C)
  * -----------------------------------------------------------------------
@@ -229,6 +237,10 @@
 #define DSI2_OBS_FSM_SEL_SYS_PKT_BUILD 0x4 /* sys_pkt_build_fsm */
 #define DSI2_OBS_FSM_SEL_PHY_TX_READY  0x5 /* phy_tx_ready_fsm */
 
+/* Number of FSMs the selector can report (0x0..0x5). */
+
+#define RK3576_DSI2_NUM_OBS_FSMS 6
+
 /* -----------------------------------------------------------------------
  * DSI2_OBS_FIFO_STATUS_SEL (0x0038) selectors / DSI2_OBS_FIFO_STATUS (0x003C)
  * -----------------------------------------------------------------------
@@ -254,13 +266,34 @@
 #define DSI2_OBS_FIFO_WORD_CNT_SHIFT (16)
 #define DSI2_OBS_FIFO_WORD_CNT_MASK  (0xffffu << DSI2_OBS_FIFO_WORD_CNT_SHIFT)
 
-/* DSI2_OBS_FSM_STATUS (0x002C) field breakdown.  The TRM layout is
- * fragmented; read-only. */
+/* DSI2_OBS_FSM_STATUS (0x002C) field breakdown, per the TRM (18.4.2):
+ *
+ *   [31:16] current_state_cnt  - cycles spent in the current state
+ *   [15:13] reserved
+ *   [12:8]  previous_state
+ *   [7:6]   reserved
+ *   [5]     stuck              - the FSM is stuck
+ *   [4:0]   current_state
+ *
+ * NOTE: earlier revisions of this header guessed the layout as
+ * current_state[12:8] / stuck[9], which decoded *every* value as
+ * "cur=0 stuck=0" and hid the real evidence.  The authoritative layout
+ * above is what makes `current_state_cnt == 0xffff && stuck == 1` a
+ * reliable "wedged FSM" signature.  Read-only.
+ */
 
-#define DSI2_OBS_FSM_CUR_STATE_SHIFT   (8)
-#define DSI2_OBS_FSM_CUR_STATE_MASK    (0x1f << DSI2_OBS_FSM_CUR_STATE_SHIFT)
-#define DSI2_OBS_FSM_STUCK_SHIFT       (9)
+#define DSI2_OBS_FSM_CNT_SHIFT         (16)
+#define DSI2_OBS_FSM_CNT_MASK          (0xffffu << DSI2_OBS_FSM_CNT_SHIFT)
+#define DSI2_OBS_FSM_PREV_STATE_SHIFT  (8)
+#define DSI2_OBS_FSM_PREV_STATE_MASK   (0x1fu << DSI2_OBS_FSM_PREV_STATE_SHIFT)
+#define DSI2_OBS_FSM_STUCK_SHIFT       (5)
 #define DSI2_OBS_FSM_STUCK             (1u << DSI2_OBS_FSM_STUCK_SHIFT)
+#define DSI2_OBS_FSM_CUR_STATE_SHIFT   (0)
+#define DSI2_OBS_FSM_CUR_STATE_MASK    (0x1fu << DSI2_OBS_FSM_CUR_STATE_SHIFT)
+
+/* Convenience aliases used by the probe decode. */
+
+#define DSI2_OBS_FSM_STATE_MASK        DSI2_OBS_FSM_CUR_STATE_MASK
 
 /* -----------------------------------------------------------------------
  * DSI2_MANUAL_MODE_CFG (0x0024)
@@ -315,6 +348,18 @@
 #define DSI2_PHY_STATUS_PHY_L1_STOPSTATE   (1u << 10)
 #define DSI2_PHY_STATUS_PHY_L2_STOPSTATE   (1u << 11)
 #define DSI2_PHY_STATUS_PHY_L3_STOPSTATE   (1u << 12)
+
+/* phy_stopstate[12:8] of every clock/data lane; 1 = the lane is in the
+ * LP-11 stop state.  For a NON-continuous clock lane running video the
+ * clock lane must cycle 1 -> 0 (HS burst) -> 1 once per line, so a sample
+ * window that reads this mask as "always 1" means the PHY never left LP-11
+ * at all (no HS burst has ever been sent). */
+
+#define DSI2_PHY_STATUS_STOPSTATE_MASK      (0x1fu << 8)
+
+/* phy_[clk,l0..l3]_ulpsactivenot[20:16]; 1 = the lane is NOT in ULPS. */
+
+#define DSI2_PHY_STATUS_ULPSACTIVENOT_MASK  (0x1fu << 16)
 
 /* -----------------------------------------------------------------------
  * DSI2_DSI_GENERAL_CFG (0x0200)

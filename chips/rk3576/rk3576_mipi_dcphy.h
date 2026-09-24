@@ -131,5 +131,28 @@ int rk3576_dcphy_power_off(void);
 
 bool rk3576_dcphy_is_ready(void);
 
+/****************************************************************************
+ * Name: rk3576_dcphy_dump
+ *
+ * Description:
+ *   Bring-up diagnostic (read-only): print the TX PLL registers and the
+ *   clock/data lane configuration actually present in the DCPHY, so the
+ *   PHY side can be verified from the console instead of being assumed.
+ *
+ *   Everything that determines whether the PHY can emit a valid HS burst
+ *   lives in this block: the PLL dividers (lane rate), the per-lane
+ *   enable/ready state, the HS drive-strength code (clock lane 52 ohm vs
+ *   data lanes 39 ohm), and the LP/HS timing counters (T_LPX, T_CLK_ZERO,
+ *   T_CLK_PREPARE, T_CLK_TRAIL, T_HS_ZERO, T_HS_PREPARE, T_HS_EXIT,
+ *   T_HS_TRAIL, escape clock).  A wrong T_HS_EXIT / T_HS_TRAIL / escape
+ *   clock directly prevents a lane from returning to LP-11, which is
+ *   exactly the "all lanes stuck out of stopstate" symptom.
+ *
+ *   Safe to call any time after rk3576_dcphy_init(); read-only.
+ *
+ ****************************************************************************/
+
+void rk3576_dcphy_dump(void);
+
 #endif /* CONFIG_RK3576_MIPI_DCPHY */
 #endif /* __VENDOR_ROCKCHIP_RK3576_RK3576_MIPI_DCPHY_H */

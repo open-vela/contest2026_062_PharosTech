@@ -55,7 +55,10 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
+
+#include <syslog.h>
 
 #include <nuttx/arch.h>
 #include <nuttx/clk/clk.h>
@@ -79,6 +82,14 @@
 /* Poll timeout for CRI command completion. */
 
 #define RK3576_DSI_POLL_LOOPS (1000000)
+
+/* Bring-up diagnostic: sweep every (video transmission mode x clock lane
+ * type) combination at dump time and report which one actually lets the PHY
+ * lanes cycle back to LP-11.  THIS IS THROWAWAY PROBE CODE -- set to 0 (or
+ * delete it) once the video link works.  See
+ * rk3576_dsi_video_mode_sweep() for the rationale. */
+
+#define RK3576_DSI_VIDEO_MODE_SWEEP 1
 
 /* DSI2_PHY_LP2HS_MAN_CFG / HS2LP_MAN_CFG field (bits 28:0, 13.16 fixed). */
 
@@ -124,6 +135,16 @@ struct rk3576_dsi_s
   struct rk3576_dsi_config cfg; /* Link/PHY configuration */
   bool initialized;             /* Core powered up + clocks enabled once */
   enum rk3576_dsi_mode_e mode;  /* Current DSI2_MODE_CTRL operating mode */
+
+  /* Video timing as programmed by enable_video().  Kept so the horizontal
+   * IPI timing + PHY_IPI_RATIO can be recomputed later
+   * (rk3576_mipi_dsi_update_pixel_clock()) once the VOP has settled its
+   * real dclk rate -- the nominal pixel_clock passed by the board is only
+   * a request; the CRU divider chain usually lands on a nearby value.
+   */
+
+  struct rk3576_dsi_video_timing timing;
+  bool timing_valid;            /* timing above has been programmed */
 };
 
 /****************************************************************************
@@ -138,6 +159,8 @@ static ssize_t rk3576_dsi_transfer(FAR struct mipi_dsi_host *host,
                                    FAR const struct mipi_dsi_msg *msg);
 static int rk3576_dsi_phy_power_up(FAR struct rk3576_dsi_s *priv);
 static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv);
+static uint32_t rk3576_dsi_set_mode(uintptr_t base, uint32_t mode, int loops);
+static void rk3576_dsi_rearm(FAR struct rk3576_dsi_s *priv);
 
 /****************************************************************************
  * Private Data
@@ -740,19 +763,24 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
       esc_div = 31;
     }
 
-  /* Probe: lock down the actual sys_clk (clk_dsihost0) rate.  initialize()
-   * reparents clk_dsihost0_sel onto clk_gpll (1188 MHz), but the escape
-   * divider observed in the wild (lptx_div=10, i.e. esc_div=10) back-solves
-   * to a ~400 MHz sys_clk, NOT 1188 MHz (which would give esc_div=30).
-   * A wrong sys_clk corrupts phy_lptx_clk (LP timing base) AND
-   * DSI2_PHY_SYS_RATIO, which stalls the clock lane's return to LP-11
-   * (clk_stopstate stays 0 -> phy_tx_ready FSM stuck at INIT -> black
-   * screen). */
+  /* Probe: lock down the actual sys_clk (clk_dsihost0) rate.  Conclusion
+   * from the bring-up rounds: sclk = 396 MHz is CORRECT, not a bug.  TRM
+   * CLKSEL_CON151 resets clk_dsihost0_sel to 0b010 (clk_spll_mux) with
+   * clk_dsihost0_div = 0x02 (/3), i.e. spll(1188M)/3 = 396 MHz -- the
+   * Rockchip default sys_clk.  Reparenting to gpll would NOT raise it
+   * (gpll and spll are both 1188 MHz) because the /3 divider remains.
+   *
+   * With sclk = 396 MHz: esc_div = ceil(396M/40M) = 10, phy_lptx_clk =
+   * 396M/(2*10) = 19.8 MHz <= 20 MHz -> correct.  (The earlier
+   * "expect esc_div=30 / ~400 MHz" note was based on a wrong assumption
+   * and is superseded.) */
 
   syslog(LOG_INFO,
-         "dsi-probe: sclk_rate=%u esc_div=%u (reparent to gpll "
-         "expect 1188000000 -> esc_div=30; 10 -> ~400 MHz)\n",
-         (unsigned)sclk_rate, (unsigned)esc_div);
+         "dsi-probe: sclk_rate=%u esc_div=%u "
+         "(sclk=spll/3=396M is the correct TRM default; "
+         "phy_lptx_clk=%u Hz, limit 20M)\n",
+         (unsigned)sclk_rate, (unsigned)esc_div,
+         (unsigned)(sclk_rate / (2u * esc_div)));
 
   /* clk_type for the panel.  ILI9881D (ILI9881D_spec.txt) is a
    * NON-continuous clock lane: Table 46 defines THS-EXIT as "time to drive
@@ -927,6 +955,92 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
       rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_MAX_RD_T_MAN_CFG, 32u);
     }
   }
+}
+
+/****************************************************************************
+ * Name: rk3576_dsi_rearm
+ *
+ * Description:
+ *   Return the DSI-2 datapath to a known-clean state and put the host back
+ *   into Command mode, WITHOUT touching the DCPHY (the PHY stays powered and
+ *   locked; only the host-side data paths are reset).
+ *
+ *   Why this is required before every video entry, not just at probe time:
+ *
+ *   A video burst that starts and never finishes leaves `phy_txhs` holding
+ *   data the PHY never accepts.  TRM 18.3.1.1 (Idle Mode) states that an
+ *   operating-mode change is only accepted once "all the remaining packets
+ *   from these sources are sent, and their respective FIFOs are empty";
+ *   while the FIFO cannot drain, MODE_CTRL is simply ignored -- the host is
+ *   wedged in Video mode and cannot even be asked to go back to Command
+ *   mode.  Observed exactly that: MODE_STATUS stayed 3 after a
+ *   (1000000 x 1 us) poll of MODE_CTRL=COMMAND.
+ *
+ *   The reference driver (dw_mipi_dsi2_mode_set()) therefore resets the host
+ *   on EVERY mode set: dw_mipi_dsi2_host_softrst() (SOFT_RESET pulse) plus a
+ *   PWR_UP down/up cycle, followed by re-running phy_init() and landing in
+ *   Command mode.  Only the soft resets can flush a wedged FIFO and force
+ *   all six debug FSMs back to INIT.
+ *
+ *   Re-asserting PHY_MODE_CFG and the whole link config here is deliberate
+ *   belt-and-braces: those registers are cheap to rewrite and MUST be right
+ *   whether or not the reset above cleared them (the reference re-runs
+ *   phy_init() for the same reason).
+ *
+ * Input Parameters:
+ *   priv - Driver state.  Caller must hold priv->lock.
+ *
+ ****************************************************************************/
+
+static void rk3576_dsi_rearm(FAR struct rk3576_dsi_s *priv)
+{
+  uintptr_t base = priv->base;
+  uint32_t phy_mode;
+  uint32_t mode;
+
+  /* 1. Pulse the three data-process soft resets (active low).  This is the
+   *    only available watchdog against a stuck HS transmission: it flushes
+   *    every FIFO and returns all FSMs to INIT.
+   */
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_SOFT_RESET, 0x0);
+  up_udelay(100);
+  rk3576_dsi_putreg(base, RK3576_DSI2_SOFT_RESET,
+                    DSI2_SOFT_RESET_SYS_RSTN | DSI2_SOFT_RESET_PHY_RSTN |
+                        DSI2_SOFT_RESET_IPI_RSTN);
+
+  /* 2. Cycle the core down and back up, as the reference does around every
+   *    mode set. */
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_PWR_UP, 0x0);
+  up_udelay(100);
+  rk3576_dsi_putreg(base, RK3576_DSI2_PWR_UP, DSI2_PWR_UP_PWR_UP);
+
+  /* 3. Re-assert the PHY interface config + link config (clk_type, escape
+   *    clock divider, both ratios, LP2HS/HS2LP, BTA/EoTp). */
+
+  phy_mode = DSI2_PHY_MODE_PPI_WIDTH_16 |
+             DSI2_PHY_MODE_PHY_LANES(priv->cfg.lanes) |
+             DSI2_PHY_MODE_PHY_TYPE_DPHY;
+  rk3576_dsi_putreg(base, RK3576_DSI2_PHY_MODE_CFG, phy_mode);
+
+  rk3576_dsi_phy_link_cfg(priv);
+
+  /* 4. Manual timing + Command mode.  The reference reaches Command mode
+   *    right after PWR_UP and only then asks for Video mode. */
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_MANUAL_MODE_CFG, DSI2_MANUAL_MODE_EN);
+
+  mode = rk3576_dsi_set_mode(base, DSI2_MODE_COMMAND, RK3576_DSI_POLL_LOOPS);
+  if (mode != DSI2_MODE_COMMAND)
+    {
+      syslog(LOG_WARNING,
+             "dsi-rearm: MODE_STATUS=%u after COMMAND request (expected %u) "
+             "-- the datapath may still be wedged\n",
+             (unsigned)mode, (unsigned)DSI2_MODE_COMMAND);
+    }
+
+  priv->mode = RK3576_DSI_MODE_COMMAND;
 }
 
 /****************************************************************************
@@ -1297,9 +1411,17 @@ static uint32_t rk3576_dsi_hstx_cycles(uint32_t pixels, uint32_t hs_rate,
    * value.  Compute with the << 16 applied before the divide so the (often
    * fractional) ratio is not truncated to zero.  pixels <= ~8192, hs_rate
    * <= a few GHz, so the product stays well within uint64.
+   *
+   * Round to NEAREST, matching the reference driver
+   * (dw_mipi_dsi2_ipi_set() uses DIV_ROUND_CLOSEST_ULL for HSA/HBP/HACT/
+   * HLINE).  Plain truncation biases every horizontal interval low by up to
+   * one phy_hstx_clk cycle, which shifts the blanking boundaries the video
+   * FSM locks onto; at 24 MHz that is ~42 ns per interval, i.e. a
+   * measurable fraction of the line's blanking window.
    */
 
-  cycles = ((uint64_t)pixels * phy_hstx_clk * 65536u) / pixel_clock;
+  cycles = (((uint64_t)pixels * phy_hstx_clk * 65536u) + (pixel_clock / 2u)) /
+           pixel_clock;
 
   /* The result carries the << 16 fixed-point shift already.  The register
    * has 13 integral bits ([29:16]); reject any value whose integral part
@@ -1314,6 +1436,191 @@ static uint32_t rk3576_dsi_hstx_cycles(uint32_t pixels, uint32_t hs_rate,
     }
 
   return (uint32_t)cycles;
+}
+
+/****************************************************************************
+ * Name: rk3576_dsi_program_ipi_h_timing
+ *
+ * Description:
+ *   Program the IPI horizontal timing registers (HSA/HBP/HACT/HLINE) and
+ *   PHY_IPI_RATIO from the given pixel clock.
+ *
+ *   Both must be derived from the SAME, ACTUAL pixel clock: the horizontal
+ *   registers are phy_hstx_clk cycle counts of the video-timing intervals
+ *   (interval = pixels / pixel_clock), while PHY_IPI_RATIO is the
+ *   fixed-point ratio (hs_rate/16) / ipi_clk with ipi_clk = pixel_clock/4
+ *   (RK3576 VOP 4:1 pixel-shift -- see the caller's ratio comment).
+ *
+ *   Programming them from different numbers silently breaks the CDC
+ *   handshake between the IPI (pixel) and PHY-HSTX clock domains, because
+ *   the controller compares the incoming pixel stream against these
+ *   registers to decide when to emit a video packet.
+ *
+ *   Called twice in the driver's life:
+ *     1. enable_video(): with the board's nominal pixel_clock, so the IPI
+ *        is fully programmed before entering Video mode.
+ *     2. rk3576_mipi_dsi_update_pixel_clock(): with the VOP's REAL dclk
+ *        rate once the CRU divider chain has settled, correcting the
+ *        nominal-vs-actual mismatch (e.g. gpll 1188M/19 = 62.526 MHz
+ *        instead of the requested 64 MHz).
+ *
+ *   Input Parameters:
+ *     priv        - Driver state (locked by caller).
+ *     timing      - Panel timing (pixel counts / line counts).
+ *     pixel_clock - ACTUAL pixel clock in Hz (must be non-zero).
+ *
+ *   Returned Value:
+ *     OK on success; -EINVAL if a horizontal interval overflows the 13-bit
+ *     fixed-point integral field.
+ *
+ ****************************************************************************/
+
+static int rk3576_dsi_program_ipi_h_timing(
+    FAR struct rk3576_dsi_s *priv,
+    FAR const struct rk3576_dsi_video_timing *timing, uint32_t pixel_clock)
+{
+  uintptr_t base = priv->base;
+  uint32_t htotal;
+  uint32_t regval;
+
+  if (pixel_clock == 0)
+    {
+      return -EINVAL;
+    }
+
+  htotal = timing->hactive + timing->hsync_len + timing->hback_porch +
+           timing->hfront_porch;
+
+  regval = rk3576_dsi_hstx_cycles(timing->hsync_len, priv->cfg.hs_rate,
+                                  pixel_clock);
+  if (regval == UINT32_MAX)
+    {
+      return -EINVAL;
+    }
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_HSA_MAN_CFG, regval);
+
+  regval = rk3576_dsi_hstx_cycles(timing->hback_porch, priv->cfg.hs_rate,
+                                  pixel_clock);
+  if (regval == UINT32_MAX)
+    {
+      return -EINVAL;
+    }
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_HBP_MAN_CFG, regval);
+
+  regval = rk3576_dsi_hstx_cycles(timing->hactive, priv->cfg.hs_rate,
+                                  pixel_clock);
+  if (regval == UINT32_MAX)
+    {
+      return -EINVAL;
+    }
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_HACT_MAN_CFG, regval);
+
+  regval = rk3576_dsi_hstx_cycles(htotal, priv->cfg.hs_rate, pixel_clock);
+  if (regval == UINT32_MAX)
+    {
+      return -EINVAL;
+    }
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_HLINE_MAN_CFG, regval);
+
+  /* PHY_IPI_RATIO = (hs_rate / 16) / (pixel_clock / 4).  Rounded to nearest
+   * like the reference driver (DIV_ROUND_CLOSEST_ULL): this value is the
+   * only thing telling the controller how many phy_hstx_clk cycles one IPI
+   * clock period is worth, so a systematic downward bias makes the IPI and
+   * PHY domains drift apart across a line.
+   */
+
+  {
+    uint64_t phy_hstx_clk = (uint64_t)priv->cfg.hs_rate / 16u;
+    uint64_t ipi_clk = (uint64_t)pixel_clock / 4u;
+
+    if (ipi_clk != 0)
+      {
+        uint64_t ipi_ratio = ((phy_hstx_clk << 16) + (ipi_clk / 2u)) / ipi_clk;
+        rk3576_dsi_putreg(base, RK3576_DSI2_PHY_IPI_RATIO_MAN_CFG,
+                          (uint32_t)ipi_ratio & DSI2_PHY_IPI_RATIO_MASK);
+      }
+  }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_mipi_dsi_update_pixel_clock
+ *
+ * Description:
+ *   Re-derive the IPI horizontal timing and PHY_IPI_RATIO from the VOP's
+ *   REAL pixel clock once the CRU divider chain has settled.
+ *
+ *   The board passes a NOMINAL pixel clock (64 MHz for kickpi-k7) to
+ *   enable_video(), but clk_set_rate() on dclk_vp0 can only pick an integer
+ *   divider from its parent PLL, so the actual rate is usually slightly
+ *   different (gpll 1188 MHz / 19 = 62.526 MHz here).  Programming the DSI
+ *   from the nominal value leaves the controller comparing the incoming
+ *   pixel stream against a timing/ratio that does not match the real clock,
+ *   which pushes the IPI<->PHY CDC handshake to the edge of its tolerance
+ *   (intermittent: the same firmware boots differently run to run).
+ *
+ *   Wiring: rk3576_vop_enable_clocks() calls this right after its
+ *   clk_set_rate(dclk, ...), i.e. after the divider has been programmed and
+ *   before the VOP starts scanning.  It is safe to call at any time once
+ *   the host is in Video mode; the IPI timing registers are plain RW and
+ *   (manual mode) take effect without leaving Video mode.
+ *
+ *   Input Parameters:
+ *     pixel_clock_hz - Actual VOP pixel clock (crtc clock) in Hz.
+ *
+ *   Returned Value:
+ *     OK on success; -EPERM if the host is not in Video mode; -EINVAL on a
+ *     bad clock or timing overflow.
+ *
+ ****************************************************************************/
+
+int rk3576_mipi_dsi_update_pixel_clock(uint32_t pixel_clock_hz)
+{
+  FAR struct rk3576_dsi_s *priv = &g_dsi;
+  uint32_t nominal;
+  int ret;
+
+  if (!priv->initialized || priv->mode != RK3576_DSI_MODE_VIDEO ||
+      !priv->timing_valid)
+    {
+      return -EPERM;
+    }
+
+  if (pixel_clock_hz == 0)
+    {
+      return -EINVAL;
+    }
+
+  ret = nxmutex_lock(&priv->lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  nominal = priv->timing.pixel_clock;
+  priv->timing.pixel_clock = pixel_clock_hz;
+
+  ret = rk3576_dsi_program_ipi_h_timing(priv, &priv->timing,
+                                        pixel_clock_hz);
+
+  syslog(LOG_INFO,
+         "dsi: pixel clock synced %u -> %u Hz (ipi=%u Hz) -> HSA=%08x "
+         "HBP=%08x HACT=%08x HLINE=%08x PHY_IPI_RATIO=%08x\n",
+         (unsigned)nominal, (unsigned)pixel_clock_hz,
+         (unsigned)(pixel_clock_hz / 4u),
+         rk3576_dsi_getreg(priv->base, RK3576_DSI2_IPI_VID_HSA_MAN_CFG),
+         rk3576_dsi_getreg(priv->base, RK3576_DSI2_IPI_VID_HBP_MAN_CFG),
+         rk3576_dsi_getreg(priv->base, RK3576_DSI2_IPI_VID_HACT_MAN_CFG),
+         rk3576_dsi_getreg(priv->base, RK3576_DSI2_IPI_VID_HLINE_MAN_CFG),
+         rk3576_dsi_getreg(priv->base, RK3576_DSI2_PHY_IPI_RATIO_MAN_CFG));
+
+  nxmutex_unlock(&priv->lock);
+  return ret;
 }
 
 /****************************************************************************
@@ -1333,7 +1640,6 @@ int rk3576_mipi_dsi_enable_video(
   uintptr_t base;
   uint32_t lanes;
   uint32_t bpp;
-  uint32_t htotal;
   uint32_t regval;
   uint32_t color;
   int ret;
@@ -1356,14 +1662,21 @@ int rk3576_mipi_dsi_enable_video(
       return ret;
     }
 
-  /* Video mode may only be entered from Command mode, at which point the
-   * DCPHY is already powered (brought up by initialize()).  This keeps the
-   * PHY lifecycle inside the DSI driver and decouples it from the video
-   * timing programming -- the DCS init sequence runs earlier, in Command
-   * mode, over the same power link.
+  /* Video mode is entered from Command mode, at which point the DCPHY is
+   * already powered (brought up by initialize()).  This keeps the PHY
+   * lifecycle inside the DSI driver and decouples it from the video timing
+   * programming -- the DCS init sequence runs earlier, in Command mode, over
+   * the same power link.
+   *
+   * Re-entering from VIDEO is also accepted, because the rearm below brings
+   * the datapath back to Command mode unconditionally: refusing here would
+   * make a wedged session (which IS stuck in VIDEO, see the rearm's comment)
+   * permanently unrecoverable, and re-enable is exactly what a caller does
+   * to recover.
    */
 
-  if (priv->mode != RK3576_DSI_MODE_COMMAND)
+  if (priv->mode != RK3576_DSI_MODE_COMMAND &&
+      priv->mode != RK3576_DSI_MODE_VIDEO)
     {
       ret = -EBUSY;
       goto errout_unlock;
@@ -1377,12 +1690,26 @@ int rk3576_mipi_dsi_enable_video(
       goto errout_unlock;
     }
 
-  /* Horizontal total = HACT + HSA + HBP + HFP, in pixels. */
+  /* Remember the timing: the horizontal IPI programming below is redone
+   * later with the VOP's REAL pixel clock once the CRU divider chain has
+   * settled (see rk3576_mipi_dsi_update_pixel_clock()).
+   */
 
-  htotal = timing->hactive + timing->hsync_len + timing->hback_porch +
-           timing->hfront_porch;
+  memcpy(&priv->timing, timing, sizeof(priv->timing));
+  priv->timing_valid = true;
 
   base = priv->base;
+
+  /* Reset the host-side datapath and return to Command mode before
+   * re-programming for video (reference driver behaviour on every mode
+   * set).  This is what recovers a wedged previous video session: once an
+   * HS burst has started and never finished, the FIFOs never drain and
+   * TRM 18.3.1.1 makes the controller ignore any mode change -- so without
+   * this the host would stay locked in the previous Video state and every
+   * register written below would be applied to a wedged datapath.
+   */
+
+  rk3576_dsi_rearm(priv);
 
   /* Configure the IPI color depth and pixel format. */
 
@@ -1421,49 +1748,56 @@ int rk3576_mipi_dsi_enable_video(
              RK3576_VO0_GRF_ADDR + RK3576_VO0_GRF_SOC_CON10_OFF);
   }
 
-  /* Program the horizontal timing (fixed-point phy_hstx_clk cycles).
-   * Each conversion is checked for 13-bit integral overflow.
+  /* Program the horizontal timing (fixed-point phy_hstx_clk cycles) and
+   * PHY_IPI_RATIO from the board's nominal pixel clock.  64 MHz is only a
+   * request: the CRU divider chain will land on the nearest achievable
+   * rate, so this is corrected later by
+   * rk3576_mipi_dsi_update_pixel_clock() with the real dclk rate.  The
+   * ratio must always be derived from the same clock as the horizontal
+   * registers (both are done inside the helper).
+   *
+   * CRITICAL (RK3576 VOP 4:1 pixel-shift): PHY_IPI_RATIO's denominator is
+   * NOT the panel pixel clock but the IPI clock = dclk_core = crtc_clock/4,
+   * per the reference driver dw_mipi_dsi2_get_mipi_pixel_clk():
+   *
+   *   (Video Timing Pixel Rate) / 4 = MIPI Pixel Clock = dclk_out = dclk_core
+   *   dsi2->mipi_pixel_rate = (mode->crtc_clock * MSEC_PER_SEC) / (4 * k)
+   *
+   * Using the raw pixel_clock (a 4x error) leaves the CDC handshake
+   * between the IPI (pixel) and PHY-HSTX domains permanently misaligned:
+   * the video stream stalls at the clock-domain crossing (IPI_BUSY never
+   * sets) while the CRI command path -- which does not depend on this
+   * ratio -- keeps working.  Correct value for kickpi-k7 (hs_rate=384M,
+   * pixel=64M):  (384M/16) / (64M/4) = 24M / 16M = 1.5 = 0x18000
+   * (an error of 0x6000 = 0.375 = 24M/64M is the old broken value).
    */
 
-  regval = rk3576_dsi_hstx_cycles(timing->hsync_len,
-                                  priv->cfg.hs_rate, timing->pixel_clock);
-  if (regval == UINT32_MAX)
+  ret = rk3576_dsi_program_ipi_h_timing(priv, timing, timing->pixel_clock);
+  if (ret < 0)
     {
-      ret = -EINVAL;
+      gerr("ERROR: DSI IPI horizontal timing overflow\n");
       goto errout_unlock;
     }
 
-  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_HSA_MAN_CFG, regval);
+  /* program_ipi_h_timing() also wrote PHY_IPI_RATIO (same clock source).
+   * PHY_SYS_RATIO uses the same numerator over sys_clk, so it is done
+   * separately here. */
 
-  regval = rk3576_dsi_hstx_cycles(timing->hback_porch,
-                                  priv->cfg.hs_rate, timing->pixel_clock);
-  if (regval == UINT32_MAX)
-    {
-      ret = -EINVAL;
-      goto errout_unlock;
-    }
+  {
+    uint64_t phy_hstx_clk = (uint64_t)priv->cfg.hs_rate / 16u;
 
-  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_HBP_MAN_CFG, regval);
+    if (priv->sclk != NULL)
+      {
+        uint32_t sclk_rate = clk_get_rate(priv->sclk);
 
-  regval = rk3576_dsi_hstx_cycles(timing->hactive,
-                                  priv->cfg.hs_rate, timing->pixel_clock);
-  if (regval == UINT32_MAX)
-    {
-      ret = -EINVAL;
-      goto errout_unlock;
-    }
-
-  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_HACT_MAN_CFG, regval);
-
-  regval = rk3576_dsi_hstx_cycles(htotal,
-                                  priv->cfg.hs_rate, timing->pixel_clock);
-  if (regval == UINT32_MAX)
-    {
-      ret = -EINVAL;
-      goto errout_unlock;
-    }
-
-  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_HLINE_MAN_CFG, regval);
+        if (sclk_rate != 0)
+          {
+            uint64_t sys_ratio = (phy_hstx_clk << 16) / sclk_rate;
+            rk3576_dsi_putreg(base, RK3576_DSI2_PHY_SYS_RATIO_MAN_CFG,
+                              (uint32_t)sys_ratio & DSI2_PHY_SYS_RATIO_MASK);
+          }
+      }
+  }
 
   /* Program the vertical timing (in lines). */
 
@@ -1481,65 +1815,33 @@ int rk3576_mipi_dsi_enable_video(
   rk3576_dsi_putreg(base, RK3576_DSI2_IPI_PIX_PKT_CFG,
                     timing->hactive & DSI2_IPI_PIX_PKT_MAX_MASK);
 
-  /* Configure the video-mode transmission type. */
+  /* Configure the video-mode transmission type.
+   *
+   * vid_mode_type (TRM 18.3.1.2): 0 = non-burst with sync pulses,
+   * 1 = non-burst with sync events, 2 = burst.  Every blk_*_hs_en bit is
+   * left 0 so the controller is allowed to return to low power in each
+   * blanking region, which a NON-continuous clock lane requires.
+   *
+   * The mode is a BOARD property (like the porches), but it is logged here
+   * together with the clock-lane type: a "still black" report is only
+   * interpretable when the log states which of the three video modes and
+   * which clock-lane behaviour the firmware actually programmed, instead of
+   * leaving the reader to guess from a source tree that may have moved on.
+   */
 
   regval = (uint32_t)priv->cfg.video_mode & DSI2_VID_TX_VID_MODE_TYPE_MASK;
   rk3576_dsi_putreg(base, RK3576_DSI2_DSI_VID_TX_CFG, regval);
 
-  /* Program the HSTX/IPI and HSTX/SYS clock ratios (fixed-point 6.16),
-   * which let the controller synchronize its three clock domains (sys_clk,
-   * ipi_clk = pixel clock, phy_hstx_clk = the DSI-2 host's internal
-   * high-speed TX clock).  Per the reference driver (dw-mipi-dsi2-rockchip.c,
-   * dw_mipi_dsi2_phy_ratio_cfg), in DPHY mode the controller's phy_hstx_clk
-   * is exactly 1/16 the lane high-speed data rate (NOT the DCPHY physical
-   * HSTX_CLK_SEL /2 domain -- that is an independent PHY-internal clock).
-   *
-   *   phy_ipi_ratio = (hs_rate / 16) / ipi_clk
-   *   phy_sys_ratio = (hs_rate / 16) / sclk
-   *
-   * CRITICAL (RK3576 VOP 4:1 pixel-shift): ipi_clk is NOT the panel pixel
-   * clock.  The RK3576 VOP feeds the MIPI DSI IPI at dclk_core = (video
-   * timing pixel rate) / 4, per the reference driver
-   * dw_mipi_dsi2_get_mipi_pixel_clk():
-   *
-   *   (Video Timing Pixel Rate) / 4 = MIPI Pixel Clock = dclk_out = dclk_core
-   *   dsi2->mipi_pixel_rate = (mode->crtc_clock * MSEC_PER_SEC) / (4 * k)
-   *
-   * Using the raw pixel_clock here (a 4x error) leaves the CDC handshake
-   * between the IPI (pixel, dclk_core) and PHY-HSTX domains permanently
-   * misaligned: the video stream stalls at the clock-domain crossing
-   * (IPI_BUSY never sets, INT_ST_IPI stays 0) while the CRI command path --
-   * which does not depend on this ratio -- keeps working.  That is the
-   * "command link up but all-black video (and eventual NSH hang)" failure.
-   *
-   * Correct value for kickpi-k7 (hs_rate=384M, pixel=64M):
-   *   phy_ipi_ratio = (384M/16) / (64M/4) = 24M / 16M = 1.5 = 0x18000
-   *   (an error of 0x6000 = 0.375 = 24M/64M is the old broken value).
-   */
-
-  {
-    uint64_t phy_hstx_clk = (uint64_t)priv->cfg.hs_rate / 16u;
-    uint64_t ipi_clk = (uint64_t)timing->pixel_clock / 4u;
-
-    if (ipi_clk != 0)
-      {
-        uint64_t ipi_ratio = (phy_hstx_clk << 16) / ipi_clk;
-        rk3576_dsi_putreg(base, RK3576_DSI2_PHY_IPI_RATIO_MAN_CFG,
-                          (uint32_t)ipi_ratio & DSI2_PHY_IPI_RATIO_MASK);
-      }
-
-    if (priv->sclk != NULL)
-      {
-        uint32_t sclk_rate = clk_get_rate(priv->sclk);
-
-        if (sclk_rate != 0)
-          {
-            uint64_t sys_ratio = (phy_hstx_clk << 16) / sclk_rate;
-            rk3576_dsi_putreg(base, RK3576_DSI2_PHY_SYS_RATIO_MAN_CFG,
-                              (uint32_t)sys_ratio & DSI2_PHY_SYS_RATIO_MASK);
-          }
-      }
-  }
+  syslog(LOG_INFO,
+         "dsi: VIDEO CFG mode_type=%u (%s) continuous_clk=%u lanes=%u bpp=%u "
+         "pixel_clock=%u hs_rate=%u\n",
+         (unsigned)regval,
+         regval == 0   ? "non-burst/sync-pulses"
+         : regval == 1 ? "non-burst/sync-events"
+                       : "burst",
+         (unsigned)(priv->cfg.continuous_clk ? 1 : 0), (unsigned)lanes,
+         (unsigned)bpp, (unsigned)timing->pixel_clock,
+         (unsigned)priv->cfg.hs_rate);
 
   /* Use manual timing (the MAN_CFG timing registers programmed above). */
 
@@ -1587,7 +1889,9 @@ int rk3576_mipi_dsi_enable_video(
      */
 
     syslog(LOG_INFO,
-           "dsi-dump: MODE_STATUS=%08x CORE_STATUS=%08x MANUAL_MODE=%08x\n",
+           "dsi-dump: MODE_STATUS=%08x CORE_STATUS=%08x MANUAL_MODE=%08x "
+           "(PRE-VOP: CORE_STATUS/FSM/FIFO here are sampled BEFORE the VOP "
+           "starts, so all-zero is EXPECTED, not diagnostic)\n",
            rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS),
            rk3576_dsi_getreg(base, RK3576_DSI2_CORE_STATUS),
            rk3576_dsi_getreg(base, RK3576_DSI2_MANUAL_MODE_CFG));
@@ -1668,8 +1972,8 @@ int rk3576_mipi_dsi_enable_video(
         }
 
       syslog(LOG_INFO,
-             "dsi-dump: FSM ipi_vid=%08x ipi_auto_calc=%08x sys_main=%08x "
-             "sys_cmd=%08x sys_pkt=%08x phy_tx_ready=%08x\n",
+             "dsi-dump: FSM(pre-VOP) ipi_vid=%08x ipi_auto_calc=%08x "
+             "sys_main=%08x sys_cmd=%08x sys_pkt=%08x phy_tx_ready=%08x\n",
              fsm_raw[0], fsm_raw[1], fsm_raw[2], fsm_raw[3], fsm_raw[4],
              fsm_raw[5]);
 
@@ -1748,7 +2052,7 @@ int rk3576_mipi_dsi_enable_video(
                         DSI2_OBS_FIFO_WORD_CNT_SHIFT;
 
           syslog(LOG_INFO,
-                 "dsi-dump: FIFO[%s] cnt=%u->%u "
+                 "dsi-dump: FIFO(pre-VOP)[%s] cnt=%u->%u "
                  "empty=%u ae=%u hf=%u af=%u full=%u\n",
                  fifo_names[fifo_i], wa, wb,
                  (unsigned)(fifo_b[fifo_i] & DSI2_OBS_FIFO_EMPTY) != 0,
@@ -1785,25 +2089,461 @@ errout_unlock:
  *   function must be called again after the VOP begins scanning to answer
  *   the real question: do pixels physically reach the DSI IPI?
  *
- *   Read-only: CORE_STATUS (ipi_busy bit8 / ipi_fifos_not_empty bit9),
- *   the ipi_data FIFO word count sampled twice, and the ipi_vid / phy_tx
- *   FSMs.  A positive ipi_data count or ipi_busy=1 proves the pixel stream
- *   reached the IPI (break is downstream in the PHY send path); all-zero
- *   again proves the break is upstream (VOP -> DSI physical link).
+ *   Read-only, and deliberately sampled DENSELY rather than as a single
+ *   point/pair, because every previous misdiagnosis in this bring-up came
+ *   from single-shot sampling of a signal that legitimately cycles:
+ *     - CORE_STATUS (ipi_busy bit8 / ipi_fifos_not_empty bit9)
+ *     - ipi_data / ipi_event / phy_txhs FIFO water levels: sampled 64 times
+ *       over ~2 ms, reported as max + "was ever non-empty".  The IPI data
+ *       FIFO drains once per video line, so a two-sample pair can read
+ *       "empty" twice on a perfectly healthy stream.
+ *     - ipi_vid / phy_tx_ready FSMs, decoded with the TRM layout
+ *       (cnt[31:16] / prev[12:8] / stuck[5] / state[4:0]); cnt == 0xffff
+ *       with stuck == 1 is the "wedged" signature.
+ *     - IPI timing registers converted back to pixels for a self-check.
+ *     - PHY_STATUS sampled 800 times on a 5 us grid over ~4 ms; a coarse
+ *       400 us grid aliases against the ~52 us line period and can read a
+ *       healthy toggling clock lane as "never in LP-11".
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: rk3576_dsi_obs_fsm
+ *
+ * Description:
+ *   Read one of the six debug FSMs of the DSI-2 controller.
+ *
+ *   DSI2_OBS_FSM_STATUS_SEL is written from the APB/sys_clk side, while the
+ *   observed FSM runs in its own clock domain (ipi_clk for ipi_vid_fsm,
+ *   phy_hstx_clk for phy_tx_ready_fsm).  The selection therefore has to
+ *   cross a CDC before it can appear in DSI2_OBS_FSM_STATUS.  Reading it in
+ *   the very next APB access (as an earlier revision of this probe did) can
+ *   return the previously selected FSM's value, or 0 -- which is
+ *   indistinguishable from a genuine "this FSM is at INIT" reading.  Wait a
+ *   few microseconds and sample twice; *unstable reports disagreement so
+ *   the log can flag an untrustworthy sample instead of silently treating
+ *   it as a measurement.
+ *
+ * Input Parameters:
+ *   base     - DSI-2 register base.
+ *   sel      - DSI2_OBS_FSM_SEL_*.
+ *   unstable - Optional out: set to true when the two samples disagree.
+ *
+ * Returned Value:
+ *   DSI2_OBS_FSM_STATUS for the requested selector.
+ *
+ ****************************************************************************/
+
+static uint32_t rk3576_dsi_obs_fsm(uintptr_t base, uint32_t sel,
+                                   FAR bool *unstable)
+{
+  uint32_t first;
+  uint32_t second;
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FSM_STATUS_SEL, sel);
+  up_udelay(2);
+  first = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FSM_STATUS);
+  up_udelay(2);
+  second = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FSM_STATUS);
+
+  if (unstable != NULL)
+    {
+      *unstable = (first != second);
+    }
+
+  return second;
+}
+
+/****************************************************************************
+ * Name: rk3576_dsi_set_mode
+ ****************************************************************************/
+
+static uint32_t rk3576_dsi_set_mode(uintptr_t base, uint32_t mode,
+                                    int loops)
+{
+  rk3576_dsi_putreg(base, RK3576_DSI2_MODE_CTRL, mode);
+
+  while (loops-- > 0)
+    {
+      if ((rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS) & 0x7u) == mode)
+        {
+          break;
+        }
+
+      up_udelay(1);
+    }
+
+  return rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS) & 0x7u;
+}
+
+/****************************************************************************
+ * Name: rk3576_dsi_video_mode_sweep
+ *
+ * Description:
+ *   Bring-up experiment: try every combination of video transmission mode
+ *   (non-burst/sync-events, burst, non-burst/sync-pulses) and clock-lane
+ *   type (continuous / non-continuous), and report -- per combination --
+ *   whether the PHY lane really cycles between LP-11 and HS.
+ *
+ *   Why this exists: with the current configuration the pixel stream does
+ *   reach the PHY (`phy_txhs` non-empty) and the data lines do carry MIPI
+ *   traffic (scope-confirmed), but the lanes NEVER return to LP-11
+ *   (clk_stopstate high=0 over 800 samples) and the controller's own
+ *   err_to_hstx timeout fires -- i.e. one HS burst that never ends.  A
+ *   panel with a NON-continuous clock lane cannot re-synchronise per line
+ *   in that state, which is exactly "backlight on, screen black".
+ *
+ *   Which of the two knobs is responsible cannot be decided by reading the
+ *   registers (all the timing/ratio registers self-check as correct), so it
+ *   has to be measured.  Doing it here, in one boot, saves a flash cycle
+ *   per guess and guarantees every combination is exercised on IDENTICAL
+ *   silicon state.
+ *
+ *   Each combination gets a genuine COMMAND -> VIDEO cycle (VID_TX_CFG is
+ *   documented as a video-mode entry option, and the controller is
+ *   guaranteed to sequence mode changes through Idle automatically), so it
+ *   starts from the same state a fresh boot would.
+ *
+ *   Reading the result: the clock lane must be in LP-11 for
+ *   (htotal-hactive)/htotal = 12.5% of the time in non-continuous mode, so
+ *   "clk_high" should land near samples/8 with clk_toggles > 0.  In
+ *   continuous mode the clock lane stays in HS and instead the DATA lanes
+ *   are the ones that must cycle (data_low > 0 and data_high > 0).
+ *
+ *   This is throwaway diagnostic code -- delete once the video link works.
+ *
+ ****************************************************************************/
+
+#define RK3576_DSI_SWEEP_SAMPLES 300 /* x 5 us = 1.5 ms ~ 114 lines */
+
+#if RK3576_DSI_VIDEO_MODE_SWEEP
+
+static void rk3576_dsi_video_mode_sweep(void)
+{
+  /* Each sweep point is a complete video-entry configuration.  The three
+   * knobs are the only ones that (a) differ between this board and the
+   * mainline ILI9881D panel drivers, or (b) rest on an unverified
+   * assumption in our own code:
+   *
+   *   mode   - DSI2_VID_TX_CFG.vid_mode_type.  Mainline uses BURST for the
+   *            720x1280/4-lane/RGB888 panels and SYNC_PULSE for others;
+   *            NO mainline ILI9881D panel uses sync-events (our value).
+   *   cont   - PHY_CLK_CFG.clk_type.  Only 2 of 8 mainline ILI9881D panels
+   *            request a NON-continuous clock; the 720x1280 parts use a
+   *            CONTINUOUS one.  Ours is non-continuous.
+   *   ratio  - PHY_IPI_RATIO.  Our value assumes the IPI clock really is
+   *            pixel_clock/4 (the reference's crtc_clock/4).  That is the
+   *            one number everything else was derived from; if it is wrong
+   *            the controller waits for pixels that never arrive on
+   *            schedule and the packet never completes.
+   */
+
+  static const struct
+  {
+    uint8_t mode;  /* vid_mode_type: 0=sync-pulses 1=sync-events 2=burst */
+    uint8_t cont;  /* clk_type: 0=continuous 1=non-continuous */
+    uint8_t ratio; /* PHY_IPI_RATIO scaling: 0=as programmed 1=/2 2=x2 */
+    FAR const char *tag;
+  } sweep[] =
+  {
+    /* [0] must always mirror the board's own configuration: it doubles as a
+     * self-check that the sweep's restore path reproduces it exactly. */
+    { 2, 0, 0, "board: BURST + CONTINUOUS clk (ACTIVE)" },
+    { 2, 1, 0, "BURST, non-cont clk" },
+    { 1, 1, 0, "sync-events, non-cont clk" },
+    { 1, 0, 0, "sync-events, CONTINUOUS clk" },
+    { 0, 1, 0, "sync-pulses, non-cont clk" },
+    { 0, 0, 0, "sync-pulses, CONTINUOUS clk" },
+    { 2, 0, 1, "board, PHY_IPI_RATIO / 2" },
+    { 2, 0, 2, "board, PHY_IPI_RATIO x 2" },
+  };
+
+  struct rk3576_dsi_s *priv = &g_dsi;
+  uintptr_t base = priv->base;
+  uint32_t lptx_div;
+  uint32_t color;
+  int ret;
+  int c;
+
+  if (!priv->initialized || !priv->timing_valid)
+    {
+      return;
+    }
+
+  ret = nxmutex_lock(&priv->lock);
+  if (ret < 0)
+    {
+      return;
+    }
+
+  lptx_div = rk3576_dsi_getreg(base, RK3576_DSI2_PHY_CLK_CFG) &
+             DSI2_PHY_CLK_LPTX_DIV_MASK;
+  color = rk3576_dsi_color_depth(priv->cfg.format) | DSI2_IPI_COLOR_FORMAT_RGB;
+
+  /* A diagnostic HS-TX timeout: 0x1388 = 5000 phy_lptx_clk cycles
+   * (~252 us at the 19.8 MHz escape clock, ~19 video lines).  This is far
+   * above a healthy burst (~11 us) yet short enough that "the burst never
+   * ended" is reported within this function's settle window -- with the
+   * production 0xffff (~3.3 ms) value such a stall is barely observable.
+   */
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_TIMEOUT_HSTX_CFG, 0x1388);
+
+  syslog(LOG_INFO,
+         "dsi-sweep: ===== video mode x clock lane sweep (%u combos) =====\n",
+         (unsigned)(sizeof(sweep) / sizeof(sweep[0])));
+  syslog(LOG_INFO,
+         "dsi-sweep: columns: mode=vid_mode_type (0=sync-pulses 1=sync-events "
+         "2=burst) cont=clk_type (0=continuous 1=non-cont) M=mode_status "
+         "clkHi/lanes=clock lane LP-11 hits clkTog=transitions "
+         "datLo=all-data-driving hits datHi=all-data-in-LP-11 hits "
+         "txhs=phy_txhs word count ipiv=ipi_vid_fsm TO=int_st_to\n");
+
+  for (c = 0; c < (int)(sizeof(sweep) / sizeof(sweep[0])); c++)
+    {
+      uint32_t clk_high = 0;
+      uint32_t clk_toggles = 0;
+      uint32_t data_high = 0;
+      uint32_t data_low = 0;
+      uint32_t last;
+      uint32_t txhs_a;
+      uint32_t txhs_b;
+      uint32_t int_to;
+      uint32_t ms;
+      uint32_t core;
+      uint32_t n;
+
+      /* Force a CLEAN datapath: soft reset + PWR_UP cycle + Command mode.
+       *
+       * A plain MODE_CTRL=COMMAND request is NOT sufficient and was
+       * observed to fail outright: once an HS burst has started and never
+       * finished, phy_txhs cannot drain, and TRM 18.3.1.1 only accepts a
+       * mode change once every FIFO is empty -- so the request is ignored
+       * and MODE_STATUS stays at VIDEO forever.  Only the soft resets can
+       * flush a wedged datapath and return all six FSMs to INIT.
+       */
+
+      rk3576_dsi_rearm(priv);
+
+      if ((rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS) & 7u) !=
+          DSI2_MODE_COMMAND)
+        {
+          syslog(LOG_WARNING,
+                 "dsi-sweep: [%d] %s: rearm left MODE_STATUS=%u "
+                 "(expected COMMAND=%u), skipping\n",
+                 c, sweep[c].tag,
+                 (unsigned)(rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS) &
+                            7u),
+                 (unsigned)DSI2_MODE_COMMAND);
+          continue;
+        }
+
+      /* Re-program the whole video entry from scratch -- the same register
+       * set enable_video() writes -- plus this point's overrides.  Must
+       * happen AFTER the rearm, since configuration written before a reset
+       * cannot be assumed to survive it. */
+
+      rk3576_dsi_putreg(base, RK3576_DSI2_PHY_CLK_CFG,
+                        lptx_div | (sweep[c].cont
+                                        ? DSI2_PHY_CLK_TYPE_NONCONTINUOUS
+                                        : DSI2_PHY_CLK_TYPE_CONTINUOUS));
+      rk3576_dsi_putreg(base, RK3576_DSI2_IPI_COLOR_MAN_CFG, color);
+
+      if (rk3576_dsi_program_ipi_h_timing(priv, &priv->timing,
+                                          priv->timing.pixel_clock) < 0)
+        {
+          syslog(LOG_WARNING,
+                 "dsi-sweep: [%d] %s: IPI horizontal timing overflow, "
+                 "skipping\n",
+                 c, sweep[c].tag);
+          continue;
+        }
+
+      /* PHY_IPI_RATIO is written by program_ipi_h_timing() above, so the
+       * scaling override has to come after it. */
+
+      if (sweep[c].ratio != 0)
+        {
+          uint32_t r = rk3576_dsi_getreg(
+              base, RK3576_DSI2_PHY_IPI_RATIO_MAN_CFG);
+
+          r = (sweep[c].ratio == 1) ? (r / 2u) : (r * 2u);
+          rk3576_dsi_putreg(base, RK3576_DSI2_PHY_IPI_RATIO_MAN_CFG,
+                            r & DSI2_PHY_IPI_RATIO_MASK);
+        }
+
+      rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_VSA_MAN_CFG,
+                        priv->timing.vsync_len & DSI2_IPI_VSA_LINES_MASK);
+      rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_VBP_MAN_CFG,
+                        priv->timing.vback_porch & DSI2_IPI_VBP_LINES_MASK);
+      rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_VACT_MAN_CFG,
+                        priv->timing.vactive & DSI2_IPI_VACT_LINES_MASK);
+      rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_VFP_MAN_CFG,
+                        priv->timing.vfront_porch & DSI2_IPI_VFP_LINES_MASK);
+      rk3576_dsi_putreg(base, RK3576_DSI2_IPI_PIX_PKT_CFG,
+                        priv->timing.hactive & DSI2_IPI_PIX_PKT_MAX_MASK);
+      rk3576_dsi_putreg(base, RK3576_DSI2_DSI_VID_TX_CFG,
+                        (uint32_t)sweep[c].mode &
+                            DSI2_VID_TX_VID_MODE_TYPE_MASK);
+      rk3576_dsi_putreg(base, RK3576_DSI2_MANUAL_MODE_CFG,
+                        DSI2_MANUAL_MODE_EN);
+
+      ms = rk3576_dsi_set_mode(base, DSI2_MODE_VIDEO, 20000);
+      if (ms != DSI2_MODE_VIDEO)
+        {
+          syslog(LOG_WARNING,
+                 "dsi-sweep: [%d] %s: could not reach VIDEO "
+                 "(MODE_STATUS=%u), skipping\n",
+                 c, sweep[c].tag, (unsigned)ms);
+          continue;
+        }
+
+      priv->mode = RK3576_DSI_MODE_VIDEO;
+
+      /* Let the new configuration settle for a few frames. */
+
+      up_mdelay(5);
+
+      txhs_a = 0;
+      {
+        uint32_t st;
+
+        rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
+                          DSI2_OBS_FIFO_SEL_PHY_TXHS);
+        up_udelay(2);
+        st = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
+        txhs_a = (st & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
+                 DSI2_OBS_FIFO_WORD_CNT_SHIFT;
+      }
+
+      last = rk3576_dsi_getreg(base, RK3576_DSI2_PHY_STATUS);
+
+      for (n = 0; n < RK3576_DSI_SWEEP_SAMPLES; n++)
+        {
+          uint32_t cur = rk3576_dsi_getreg(base, RK3576_DSI2_PHY_STATUS);
+
+          if (cur & DSI2_PHY_STATUS_PHY_CLK_STOPSTATE)
+            {
+              clk_high++;
+            }
+
+          if ((cur ^ last) & DSI2_PHY_STATUS_PHY_CLK_STOPSTATE)
+            {
+              clk_toggles++;
+            }
+
+          last = cur;
+
+          if ((cur & 0x00001e00u) == 0x00001e00u)
+            {
+              data_high++;
+            }
+          else
+            {
+              data_low++;
+            }
+
+          up_udelay(5);
+        }
+
+      rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
+                        DSI2_OBS_FIFO_SEL_PHY_TXHS);
+      up_udelay(2);
+      txhs_b = (rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS) &
+                DSI2_OBS_FIFO_WORD_CNT_MASK) >>
+               DSI2_OBS_FIFO_WORD_CNT_SHIFT;
+
+      int_to = rk3576_dsi_getreg(base, RK3576_DSI2_INT_ST_TO); /* RC */
+      core = rk3576_dsi_getreg(base, RK3576_DSI2_CORE_STATUS);
+
+      syslog(LOG_INFO,
+             "dsi-sweep: [%d] mode=%u cont=%u ratio=%u \"%s\" M=%u "
+             "clkHi=%u/%u clkTog=%u datLo=%u datHi=%u txhs=%u..%u ipiv=%08x "
+             "TO=%02x (hstx=%u hstxrdy=%u) ipibs=%u -> %s\n",
+             c, (unsigned)sweep[c].mode, (unsigned)sweep[c].cont,
+             (unsigned)sweep[c].ratio, sweep[c].tag,
+             (unsigned)(rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS) & 7u),
+             (unsigned)clk_high, (unsigned)RK3576_DSI_SWEEP_SAMPLES,
+             (unsigned)clk_toggles, (unsigned)data_low, (unsigned)data_high,
+             (unsigned)txhs_a, (unsigned)txhs_b,
+             rk3576_dsi_obs_fsm(base, DSI2_OBS_FSM_SEL_IPI_VID, NULL),
+             (unsigned)int_to, (unsigned)(int_to & 1u),
+             (unsigned)((int_to >> 1) & 1u),
+             (unsigned)((core >> 8) & 1u),
+             (clk_toggles > 0 && clk_high > 0 &&
+              clk_high < RK3576_DSI_SWEEP_SAMPLES)
+                 ? "CLOCK LANE CYCLES LP-11 <== HEALTHY"
+                 : (data_low > 0 && data_high > 0)
+                       ? "data lanes cycle, clock lane does not"
+                       : "lanes NEVER return to LP-11");
+    }
+
+  /* Restore the board's configured video mode + clock lane type and put the
+   * controller back into Video mode so the rest of the driver's probes (and
+   * the running system) see the same state they had before the sweep.
+   *
+   * The rearm is mandatory here for the same reason as inside the loop: the
+   * last sweep point may well have left the datapath wedged, and a wedged
+   * datapath ignores mode changes. */
+
+  rk3576_dsi_rearm(priv);
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_PHY_CLK_CFG,
+                    lptx_div | (priv->cfg.continuous_clk
+                                    ? DSI2_PHY_CLK_TYPE_CONTINUOUS
+                                    : DSI2_PHY_CLK_TYPE_NONCONTINUOUS));
+  rk3576_dsi_putreg(base, RK3576_DSI2_DSI_VID_TX_CFG,
+                    (uint32_t)priv->cfg.video_mode &
+                        DSI2_VID_TX_VID_MODE_TYPE_MASK);
+  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_COLOR_MAN_CFG, color);
+  rk3576_dsi_program_ipi_h_timing(priv, &priv->timing,
+                                  priv->timing.pixel_clock);
+  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_VSA_MAN_CFG,
+                    priv->timing.vsync_len & DSI2_IPI_VSA_LINES_MASK);
+  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_VBP_MAN_CFG,
+                    priv->timing.vback_porch & DSI2_IPI_VBP_LINES_MASK);
+  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_VACT_MAN_CFG,
+                    priv->timing.vactive & DSI2_IPI_VACT_LINES_MASK);
+  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_VFP_MAN_CFG,
+                    priv->timing.vfront_porch & DSI2_IPI_VFP_LINES_MASK);
+  rk3576_dsi_putreg(base, RK3576_DSI2_IPI_PIX_PKT_CFG,
+                    priv->timing.hactive & DSI2_IPI_PIX_PKT_MAX_MASK);
+  rk3576_dsi_set_mode(base, DSI2_MODE_VIDEO, 20000);
+  priv->mode = RK3576_DSI_MODE_VIDEO;
+
+  rk3576_dsi_putreg(base, RK3576_DSI2_TIMEOUT_HSTX_CFG, 0xffff);
+
+  syslog(LOG_INFO,
+         "dsi-sweep: ===== restored vid_mode_type=%u clk_type=%u "
+         "(MODE_STATUS=%u PHY_STATUS=%08x VID_TX_CFG=%08x PHY_CLK_CFG=%08x "
+         "PHY_IPI_RATIO=%08x) =====\n",
+         (unsigned)(priv->cfg.video_mode & DSI2_VID_TX_VID_MODE_TYPE_MASK),
+         (unsigned)rk3576_dsi_getreg(base, RK3576_DSI2_PHY_CLK_CFG) & 1u,
+         (unsigned)(rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS) & 7u),
+         rk3576_dsi_getreg(base, RK3576_DSI2_PHY_STATUS),
+         rk3576_dsi_getreg(base, RK3576_DSI2_DSI_VID_TX_CFG),
+         rk3576_dsi_getreg(base, RK3576_DSI2_PHY_CLK_CFG),
+         rk3576_dsi_getreg(base, RK3576_DSI2_PHY_IPI_RATIO_MAN_CFG));
+
+  nxmutex_unlock(&priv->lock);
+}
+
+#endif /* RK3576_DSI_VIDEO_MODE_SWEEP */
 
 void rk3576_mipi_dsi_dump_video_status(void)
 {
   struct rk3576_dsi_s *priv = &g_dsi;
   uintptr_t base = priv->base;
   uint32_t core_status;
-  uint32_t ipi_data_a;
-  uint32_t ipi_data_b;
-  uint32_t ipi_event_a;
-  uint32_t ipi_event_b;
-  uint32_t fsm_vid;
-  uint32_t fsm_ready;
+  uint32_t fifo_max[3];
+  uint32_t fifo_ever[3];
+  uint32_t fifo_full[3];
+  uint32_t fifo_min[3];
+  uint32_t fsm[RK3576_DSI2_NUM_OBS_FSMS];
+  bool fsm_unstable[RK3576_DSI2_NUM_OBS_FSMS];
   uint32_t int_st_ipi;
+  uint32_t int_st_to;
+  uint32_t int_st_phy;
+  uint32_t int_mask_to;
   uint32_t mode_status;
 
   if (!priv->initialized || priv->mode != RK3576_DSI_MODE_VIDEO)
@@ -1815,69 +2555,230 @@ void rk3576_mipi_dsi_dump_video_status(void)
   mode_status = rk3576_dsi_getreg(base, RK3576_DSI2_MODE_STATUS);
   int_st_ipi = rk3576_dsi_getreg(base, RK3576_DSI2_INT_ST_IPI);
 
-  /* ipi_data FIFO word count sampled twice (see the enable_video probe).
-   * Also sample ipi_event FIFO at the same time: the decisive split for a
-   * black screen where the data lane toggles identically for 0xff and 0x00
-   * framebuffers is whether the VOP delivered ONLY sync/blanking events
-   * (ipi_event non-empty, ipi_data empty) or nothing at all (both empty).
-   * ipi_busy=1 alone cannot distinguish these: it reflects event packets
-   * too, which is why an all-black and all-white fb look identical on the
-   * scope. */
+  /* DSI2_INT_ST_TO / INT_ST_PHY are read-clear: this read consumes whatever
+   * the hardware latched up to now.  That is intentional here (the stall is
+   * already established), and err_to_hstxrdy is the single most valuable
+   * signal available -- it is the controller itself reporting "I asked the
+   * PHY to transmit in HS and it never became ready". */
 
-  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
-                    DSI2_OBS_FIFO_SEL_IPI_DATA);
-  ipi_data_a = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
-  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
-                    DSI2_OBS_FIFO_SEL_IPI_EVENT);
-  ipi_event_a = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
-  up_udelay(200);
-  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
-                    DSI2_OBS_FIFO_SEL_IPI_DATA);
-  ipi_data_b = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
-  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
-                    DSI2_OBS_FIFO_SEL_IPI_EVENT);
-  ipi_event_b = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
+  int_st_to = rk3576_dsi_getreg(base, RK3576_DSI2_INT_ST_TO);
+  int_st_phy = rk3576_dsi_getreg(base, RK3576_DSI2_INT_ST_PHY);
+  int_mask_to = rk3576_dsi_getreg(base, RK3576_DSI2_INT_MASK_TO);
 
-  /* ipi_vid_fsm + phy_tx_ready_fsm current state. */
+  /* Repeatedly sample the three video-path FIFOs over ~2 ms (a few video
+   * lines).  A single PAIR of samples cannot distinguish "the FIFO was
+   * drained between the two reads" from "the FIFO never held anything":
+   * the IPI data FIFO legitimately cycles empty -> non-empty -> empty once
+   * per line (each line's packet is built and handed on within one line
+   * time), so a pair of reads 200 us apart can easily land empty twice
+   * while the stream is perfectly healthy -- and previous rounds misread
+   * exactly that as "no pixels".  The reliable criteria are the MAX water
+   * level and whether the FIFO was EVER non-empty across the window:
+   *
+   *   ipi_data  max > 0  -> pixels DO reach the IPI (break is downstream)
+   *   ipi_data  always 0 -> no pixel ever entered the IPI (break upstream)
+   *   phy_txhs  max > 0  -> the IPI handed packets to the PHY TX FIFO
+   *   phy_txhs  always 0 -> nothing left the IPI: the send side is stalled
+   *                         (this is the "phy_tx_ready FSM stuck at INIT"
+   *                         hypothesis, now testable directly)
+   *   ipi_event sees sync/blanking events only (data lane toggles identically
+   *   for a black and a white framebuffer).
+   */
 
-  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FSM_STATUS_SEL,
-                    DSI2_OBS_FSM_SEL_IPI_VID);
-  fsm_vid = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FSM_STATUS);
-  rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FSM_STATUS_SEL,
-                    DSI2_OBS_FSM_SEL_PHY_TX_READY);
-  fsm_ready = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FSM_STATUS);
+  {
+    static const uint8_t fifo_sel[3] = {
+      DSI2_OBS_FIFO_SEL_IPI_DATA,
+      DSI2_OBS_FIFO_SEL_IPI_EVENT,
+      DSI2_OBS_FIFO_SEL_PHY_TXHS,
+    };
+    int f;
+    int n;
+
+    for (f = 0; f < 3; f++)
+      {
+        fifo_max[f] = 0;
+        fifo_ever[f] = 0;
+        fifo_full[f] = 0;
+        fifo_min[f] = 0xffffu;
+      }
+
+    for (n = 0; n < 64; n++)
+      {
+        for (f = 0; f < 3; f++)
+          {
+            uint32_t st;
+
+            rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FIFO_STATUS_SEL,
+                              (uint32_t)fifo_sel[f]);
+
+            /* Same CDC caveat as rk3576_dsi_obs_fsm(): let the newly written
+             * selector propagate before sampling the status. */
+
+            up_udelay(2);
+            st = rk3576_dsi_getreg(base, RK3576_DSI2_OBS_FIFO_STATUS);
+
+            {
+              uint32_t cnt = (st & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
+                             DSI2_OBS_FIFO_WORD_CNT_SHIFT;
+
+              if (cnt > fifo_max[f])
+                {
+                  fifo_max[f] = cnt;
+                }
+
+              if (cnt < fifo_min[f])
+                {
+                  fifo_min[f] = cnt;
+                }
+
+              if (st & (DSI2_OBS_FIFO_FULL | DSI2_OBS_FIFO_ALMOST_FULL))
+                {
+                  fifo_full[f]++;
+                }
+
+              if ((st & DSI2_OBS_FIFO_EMPTY) == 0 || cnt != 0)
+                {
+                  fifo_ever[f] = 1;
+                }
+            }
+          }
+
+        up_udelay(30); /* 64 * 30us ~ 1.9 ms ~ 3+ video lines */
+      }
+  }
+
+  /* Read ALL SIX debug FSMs, not just ipi_vid + phy_tx_ready.  The video
+   * TX chain is ipi_vid_fsm -> sys_pkt_build_fsm -> sys_main_fsm ->
+   * phy_tx_ready_fsm, so a stall can sit anywhere along it; reporting only
+   * the two ends cannot tell "the IPI side never delivered a line" apart
+   * from "the IPI delivered, but the SYS packet builder never consumed the
+   * data FIFO".  With all six states plus the per-FSM cycle counter the
+   * break can be located to a single stage. */
+
+  {
+    int s;
+
+    for (s = 0; s < RK3576_DSI2_NUM_OBS_FSMS; s++)
+      {
+        fsm[s] = rk3576_dsi_obs_fsm(base, (uint32_t)s, &fsm_unstable[s]);
+      }
+  }
 
   syslog(LOG_INFO,
          "vop-scanning: DSI CORE_STATUS=%08x (ipi_busy[8]=%u "
-         "ipi_fifos_not_empty[9]=%u) MODE_STATUS=%08x INT_ST_IPI=%08x\n",
+         "ipi_fifos_not_empty[9]=%u core_busy[0]=%u) MODE_STATUS=%08x "
+         "INT_ST_IPI=%08x\n",
          core_status,
          (unsigned)((core_status >> 8) & 1),
          (unsigned)((core_status >> 9) & 1),
+         (unsigned)(core_status & 1),
          mode_status, int_st_ipi);
 
-  syslog(LOG_INFO,
-         "vop-scanning: DSI ipi_data fifo cnt=%u->%u empty=%u "
-         "ipi_event fifo cnt=%u->%u empty=%u "
-         "ipi_vid_fsm=%08x phy_tx_ready_fsm=%08x\n",
-         (unsigned)((ipi_data_a & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
-                    DSI2_OBS_FIFO_WORD_CNT_SHIFT),
-         (unsigned)((ipi_data_b & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
-                    DSI2_OBS_FIFO_WORD_CNT_SHIFT),
-         (unsigned)((ipi_data_b & DSI2_OBS_FIFO_EMPTY) != 0),
-         (unsigned)((ipi_event_a & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
-                    DSI2_OBS_FIFO_WORD_CNT_SHIFT),
-         (unsigned)((ipi_event_b & DSI2_OBS_FIFO_WORD_CNT_MASK) >>
-                    DSI2_OBS_FIFO_WORD_CNT_SHIFT),
-         (unsigned)((ipi_event_b & DSI2_OBS_FIFO_EMPTY) != 0),
-         fsm_vid, fsm_ready);
+  /* The controller's own timeout verdict.  err_to_hstxrdy is the hardware
+   * equivalent of "phy_tx_ready never came": it latches when an HS
+   * transmission was requested and PHY_TX_READY was not asserted within
+   * DSI2_TIMEOUT_HSTXRDY_CFG phy_lptx_clk cycles.  If it is CLEAR while the
+   * pixel stream is stalled, the controller never even got as far as
+   * requesting HS -- which moves the fault to whatever feeds it (the SYS
+   * packet builder / IPI FSM), not to the PPI handshake. */
 
-  /* --- Probe H: IPI timing register readback.  The enable_video() path
-   * programs HSA/HBP/HACT/HLINE (phy_hstx_clk cycles) + VSA/VBP/VACT/VFP
-   * (lines).  If any of these read back 0 the IPI video FSM has nothing to
-   * compare the incoming pixel stream against, so it can never decide where
-   * a line's active pixels start/end and thus never emits a video packet --
-   * the pixel stream advances (ipi_busy toggles) but nothing is sent.  This
-   * is the last unverified link for "fb=0xff AND fb=0x00 both black". --- */
+  syslog(LOG_INFO,
+         "vop-scanning: DSI INT_ST_TO=%08x (err_hstx[0]=%u err_hstxrdy[1]=%u "
+         "err_lptxrdy[3]=%u) INT_MASK_TO=%08x INT_ST_PHY=%08x "
+         "[RC: this read consumes them]\n",
+         int_st_to,
+         (unsigned)((int_st_to >> 0) & 1),
+         (unsigned)((int_st_to >> 1) & 1),
+         (unsigned)((int_st_to >> 3) & 1),
+         int_mask_to, int_st_phy);
+
+  /* Core configuration snapshot: a stalled video path is only meaningful if
+   * these are the values we think we programmed. */
+
+  syslog(LOG_INFO,
+         "vop-scanning: DSI PWR_UP=%08x SOFT_RESET=%08x GENERAL_CFG=%08x "
+         "MANUAL_MODE=%08x VCID=%08x\n",
+         rk3576_dsi_getreg(base, RK3576_DSI2_PWR_UP),
+         rk3576_dsi_getreg(base, RK3576_DSI2_SOFT_RESET),
+         rk3576_dsi_getreg(base, RK3576_DSI2_DSI_GENERAL_CFG),
+         rk3576_dsi_getreg(base, RK3576_DSI2_MANUAL_MODE_CFG),
+         rk3576_dsi_getreg(base, RK3576_DSI2_DSI_VCID_CFG));
+  syslog(LOG_INFO,
+         "vop-scanning: DSI TIMEOUT_HSTX=%08x TIMEOUT_HSTXRDY=%08x "
+         "IPI_COLOR=%08x VID_TX_CFG=%08x PIX_PKT=%08x\n",
+         rk3576_dsi_getreg(base, RK3576_DSI2_TIMEOUT_HSTX_CFG),
+         rk3576_dsi_getreg(base, RK3576_DSI2_TIMEOUT_HSTXRDY_CFG),
+         rk3576_dsi_getreg(base, RK3576_DSI2_IPI_COLOR_MAN_CFG),
+         rk3576_dsi_getreg(base, RK3576_DSI2_DSI_VID_TX_CFG),
+         rk3576_dsi_getreg(base, RK3576_DSI2_IPI_PIX_PKT_CFG));
+
+  syslog(LOG_INFO,
+         "vop-scanning: DSI FIFO(min/max/ever/full_hits) over 64 samples "
+         "~2ms:\n");
+  syslog(LOG_INFO,
+         "vop-scanning:   ipi_data  min=%u max=%u ever=%u full_hits=%u\n",
+         (unsigned)fifo_min[0], (unsigned)fifo_max[0],
+         (unsigned)fifo_ever[0], (unsigned)fifo_full[0]);
+  syslog(LOG_INFO,
+         "vop-scanning:   ipi_event min=%u max=%u ever=%u full_hits=%u\n",
+         (unsigned)fifo_min[1], (unsigned)fifo_max[1],
+         (unsigned)fifo_ever[1], (unsigned)fifo_full[1]);
+  syslog(LOG_INFO,
+         "vop-scanning:   phy_txhs  min=%u max=%u ever=%u full_hits=%u "
+         "(ever=0 -> nothing ever left the IPI; max at/near the FIFO depth "
+         "with full_hits>0 -> the PHY is not draining the TX FIFO)\n",
+         (unsigned)fifo_min[2], (unsigned)fifo_max[2],
+         (unsigned)fifo_ever[2], (unsigned)fifo_full[2]);
+
+  /* Decode both FSMs with the TRM's authoritative field layout
+   * (DSI2_OBS_FSM_STATUS): [31:16] current_state_cnt, [12:8]
+   * previous_state, [5] stuck, [4:0] current_state.  cnt saturated at
+   * 0xffff together with stuck=1 is the signature of a wedged FSM.
+   *
+   * Printed with the counter so a genuinely advancing FSM can be told from
+   * one that is merely caught mid-walk, and with a '!' when the two samples
+   * taken 2 us apart disagreed (selector CDC not settled -> discard).
+   */
+
+  {
+    static FAR const char *const names[RK3576_DSI2_NUM_OBS_FSMS] = {
+      "ipi_vid", "ipi_auto_calc", "sys_main", "sys_cmd", "sys_pkt_build",
+      "phy_tx_ready"
+    };
+    char line[224];
+    int n = 0;
+    int s;
+
+    for (s = 0; s < RK3576_DSI2_NUM_OBS_FSMS; s++)
+      {
+        n += snprintf(line + n, sizeof(line) - (size_t)n,
+                      "%s%s=%08x(c=%u st=%u s=%u%s)", s == 0 ? "" : " ",
+                      names[s], (unsigned)fsm[s],
+                      (unsigned)((fsm[s] >> DSI2_OBS_FSM_CNT_SHIFT) & 0xffff),
+                      (unsigned)((fsm[s] & DSI2_OBS_FSM_STUCK) != 0),
+                      (unsigned)(fsm[s] & DSI2_OBS_FSM_STATE_MASK),
+                      fsm_unstable[s] ? "!" : "");
+      }
+
+    syslog(LOG_INFO, "vop-scanning: DSI FSM(all) %s\n", line);
+  }
+
+  /* --- Probe H: IPI timing register readback + self-check.  The
+   * enable_video() path programs HSA/HBP/HACT/HLINE in phy_hstx_clk cycles
+   * (13.16 fixed point) derived from the pixel clock, and
+   * rk3576_mipi_dsi_update_pixel_clock() re-derives them once the VOP's
+   * real dclk is known.  Because those registers only store cycles, a
+   * nominal-vs-actual clock mismatch is INVISIBLE in the raw values; this
+   * probe therefore converts them back to pixels using the clock the driver
+   * currently believes in, so the numbers can be compared directly against
+   * the panel timing (25/26/720/823 for kickpi-k7).
+   *
+   *   - converted values == 25/26/720/823  -> the IPI timing matches the
+   *     pixel clock the driver is using (self-consistent).
+   *   - they are off by the dclk ratio (e.g. HACT ~= 705 instead of 720)
+   *     -> the driver is still on a stale clock; compare "pixel_clk=" here
+   *     against the VOP's dclk_vp0 in the vop-dump line.
+   */
 
   {
     syslog(LOG_INFO,
@@ -1894,6 +2795,49 @@ void rk3576_mipi_dsi_dump_video_status(void)
            rk3576_dsi_getreg(base, RK3576_DSI2_IPI_VID_VBP_MAN_CFG),
            rk3576_dsi_getreg(base, RK3576_DSI2_IPI_VID_VACT_MAN_CFG),
            rk3576_dsi_getreg(base, RK3576_DSI2_IPI_VID_VFP_MAN_CFG));
+
+    {
+      uint32_t pc = priv->timing.pixel_clock;
+      uint32_t hstx = priv->cfg.hs_rate / 16u;
+
+      if (pc != 0 && hstx != 0)
+        {
+          uint32_t hsa = rk3576_dsi_getreg(base,
+                                           RK3576_DSI2_IPI_VID_HSA_MAN_CFG);
+          uint32_t hbp = rk3576_dsi_getreg(base,
+                                           RK3576_DSI2_IPI_VID_HBP_MAN_CFG);
+          uint32_t hact = rk3576_dsi_getreg(base,
+                                            RK3576_DSI2_IPI_VID_HACT_MAN_CFG);
+          uint32_t hline = rk3576_dsi_getreg(base,
+                                             RK3576_DSI2_IPI_VID_HLINE_MAN_CFG);
+          uint32_t ratio = rk3576_dsi_getreg(
+              base, RK3576_DSI2_PHY_IPI_RATIO_MAN_CFG);
+
+          /* The registers hold a 13.16 fixed-point cycle count.  Convert
+           * the WHOLE fixed-point value back to pixels, e.g.
+           *   pixels = reg * pixel_clock / (hstx * 65536)
+           * (truncating the fraction first, as an earlier revision of this
+           * probe did, loses up to 1-2 pixels and prints false mismatches).
+           */
+
+          syslog(LOG_INFO,
+                 "vop-scanning: IPI_TIMING self-check pixel_clk=%u "
+                 "hstx_clk=%u -> HSA=%upx HBP=%upx HACT=%upx HLINE=%upx "
+                 "(panel wants 25/26/720/823) PHY_IPI_RATIO=%08x "
+                 "(expect ~0x%08x for this pixel clock)\n",
+                 (unsigned)pc, (unsigned)hstx,
+                 (unsigned)((((uint64_t)hsa * pc) + ((uint64_t)hstx << 15)) /
+                            ((uint64_t)hstx << 16)),
+                 (unsigned)((((uint64_t)hbp * pc) + ((uint64_t)hstx << 15)) /
+                            ((uint64_t)hstx << 16)),
+                 (unsigned)((((uint64_t)hact * pc) + ((uint64_t)hstx << 15)) /
+                            ((uint64_t)hstx << 16)),
+                 (unsigned)((((uint64_t)hline * pc) + ((uint64_t)hstx << 15)) /
+                            ((uint64_t)hstx << 16)),
+                 ratio,
+                 (unsigned)(((uint64_t)hstx << 16) / (pc / 4u)));
+        }
+    }
   }
 
   /* --- Probe F: PHY lane state.  phy_tx_ready_fsm stuck at INIT means the
@@ -1911,14 +2855,22 @@ void rk3576_mipi_dsi_dump_video_status(void)
 
     syslog(LOG_INFO,
            "vop-scanning: DSI PHY_STATUS=%08x (clk_stopstate[8]=%u "
-           "l0[9]=%u l1[10]=%u l2[11]=%u l3[12]=%u dir[0]=%u)\n",
+           "l0[9]=%u l1[10]=%u l2[11]=%u l3[12]=%u dir[0]=%u "
+           "ulpsactivenot[20:16]=%02x) stopstate_all=%u "
+           "(1 on every lane = the PHY is idle in LP-11 and has NOT left "
+           "stopstate -> no HS burst is in flight at this instant)\n",
            phy_status,
            (unsigned)((phy_status >> 8) & 1),
            (unsigned)((phy_status >> 9) & 1),
            (unsigned)((phy_status >> 10) & 1),
            (unsigned)((phy_status >> 11) & 1),
            (unsigned)((phy_status >> 12) & 1),
-           (unsigned)(phy_status & 1));
+           (unsigned)(phy_status & 1),
+           (unsigned)((phy_status >> 16) & 0x1f),
+           (unsigned)(((phy_status & DSI2_PHY_STATUS_STOPSTATE_MASK) ==
+                       DSI2_PHY_STATUS_STOPSTATE_MASK)
+                          ? 1
+                          : 0));
 
     syslog(LOG_INFO,
            "vop-scanning: DSI PHY_CLK_CFG=%08x "
@@ -1939,45 +2891,118 @@ void rk3576_mipi_dsi_dump_video_status(void)
   rk3576_dsi_putreg(base, RK3576_DSI2_OBS_FSM_STATUS_SEL,
                     DSI2_OBS_FSM_SEL_IPI_VID);
 
-  /* --- Probe G: is the clock lane REALLY stuck in HS, or just sampled
-   * during HACT?  Sample phy_clk_stopstate (and data-lane stopstate)
-   * repeatedly across ~1 frame (16.6 ms @ 60 Hz) so we cross several
-   * HACT(window in HS, stopstate=0) and blanking(window in LP-11,
-   * stopstate=1) phases.  If the bits toggle 0<->1 periodically the clock
-   * lane is fine and the black screen is NOT a PHY LP-11 problem; if they
-   * stay 0 forever the clock lane is genuinely stuck in HS. --- */
+  /* --- Probe I: DCPHY state.  Everything above lives in the DSI *host*;
+   * this dumps the PHY that actually drives the wires: PLL dividers (i.e.
+   * the real lane rate), per-lane enable/ready, the HS drive-strength code
+   * (clock lane 52 ohm vs data lanes 39 ohm) and all LP/HS timing counters
+   * plus the escape-clock divider.  A wrong T_HS_EXIT / T_HS_TRAIL /
+   * escape-clock value is what prevents a lane from returning to LP-11,
+   * which is precisely the "all lanes stuck out of stopstate" symptom seen
+   * while the pixel stream is clearly flowing.  Read-only. --- */
+
+  rk3576_dcphy_dump();
+
+  /* --- Probe G: is the clock/data lane REALLY stuck in HS, or just sampled
+   * during HACT?
+   *
+   * Sampling layout matters here.  With clk_type=1 (non-continuous) and
+   * every blk_*_hs_en=0, the clock lane MUST return to LP-11 during every
+   * line's blanking interval, i.e. it is in LP-11 for roughly
+   * (htotal - hactive)/htotal = (823-720)/823 = 12.5% of the time.  The IPI
+   * is fed at dclk/4 = 15.6 MHz and a line is 823 pixels, so a line lasts
+   * ~52.6 us -- a 400 us sampling grid ALIASES against that (it lands at
+   * nearly the same phase every 8th line), which is exactly how a healthy
+   * toggling lane can read back as "high=0 toggles=0" and be mistaken for a
+   * fault.  Sample densely (5 us steps) over ~4 ms instead, and count the
+   * *data* lane stopstates too: a genuinely framed video stream drives
+   * data lanes out of LP-11 during HACT and back for blanking, so all four
+   * lanes showing the same toggle behaviour as the clock lane is the
+   * healthy signature.
+   *
+   * Decisive readings (clk_high counts samples in which the clock lane
+   * stopstate bit was SET, i.e. the lane was in LP-11):
+   *   0 < clk_high < samples && toggles > 0
+   *                             -> the clock lane cycles LP-11 <-> HS as a
+   *                                non-continuous video clock must: the PHY
+   *                                is genuinely transmitting.
+   *   clk_high == 0              -> never seen in LP-11: the lane is stuck
+   *                                in HS (or the PPI read path is dead).
+   *   clk_high == samples        -> ALWAYS in LP-11: the lane never left
+   *                                stopstate, i.e. NOT ONE HS burst has
+   *                                been sent in the whole window.  This is
+   *                                the mirror image of the case above and
+   *                                an earlier revision of this probe
+   *                                mislabelled it as "healthy toggle".
+   *                                An ideal non-continuous clock lane sits
+   *                                in LP-11 for only
+   *                                (htotal-hactive)/htotal = 12.5% of the
+   *                                time, so ~samples/8 hits are expected.
+   */
 
   {
-    uint32_t last = rk3576_dsi_getreg(base, RK3576_DSI2_PHY_STATUS);
-    uint32_t toggles = 0;
     uint32_t clk_high = 0;
+    uint32_t clk_toggles = 0;
+    uint32_t last_clk = rk3576_dsi_getreg(base, RK3576_DSI2_PHY_STATUS);
+    uint32_t lane_high[4] = { 0, 0, 0, 0 };
     uint32_t samples = 0;
     int n;
+    int i;
 
-    for (n = 0; n < 40; n++)
+    for (n = 0; n < 800; n++)
       {
         uint32_t cur = rk3576_dsi_getreg(base, RK3576_DSI2_PHY_STATUS);
 
         samples++;
+
         if (cur & DSI2_PHY_STATUS_PHY_CLK_STOPSTATE)
           {
             clk_high++;
           }
 
-        if ((cur ^ last) & DSI2_PHY_STATUS_PHY_CLK_STOPSTATE)
+        if ((cur ^ last_clk) & DSI2_PHY_STATUS_PHY_CLK_STOPSTATE)
           {
-            toggles++;
+            clk_toggles++;
           }
 
-        last = cur;
-        up_udelay(400); /* ~40 samples * 0.4ms = 16ms = ~1 frame */
+        last_clk = cur;
+
+        for (i = 0; i < 4; i++)
+          {
+            if (cur & (DSI2_PHY_STATUS_PHY_L0_STOPSTATE << i))
+              {
+                lane_high[i]++;
+              }
+          }
+
+        up_udelay(5); /* 800 * 5us = 4 ms ~ 76 video lines */
       }
 
     syslog(LOG_INFO,
            "dsi-probe-G: clk_stopstate sampled=%u high=%u toggles=%u "
-           "(toggle>0 = clock lane cycles LP-11 normally; all-0 = stuck HS)\n",
-           samples, clk_high, toggles);
+           "(expected ~%u hits if the clock lane really cycles HS/LP-11; "
+           "high=0 -> stuck in HS, high=samples -> NEVER left LP-11, "
+           "i.e. no HS burst was ever sent)\n",
+           samples, clk_high, clk_toggles, (unsigned)(samples / 8u));
+
+    syslog(LOG_INFO,
+           "dsi-probe-G: data_lane_stopstate_high l0=%u l1=%u l2=%u l3=%u "
+           "(of %u samples; expected ~%u: data lanes leave LP-11 only for "
+           "the active line.  ==samples on all four = the data lanes never "
+           "transmitted either)\n",
+           (unsigned)lane_high[0], (unsigned)lane_high[1],
+           (unsigned)lane_high[2], (unsigned)lane_high[3], samples,
+           (unsigned)(samples / 8u));
   }
+
+  /* --- Sweep: the decisive experiment.  Everything above describes the
+   * board's configured video mode; this section MEASURES the alternative
+   * (mode_type, clk_type) combinations to find out which one lets the PHY
+   * lanes cycle back to LP-11.  Must run last, because it temporarily
+   * leaves Video mode. --- */
+
+#if RK3576_DSI_VIDEO_MODE_SWEEP
+  rk3576_dsi_video_mode_sweep();
+#endif
 }
 
 /****************************************************************************
