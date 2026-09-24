@@ -3025,6 +3025,11 @@ static void rk3576_clk_register_dcphy(void)
  *   dclk_vp0 is the pixel clock that drives the MIPI DSI host IPI (video
  *   mode); its rate = hs_rate * lanes / bpp.
  *
+ *   The three dclk_vpN_src_sel muxes are registered with
+ *   CLK_MUX_SET_RATE_NO_REPARENT and without CLK_SET_RATE_PARENT, so a
+ *   pixel-clock clk_set_rate() can neither reparent them onto clk_lpll nor
+ *   reprogram that PLL.  See the note at dclk_vp_src_parents below.
+ *
  *   Below the TRM mux names are mapped to the CLK-framework clock names:
  *     clk_gpll_mux/clk_cpll_mux/clk_aupll_mux -> clk_gpll/clk_cpll/clk_aupll
  *     clk_lpll_src -> clk_lpll
@@ -3086,6 +3091,28 @@ static void rk3576_clk_register_vop(void)
 
   /* dclk_vpx_src 3-bit mux parents (CLKSEL_CON145/146/147 [10:8]).
    * Identical for vp0/vp1/vp2.
+   *
+   * These muxes MUST be registered with CLK_MUX_SET_RATE_NO_REPARENT and
+   * WITHOUT CLK_SET_RATE_PARENT.  Otherwise a clk_set_rate(dclk_vpN, ...)
+   * silently hijacks them onto clk_lpll and reprograms the PLL:
+   *
+   *   clk_mux_determine_rate() re-scans EVERY parent on each clk_set_rate()
+   *   unless CLK_MUX_SET_RATE_NO_REPARENT is set -- it ignores the currently
+   *   selected parent.  clk_lpll is the only parent here whose ops expose
+   *   round_rate()/set_rate() (g_rk3576_fracpll_configurable_ops, needed by
+   *   the LIT-core CPU-frequency helper), so it is the only parent the
+   *   framework can "negotiate" with.  For a 64 MHz pixel clock the divider's
+   *   best-divider search reaches div=24, where the exact LPLL table entry
+   *   1536 MHz (m=256/p=2/s=1) yields 1536/24 = 64.0 MHz -- better than
+   *   clk_gpll's 1188/19 = 62.5 MHz -- so the mux reparents onto LPLL, and
+   *   because CLK_SET_RATE_PARENT propagated the request one level further,
+   *   rk3576_fracpll_set_rate() then REPROGRAMS LPLL.  Net effect: bringing
+   *   up the display used to change the LIT-core CPU frequency.
+   *
+   * With NO_REPARENT the mux stays on the source explicitly selected by
+   * rk3576_vop_reparent_clocks() (clk_gpll); with CLK_SET_RATE_PARENT absent
+   * the request is never propagated into any PLL, so the divider below it
+   * still negotiates its own value (64 MHz -> 63 MHz from GPLL, ~1.6% off).
    */
 
   static const char *dclk_vp_src_parents[] = {
@@ -3230,12 +3257,17 @@ static void rk3576_clk_register_vop(void)
   /* --- Video-port pixel clocks (dclk_vp0/1/2) --- */
 
   /* dclk_vp0: src mux/div (CON145) -> gate (CON61[10]) -> final select
-   * (CON147[11]) -> gate (CON61[13]). */
+   * (CON147[11]) -> gate (CON61[13]).
+   *
+   * The src_sel mux is pinned to its current source (no reparent, no rate
+   * propagation into the PLL) -- see the dclk_vp_src_parents note above.
+   */
 
   clk = clk_register_mux(
       "dclk_vp0_src_sel", dclk_vp_src_parents, nitems(dclk_vp_src_parents),
-      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-      cru + RK3576_CRU_CLKSEL_CON(145), 8, 3, CLK_MUX_HIWORD_MASK);
+      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(145), 8, 3,
+      CLK_MUX_HIWORD_MASK | CLK_MUX_SET_RATE_NO_REPARENT);
   _assert_registered(clk);
 
   clk = clk_register_divider(
@@ -3265,12 +3297,17 @@ static void rk3576_clk_register_vop(void)
   _assert_registered(clk);
 
   /* dclk_vp1: src mux/div (CON146) -> gate (CON61[11]) -> final select
-   * (CON147[12]) -> gate (CON62[0]). */
+   * (CON147[12]) -> gate (CON62[0]).
+   *
+   * The src_sel mux is pinned to its current source -- see the
+   * dclk_vp_src_parents note above.
+   */
 
   clk = clk_register_mux(
       "dclk_vp1_src_sel", dclk_vp_src_parents, nitems(dclk_vp_src_parents),
-      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-      cru + RK3576_CRU_CLKSEL_CON(146), 8, 3, CLK_MUX_HIWORD_MASK);
+      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(146), 8, 3,
+      CLK_MUX_HIWORD_MASK | CLK_MUX_SET_RATE_NO_REPARENT);
   _assert_registered(clk);
 
   clk = clk_register_divider(
@@ -3300,12 +3337,17 @@ static void rk3576_clk_register_vop(void)
   _assert_registered(clk);
 
   /* dclk_vp2: src mux/div (CON147) -> gate (CON61[12]) -> final select
-   * (CON147[13]) -> gate (CON62[1]). */
+   * (CON147[13]) -> gate (CON62[1]).
+   *
+   * The src_sel mux is pinned to its current source -- see the
+   * dclk_vp_src_parents note above.
+   */
 
   clk = clk_register_mux(
       "dclk_vp2_src_sel", dclk_vp_src_parents, nitems(dclk_vp_src_parents),
-      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-      cru + RK3576_CRU_CLKSEL_CON(147), 8, 3, CLK_MUX_HIWORD_MASK);
+      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(147), 8, 3,
+      CLK_MUX_HIWORD_MASK | CLK_MUX_SET_RATE_NO_REPARENT);
   _assert_registered(clk);
 
   clk = clk_register_divider(
