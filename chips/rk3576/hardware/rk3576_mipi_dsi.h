@@ -258,11 +258,11 @@
  * FIFO observation word convention is the 16-bit count in [31:16] and the
  * status flags in bits [4:0], read-only. */
 
-#define DSI2_OBS_FIFO_EMPTY        (1u << 0)  /* FIFO is empty */
-#define DSI2_OBS_FIFO_ALMOST_EMPTY (1u << 1)  /* FIFO is almost empty */
-#define DSI2_OBS_FIFO_HALF_FULL    (1u << 2)  /* FIFO is at least half full */
-#define DSI2_OBS_FIFO_ALMOST_FULL  (1u << 3)  /* FIFO is almost full */
-#define DSI2_OBS_FIFO_FULL         (1u << 4)  /* FIFO is full */
+#define DSI2_OBS_FIFO_EMPTY          (1u << 0) /* FIFO is empty */
+#define DSI2_OBS_FIFO_ALMOST_EMPTY   (1u << 1) /* FIFO is almost empty */
+#define DSI2_OBS_FIFO_HALF_FULL      (1u << 2) /* FIFO is at least half full */
+#define DSI2_OBS_FIFO_ALMOST_FULL    (1u << 3) /* FIFO is almost full */
+#define DSI2_OBS_FIFO_FULL           (1u << 4) /* FIFO is full */
 #define DSI2_OBS_FIFO_WORD_CNT_SHIFT (16)
 #define DSI2_OBS_FIFO_WORD_CNT_MASK  (0xffffu << DSI2_OBS_FIFO_WORD_CNT_SHIFT)
 
@@ -282,18 +282,18 @@
  * reliable "wedged FSM" signature.  Read-only.
  */
 
-#define DSI2_OBS_FSM_CNT_SHIFT         (16)
-#define DSI2_OBS_FSM_CNT_MASK          (0xffffu << DSI2_OBS_FSM_CNT_SHIFT)
-#define DSI2_OBS_FSM_PREV_STATE_SHIFT  (8)
-#define DSI2_OBS_FSM_PREV_STATE_MASK   (0x1fu << DSI2_OBS_FSM_PREV_STATE_SHIFT)
-#define DSI2_OBS_FSM_STUCK_SHIFT       (5)
-#define DSI2_OBS_FSM_STUCK             (1u << DSI2_OBS_FSM_STUCK_SHIFT)
-#define DSI2_OBS_FSM_CUR_STATE_SHIFT   (0)
-#define DSI2_OBS_FSM_CUR_STATE_MASK    (0x1fu << DSI2_OBS_FSM_CUR_STATE_SHIFT)
+#define DSI2_OBS_FSM_CNT_SHIFT        (16)
+#define DSI2_OBS_FSM_CNT_MASK         (0xffffu << DSI2_OBS_FSM_CNT_SHIFT)
+#define DSI2_OBS_FSM_PREV_STATE_SHIFT (8)
+#define DSI2_OBS_FSM_PREV_STATE_MASK  (0x1fu << DSI2_OBS_FSM_PREV_STATE_SHIFT)
+#define DSI2_OBS_FSM_STUCK_SHIFT      (5)
+#define DSI2_OBS_FSM_STUCK            (1u << DSI2_OBS_FSM_STUCK_SHIFT)
+#define DSI2_OBS_FSM_CUR_STATE_SHIFT  (0)
+#define DSI2_OBS_FSM_CUR_STATE_MASK   (0x1fu << DSI2_OBS_FSM_CUR_STATE_SHIFT)
 
 /* Convenience aliases used by the probe decode. */
 
-#define DSI2_OBS_FSM_STATE_MASK        DSI2_OBS_FSM_CUR_STATE_MASK
+#define DSI2_OBS_FSM_STATE_MASK DSI2_OBS_FSM_CUR_STATE_MASK
 
 /* -----------------------------------------------------------------------
  * DSI2_MANUAL_MODE_CFG (0x0024)
@@ -342,12 +342,12 @@
  * -----------------------------------------------------------------------
  */
 
-#define DSI2_PHY_STATUS_PHY_DIRECTION    (1u << 0)  /* 0=TX, 1=RX */
-#define DSI2_PHY_STATUS_PHY_CLK_STOPSTATE  (1u << 8)
-#define DSI2_PHY_STATUS_PHY_L0_STOPSTATE   (1u << 9)
-#define DSI2_PHY_STATUS_PHY_L1_STOPSTATE   (1u << 10)
-#define DSI2_PHY_STATUS_PHY_L2_STOPSTATE   (1u << 11)
-#define DSI2_PHY_STATUS_PHY_L3_STOPSTATE   (1u << 12)
+#define DSI2_PHY_STATUS_PHY_DIRECTION     (1u << 0) /* 0=TX, 1=RX */
+#define DSI2_PHY_STATUS_PHY_CLK_STOPSTATE (1u << 8)
+#define DSI2_PHY_STATUS_PHY_L0_STOPSTATE  (1u << 9)
+#define DSI2_PHY_STATUS_PHY_L1_STOPSTATE  (1u << 10)
+#define DSI2_PHY_STATUS_PHY_L2_STOPSTATE  (1u << 11)
+#define DSI2_PHY_STATUS_PHY_L3_STOPSTATE  (1u << 12)
 
 /* phy_stopstate[12:8] of every clock/data lane; 1 = the lane is in the
  * LP-11 stop state.  For a NON-continuous clock lane running video the
@@ -355,11 +355,11 @@
  * window that reads this mask as "always 1" means the PHY never left LP-11
  * at all (no HS burst has ever been sent). */
 
-#define DSI2_PHY_STATUS_STOPSTATE_MASK      (0x1fu << 8)
+#define DSI2_PHY_STATUS_STOPSTATE_MASK (0x1fu << 8)
 
 /* phy_[clk,l0..l3]_ulpsactivenot[20:16]; 1 = the lane is NOT in ULPS. */
 
-#define DSI2_PHY_STATUS_ULPSACTIVENOT_MASK  (0x1fu << 16)
+#define DSI2_PHY_STATUS_ULPSACTIVENOT_MASK (0x1fu << 16)
 
 /* -----------------------------------------------------------------------
  * DSI2_DSI_GENERAL_CFG (0x0200)
@@ -479,10 +479,10 @@
 
 #define RK3576_VO0_GRF_SOC_CON10_OFF   0x0028
 
-#define RK3576_VO0_GRF_IPI_GATING_EN   (1u << 0)  /* IPI memory clk gating */
-#define RK3576_VO0_GRF_TXREQCLKHS_MASK (1u << 1)  /* deskew request mask */
-#define RK3576_VO0_GRF_IPI_COLORM      (1u << 2)  /* IPI color mode */
-#define RK3576_VO0_GRF_IPI_SHUTDN      (1u << 3)  /* IPI shutdown */
+#define RK3576_VO0_GRF_IPI_GATING_EN   (1u << 0)   /* IPI memory clk gating */
+#define RK3576_VO0_GRF_TXREQCLKHS_MASK (1u << 1)   /* deskew request mask */
+#define RK3576_VO0_GRF_IPI_COLORM      (1u << 2)   /* IPI color mode */
+#define RK3576_VO0_GRF_IPI_SHUTDN      (1u << 3)   /* IPI shutdown */
 #define RK3576_VO0_GRF_IPI_FORMAT_MASK (0xfu << 4) /* IPI pixel format */
 #define RK3576_VO0_GRF_IPI_FORMAT_DSC  (0x1u << 4) /* DSC-compressed */
 #define RK3576_VO0_GRF_IPI_DEPTH_MASK  (0xfu << 8) /* IPI color depth */
@@ -494,9 +494,9 @@
  *   RGB565 -> 5-6-5 -> 0x2
  */
 
-#define RK3576_VO0_GRF_IPI_DEPTH_8     (0x5u << 8)
-#define RK3576_VO0_GRF_IPI_DEPTH_6     (0x3u << 8)
-#define RK3576_VO0_GRF_IPI_DEPTH_565   (0x2u << 8)
+#define RK3576_VO0_GRF_IPI_DEPTH_8   (0x5u << 8)
+#define RK3576_VO0_GRF_IPI_DEPTH_6   (0x3u << 8)
+#define RK3576_VO0_GRF_IPI_DEPTH_565 (0x2u << 8)
 
 /* VO0_GRF_SOC_CON9 (0x0024) — data-source routing between VOP / EBC / the
  * display IPs.  The MIPI IPI source select is the decisive bit for "VOP is
@@ -504,20 +504,20 @@
  * (embedded-bridge controller) ipi instead of the VOP MIPI ipi, the pixel
  * stream never reaches DSI2. */
 
-#define RK3576_VO0_GRF_SOC_CON9_OFF    0x0024
-#define RK3576_VO0_GRF_MIPI_CH_SEL     (1u << 8) /* 0=VOP MIPI ipi, 1=EBC ipi */
-#define RK3576_VO0_GRF_HDMI_CH_SEL     (1u << 9) /* 0=EDP, 1=VOP (HDMI) */
-#define RK3576_VO0_GRF_EDP_CH_SEL      (1u << 10) /* 0=VOP, 1=EBC (EDP) */
+#define RK3576_VO0_GRF_SOC_CON9_OFF 0x0024
+#define RK3576_VO0_GRF_MIPI_CH_SEL  (1u << 8)  /* 0=VOP MIPI ipi, 1=EBC ipi */
+#define RK3576_VO0_GRF_HDMI_CH_SEL  (1u << 9)  /* 0=EDP, 1=VOP (HDMI) */
+#define RK3576_VO0_GRF_EDP_CH_SEL   (1u << 10) /* 0=VOP, 1=EBC (EDP) */
 
 /* VO0_GRF_SOC_CON13 (0x0034) — EBC-to-DSIHOST/dclk gating and MIPI mode.
  * These gates can disconnect the dclk/pixel path into the DSI host. */
 
-#define RK3576_VO0_GRF_SOC_CON13_OFF               0x0034
-#define RK3576_VO0_GRF_EBC_DCLK2DSIHOST_DISABLE    (1u << 9)
-#define RK3576_VO0_GRF_SW_MIPI_MODE               (1u << 3)
-#define RK3576_VO0_GRF_SW_MIPI_HSYNC_POL          (1u << 2)
-#define RK3576_VO0_GRF_SW_MIPI_VSYNC_POL          (1u << 1)
-#define RK3576_VO0_GRF_SW_MIPI_1TO4_EN            (1u << 0)
+#define RK3576_VO0_GRF_SOC_CON13_OFF            0x0034
+#define RK3576_VO0_GRF_EBC_DCLK2DSIHOST_DISABLE (1u << 9)
+#define RK3576_VO0_GRF_SW_MIPI_MODE             (1u << 3)
+#define RK3576_VO0_GRF_SW_MIPI_HSYNC_POL        (1u << 2)
+#define RK3576_VO0_GRF_SW_MIPI_VSYNC_POL        (1u << 1)
+#define RK3576_VO0_GRF_SW_MIPI_1TO4_EN          (1u << 0)
 
 /* Hiword write-enable mask for GRF (bit 16+N enables low bit N). */
 

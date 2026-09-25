@@ -156,9 +156,8 @@
  *   PLL_ENABLE_SEL [8] : 0 = enable PLL buffering when PLL_EN is set;
  *                         1 = enable when ENABLE(GNR_CON0[0]) is set.
  *
- * The Rockchip reference driver (phy-rockchip-samsung-dcphy.c) always
- * programs RESET_N_SEL | PLL_ENABLE_SEL to tie PLL gate/reset to the
- * ENABLE phase; keep the same value for alignment.
+ * Both bits are set, which ties the PLL gate/reset to the
+ * ENABLE phase.
  * -----------------------------------------------------------------------
  */
 
@@ -169,8 +168,7 @@
  * PLL_CON7 (0x011C) — PLL_LOCK_CNT [15:0]
  *   TRM 21.6.3 step (4): the PLL lock counter counts up after PLL_EN is
  *   set and PLL_LOCK (PLL_STAT0[0]) is asserted when it reaches this
- *   value.  Roughly 200us is needed to lock; 0xf000 matches the Rockchip
- *   reference driver.
+ *   value.  Roughly 200us is needed to lock, which 0xf000 provides.
  * -----------------------------------------------------------------------
  */
 
@@ -179,7 +177,7 @@
 /* -----------------------------------------------------------------------
  * PLL_CON8 (0x0120) — PLL_STB_CNT [15:0]
  *   PLL stabilization counter (frequency-hop / stabilization timing).
- *   0xf000 matches the Rockchip reference driver.
+ *   0xf000 is the value used here.
  * -----------------------------------------------------------------------
  */
 
@@ -201,8 +199,9 @@
 #define DCPHY_GNR_CON0_PHY_READY (1u << 1)
 
 /* GNR_CON1 = T_PHY_READY: the PHY_READY handshake timeout, in cycles.
- * The reference driver (samsung_mipi_dphy_lane_enable) programs 0x2000 on
- * the clock lane and on every data lane; the reset value 0 is not a state
+ * 0x2000 is programmed on the clock lane and on every data lane; the reset
+ * value 0
+ * is not a state
  * the handshake is specified for.
  */
 
@@ -221,7 +220,7 @@
  *   [3:0]   RES_DN        = driver-down resistor code
  *
  * The resistor code is NOT the same for the clock and data lanes:
- * reference pdata for RK3576 (rk3576_dphy_hs_drv_res_cfg) uses 52 ohm
+ * RK3576 uses 52 ohm
  * (code 0x3) for the clock lane but 39 ohm (code 0xe) for the data lanes.
  * The two encodings therefore differ:
  *
@@ -241,8 +240,7 @@
  *
  * The timing values depend on the lane high-speed data rate and are
  * looked up from a table indexed by lane Mbps (see the DCPHY driver).
- * Field encodings follow the MIPI D-PHY Supplement Guide and match the
- * Rockchip reference driver.
+ * Field encodings follow the MIPI D-PHY Supplement Guide.
  * -----------------------------------------------------------------------
  */
 

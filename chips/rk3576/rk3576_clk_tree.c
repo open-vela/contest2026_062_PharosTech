@@ -3263,11 +3263,11 @@ static void rk3576_clk_register_vop(void)
    * propagation into the PLL) -- see the dclk_vp_src_parents note above.
    */
 
-  clk = clk_register_mux(
-      "dclk_vp0_src_sel", dclk_vp_src_parents, nitems(dclk_vp_src_parents),
-      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-      cru + RK3576_CRU_CLKSEL_CON(145), 8, 3,
-      CLK_MUX_HIWORD_MASK | CLK_MUX_SET_RATE_NO_REPARENT);
+  clk = clk_register_mux("dclk_vp0_src_sel", dclk_vp_src_parents,
+                         nitems(dclk_vp_src_parents),
+                         CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                         cru + RK3576_CRU_CLKSEL_CON(145), 8, 3,
+                         CLK_MUX_HIWORD_MASK | CLK_MUX_SET_RATE_NO_REPARENT);
   _assert_registered(clk);
 
   clk = clk_register_divider(
@@ -3303,11 +3303,11 @@ static void rk3576_clk_register_vop(void)
    * dclk_vp_src_parents note above.
    */
 
-  clk = clk_register_mux(
-      "dclk_vp1_src_sel", dclk_vp_src_parents, nitems(dclk_vp_src_parents),
-      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-      cru + RK3576_CRU_CLKSEL_CON(146), 8, 3,
-      CLK_MUX_HIWORD_MASK | CLK_MUX_SET_RATE_NO_REPARENT);
+  clk = clk_register_mux("dclk_vp1_src_sel", dclk_vp_src_parents,
+                         nitems(dclk_vp_src_parents),
+                         CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                         cru + RK3576_CRU_CLKSEL_CON(146), 8, 3,
+                         CLK_MUX_HIWORD_MASK | CLK_MUX_SET_RATE_NO_REPARENT);
   _assert_registered(clk);
 
   clk = clk_register_divider(
@@ -3343,11 +3343,11 @@ static void rk3576_clk_register_vop(void)
    * dclk_vp_src_parents note above.
    */
 
-  clk = clk_register_mux(
-      "dclk_vp2_src_sel", dclk_vp_src_parents, nitems(dclk_vp_src_parents),
-      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
-      cru + RK3576_CRU_CLKSEL_CON(147), 8, 3,
-      CLK_MUX_HIWORD_MASK | CLK_MUX_SET_RATE_NO_REPARENT);
+  clk = clk_register_mux("dclk_vp2_src_sel", dclk_vp_src_parents,
+                         nitems(dclk_vp_src_parents),
+                         CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                         cru + RK3576_CRU_CLKSEL_CON(147), 8, 3,
+                         CLK_MUX_HIWORD_MASK | CLK_MUX_SET_RATE_NO_REPARENT);
   _assert_registered(clk);
 
   clk = clk_register_divider(

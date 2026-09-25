@@ -380,9 +380,8 @@ rk3576_dcphy_dphy_timing_lookup(uint32_t lane_mbps)
     /* {max_mbps, clk_prep, clk_zero, clk_post, clk_trail,
      *  hs_prep, hs_zero, hs_trail, lpx, hs_exit}
      *
-     * Values are taken verbatim from the Rockchip reference driver
-     * phy-rockchip-samsung-dcphy.c (samsung_mipi_dphy_timing_table).  That
-     * table has an 11th per-entry field "hs_settle" which the D-PHY TX path
+     * WARNING: the D-PHY timing table has an 11th per-entry field
+     * "hs_settle" in some transcriptions, which the D-PHY TX path
      * does NOT program (it is RX-settle-only); it must NOT be confused with
      * hs_exit here.  The previous hand-authored values had hs_exit (T_HS_EXIT,
      * the clock lane HS->LP-11 exit time, panel Table 46 THS-EXIT ~100ns)
@@ -390,17 +389,15 @@ rk3576_dcphy_dphy_timing_lookup(uint32_t lane_mbps)
      * which kept the clock lane from ever returning to LP-11: clk_stopstate
      * stayed 0, phy_tx_ready FSM stuck at INIT, all-black video.
      *
-     * NOTE: this is a PARTIAL transcription -- only the 100 Mbps-decade rows
-     * are carried, whereas the reference table is dense at every 10 Mbps.
-     * The "first bound >= lane_mbps" rule below therefore lands one bin high
-     * whenever the rate falls between two transcribed rows (384 Mbps picks
-     * the 400 row here, where the reference's dense table picks its 390
-     * row).  The resulting difference is a single counter LSB in t_lpx /
+     * NOTE: this is a PARTIAL table -- only the 100 Mbps-decade rows
+     * are carried.  The "first bound >= lane_mbps" rule below therefore lands
+     * one bin high whenever the rate falls between two rows (384 Mbps picks
+     * the 400 row).  The resulting difference is a single counter LSB in
+     * t_lpx /
      * t_clk_zero / t_hs_trail, i.e. a few nanoseconds, so it is not a
-     * plausible cause of a dead TX path; rk3576_dcphy_dump() prints the row
-     * that was actually selected so every log states it.  If a panel ever
-     * lands on a boundary where this matters, transcribe the full dense
-     * table rather than guessing.
+     * plausible cause of a dead TX path.  If a panel ever
+     * lands on a boundary where this matters, add the missing rows rather
+     * than guessing.
      */
     { 100, 3, 0, 0, 29, 5, 0, 22, 2, 0 },
     { 200, 7, 1, 0, 33, 9, 0, 26, 5, 0 },
@@ -411,8 +408,8 @@ rk3576_dcphy_dphy_timing_lookup(uint32_t lane_mbps)
     { 1000, 39, 16, 3, 60, 40, 6, 53, 29, 5 },
     { 1250, 49, 20, 5, 68, 49, 8, 62, 37, 7 },
 
-    /* Reference row {1500, 7, 24, 6, 7, 7, 10, 6, 5, 10, 7}: the 10th field
-     * is hs_exit = 10, NOT the 11th (hs_settle = 7) that stood here before.
+    /* Same row: the 10th field is hs_exit = 10, NOT the 11th (hs_settle = 7)
+     * that stood here before.
      * Identical failure mode to the original hs_exit bug -- reading
      * hs_settle as hs_exit -- so it is called out explicitly. */
 
@@ -462,9 +459,7 @@ static void rk3576_dcphy_configure_pll(struct rk3576_dcphy_s *priv)
                       ((uint32_t)priv->pll.m << DCPHY_PLL_CON2_M_SHIFT) &
                           DCPHY_PLL_CON2_M_MASK);
 
-  /* PLL gate/reset source select: tie to the ENABLE phase (matches the
-   * Rockchip reference driver phy-rockchip-samsung-dcphy.c).
-   */
+  /* PLL gate/reset source select: tie to the ENABLE phase. */
 
   rk3576_dcphy_putreg(base, RK3576_DCPHY_PLL_CON5,
                       DCPHY_PLL_CON5_RESET_N_SEL |
@@ -472,7 +467,7 @@ static void rk3576_dcphy_configure_pll(struct rk3576_dcphy_s *priv)
 
   /* PLL lock / stabilization counters (TRM 21.6.3 step 4).  Reset values
    * are 0, which would assert PLL_LOCK immediately and skip the ~200us
-   * PLL stabilization window; program them like the reference driver so
+   * PLL stabilization window; program them so
    * the shared clocks (incl. M_TXWORDCLKHS) are truly stable before use.
    */
 
@@ -501,8 +496,7 @@ static void rk3576_dcphy_configure_tx_clock_lane(struct rk3576_dcphy_s *priv,
 
   rk3576_dcphy_putreg(base, RK3576_DCPHY_MC_GNR_CON0, 0xf000);
 
-  /* GNR_CON1 = T_PHY_READY timeout.  The reference driver
-   * (samsung_mipi_dphy_lane_enable) programs T_PHY_READY(0x2000) for the
+  /* GNR_CON1 = T_PHY_READY timeout.  T_PHY_READY(0x2000) is programmed for the
    * clock lane as well as every data lane; leaving it at the reset value 0
    * gives the PHY_READY handshake a zero-cycle budget, which is not a state
    * the hardware is specified for.
@@ -514,9 +508,9 @@ static void rk3576_dcphy_configure_tx_clock_lane(struct rk3576_dcphy_s *priv,
   rk3576_dcphy_putreg(base, RK3576_DCPHY_MC_ANA_CON0,
                       RK3576_DCPHY_ANA_CON0_CLK_LANE);
 
-  /* ANA_CON1 = 0x0001 is only programmed by the reference driver when the
-   * lane rate is >= 4500 Mbps (see samsung_mipi_dphy_clk_lane_timing_init);
-   * at the panel rates used here (<= 400 Mbps) it must stay at reset.
+  /* ANA_CON1 = 0x0001 is only programmed when the
+   * lane rate is >= 4500 Mbps; at the panel rates used here
+   * (<= 400 Mbps) it must stay at reset.
    */
 
   if (lane_mbps >= 4500)
@@ -874,8 +868,7 @@ int rk3576_dcphy_power_on(uint8_t lanes, bool dphy, uint32_t hs_rate)
   /* After releasing M_RESETN, the initial deskew calibration (TSKEWCAL)
    * runs for up to ~100us; wait for it to settle before the DSI host
    * starts issuing commands, otherwise the TX HS state machine lacks a
-   * stable clock.  Matches the reference driver's usleep_range(100,110)
-   * following reset deassert.
+   * stable clock.
    */
 
   up_udelay(150);
@@ -956,169 +949,6 @@ bool rk3576_dcphy_is_ready(void)
 
   nxmutex_unlock(&priv->lock);
   return ready;
-}
-
-/****************************************************************************
- * Name: rk3576_dcphy_dump
- ****************************************************************************/
-
-void rk3576_dcphy_dump(void)
-{
-  struct rk3576_dcphy_s *priv = &g_dcphy;
-  uintptr_t base = priv->base;
-  uint32_t con0;
-  uint32_t con1;
-  uint32_t con2;
-  uint32_t mc_time0;
-  uint32_t mc_time2;
-  uint32_t md_time0;
-  uint32_t md_time2;
-
-  if (!priv->initialized)
-    {
-      return;
-    }
-
-  con0 = rk3576_dcphy_getreg(base, RK3576_DCPHY_PLL_CON0);
-  con1 = rk3576_dcphy_getreg(base, RK3576_DCPHY_PLL_CON1);
-  con2 = rk3576_dcphy_getreg(base, RK3576_DCPHY_PLL_CON2);
-
-  syslog(LOG_INFO,
-         "dcphy-dump: PLL_CON0=%08x (pll_en[12]=%u s[10:8]=%u p[5:0]=%u) "
-         "PLL_CON1(k)=%08x PLL_CON2(m[9:0])=%u PLL_STAT0=%08x (lock[0]=%u)\n",
-         con0, (unsigned)((con0 >> 12) & 1), (unsigned)((con0 >> 8) & 7),
-         (unsigned)(con0 & 0x3f), con1, (unsigned)(con2 & 0x3ff),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_PLL_STAT0),
-         (unsigned)(rk3576_dcphy_getreg(base, RK3576_DCPHY_PLL_STAT0) & 1));
-
-  /* Recompute the PLL output from the live dividers so the actual lane rate
-   * can be compared with the requested one (384 Mbps for kickpi-k7).
-   *   Fvco = ((M + K/65536) * 2 * Fin) / P ;  Fout = Fvco / 2^S
-   */
-
-  {
-    uint64_t m = con2 & 0x3ff;
-    int32_t k = (int16_t)(con1 & 0xffff);
-    uint64_t p = con0 & 0x3f;
-    uint64_t s = (con0 >> 8) & 7;
-    uint64_t fin = RK3576_DCPHY_REF_CLK_HZ;
-    uint64_t fout = 0;
-
-    if (p != 0)
-      {
-        uint64_t fvco = ((m << 16) + (uint64_t)(k < 0 ? 0 : k)) * 2 * fin /
-                        (p << 16);
-
-        fout = fvco >> s;
-      }
-
-    syslog(LOG_INFO,
-           "dcphy-dump: PLL recomputed = %llu Hz (%llu Mbps/lane); driver "
-           "target = %llu Mbps (table bin hs_exit etc. from %u Mbps)\n",
-           (unsigned long long)fout, (unsigned long long)(fout / 1000000ULL),
-           (unsigned long long)(priv->pll.rate / 1000000ULL),
-           (unsigned)priv->lane_mbps);
-  }
-
-  /* Which row of the (sparse) D-PHY timing table the current lane rate
-   * resolved to -- see the NOTE in rk3576_dcphy_dphy_timing_lookup().  The
-   * table rows are what actually drive t_lpx / t_clk_zero / t_hs_exit, so
-   * logging the selected row makes every log self-contained instead of
-   * requiring the reader to redo the bin lookup by hand. */
-
-  {
-    const struct rk3576_dcphy_dphy_timing_s *timing =
-        rk3576_dcphy_dphy_timing_lookup(priv->lane_mbps);
-
-    syslog(LOG_INFO,
-           "dcphy-dump: timing bin <=%u Mbps (t_lpx=%u t_clk_zero=%u "
-           "t_hs_exit=%u t_hs_trail=%u t_clk_trail=%u) for lane rate %u Mbps\n",
-           (unsigned)timing->max_lane_mbps, (unsigned)timing->lpx,
-           (unsigned)timing->clk_zero, (unsigned)timing->hs_exit,
-           (unsigned)timing->hs_trail, (unsigned)timing->clk_trail,
-           (unsigned)priv->lane_mbps);
-  }
-
-  syslog(LOG_INFO,
-         "dcphy-dump: MC_GNR_CON0=%08x (enable[0]=%u phy_ready[1]=%u) "
-         "MC_GNR_CON1=%08x (T_PHY_READY) MC_ANA_CON0=%08x "
-         "(res_up[7:4]=%u res_dn[3:0]=%u) MC_ANA_CON1=%08x\n",
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_GNR_CON0),
-         (unsigned)(rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_GNR_CON0) & 1),
-         (unsigned)((rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_GNR_CON0) >> 1) &
-                    1),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_GNR_CON1),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_ANA_CON0),
-         (unsigned)((rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_ANA_CON0) >> 4) &
-                    0xf),
-         (unsigned)(rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_ANA_CON0) & 0xf),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_ANA_CON1));
-
-  mc_time0 = rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_TIME_CON0);
-  mc_time2 = rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_TIME_CON2);
-
-  syslog(LOG_INFO,
-         "dcphy-dump: CLK lane MC_TIME_CON0=%08x (hstx_clk_sel[12]=%u "
-         "t_lpx[11:4]=%u) MC_TIME_CON1=%08x (t_clk_zero[15:8]=%u "
-         "t_clk_prepare[7:0]=%u) MC_TIME_CON2=%08x (t_hs_exit[15:8]=%u "
-         "t_clk_trail[7:0]=%u) MC_TIME_CON3=%08x (t_clk_post=%u) "
-         "MC_TIME_CON4=%08x (esc_clk_div, expect 0x1f4)\n",
-         mc_time0, (unsigned)((mc_time0 >> 12) & 1),
-         (unsigned)((mc_time0 >> 4) & 0xff),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_TIME_CON1),
-         (unsigned)((rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_TIME_CON1) >> 8) &
-                    0xff),
-         (unsigned)(rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_TIME_CON1) &
-                    0xff),
-         mc_time2, (unsigned)((mc_time2 >> 8) & 0xff),
-         (unsigned)(mc_time2 & 0xff),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_TIME_CON3),
-         (unsigned)(rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_TIME_CON3) & 0xff),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MC_TIME_CON4));
-
-  md_time0 = rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_TIME_CON0(0));
-  md_time2 = rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_TIME_CON2(0));
-
-  syslog(LOG_INFO,
-         "dcphy-dump: DATA lane0 MD_GNR_CON0=%08x (enable[0]=%u) "
-         "MD_GNR_CON1=%08x MD_ANA_CON0=%08x (res_up=%u res_dn=%u, expect "
-         "0xe/0xe=0x71ee) MD_ANA_CON1=%08x\n",
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_GNR_CON0(0)),
-         (unsigned)(rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_GNR_CON0(0)) & 1),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_GNR_CON1(0)),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_ANA_CON0(0)),
-         (unsigned)((rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_ANA_CON0(0)) >>
-                     4) &
-                    0xf),
-         (unsigned)(rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_ANA_CON0(0)) &
-                    0xf),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_ANA_CON1(0)));
-
-  syslog(LOG_INFO,
-         "dcphy-dump: DATA lane0 MD_TIME_CON0=%08x (hstx_clk_sel=%u "
-         "t_lpx=%u) MD_TIME_CON1=%08x (t_hs_zero[15:8]=%u "
-         "t_hs_prepare[7:0]=%u) MD_TIME_CON2=%08x (t_hs_exit[15:8]=%u "
-         "t_hs_trail[7:0]=%u) MD_TIME_CON4=%08x (esc_clk_div)\n",
-         md_time0, (unsigned)((md_time0 >> 12) & 1),
-         (unsigned)((md_time0 >> 4) & 0xff),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_TIME_CON1(0)),
-         (unsigned)((rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_TIME_CON1(0)) >>
-                     8) &
-                    0xff),
-         (unsigned)(rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_TIME_CON1(0)) &
-                    0xff),
-         md_time2, (unsigned)((md_time2 >> 8) & 0xff),
-         (unsigned)(md_time2 & 0xff),
-         rk3576_dcphy_getreg(base, RK3576_DCPHY_MD_TIME_CON4(0)));
-
-  syslog(LOG_INFO,
-         "dcphy-dump: M_RESETN (PMU1CRU_SOFTRST_CON1 bit3) = %u "
-         "(0 = released), powered=%u lanes=%u\n",
-         (unsigned)((getreg32(priv->pmu1cru +
-                              RK3576_PMU1CRU_SOFTRST_CON(1)) >>
-                     RK3576_DCPHY_M_RESETN_BIT) &
-                    1),
-         (unsigned)priv->powered, (unsigned)priv->lanes);
 }
 
 #endif /* CONFIG_RK3576_MIPI_DCPHY */
