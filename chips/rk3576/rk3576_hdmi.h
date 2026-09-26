@@ -52,6 +52,30 @@
  * NOT call clk_set_rate() on dclk_vp0 -- see the long note in
  * rk3576_clk_register_hdmi() in rk3576_clk_tree.c.
  *
+ * ---------------------------------------------------------------------------
+ * Sink timings (EDID)
+ * ---------------------------------------------------------------------------
+ * The controller also owns the DDC master, so it is the natural place to
+ * decode what the sink says it can display.  rk3576_hdmi_read_sink_timing()
+ * reads the sink's EDID base block over DDC and returns its preferred detailed
+ * timing; the CALLER owns the policy (which pixel clock cap applies, which
+ * rates the PHY can synthesise, what to fall back to).
+ *
+ * This split matters because the two halves have different failure stories: a
+ * DDC read can simply not answer (no sink, no +5 V, a sink that holds the
+ *bus), while the PHY can only generate the discrete rates in its PLL table.
+ *Keeping the policy with the board lets a failed read fall back to a
+ *known-good mode instead of failing the display bring-up.
+ *
+ * The decode is deliberately local rather than reusing <nuttx/video/edid.h>.
+ * That header's detailed-timing horizontal helpers use the _SHIFT constants as
+ * masks (`byte & 4` instead of `byte & 0xf0`, and `byte & 0` for the blanking
+ * nibble), so edid_parse() reports a horizontally wrong active width for every
+ * DTD; it also stores a DTD's pixel clock in the EDID's native 10 kHz units
+ * while the rest of the videomode code assumes kHz.  Both are upstream quirks
+ * this driver cannot fix from here, so the ~30 lines of DTD decoding live in
+ * rk3576_hdmi.c where their units and bit placement are visible and testable.
+ *
  * Scope: DVI mode over TMDS only.  HDMI infoframes, audio, HDCP, SCDC
  * scrambling and HDMI 2.1 FRL are not implemented; a sink that requires any
  * of them will not produce a picture.
@@ -69,7 +93,47 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <nuttx/compiler.h>
+
 #ifdef CONFIG_RK3576_HDMI
+
+/****************************************************************************
+ * Public Types
+ ****************************************************************************/
+
+/* One display timing, in the terms the VOP and the interface both need:
+ * visible geometry, porch and sync lengths, and the pixel clock.  This is the
+ * bridge between "what the sink advertised" and struct rk3576_vop_config.
+ *
+ * The pixel clock is the mode's dot clock in Hz -- already converted out of
+ * the EDID's 10 kHz units -- and is NOT necessarily a rate the PHY can
+ * synthesise.  Callers must snap it (rk3576_hdptxphy_snap_pixel_clock())
+ * before using it.
+ */
+
+struct rk3576_hdmi_timing_s
+{
+  uint32_t pixel_clock; /* Dot clock in Hz                          */
+
+  uint16_t xres; /* Horizontal active pixels                 */
+  uint16_t yres; /* Vertical active lines                    */
+
+  uint16_t hsync_len;    /* HSYNC pulse width, pixels          */
+  uint16_t hfront_porch; /* Horizontal front porch, pixels     */
+  uint16_t hback_porch;  /* Horizontal back porch, pixels      */
+  uint16_t vsync_len;    /* VSYNC pulse width, lines           */
+  uint16_t vfront_porch; /* Vertical front porch, lines        */
+  uint16_t vback_porch;  /* Vertical back porch, lines         */
+
+  bool hsync_positive; /* Sync polarities, true = positive   */
+  bool vsync_positive;
+
+  /* Manufacturer ID from the EDID header, NUL terminated.  Carried only so
+   * the board's log can name the sink it read the numbers from.
+   */
+
+  char manufacturer[4];
+};
 
 /****************************************************************************
  * Public Function Prototypes
@@ -290,6 +354,88 @@ uint32_t rk3576_hdmi_ref_clock_hz(void);
  ****************************************************************************/
 
 int rk3576_hdmi_start_video_path(void);
+
+/****************************************************************************
+ * Name: rk3576_hdmi_hpd_connected
+ *
+ * Description:
+ *   Report whether the sink is asserting hot-plug detect.
+ *
+ *   Read straight from the IOC's HDMITX_HPD_STATUS bit 3, the debounced level
+ *   -- the other fields of that register are a raw pad level, an edge counter
+ *   and an interrupt flag, none of which answer "is a sink attached".
+ *
+ *   Deliberately advisory.  On this board HPD has read low even with a monitor
+ *   plugged in and terminating the link, because at boot the sink is often
+ *   still asleep and releases HPD; and it stays low if the HPD pad is not
+ *muxed to its HDMI function.  It is therefore reported alongside the EDID read
+ *   rather than used to skip it -- see rk3576_hdmi_read_sink_timing().
+ *
+ * Input Parameters:
+ *   None.
+ *
+ * Returned Value:
+ *   true if the debounced hot-plug-detect level is asserted.
+ *
+ ****************************************************************************/
+
+bool rk3576_hdmi_hpd_connected(void);
+
+/****************************************************************************
+ * Name: rk3576_hdmi_read_sink_timing
+ *
+ * Description:
+ *   Read the sink's EDID base block over DDC and decode its preferred detailed
+ *   timing.
+ *
+ *   Requires rk3576_hdmi_initialize() to have run: that is what enables the
+ *   controller's APB clock, hands the DDC pads to the built-in I2C master and
+ *   configures its SCL timing.  It does NOT require a mode to be enabled, so
+ *   it must be called BEFORE rk3576_hdmi_enable() -- the pixel clock has to be
+ *   known before the PHY is programmed with it.
+ *
+ *   DDC is driven even when rk3576_hdmi_hpd_connected() reports no sink.  That
+ *   is deliberate: HPD on this board has been an unreliable indicator (see the
+ *   note on that function, and the pad-mux note in rk3576_hdmi_routing()), and
+ *   an absent sink costs only one NACK, whereas gating on HPD would silently
+ *   disable EDID for exactly the case this function exists to serve.  The HPD
+ *   level is logged either way.
+ *
+ *   The whole base block is logged before anything is decoded from it, so a
+ *   surprising mode can be explained from the log alone.
+ *
+ *   The timing returned is the FIRST usable detailed timing, found by scanning
+ *   all four descriptor slots.  EDID 1.3+ requires the preferred timing to be
+ *   descriptor 1, but cheap EDID 1.0/1.2 sinks predate that rule and put their
+ *   monitor name there instead; reading only slot 1 makes those look like they
+ *   have no timing at all.  "First" is what "preferred" means, since the
+ *   descriptors are ordered and the first timing is the sink's native mode --
+ *   choosing a later one would need a preference of our own, and falling back
+ *   to the caller's known-good default is a more predictable outcome than
+ *   driving a secondary mode.
+ *
+ * Input Parameters:
+ *   timing - Receives the decoded timing on success.  Must not be NULL; left
+ *            unmodified on failure.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure:
+ *     -EINVAL  NULL argument, the EDID header or checksum is wrong, or a
+ *timing descriptor was malformed (zero or absurd active size, a missing porch,
+ *...) -ENOTSUP no descriptor held a timing this driver can express -- either
+ *              there was none (which also reports as -ENOENT) or every one
+ *              found was interlaced or did not use digital separate sync
+ *     -ENOENT  the block was valid but contained no detailed timing at all
+ *     -ETIMEDOUT  the DDC transfer did not complete
+ *     -EIO     the sink did not acknowledge
+ *
+ * Assumptions:
+ *   Called from task context, after rk3576_hdmi_initialize() has succeeded.
+ *   The sink is powered (the board drives the connector's +5 V rail).
+ *
+ ****************************************************************************/
+
+int rk3576_hdmi_read_sink_timing(FAR struct rk3576_hdmi_timing_s *timing);
 
 #undef EXTERN
 #if defined(__cplusplus)

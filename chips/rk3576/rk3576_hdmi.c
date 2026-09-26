@@ -30,6 +30,8 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 #include <nuttx/arch.h>
 #include <nuttx/clk/clk.h>
@@ -64,9 +66,35 @@
 
 #define RK3576_HDMI_RESET_SETTLE_US 100
 
+/* DDC transfer timing.  One EDID byte is a handful of I2C frames at the ~92
+ * kHz the SCL configuration produces, so a few hundred microseconds is the
+ * normal cost and 20 ms is a generous ceiling -- a sink that has not answered
+ * by then is not going to.  The poll interval is short enough that a good
+ * transfer is not measurably slowed and long enough not to hammer the APB.
+ */
+
+#define RK3576_HDMI_DDC_TIMEOUT_US 20000
+#define RK3576_HDMI_DDC_POLL_US    50
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
+
+/* How one EDID descriptor slot is classified.  Declared as an enum rather than
+ * reusing errno values so that every rejection reason has a name of its own:
+ * the reader logs each slot, and "interlaced" versus "malformed" versus "not a
+ * timing at all" are three different answers to "why was this mode not used".
+ */
+
+enum rk3576_hdmi_dtd_status_e
+{
+  RK3576_HDMI_DTD_STATUS_OK = 0, /* A usable progressive timing             */
+  RK3576_HDMI_DTD_STATUS_NOT_TIMING, /* Not a detailed timing (a display
+                                        descriptor) */
+  RK3576_HDMI_DTD_STATUS_INTERLACED,
+  RK3576_HDMI_DTD_STATUS_SYNC_SCHEME,
+  RK3576_HDMI_DTD_STATUS_MALFORMED,
+};
 
 /* Driver state.  One instance: RK3576 has a single HDMI TX controller on
  * VO0, and the HDPTX PHY it drives is shared with the eDP controller, so a
@@ -196,6 +224,729 @@ static void rk3576_hdmi_grf_write(uintptr_t base, uint32_t offset,
                                   uint32_t mask, uint32_t value)
 {
   putreg32(((mask & 0xffffu) << 16) | (value & mask), base + offset);
+}
+
+/****************************************************************************
+ * Name: rk3576_hdmi_ddc_init
+ *
+ * Description:
+ *   Park the controller's embedded I2C (DDC) master in its idle, base-block
+ *   state: reset the bus clock generator, program the SCL timing, and select
+ *   EDID segment 0.
+ *
+ *   Called at bring-up and again after an aborted transfer, so that a bus a
+ *   sink has wedged is left in exactly the state a fresh boot produces.
+ *
+ *   The SCL counts are the reference driver's and assume the 396 MHz reference
+ *   clock this board programs: 0x085c = 2140 counts is a ~5.4 us half period,
+ *   i.e. ~92 kHz, the standard-mode DDC rate every sink must accept.  DDC is
+ *   the slow path that must not fail, so the conservative value is used
+ *   deliberately rather than deriving a faster one.
+ *
+ * Input Parameters:
+ *   priv - Driver state.
+ *
+ ****************************************************************************/
+
+static void rk3576_hdmi_ddc_init(struct rk3576_hdmi_s *priv)
+{
+  /* Pulse the master's software reset, then program its clock.  The order
+   * matters if the reset clears the timing registers, so the configuration
+   * follows the reset exactly as it does in the reference driver.
+   */
+
+  rk3576_hdmi_putreg(priv, RK3576_HDMI_I2CM_CONTROL0,
+                     RK3576_HDMI_I2CM_CONTROL0_SWRESET);
+  rk3576_hdmi_putreg(priv, RK3576_HDMI_I2CM_FM_SCL_CONFIG0,
+                     RK3576_HDMI_I2CM_FM_SCL_CONFIG0_VAL);
+
+  /* Drop any command left programmed and leave fast-mode off.  The command
+   * field sits inside RK3576_HDMI_I2CM_WR_MASK, so it is cleared by writing 0
+   * through that mask.
+   */
+
+  rk3576_hdmi_modifyreg(priv, RK3576_HDMI_I2CM_INTERFACE_CONTROL0,
+                        RK3576_HDMI_I2CM_WR_MASK | RK3576_HDMI_I2CM_FM_EN, 0);
+
+  /* Select segment 0 (the EDID base block).  Only extended reads use the
+   * segment pointer, but clearing it here means a segment left over by an
+   * earlier stage cannot silently redirect an ordinary read.
+   */
+
+  rk3576_hdmi_putreg(priv, RK3576_HDMI_I2CM_INTERFACE_CONTROL1, 0);
+}
+
+/****************************************************************************
+ * Name: rk3576_hdmi_ddc_read
+ *
+ * Description:
+ *   Read len bytes from the sink's EDID EEPROM, starting at offset 0, using
+ *   the controller's built-in DDC master.
+ *
+ *   One byte is transferred per transaction, exactly as the reference driver
+ *   does it: the master sends the slave address, then the sub-address it is
+ *   being given through I2CM_ADDR, then a repeated start and reads one byte.
+ *   That is far slower than a block read would be, but it is the only mode
+ *   this master's windowed interface exposes for an arbitrary offset, and it
+ *   is a few tens of milliseconds in total.
+ *
+ *   No interrupt handler exists for this controller, so the transfer is driven
+ *   by polling MAINUNIT_1_INT_STATUS.  The two completion bits are unmasked
+ *for the duration anyway: on this controller the mask is applied to the
+ *latched status, and the reference driver unmasks them around every transfer,
+ *so matching that behaviour costs nothing and removes a guess.
+ *
+ * Input Parameters:
+ *   priv - Driver state.
+ *   buf  - Destination, len bytes.
+ *   len  - Number of bytes to read; at most one EDID base block.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; -EINVAL for a bad length, -ETIMEDOUT if a byte never
+ *   completed, or -EIO if the sink did not acknowledge.
+ *
+ ****************************************************************************/
+
+static int rk3576_hdmi_ddc_read(struct rk3576_hdmi_s *priv, FAR uint8_t *buf,
+                                size_t len)
+{
+  uint32_t elapsed;
+  uint32_t status;
+  uint32_t subaddr = 0;
+  size_t i;
+  int ret = OK;
+
+  if (len == 0 || len > RK3576_HDMI_EDID_LENGTH)
+    {
+      return -EINVAL;
+    }
+
+  rk3576_hdmi_modifyreg(priv, RK3576_HDMI_MAINUNIT_1_INT_MASK_N, 0,
+                        RK3576_HDMI_I2CM_OP_DONE_IRQ |
+                            RK3576_HDMI_I2CM_NACK_RCVD_IRQ);
+
+  /* The EEPROM stays selected for the whole read; each transaction re-sends
+   * the address together with the next sub-address.
+   */
+
+  rk3576_hdmi_modifyreg(
+      priv, RK3576_HDMI_I2CM_INTERFACE_CONTROL0, RK3576_HDMI_I2CM_SLVADDR,
+      (uint32_t)RK3576_HDMI_DDC_EDID_ADDR << RK3576_HDMI_I2CM_SLVADDR_SHIFT);
+
+  for (i = 0; i < len; i++)
+    {
+      /* Retire the previous byte's completion first, so the poll below cannot
+       * observe it and read a stale data register.
+       */
+
+      rk3576_hdmi_putreg(priv, RK3576_HDMI_MAINUNIT_1_INT_CLEAR,
+                         RK3576_HDMI_MAINUNIT_1_INT_CLEAR_VAL);
+
+      /* Sub-address for this byte, then start a one-byte read.  Note that the
+       * command is written THROUGH I2CM_WR_MASK -- I2CM_FM_READ is a value
+       * inside that field, not a bit beside it.
+       */
+
+      rk3576_hdmi_modifyreg(priv, RK3576_HDMI_I2CM_INTERFACE_CONTROL0,
+                            RK3576_HDMI_I2CM_ADDR,
+                            subaddr << RK3576_HDMI_I2CM_ADDR_SHIFT);
+      rk3576_hdmi_modifyreg(priv, RK3576_HDMI_I2CM_INTERFACE_CONTROL0,
+                            RK3576_HDMI_I2CM_WR_MASK,
+                            RK3576_HDMI_I2CM_FM_READ);
+      subaddr++;
+
+      for (elapsed = 0;; elapsed += RK3576_HDMI_DDC_POLL_US)
+        {
+          status = rk3576_hdmi_getreg(priv, RK3576_HDMI_MAINUNIT_1_INT_STATUS);
+          if ((status & (RK3576_HDMI_I2CM_OP_DONE_IRQ |
+                         RK3576_HDMI_I2CM_NACK_RCVD_IRQ)) != 0)
+            {
+              break;
+            }
+
+          if (elapsed >= RK3576_HDMI_DDC_TIMEOUT_US)
+            {
+              _err("ERROR: RK3576 HDMI DDC byte %u timed out after %u us "
+                   "(MAINUNIT_1_INT_STATUS=%08" PRIx32 ")\n",
+                   (unsigned int)i, (unsigned int)RK3576_HDMI_DDC_TIMEOUT_US,
+                   status);
+              ret = -ETIMEDOUT;
+              goto err;
+            }
+
+          up_udelay(RK3576_HDMI_DDC_POLL_US);
+        }
+
+      if ((status & RK3576_HDMI_I2CM_NACK_RCVD_IRQ) != 0)
+        {
+          _err("ERROR: RK3576 HDMI DDC byte %u was not acknowledged "
+               "(no sink, no +5 V on the connector, or a wedged bus)\n",
+               (unsigned int)i);
+          ret = -EIO;
+          goto err;
+        }
+
+      *buf++ = (uint8_t)(rk3576_hdmi_getreg(
+                             priv, RK3576_HDMI_I2CM_INTERFACE_RDDATA_0) &
+                         0xffu);
+
+      /* End the transaction. */
+
+      rk3576_hdmi_modifyreg(priv, RK3576_HDMI_I2CM_INTERFACE_CONTROL0,
+                            RK3576_HDMI_I2CM_WR_MASK, 0);
+    }
+
+  rk3576_hdmi_modifyreg(
+      priv, RK3576_HDMI_MAINUNIT_1_INT_MASK_N,
+      RK3576_HDMI_I2CM_OP_DONE_IRQ | RK3576_HDMI_I2CM_NACK_RCVD_IRQ, 0);
+  return OK;
+
+err:
+  /* Abort the transaction and park the master, then restore the interrupt
+   * mask.  The caller decides what to do about the failure.
+   */
+
+  rk3576_hdmi_ddc_init(priv);
+  rk3576_hdmi_modifyreg(
+      priv, RK3576_HDMI_MAINUNIT_1_INT_MASK_N,
+      RK3576_HDMI_I2CM_OP_DONE_IRQ | RK3576_HDMI_I2CM_NACK_RCVD_IRQ, 0);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: rk3576_hdmi_edid_valid
+ *
+ * Description:
+ *   Apply the two checks every EDID reader must apply to a base block: the
+ *   eight-byte header, and the checksum (the 128 bytes sum to 0 mod 256).
+ *
+ *   This is not paranoia.  DDC is an open-drain bus on a connector, so a
+ *   half-seated cable produces a plausible-looking transfer of garbage, and
+ *   the timing decoded from that garbage would be programmed into the VOP.
+ *
+ * Input Parameters:
+ *   edid - 128-byte base block.
+ *
+ * Returned Value:
+ *   true if the block is well formed.
+ *
+ ****************************************************************************/
+
+static bool rk3576_hdmi_edid_valid(FAR const uint8_t *edid)
+{
+  static const uint8_t magic[RK3576_HDMI_EDID_MAGIC_SIZE] = {
+    0x00u, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0x00u
+  };
+
+  unsigned int sum = 0;
+  unsigned int i;
+
+  if (memcmp(edid, magic, sizeof(magic)) != 0)
+    {
+      return false;
+    }
+
+  for (i = 0; i < RK3576_HDMI_EDID_LENGTH; i++)
+    {
+      sum += edid[i];
+    }
+
+  return (sum & 0xffu) == 0;
+}
+
+/****************************************************************************
+ * Name: rk3576_hdmi_edid_dtd
+ *
+ * Description:
+ *   Decode one 18-byte EDID detailed timing descriptor into a
+ *   struct rk3576_hdmi_timing_s.
+ *
+ *   The bit placement is the classic EDID trap and is spelled out rather than
+ *   compressed, because the high bits of every field are scattered across
+ *   bytes 4, 7 and 11 in three different arrangements:
+ *
+ *     byte  4  [7:4] hactive[11:8]   [3:0] hblank[11:8]
+ *     byte  7  [7:4] vactive[11:8]   [3:0] vblank[11:8]
+ *     byte 11  [7:6] hsync offset[9:8]   [5:4] hsync width[5:4]
+ *              [3:2] vsync offset[5:4]   [1:0] vsync width[5:4]
+ *
+ *   Rejections are deliberate and are the difference between "no picture" and
+ *   "no picture with a reason in the log":
+ *
+ *     - a zero pixel clock means this descriptor is not a timing at all (the
+ *       slots normally hold the monitor name, serial number and range limits);
+ *     - an interlaced descriptor cannot be expressed by this driver's
+ *       progressive scan-out;
+ *     - a sync scheme other than digital separate cannot be expressed by the
+ *       single hsync/vsync polarity pair rk3576_vop_config carries;
+ *     - a blanking interval too short for the sync pulse and the porches is
+ *       malformed and would underflow the porch arithmetic below.
+ *
+ *   SILENT BY DESIGN, and the reason is the descriptor scan: a sink
+ *legitimately lists 1080i in a later slot of an otherwise progressive EDID, so
+ *a decoder that warned about every unusable timing would fill the boot log
+ *with warnings about modes nobody asked for.  The status is returned instead
+ *and the one caller that logs (rk3576_hdmi_edid_dump()) reports it per slot.
+ *
+ *   Image borders (descriptor bytes 15 and 16) are deliberately ignored: they
+ *   are contained within the blanking intervals, so absorbing them into the
+ *   back porch reproduces the same totals, which is what the VOP programs.
+ *
+ * Input Parameters:
+ *   desc   - The 18 descriptor bytes.
+ *   timing - Receives the decoded timing when the status is OK; untouched
+ *            otherwise.
+ *
+ * Returned Value:
+ *   How the descriptor was classified; see the enum for the meanings.
+ *
+ ****************************************************************************/
+
+static enum rk3576_hdmi_dtd_status_e
+rk3576_hdmi_edid_dtd(FAR const uint8_t *desc,
+                     FAR struct rk3576_hdmi_timing_s *timing)
+{
+  uint32_t pixclk10k;
+  uint32_t hactive;
+  uint32_t hblank;
+  uint32_t hsync_off;
+  uint32_t hsync_wid;
+  uint32_t vactive;
+  uint32_t vblank;
+  uint32_t vsync_off;
+  uint32_t vsync_wid;
+  uint8_t flags;
+
+  pixclk10k = (uint32_t)desc[RK3576_HDMI_DTD_PIXCLOCK_LO] |
+              ((uint32_t)desc[RK3576_HDMI_DTD_PIXCLOCK_HI] << 8);
+
+  if (pixclk10k == 0)
+    {
+      return RK3576_HDMI_DTD_STATUS_NOT_TIMING;
+    }
+
+  hactive = (uint32_t)desc[RK3576_HDMI_DTD_HACTIVE_LO] |
+            (((uint32_t)desc[RK3576_HDMI_DTD_H_MSBITS] &
+              RK3576_HDMI_DTD_HACTIVE_MSB_MASK)
+             << RK3576_HDMI_DTD_HACTIVE_MSB_SHIFT);
+  hblank = (uint32_t)desc[RK3576_HDMI_DTD_HBLANK_LO] |
+           (((uint32_t)desc[RK3576_HDMI_DTD_H_MSBITS] &
+             RK3576_HDMI_DTD_HBLANK_MSB_MASK)
+            << RK3576_HDMI_DTD_HBLANK_MSB_SHIFT);
+
+  vactive = (uint32_t)desc[RK3576_HDMI_DTD_VACTIVE_LO] |
+            (((uint32_t)desc[RK3576_HDMI_DTD_V_MSBITS] &
+              RK3576_HDMI_DTD_VACTIVE_MSB_MASK)
+             << RK3576_HDMI_DTD_VACTIVE_MSB_SHIFT);
+  vblank = (uint32_t)desc[RK3576_HDMI_DTD_VBLANK_LO] |
+           (((uint32_t)desc[RK3576_HDMI_DTD_V_MSBITS] &
+             RK3576_HDMI_DTD_VBLANK_MSB_MASK)
+            << RK3576_HDMI_DTD_VBLANK_MSB_SHIFT);
+
+  hsync_off = (uint32_t)desc[RK3576_HDMI_DTD_HSYNC_OFF_LO] |
+              (((uint32_t)desc[RK3576_HDMI_DTD_SYNC_MSBITS] &
+                RK3576_HDMI_DTD_HSYNC_OFF_MSB_MASK)
+               << RK3576_HDMI_DTD_HSYNC_OFF_MSB_SHIFT);
+  hsync_wid = (uint32_t)desc[RK3576_HDMI_DTD_HSYNC_WID_LO] |
+              (((uint32_t)desc[RK3576_HDMI_DTD_SYNC_MSBITS] &
+                RK3576_HDMI_DTD_HSYNC_WID_MSB_MASK)
+               << RK3576_HDMI_DTD_HSYNC_WID_MSB_SHIFT);
+
+  vsync_off = ((uint32_t)desc[RK3576_HDMI_DTD_VSYNC_LO] >>
+               RK3576_HDMI_DTD_VSYNC_OFF_LO_SHIFT) |
+              (((uint32_t)desc[RK3576_HDMI_DTD_SYNC_MSBITS] &
+                RK3576_HDMI_DTD_VSYNC_OFF_MSB_MASK)
+               << RK3576_HDMI_DTD_VSYNC_OFF_MSB_SHIFT);
+  vsync_wid = ((uint32_t)desc[RK3576_HDMI_DTD_VSYNC_LO] &
+               RK3576_HDMI_DTD_VSYNC_WID_LO_MASK) |
+              (((uint32_t)desc[RK3576_HDMI_DTD_SYNC_MSBITS] &
+                RK3576_HDMI_DTD_VSYNC_WID_MSB_MASK)
+               << RK3576_HDMI_DTD_VSYNC_WID_MSB_SHIFT);
+
+  flags = desc[RK3576_HDMI_DTD_FLAGS];
+
+  if ((flags & RK3576_HDMI_DTD_INTERLACED) != 0)
+    {
+      return RK3576_HDMI_DTD_INTERLACED;
+    }
+
+  if ((flags & RK3576_HDMI_DTD_SYNCTYPE_MASK) !=
+      RK3576_HDMI_DTD_SYNCTYPE_SEPARATE)
+    {
+      return RK3576_HDMI_DTD_STATUS_SYNC_SCHEME;
+    }
+
+  /* Validate before any subtraction, so the porches below cannot underflow.
+   * An EDID is untrusted input: it arrives over a cable and must not be able
+   * to size a framebuffer allocation or wrap a total.
+   */
+
+  if (hactive == 0 || vactive == 0 || hactive > RK3576_HDMI_DTD_MAX_ACTIVE ||
+      vactive > RK3576_HDMI_DTD_MAX_ACTIVE || hsync_wid == 0 ||
+      vsync_wid == 0 || hblank <= hsync_off + hsync_wid ||
+      vblank <= vsync_off + vsync_wid)
+    {
+      return RK3576_HDMI_DTD_STATUS_MALFORMED;
+    }
+
+  memset(timing, 0, sizeof(*timing));
+
+  /* The descriptor carries the pixel clock in 10 kHz units. */
+
+  timing->pixel_clock = pixclk10k * 10000u;
+
+  timing->xres = (uint16_t)hactive;
+  timing->yres = (uint16_t)vactive;
+
+  timing->hfront_porch = (uint16_t)hsync_off;
+  timing->hsync_len = (uint16_t)hsync_wid;
+  timing->hback_porch = (uint16_t)(hblank - hsync_off - hsync_wid);
+
+  timing->vfront_porch = (uint16_t)vsync_off;
+  timing->vsync_len = (uint16_t)vsync_wid;
+  timing->vback_porch = (uint16_t)(vblank - vsync_off - vsync_wid);
+
+  timing->hsync_positive = (flags & RK3576_HDMI_DTD_HSYNC_POLARITY) != 0;
+  timing->vsync_positive = (flags & RK3576_HDMI_DTD_VSYNC_POLARITY) != 0;
+
+  return RK3576_HDMI_DTD_STATUS_OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_hdmi_dtd_status_str
+ *
+ * Description:
+ *   Name a DTD classification for the log.
+ *
+ ****************************************************************************/
+
+static FAR const char *
+rk3576_hdmi_dtd_status_str(enum rk3576_hdmi_dtd_status_e status)
+{
+  switch (status)
+    {
+      case RK3576_HDMI_DTD_STATUS_OK:
+        return "usable";
+
+      case RK3576_HDMI_DTD_STATUS_NOT_TIMING:
+        return "not a timing";
+
+      case RK3576_HDMI_DTD_STATUS_INTERLACED:
+        return "interlaced";
+
+      case RK3576_HDMI_DTD_STATUS_SYNC_SCHEME:
+        return "sync is not digital separate";
+
+      case RK3576_HDMI_DTD_STATUS_MALFORMED:
+        return "malformed";
+
+      default:
+        return "unknown";
+    }
+}
+
+/****************************************************************************
+ * Name: rk3576_hdmi_edid_manufacturer
+ *
+ * Description:
+ *   Decode the EDID's three-letter manufacturer ID.  The 16-bit field is three
+ *   five-bit letters, most significant first, each biased from '@'.
+ *
+ * Input Parameters:
+ *   edid - The base block.
+ *   buf  - Receives 4 bytes: three letters plus a NUL.
+ *
+ ****************************************************************************/
+
+static void rk3576_hdmi_edid_manufacturer(FAR const uint8_t *edid,
+                                          FAR char *buf)
+{
+  uint16_t code = ((uint16_t)edid[RK3576_HDMI_EDID_MANUFACTURER] << 8) |
+                  (uint16_t)edid[RK3576_HDMI_EDID_MANUFACTURER + 1u];
+
+  buf[0] = (char)('@' + ((code >> 10) & 0x1fu));
+  buf[1] = (char)('@' + ((code >> 5) & 0x1fu));
+  buf[2] = (char)('@' + (code & 0x1fu));
+  buf[3] = '\0';
+}
+
+/****************************************************************************
+ * Name: rk3576_hdmi_edid_text
+ *
+ * Description:
+ *   Copy one of a descriptor's ASCII fields (monitor name, serial number,
+ *   free-form text) into a NUL-terminated buffer.
+ *
+ *   Two details make this more than a memcpy: the field is thirteen bytes
+ *   padded with spaces and terminated by a newline rather than a NUL, so a
+ *   straight %s would run straight on into the next descriptor; and it is
+ *   remote input, so every non-printable byte is replaced rather than risk
+ *   emitting terminal control sequences into the log.
+ *
+ * Input Parameters:
+ *   desc   - The 18 descriptor bytes.
+ *   buf    - Destination.
+ *   buflen - Size of buf; at least RK3576_HDMI_DESC_TEXT_LEN + 1.
+ *
+ ****************************************************************************/
+
+static void rk3576_hdmi_edid_text(FAR const uint8_t *desc, FAR char *buf,
+                                  size_t buflen)
+{
+  size_t n = 0;
+  size_t i;
+
+  for (i = 0; i < RK3576_HDMI_DESC_TEXT_LEN && n + 1u < buflen; i++)
+    {
+      uint8_t c = desc[RK3576_HDMI_DESC_TEXT + i];
+
+      if (c == '\n' || c == '\r')
+        {
+          break;
+        }
+
+      buf[n++] = (char)((c >= 0x20u && c < 0x7fu) ? (char)c : '.');
+    }
+
+  /* Trim the space padding the field is filled out with. */
+
+  while (n > 0 && buf[n - 1] == ' ')
+    {
+      n--;
+    }
+
+  buf[n] = '\0';
+}
+
+/****************************************************************************
+ * Name: rk3576_hdmi_edid_dump_descriptor
+ *
+ * Description:
+ *   Log one of the four EDID descriptor slots: its detailed timing if it has
+ *   one, otherwise whatever display descriptor it is.
+ *
+ *   Both cases are reported, and that includes the ones this driver cannot
+ *use. A sink whose preferred timing is interlaced is a real and fairly common
+ *   case, and "descriptor 1: interlaced" answers at a glance the question that
+ *   would otherwise take a DDC trace to answer.
+ *
+ * Input Parameters:
+ *   index - 1-based slot number, for the log.
+ *   desc  - The 18 descriptor bytes.
+ *
+ ****************************************************************************/
+
+static void rk3576_hdmi_edid_dump_descriptor(unsigned int index,
+                                             FAR const uint8_t *desc)
+{
+  struct rk3576_hdmi_timing_s timing;
+  enum rk3576_hdmi_dtd_status_e status;
+  char text[RK3576_HDMI_DESC_TEXT_LEN + 1u];
+  uint32_t htotal;
+  uint32_t vtotal;
+
+  status = rk3576_hdmi_edid_dtd(desc, &timing);
+  if (status == RK3576_HDMI_DTD_STATUS_OK)
+    {
+      htotal = (uint32_t)timing.xres + timing.hfront_porch + timing.hsync_len +
+               timing.hback_porch;
+      vtotal = (uint32_t)timing.yres + timing.vfront_porch + timing.vsync_len +
+               timing.vback_porch;
+
+      _info("EDID descriptor %u: %ux%u @ %u Hz, pixel clock %" PRIu32
+            " Hz, %u/%u/%u/%u h, %u/%u/%u/%u v, sync %c%c\n",
+            index, (unsigned int)timing.xres, (unsigned int)timing.yres,
+            (unsigned int)(timing.pixel_clock / (htotal * vtotal)),
+            timing.pixel_clock, (unsigned int)timing.xres,
+            (unsigned int)timing.hfront_porch, (unsigned int)timing.hsync_len,
+            (unsigned int)timing.hback_porch, (unsigned int)timing.yres,
+            (unsigned int)timing.vfront_porch, (unsigned int)timing.vsync_len,
+            (unsigned int)timing.vback_porch,
+            timing.hsync_positive ? '+' : '-',
+            timing.vsync_positive ? '+' : '-');
+      return;
+    }
+
+  if (status != RK3576_HDMI_DTD_STATUS_NOT_TIMING)
+    {
+      _info("EDID descriptor %u: timing not usable here (%s)\n", index,
+            rk3576_hdmi_dtd_status_str(status));
+      return;
+    }
+
+  switch (desc[RK3576_HDMI_DESC_TYPE])
+    {
+      case RK3576_HDMI_DESC_TYPE_NAME:
+        rk3576_hdmi_edid_text(desc, text, sizeof(text));
+        _info("EDID descriptor %u: monitor name \"%s\"\n", index, text);
+        break;
+
+      case RK3576_HDMI_DESC_TYPE_SERIAL:
+        rk3576_hdmi_edid_text(desc, text, sizeof(text));
+        _info("EDID descriptor %u: serial number \"%s\"\n", index, text);
+        break;
+
+      case RK3576_HDMI_DESC_TYPE_TEXT:
+        rk3576_hdmi_edid_text(desc, text, sizeof(text));
+        _info("EDID descriptor %u: text \"%s\"\n", index, text);
+        break;
+
+      case RK3576_HDMI_DESC_TYPE_LIMITS:
+        /* The maximum pixel clock is in 10 MHz units, so 17 prints as 170 MHz.
+         * Reporting it matters more than the refresh limits: it is the sink's
+         * own statement of the fastest pixel clock it will accept, which is
+         * exactly the number the board-level cap is compared against.
+         */
+
+        _info("EDID descriptor %u: range limits %u-%u Hz v, %u-%u kHz h, "
+              "max pixel clock %" PRIu32 " MHz\n",
+              index, (unsigned int)desc[RK3576_HDMI_DESC_LIMITS_MIN_VFREQ],
+              (unsigned int)desc[RK3576_HDMI_DESC_LIMITS_MAX_VFREQ],
+              (unsigned int)desc[RK3576_HDMI_DESC_LIMITS_MIN_HFREQ],
+              (unsigned int)desc[RK3576_HDMI_DESC_LIMITS_MAX_HFREQ],
+              (uint32_t)desc[RK3576_HDMI_DESC_LIMITS_MAX_CLOCK] *
+                  RK3576_HDMI_DESC_LIMITS_MAX_CLOCK_UNIT / 1000000u);
+        break;
+
+      default:
+        _info("EDID descriptor %u: display descriptor type 0x%02x (unused "
+              "here)\n",
+              index, (unsigned int)desc[RK3576_HDMI_DESC_TYPE]);
+        break;
+    }
+}
+
+/****************************************************************************
+ * Name: rk3576_hdmi_edid_dump
+ *
+ * Description:
+ *   Log the sink's EDID in decoded form: the identification fields and all
+ *four descriptor slots.
+ *
+ *   Decoded rather than raw.  This used to also print the 128 bytes in hex, to
+ *   preserve anything the decoder did not understand, but everything a sink
+ *has said in this project so far fits the decoded form -- and eight lines of
+ *hex have to be hand-decoded to be useful.  If a sink ever needs its
+ *   chromaticity, established-timing or standard-timing sections read out,
+ *dump just those bytes rather than restoring the whole block.
+ *
+ *   Every descriptor slot is reported, including the ones this driver cannot
+ *   use: a sink whose preferred timing is interlaced is a real and fairly
+ *   common case, and "descriptor 1: interlaced" answers at a glance what would
+ *   otherwise take a DDC trace to answer.
+ *
+ * Input Parameters:
+ *   edid - The 128-byte base block.
+ *   hpd  - The hot-plug-detect level, reported because it is the one piece of
+ *          context that explains a successful read next to a low HPD, or a
+ *          failed one next to a low HPD.
+ *
+ ****************************************************************************/
+
+static void rk3576_hdmi_edid_dump(FAR const uint8_t *edid, bool hpd)
+{
+  char text[RK3576_HDMI_DESC_TEXT_LEN + 1u];
+  uint8_t input = edid[RK3576_HDMI_EDID_VIDEO_INPUT];
+  uint8_t features = edid[RK3576_HDMI_EDID_FEATURES];
+  uint8_t gamma = edid[RK3576_HDMI_EDID_GAMMA];
+  uint16_t product = (uint16_t)edid[RK3576_HDMI_EDID_PRODUCTCODE] |
+                     ((uint16_t)edid[RK3576_HDMI_EDID_PRODUCTCODE + 1u] << 8);
+  uint32_t serial = (uint32_t)edid[RK3576_HDMI_EDID_SERIALNO] |
+                    ((uint32_t)edid[RK3576_HDMI_EDID_SERIALNO + 1u] << 8) |
+                    ((uint32_t)edid[RK3576_HDMI_EDID_SERIALNO + 2u] << 16) |
+                    ((uint32_t)edid[RK3576_HDMI_EDID_SERIALNO + 3u] << 24);
+  unsigned int i;
+
+  rk3576_hdmi_edid_manufacturer(edid, text);
+
+  _info("EDID: %s product 0x%04x, serial 0x%08" PRIx32
+        ", week %u of %u, EDID v%u.%u, %u extension block(s), HPD %s\n",
+        text, (unsigned int)product, serial,
+        (unsigned int)edid[RK3576_HDMI_EDID_WEEK],
+        (unsigned int)edid[RK3576_HDMI_EDID_YEAR] + 1990u,
+        (unsigned int)edid[RK3576_HDMI_EDID_VERSION],
+        (unsigned int)edid[RK3576_HDMI_EDID_REVISION],
+        (unsigned int)edid[RK3576_HDMI_EDID_EXT_COUNT],
+        hpd ? "asserted" : "NOT asserted");
+
+  if ((input & RK3576_HDMI_EDID_INPUT_DIGITAL) != 0)
+    {
+      static FAR const char *const vidif[] = { "undefined", "HDMI-a",
+                                               "HDMI-b",    "undefined",
+                                               "MDDI",      "DisplayPort" };
+
+      char digitalstr[64];
+      char gammastr[20];
+      unsigned int revision = edid[RK3576_HDMI_EDID_REVISION];
+      unsigned int bits = (input & RK3576_HDMI_EDID_INPUT_BITDEPTH_MASK) >>
+                          RK3576_HDMI_EDID_INPUT_BITDEPTH_SHIFT;
+      unsigned int iface = input & RK3576_HDMI_EDID_INPUT_VIDIF_MASK;
+
+      /* The video interface and bit depth fields are EDID 1.4 additions.  In a
+       * 1.3 block those bits are reserved and read 0, so decoding them anyway
+       * would report "undefined" and "depth unspecified" about a monitor that
+       * merely predates the fields -- which reads like a defect rather than a
+       * version number.  MEASURED, and the reason this check exists: the AOC
+       * 22B2WG5 is v1.3 and showed exactly that.
+       */
+
+      if (revision < 4u)
+        {
+          snprintf(digitalstr, sizeof(digitalstr),
+                   "interface and depth reserved in EDID v1.%u", revision);
+        }
+      else if (bits == RK3576_HDMI_EDID_INPUT_BITDEPTH_UNDEFINED)
+        {
+          snprintf(digitalstr, sizeof(digitalstr), "%s, depth unspecified",
+                   iface < nitems(vidif) ? vidif[iface] : "unknown");
+        }
+      else
+        {
+          /* The field counts the depth in 2-bit steps starting at 6 bpc:
+           * 1 -> 6, 2 -> 8, 3 -> 10, 4 -> 12, 5 -> 14, 6 -> 16.
+           */
+
+          snprintf(digitalstr, sizeof(digitalstr), "%s, %u bpc",
+                   iface < nitems(vidif) ? vidif[iface] : "unknown",
+                   4u + bits * 2u);
+        }
+
+      /* Gamma has its own "not stated" encoding: it is stored biased by 100,
+       * so 0xff means "undefined" rather than 3.55.
+       */
+
+      if (gamma == 0xffu)
+        {
+          snprintf(gammastr, sizeof(gammastr), "gamma undefined");
+        }
+      else
+        {
+          snprintf(gammastr, sizeof(gammastr), "gamma %u.%02u",
+                   ((unsigned int)gamma + 100u) / 100u,
+                   ((unsigned int)gamma + 100u) % 100u);
+        }
+
+      _info("EDID: digital, %s, %s, %ux%u cm, features 0x%02x%s\n", digitalstr,
+            gammastr, (unsigned int)edid[RK3576_HDMI_EDID_HSIZE_CM],
+            (unsigned int)edid[RK3576_HDMI_EDID_VSIZE_CM],
+            (unsigned int)features,
+            (features & RK3576_HDMI_EDID_FEATURE_PREFERRED_TIMING) != 0
+                ? ", preferred timing promised in descriptor 1"
+                : ", no preferred timing promised");
+    }
+  else
+    {
+      _info("EDID: analog input (0x%02x); this driver only drives digital "
+            "sinks\n",
+            (unsigned int)input);
+    }
+
+  for (i = 0; i < RK3576_HDMI_EDID_DESC_NUMBER; i++)
+    {
+      rk3576_hdmi_edid_dump_descriptor(
+          i + 1u,
+          &edid[RK3576_HDMI_EDID_DESCRIPTOR + i * RK3576_HDMI_EDID_DESC_SIZE]);
+    }
 }
 
 /****************************************************************************
@@ -453,17 +1204,13 @@ static int rk3576_hdmi_init_registers(struct rk3576_hdmi_s *priv)
   rk3576_hdmi_putreg(priv, RK3576_HDMI_TIMER_BASE_CONFIG0,
                      priv->ref_hz & RK3576_HDMI_TIMER_REFERENCE_BASE_MASK);
 
-  /* Software-reset the embedded I2C master and park its SCL timing.  The
-   * master is not used for EDID reading yet, but leaving it in an undefined
-   * state can make it drive the DDC pads.
+  /* Park the embedded I2C (DDC) master.  It is not used for anything in DVI
+   * mode by itself, but left in an undefined state it can drive the DDC pads,
+   * and leaving it configured here is what makes the EDID read that follows
+   * board bring-up a plain transfer rather than another setup step.
    */
 
-  rk3576_hdmi_putreg(priv, RK3576_HDMI_I2CM_CONTROL0,
-                     RK3576_HDMI_I2CM_CONTROL0_SWRESET);
-  rk3576_hdmi_putreg(priv, RK3576_HDMI_I2CM_FM_SCL_CONFIG0,
-                     RK3576_HDMI_I2CM_FM_SCL_CONFIG0_VAL);
-  rk3576_hdmi_modifyreg(priv, RK3576_HDMI_I2CM_INTERFACE_CONTROL0,
-                        RK3576_HDMI_I2CM_FM_EN, 0);
+  rk3576_hdmi_ddc_init(priv);
 
   /* Acknowledge the I2C master's two interrupt sources. */
 
@@ -506,10 +1253,14 @@ static int rk3576_hdmi_init_registers(struct rk3576_hdmi_s *priv)
       if (rk3576_hdmi_getreg(priv, RK3576_HDMI_TIMER_BASE_STATUS0) &
           RK3576_HDMI_TIMER_BASE_LOCKED_ST)
         {
-          _info("RK3576 HDMI ref %" PRIu32
-                " Hz, timer base locked, CMU_STATUS %08" PRIx32 "\n",
-                priv->ref_hz,
-                rk3576_hdmi_getreg(priv, RK3576_HDMI_CMU_STATUS));
+          /* Deliberately silent on the success path: the timer base latching
+           * is an internal precondition that has never failed on this board,
+           * and a line saying so every boot is noise.  The failure path below
+           * still reports it, which is the case worth reading about.  The
+           * controller's identity (CORE_ID, clocks) is logged by the caller
+           * instead.
+           */
+
           return OK;
         }
 
@@ -530,16 +1281,16 @@ static int rk3576_hdmi_init_registers(struct rk3576_hdmi_s *priv)
    *     and re-check CMU_STATUS after the PHY is up.
    */
 
-  _err("WARNING: RK3576 HDMI timer base never locked after %d tries "
-       "(TIMER_BASE_STATUS0=%08" PRIx32 ", CMU_STATUS=%08" PRIx32
-       ", ref %" PRIu32
-       " Hz).  The controller's internal vidqp/linkqp clock domains are "
-       "derived from the reference clock, so the register block above "
-       "0x0400 may not answer and the next access to it can abort on the "
-       "bus.\n",
-       RK3576_HDMI_BANK_READY_TRIES,
-       rk3576_hdmi_getreg(priv, RK3576_HDMI_TIMER_BASE_STATUS0),
-       rk3576_hdmi_getreg(priv, RK3576_HDMI_CMU_STATUS), priv->ref_hz);
+  _warn("WARNING: RK3576 HDMI timer base never locked after %d tries "
+        "(TIMER_BASE_STATUS0=%08" PRIx32 ", CMU_STATUS=%08" PRIx32
+        ", ref %" PRIu32
+        " Hz).  The controller's internal vidqp/linkqp clock domains are "
+        "derived from the reference clock, so the register block above "
+        "0x0400 may not answer and the next access to it can abort on the "
+        "bus.\n",
+        RK3576_HDMI_BANK_READY_TRIES,
+        rk3576_hdmi_getreg(priv, RK3576_HDMI_TIMER_BASE_STATUS0),
+        rk3576_hdmi_getreg(priv, RK3576_HDMI_CMU_STATUS), priv->ref_hz);
 
   return OK;
 }
@@ -802,7 +1553,7 @@ int rk3576_hdmi_initialize(void)
       goto err_hdp;
     }
 
-  _info("RK3576 HDMI core id %08" PRIx32 ", ver %08" PRIx32
+  _info("RK3576 HDMI controller: core id %08" PRIx32 ", ver %08" PRIx32
         ", config %08" PRIx32 ", ref %" PRIu32 " Hz\n",
         id, rk3576_hdmi_getreg(priv, RK3576_HDMI_VER_NUMBER),
         rk3576_hdmi_getreg(priv, RK3576_HDMI_CONFIG_REG), priv->ref_hz);
@@ -994,43 +1745,24 @@ int rk3576_hdmi_enable(uint32_t pixel_clock_hz, uint8_t bpc)
   priv->bpc = bpc;
   priv->streaming = true;
 
-  /* CMU_STATUS is the only status register that may be read at this point --
-   * and it turns out to be the one that matters.
+  /* CMU_STATUS is read here because it is the only status register that may be
+   * read at this point, and it is reported rather than checked.  MEASURED:
+   * 0x0000024a here, which fails the (CMU_STATUS & 0x15) == 0x15 readiness
+   * test
+   * -- and that is the EXPECTED reading, not a fault: ipi_clk and vidqpclk are
+   * derived from the interface clock the VOP supplies, and the VOP has not
+   * been started yet.  It is logged for comparison with the post-VOP reading
+   * in rk3576_hdmi_start_video_path(), which is the one that says whether the
+   * video path actually came up.
    *
-   * MEASURED: CMU_STATUS = 0x0000020a at this point, and the readiness test
-   * (CMU_STATUS & 0x15) == 0x15 FAILS -- the VOP is not
-   * scanning yet, so that is the expected reading rather than a fault.
-   *
-   * The upper block is clock-gated while clk_locked is false, and MEASURED,
-   * touching it then accepts a write and breaks the NEXT controller access:
-   * 0x0aac and 0x08e0 have both done it.
-   *
-   * 0x0968 (LINK_CONFIG0) and the whole 0x0000-0x03ff block do answer here,
-   * which is why this function can set DVI mode at all -- their clocks are
-   * already up.
-   *
-   * So anything in 0x0800-0x0aff waits for clk_locked, which only becomes true
-   * once the VOP delivers the interface clock, and that is why HDCP2_BYPASS
-   * and the packet scheduler are both programmed from
-   * rk3576_hdmi_start_video_path() rather than from here.
-   *
-   * READS are a separate matter and are not done anywhere in this driver: the
-   * reads of 0x08e0 and of 0x0814/0x0804 that were measured aborted in BOTH
-   * clock states, so a read is suspect in a way a write is not.
+   * Nothing in the 0x0800-0x0aff block is touched here: MEASURED, programming
+   * it while it is still clock-gated accepts the write and then breaks the
+   * NEXT controller access.  HDCP2_BYPASS and the packet scheduler both wait
+   * for clk_locked, in rk3576_hdmi_start_video_path().
    */
 
-  _err("RK3576 HDMI DVI mode enabled: %" PRIu32
-       " Hz, %u bpc, CMU_STATUS %08" PRIx32 " (%s), HPD %08" PRIx32 " (%s)\n",
-       pixel_clock_hz, bpc, rk3576_hdmi_getreg(priv, RK3576_HDMI_CMU_STATUS),
-       ((rk3576_hdmi_getreg(priv, RK3576_HDMI_CMU_STATUS) &
-         RK3576_HDMI_CMU_CTRL_CLK_EN) == RK3576_HDMI_CMU_CTRL_CLK_EN)
-           ? "clocks locked"
-           : "CLOCKS NOT LOCKED",
-       getreg32(priv->ioc + RK3576_HDMI_IOC_HDMI_HPD_STATUS_OFF),
-       (getreg32(priv->ioc + RK3576_HDMI_IOC_HDMI_HPD_STATUS_OFF) &
-        RK3576_HDMI_IOC_HPD_LEVEL)
-           ? "sink attached"
-           : "NO SINK (bit 3 clear)");
+  _info("RK3576 HDMI DVI mode enabled: %" PRIu32 " Hz, %u bpc\n",
+        pixel_clock_hz, bpc);
 
   nxmutex_unlock(&priv->lock);
 
@@ -1140,23 +1872,25 @@ int rk3576_hdmi_start_video_path(void)
       putreg32(RK3576_HDMI_HDCP2_BYPASS,
                priv->base + RK3576_HDMI_HDCP2LOGIC_CONFIG0);
 
-      _err("RK3576 HDMI HDCP2 bypass set (0x08e0 <- 0x%08" PRIx32
-           "): the video datapath no longer routes through the external "
-           "HDCP2 module\n",
-           (uint32_t)RK3576_HDMI_HDCP2_BYPASS);
-
       putreg32(RK3576_HDMI_PKTSCHED_PKT_CONTROL0_START,
                priv->base + RK3576_HDMI_PKTSCHED_PKT_CONTROL0);
       putreg32(RK3576_HDMI_PKTSCHED_GCP_TX_EN,
                priv->base + RK3576_HDMI_PKTSCHED_PKT_EN);
-      _err("RK3576 HDMI packet scheduler started\n");
+
+      _info("RK3576 HDMI video path started: HDCP2 bypassed, packet scheduler "
+            "running (CMU_STATUS %08" PRIx32 ", all display clock domains "
+            "up)\n",
+            cmu);
     }
   else
     {
-      _err("RK3576 HDMI HDCP2 bypass NOT set and packet scheduler NOT "
-           "started: their register block is clock-gated, so the programming "
-           "would be discarded and has been measured to break the next "
-           "controller access.\n");
+      _warn(
+          "WARNING: RK3576 HDMI: the video clock domains are still not up "
+          "(CMU_STATUS %08" PRIx32 ", expected 0x15 bits): HDCP2 bypass and "
+          "packet scheduler left unprogrammed, because that register block is "
+          "clock-gated and touching it has been measured to break the next "
+          "controller access\n",
+          cmu);
     }
 
   return OK;
@@ -1242,6 +1976,116 @@ uint32_t rk3576_hdmi_pixel_clock_hz(void) { return g_rk3576_hdmi.pixel_clock; }
  ****************************************************************************/
 
 uint32_t rk3576_hdmi_ref_clock_hz(void) { return g_rk3576_hdmi.ref_hz; }
+
+/****************************************************************************
+ * Name: rk3576_hdmi_hpd_connected
+ *
+ * Description:
+ *   Report whether the sink is asserting hot-plug detect.  See the header for
+ *   why this is advisory rather than a gate on the EDID read.
+ *
+ ****************************************************************************/
+
+bool rk3576_hdmi_hpd_connected(void)
+{
+  return (getreg32(g_rk3576_hdmi.ioc + RK3576_HDMI_IOC_HDMI_HPD_STATUS_OFF) &
+          RK3576_HDMI_IOC_HPD_LEVEL) != 0;
+}
+
+/****************************************************************************
+ * Name: rk3576_hdmi_read_sink_timing
+ *
+ * Description:
+ *   Read the sink's EDID base block over DDC, log it in full, and decode the
+ *   operating timing from it.  See the header for the contract and the
+ *   deliberate refusal to gate on HPD.
+ *
+ ****************************************************************************/
+
+int rk3576_hdmi_read_sink_timing(FAR struct rk3576_hdmi_timing_s *timing)
+{
+  FAR struct rk3576_hdmi_s *priv = &g_rk3576_hdmi;
+  FAR const uint8_t *desc;
+  struct rk3576_hdmi_timing_s candidate;
+  enum rk3576_hdmi_dtd_status_e status;
+  uint8_t edid[RK3576_HDMI_EDID_LENGTH];
+  bool hpd;
+  int unusable = -ENOENT;
+  unsigned int i;
+  int ret;
+
+  if (timing == NULL)
+    {
+      return -EINVAL;
+    }
+
+  if (!priv->initialized)
+    {
+      _err("ERROR: RK3576 HDMI EDID read before initialize\n");
+      return -EIO;
+    }
+
+  hpd = rk3576_hdmi_hpd_connected();
+
+  ret = rk3576_hdmi_ddc_read(priv, edid, sizeof(edid));
+  if (ret < 0)
+    {
+      _warn("WARNING: RK3576 HDMI EDID read failed: %d (HPD %s)\n", ret,
+            hpd ? "asserted" : "NOT asserted");
+      return ret;
+    }
+
+  if (!rk3576_hdmi_edid_valid(edid))
+    {
+      _warn("WARNING: RK3576 HDMI EDID header or checksum is invalid\n");
+      return -EINVAL;
+    }
+
+  rk3576_hdmi_edid_dump(edid, hpd);
+
+  /* Take the FIRST usable detailed timing, scanning all four descriptor slots.
+   *
+   * Two reasons for the scan rather than reading slot 1 alone:
+   *
+   *   - EDID 1.3+ requires the preferred timing to be in descriptor 1, and
+   * byte 24 bit 1 is the sink's promise that it is.  Cheap EDID 1.0/1.2 sinks
+   *     predate that rule and put the monitor name there instead, leaving the
+   *     real timing in a later slot.  Reading only slot 1 makes those sinks
+   * look like they have no timing at all.
+   *
+   *   - "First" is what "preferred" means: the descriptors are ordered and the
+   *     first timing is the sink's native mode.  Choosing a later one would
+   * need a preference of our own, and falling back to the board's known-good
+   *     default is a more predictable outcome than driving a secondary mode.
+   *
+   * A slot that holds a timing this driver cannot use (-ENOTSUP) or a
+   * malformed one (-EINVAL) does not stop the scan -- a later slot may still
+   * be usable -- but the reason is remembered so the caller can say why
+   * nothing was taken.
+   */
+
+  for (i = 0; i < RK3576_HDMI_EDID_DESC_NUMBER; i++)
+    {
+      desc =
+          &edid[RK3576_HDMI_EDID_DESCRIPTOR + i * RK3576_HDMI_EDID_DESC_SIZE];
+
+      status = rk3576_hdmi_edid_dtd(desc, &candidate);
+      if (status == RK3576_HDMI_DTD_STATUS_OK)
+        {
+          rk3576_hdmi_edid_manufacturer(edid, candidate.manufacturer);
+          *timing = candidate;
+          return OK;
+        }
+
+      if (status != RK3576_HDMI_DTD_STATUS_NOT_TIMING && unusable == -ENOENT)
+        {
+          unusable = (status == RK3576_HDMI_DTD_STATUS_MALFORMED) ? -EINVAL
+                                                                  : -ENOTSUP;
+        }
+    }
+
+  return unusable;
+}
 
 /****************************************************************************
  * Name: rk3576_hdmi_uninitialize

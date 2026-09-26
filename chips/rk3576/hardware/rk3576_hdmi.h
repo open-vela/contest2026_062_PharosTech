@@ -44,8 +44,8 @@
  * driver needs to write it.
  ****************************************************************************/
 
-#ifndef __VENDOR_ROCKCHIP_RK3576_RK3576_HDMI_H
-#define __VENDOR_ROCKCHIP_RK3576_RK3576_HDMI_H
+#ifndef __VENDOR_ROCKCHIP_RK3576_HARDWARE_RK3576_HDMI_H
+#define __VENDOR_ROCKCHIP_RK3576_HARDWARE_RK3576_HDMI_H
 
 /****************************************************************************
  * Included Files
@@ -208,9 +208,20 @@
 /* ---------------------------------------------------------------------------
  * I2C master (DDC)
  * ---------------------------------------------------------------------------
- * The controller embeds the DDC master used to read the sink EDID.  Only the
- * init constants are needed by the DVI bring-up; actual transfers would go
- * through the I2CM_INTERFACE_* windowed register file.
+ * The controller embeds the DDC master that reads the sink's EDID EEPROM.  It
+ * is the only master on the DDC pads (VO0_GRF_SOC_CON14 hands them over), and
+ * it is the reference driver's choice too, because SCDC and HDCP -- both
+ * hardware state machines sharing the same pads -- are unreachable from any
+ * external I2C controller.
+ *
+ * The runtime interface is a window: I2CM_INTERFACE_CONTROL0 carries the slave
+ * address and the command for one byte, the data register carries that byte,
+ * and the transfer completes on the MAINUNIT_1 interrupt.  Control0 and the
+ * command field are the tricky part -- I2CM_FM_READ, I2CM_FM_WRITE,
+ * I2CM_SHORT_READ and I2CM_EXT_READ all live INSIDE I2CM_WR_MASK ([4:1]), so
+ * the command is programmed by writing one of those values *through* that
+ * mask, and cleared by writing 0 through it.  I2CM_FM_EN (bit 0) is the only
+ * command bit outside the mask, and the reference driver leaves it clear.
  */
 
 #define RK3576_HDMI_I2CM_FM_SCL_CONFIG0     0x00e4u
@@ -218,10 +229,52 @@
 #define RK3576_HDMI_I2CM_CONTROL0           0x00ecu
 #define RK3576_HDMI_I2CM_STATUS0            0x00f0u
 #define RK3576_HDMI_I2CM_INTERFACE_CONTROL0 0x00f4u
+#define RK3576_HDMI_I2CM_INTERFACE_CONTROL1 0x00f8u
+#define RK3576_HDMI_I2CM_INTERFACE_WRDATA_0 0x00fcu /* WRDATA_0_3  */
+#define RK3576_HDMI_I2CM_INTERFACE_RDDATA_0 0x010cu /* RDDATA_0_3  */
 
 #define RK3576_HDMI_I2CM_CONTROL0_SWRESET   0x01u
 #define RK3576_HDMI_I2CM_FM_SCL_CONFIG0_VAL 0x085c085cu
-#define RK3576_HDMI_I2CM_FM_EN              (1u << 0)
+
+/* I2CM_INTERFACE_CONTROL0 fields. */
+
+#define RK3576_HDMI_I2CM_ADDR          0x0ff000u /* [19:12] sub-address       */
+#define RK3576_HDMI_I2CM_ADDR_SHIFT    12
+#define RK3576_HDMI_I2CM_SLVADDR       0x000fe0u /* [11: 5] 7-bit slave address */
+#define RK3576_HDMI_I2CM_SLVADDR_SHIFT 5
+#define RK3576_HDMI_I2CM_WR_MASK       0x00001eu /* [ 4: 1] command field     */
+#define RK3576_HDMI_I2CM_EXT_READ      (1u << 4) /* read, with segment pointer */
+#define RK3576_HDMI_I2CM_SHORT_READ    (1u << 3) /* read, no sub-address */
+#define RK3576_HDMI_I2CM_FM_READ       (1u << 2) /* read one byte              */
+#define RK3576_HDMI_I2CM_FM_WRITE      (1u << 1) /* write one byte             */
+#define RK3576_HDMI_I2CM_FM_EN         (1u << 0) /* fast-mode enable           */
+
+/* I2CM_INTERFACE_CONTROL1 selects the EDID segment for extended reads.  The
+ * base block lives in segment 0, which is the reset value, so a plain
+ * base-block read never has to touch this register -- but it IS cleared at
+ * init so a stale segment from a previous stage cannot redirect the read.
+ */
+
+#define RK3576_HDMI_I2CM_SEG_PTR  0x7f80u /* [14: 7]                    */
+#define RK3576_HDMI_I2CM_SEG_ADDR 0x007fu /* [ 6: 0]                    */
+
+/* The DDC master address block.  The EDID EEPROM answers at 0x50; 0x30 is the
+ * segment-pointer pseudo-device, which this driver does not use.
+ */
+
+#define RK3576_HDMI_DDC_EDID_ADDR 0x50u
+
+/* ---------------------------------------------------------------------------
+ * Main unit 1 interrupt bits (the I2C master's completion signals)
+ * ---------------------------------------------------------------------------
+ * MAINUNIT_1_INT_STATUS, _MASK_N and _CLEAR all use the same bit positions;
+ * _MASK_N is an active-low mask (1 = unmasked).  NuttX takes no interrupt from
+ * this controller, so the driver polls _STATUS and unmasks the two bits for
+ * the duration of a transfer, mirroring the reference driver's behaviour.
+ */
+
+#define RK3576_HDMI_I2CM_OP_DONE_IRQ   (1u << 0)
+#define RK3576_HDMI_I2CM_NACK_RCVD_IRQ (1u << 2)
 
 /* SCDC (Status and Data Channel) -- HDMI 1.4+ scrambling control.  Not needed
  * for DVI mode but the registers must exist so that future HDMI 1.4 modes can
@@ -385,6 +438,155 @@
 
 #define RK3576_HDMI_MAINUNIT_1_INT_CLEAR_VAL \
   (RK3576_HDMI_I2CM_OP_DONE_CLEAR | RK3576_HDMI_I2CM_NACK_RCVD_CLEAR)
+
+/* ---------------------------------------------------------------------------
+ * EDID base block
+ * ---------------------------------------------------------------------------
+ * Only the base block is needed: a sink that offers anything else as its
+ * preferred timing still advertises "I can be driven like this" first.  The
+ * extension block count is read only to report whether the sink has more.
+ *
+ * The magic and checksum rules are the ones every EDID reader applies, and the
+ * detailed timing descriptor below is the standard 18-byte layout.  Note that
+ * the horizontal active/blanking high bits share one byte with the HIGH nibble
+ * carrying the ACTIVE pixels -- byte 4 bits [7:4] = hactive[11:8], bits [3:0]
+ * = hblank[11:8]; the vertical word (byte 7) is arranged the same way, and the
+ * sync-offset/width high bits live in byte 11.
+ */
+
+#define RK3576_HDMI_EDID_LENGTH       128u
+#define RK3576_HDMI_EDID_MAGIC_SIZE   8u
+#define RK3576_HDMI_EDID_MANUFACTURER 8u  /* 2 bytes, big endian  */
+#define RK3576_HDMI_EDID_PRODUCTCODE  10u /* 2 bytes, little endian */
+#define RK3576_HDMI_EDID_SERIALNO     12u /* 4 bytes, little endian */
+#define RK3576_HDMI_EDID_WEEK         16u
+#define RK3576_HDMI_EDID_YEAR         17u /* minus 1990 */
+#define RK3576_HDMI_EDID_VERSION      18u
+#define RK3576_HDMI_EDID_REVISION     19u
+#define RK3576_HDMI_EDID_VIDEO_INPUT  20u
+#define RK3576_HDMI_EDID_HSIZE_CM     21u
+#define RK3576_HDMI_EDID_VSIZE_CM     22u
+#define RK3576_HDMI_EDID_GAMMA        23u
+#define RK3576_HDMI_EDID_FEATURES     24u
+#define RK3576_HDMI_EDID_DESCRIPTOR   54u /* first descriptor, 18 bytes */
+#define RK3576_HDMI_EDID_DESC_NUMBER  4u
+#define RK3576_HDMI_EDID_DESC_SIZE    18u
+#define RK3576_HDMI_EDID_EXT_COUNT    126u
+#define RK3576_HDMI_EDID_CHECKSUM     127u
+
+/* Video input bitmap (byte 20). */
+
+#define RK3576_HDMI_EDID_INPUT_DIGITAL            (1u << 7)
+#define RK3576_HDMI_EDID_INPUT_VIDIF_MASK         0x0fu
+#define RK3576_HDMI_EDID_INPUT_VIDIF_HDMIA        1u
+#define RK3576_HDMI_EDID_INPUT_VIDIF_HDMIB        2u
+#define RK3576_HDMI_EDID_INPUT_BITDEPTH_SHIFT     4u
+#define RK3576_HDMI_EDID_INPUT_BITDEPTH_MASK      0x70u
+#define RK3576_HDMI_EDID_INPUT_BITDEPTH_UNDEFINED 0u
+
+/* Features bitmap (byte 24).  Bit 1 is the one that matters here: it is the
+ * sink PROMISING that descriptor 1 holds its preferred timing.  When it is
+ * clear the sink is free to put something else there, which is why the reader
+ * scans all four descriptor slots rather than trusting slot 1.
+ */
+
+#define RK3576_HDMI_EDID_FEATURE_DPMS_STANDBY     (1u << 7)
+#define RK3576_HDMI_EDID_FEATURE_DPMS_SUSPEND     (1u << 6)
+#define RK3576_HDMI_EDID_FEATURE_DPMS_OFF         (1u << 5)
+#define RK3576_HDMI_EDID_FEATURE_PREFERRED_TIMING (1u << 1)
+#define RK3576_HDMI_EDID_FEATURE_SRGB             (1u << 2)
+
+/* Display descriptor classification.  A descriptor whose first two bytes are
+ * zero is not a timing: byte 3 then names what it actually is.
+ */
+
+#define RK3576_HDMI_DESC_TYPE            3u
+#define RK3576_HDMI_DESC_TEXT            5u /* text/range fields start here */
+
+#define RK3576_HDMI_DESC_TYPE_DUMMY      0x10u
+#define RK3576_HDMI_DESC_TYPE_STDTIMING  0xf7u
+#define RK3576_HDMI_DESC_TYPE_CVT        0xf8u
+#define RK3576_HDMI_DESC_TYPE_DCM        0xf9u
+#define RK3576_HDMI_DESC_TYPE_STDID      0xfau
+#define RK3576_HDMI_DESC_TYPE_WHITEPOINT 0xfbu
+#define RK3576_HDMI_DESC_TYPE_NAME       0xfcu
+#define RK3576_HDMI_DESC_TYPE_LIMITS     0xfdu
+#define RK3576_HDMI_DESC_TYPE_TEXT       0xfeu
+#define RK3576_HDMI_DESC_TYPE_SERIAL     0xffu
+
+#define RK3576_HDMI_DESC_TEXT_LEN        13u /* bytes 5..17 */
+
+/* Display range limits (descriptor type 0xfd).  The maximum pixel clock is
+ * stored in 10 MHz units, which is why it needs a *10 to become MHz -- a
+ * detail worth naming, because reading it as MHz understates a sink's
+ * capability by 10x and would make a perfectly good mode look unsupported.
+ */
+
+#define RK3576_HDMI_DESC_LIMITS_MIN_VFREQ      5u
+#define RK3576_HDMI_DESC_LIMITS_MAX_VFREQ      6u
+#define RK3576_HDMI_DESC_LIMITS_MIN_HFREQ      7u
+#define RK3576_HDMI_DESC_LIMITS_MAX_HFREQ      8u
+#define RK3576_HDMI_DESC_LIMITS_MAX_CLOCK      9u /* 10 MHz units */
+#define RK3576_HDMI_DESC_LIMITS_MAX_CLOCK_UNIT 10000000u
+
+/* Detailed timing descriptor (relative to RK3576_HDMI_EDID_DESCRIPTOR + i*18).
+ *
+ * NOTE: the whole RK3576_HDMI_DTD_* namespace belongs to these field
+ * constants. They are macros, so an enum in a .c file that could also see them
+ * must not reuse a name from it -- the preprocessor expands the enumerator and
+ * the declaration turns into garbage.  The DTD classification enum in
+ * rk3576_hdmi.c is therefore spelt RK3576_HDMI_DTD_STATUS_* for that reason.
+ */
+
+#define RK3576_HDMI_DTD_PIXCLOCK_LO 0u /* 10 kHz units, little endian */
+#define RK3576_HDMI_DTD_PIXCLOCK_HI 1u
+#define RK3576_HDMI_DTD_HACTIVE_LO  2u
+#define RK3576_HDMI_DTD_HBLANK_LO   3u
+#define RK3576_HDMI_DTD_H_MSBITS \
+  4u /* [7:4] hactive[11:8], [3:0] hblank[11:8] */
+#define RK3576_HDMI_DTD_VACTIVE_LO 5u
+#define RK3576_HDMI_DTD_VBLANK_LO  6u
+#define RK3576_HDMI_DTD_V_MSBITS \
+  7u /* [7:4] vactive[11:8], [3:0] vblank[11:8] */
+#define RK3576_HDMI_DTD_HSYNC_OFF_LO 8u
+#define RK3576_HDMI_DTD_HSYNC_WID_LO 9u
+#define RK3576_HDMI_DTD_VSYNC_LO \
+  10u /* [7:4] vsync offset[3:0], [3:0] vsync width[3:0] */
+#define RK3576_HDMI_DTD_SYNC_MSBITS        \
+  11u /* [7:6] hoff[9:8], [5:4] hwid[5:4], \
+       * [3:2] voff[5:4], [1:0] vwid[5:4] */
+#define RK3576_HDMI_DTD_HACTIVE_MSB_SHIFT   4u /* 0xf0 -> bits [11:8] */
+#define RK3576_HDMI_DTD_HBLANK_MSB_SHIFT    8u /* 0x0f -> bits [11:8] */
+#define RK3576_HDMI_DTD_HACTIVE_MSB_MASK    0xf0u
+#define RK3576_HDMI_DTD_HBLANK_MSB_MASK     0x0fu
+#define RK3576_HDMI_DTD_VACTIVE_MSB_SHIFT   4u /* 0xf0 -> bits [11:8] */
+#define RK3576_HDMI_DTD_VBLANK_MSB_SHIFT    8u /* 0x0f -> bits [11:8] */
+#define RK3576_HDMI_DTD_VACTIVE_MSB_MASK    0xf0u
+#define RK3576_HDMI_DTD_VBLANK_MSB_MASK     0x0fu
+#define RK3576_HDMI_DTD_HSYNC_OFF_MSB_MASK  0xc0u
+#define RK3576_HDMI_DTD_HSYNC_OFF_MSB_SHIFT 2u
+#define RK3576_HDMI_DTD_HSYNC_WID_MSB_MASK  0x30u
+#define RK3576_HDMI_DTD_HSYNC_WID_MSB_SHIFT 4u
+#define RK3576_HDMI_DTD_VSYNC_OFF_MSB_MASK  0x0cu
+#define RK3576_HDMI_DTD_VSYNC_OFF_MSB_SHIFT 2u
+#define RK3576_HDMI_DTD_VSYNC_WID_MSB_MASK  0x03u
+#define RK3576_HDMI_DTD_VSYNC_WID_MSB_SHIFT 4u
+#define RK3576_HDMI_DTD_VSYNC_OFF_LO_SHIFT  4u
+#define RK3576_HDMI_DTD_VSYNC_OFF_LO_MASK   0x0fu
+#define RK3576_HDMI_DTD_VSYNC_WID_LO_MASK   0x0fu
+#define RK3576_HDMI_DTD_FLAGS               17u
+#define RK3576_HDMI_DTD_INTERLACED          (1u << 7)
+#define RK3576_HDMI_DTD_SYNCTYPE_MASK       (3u << 3)
+#define RK3576_HDMI_DTD_SYNCTYPE_SEPARATE   (3u << 3)
+#define RK3576_HDMI_DTD_VSYNC_POLARITY      (1u << 2)
+#define RK3576_HDMI_DTD_HSYNC_POLARITY      (1u << 1)
+
+/* Sanity bounds applied by the decoder.  An EDID is untrusted input: a
+ * malformed or dishonest one must not be able to size a framebuffer
+ * allocation or wrap a porch calculation.
+ */
+
+#define RK3576_HDMI_DTD_MAX_ACTIVE 4096u
 
 /* ---------------------------------------------------------------------------
  * VO0_GRF: routing, colour format and pad ownership
@@ -597,9 +799,6 @@
 /* ---------------------------------------------------------------------------
  * GPIO4C pad function select (VCCIO6_IOC_GPIO4C_IOMUX_SEL_L)
  * ---------------------------------------------------------------------------
- * Reference only -- NOT written by the driver today (see the note in
- * rk3576_hdmi_routing()).
- *
  * The four HDMI SIDEBAND signals live on GPIO4C pads, whose function select
  * resets to 0 = GPIO.  Function 9 is the HDMI one for all four:
  *
@@ -608,16 +807,24 @@
  *   gpio4c2_sel [11:8]  -> HDMI_TX_SCL
  *   gpio4c3_sel [15:12] -> HDMI_TX_SDA
  *
- * These pads really are shared with GPIO, so HPD / DDC / CEC genuinely need
- * this muxing before they can work.
+ * The driver writes all four fields together from rk3576_hdmi_routing(), and
+ * the value (0x9999) is the one the vendor's own Debian image leaves in this
+ * register, so it is known-good for this board rather than a guess.
  *
- * BUT the TMDS clock and data lanes are NOT here.  They are dedicated HDMI
- * pins and pass through no IOMUX, so this register has no bearing on whether
- * a picture appears -- only on whether hot-plug and EDID can be read.  It is
- * a prerequisite for adding HPD/EDID support, not for the video path, and
- * forcing four pads to a fixed function without checking the board schematic
- * can break whatever else they drive.  Wire it up when HPD/EDID is actually
- * implemented and testable.
+ * MEASURED, and why the write is not optional: with it absent,
+ * VCCIO6_IOC_HDMITX_HPD_STATUS reads 0x00000080 -- bit 7 only, bit 3 clear --
+ * i.e. "no sink attached" with a monitor plugged in and terminating the link,
+ * because the HPD input is not connected to its pad.
+ *
+ * The TMDS clock and data lanes are NOT here.  They are dedicated HDMI pins
+ * and pass through no IOMUX, so this register has no bearing on whether a
+ * picture appears -- only on whether HPD, DDC and CEC can be used.  It is a
+ * prerequisite for HPD/EDID, not for the video path.
+ *
+ * NOTE: gpio4c0 (CEC) is muxed along with the rest even though nothing here
+ * speaks CEC, because the whole 16-bit field is written as one known-good
+ * value.  A board whose schematic puts something else on GPIO4_C0 would need
+ * this narrowed to bits [15:4].
  */
 
 #define RK3576_HDMI_IOC_GPIO4C_IOMUX_SEL_L_OFF 0x0390u
@@ -673,4 +880,4 @@
 
 #define RK3576_HDMI_RST_PULSE_US 10
 
-#endif /* __VENDOR_ROCKCHIP_RK3576_RK3576_HDMI_H */
+#endif /* __VENDOR_ROCKCHIP_RK3576_HARDWARE_RK3576_HDMI_H */

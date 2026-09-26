@@ -186,6 +186,8 @@ static struct rk3576_hdptxphy_s g_hdptxphy = {
   .lock = NXMUTEX_INITIALIZER,
 };
 
+#define RK3576_HDPTXPHY_SNAP_TOLERANCE_PPM 10000u
+
 /* TMDS ROPLL settings, ordered by descending TMDS character rate.  The rate
  * key is the
  * TMDS character rate (pixel clock at 8 bpc), not the pixel clock at any other
@@ -1034,6 +1036,63 @@ bool rk3576_hdptxphy_is_ready(void)
 uint32_t rk3576_hdptxphy_pixel_clock_hz(void)
 {
   return g_hdptxphy.powered ? g_hdptxphy.pixel_clock : 0;
+}
+
+uint32_t rk3576_hdptxphy_snap_pixel_clock(uint32_t pixel_clock_hz, uint8_t bpc)
+{
+  uint64_t char_rate;
+  uint64_t best_delta = UINT64_MAX;
+  uint32_t best_rate = 0;
+  size_t i;
+
+  if (pixel_clock_hz == 0)
+    {
+      return 0;
+    }
+
+  if (bpc != 8 && bpc != 10 && bpc != 12 && bpc != 16)
+    {
+      return 0;
+    }
+
+  /* The table is keyed by the TMDS character rate, which scales with the
+   * colour depth: at 10 bpc a 148.5 MHz pixel clock is carried as a 185.625
+   * MHz character rate.  Divide by 8 before multiplying by bpc so the
+   * intermediate value cannot overflow 32 bits.
+   */
+
+  char_rate = ((uint64_t)pixel_clock_hz / 8u) * bpc;
+
+  for (i = 0; i < nitems(g_hdptxphy_tmds_ropll); i++)
+    {
+      uint64_t rate = g_hdptxphy_tmds_ropll[i].rate;
+      uint64_t delta =
+          (rate > char_rate) ? rate - char_rate : char_rate - rate;
+
+      if (delta < best_delta)
+        {
+          best_delta = delta;
+          best_rate = (uint32_t)rate;
+        }
+    }
+
+  /* Rejecting rather than snapping when nothing is close is what keeps a mode
+   * this PHY cannot really carry from being mistaken for one it can: the
+   * caller falls back to a mode it knows works.
+   */
+
+  if (best_rate == 0 ||
+      best_delta * 1000000u >
+          (uint64_t)best_rate * RK3576_HDPTXPHY_SNAP_TOLERANCE_PPM)
+    {
+      return 0;
+    }
+
+  /* Convert the character rate back to a pixel clock at this depth.  Every
+   * table entry was derived as pixel_clock * bpc / 8, so this is exact.
+   */
+
+  return (uint32_t)((uint64_t)best_rate * 8u / bpc);
 }
 
 #endif /* CONFIG_RK3576_HDPTXPHY */

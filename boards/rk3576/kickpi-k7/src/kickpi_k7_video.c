@@ -106,6 +106,8 @@ int kickpi_k7_video_initialize(FAR const struct kickpi_k7_video_mode_s *mode)
   vop_cfg.vsync_len = mode->vsync_len;
   vop_cfg.vfront_porch = mode->vfront_porch;
   vop_cfg.vback_porch = mode->vback_porch;
+  vop_cfg.hsync_positive = mode->hsync_positive;
+  vop_cfg.vsync_positive = mode->vsync_positive;
   vop_cfg.pixel_clock = mode->pixel_clock;
 
   ret = rk3576_vop_initialize(&vop_cfg);

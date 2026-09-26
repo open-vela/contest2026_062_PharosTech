@@ -174,5 +174,39 @@ bool rk3576_hdptxphy_is_ready(void);
 
 uint32_t rk3576_hdptxphy_pixel_clock_hz(void);
 
+/****************************************************************************
+ * Name: rk3576_hdptxphy_snap_pixel_clock
+ *
+ * Description:
+ *   Map a desired pixel clock onto the nearest rate the TMDS PLL can
+ *   synthesise.
+ *
+ *   The PLL is table-driven (see the long note in rk3576_hdptxphy.c), so a
+ *   rate taken from a sink's EDID is very often not directly programmable:
+ *   monitors that run 59.94 Hz advertise 148.352 MHz where the table has
+ *   148.5 MHz, and so on.  Refusing every such mode would make EDID-based mode
+ *   selection useless, while programming the nearest entry shifts the refresh
+ *   by 0.1% -- far inside any sink's tolerance, and exactly what a full
+ *display driver does.
+ *
+ *   The match is accepted only within RK3576_HDPTXPHY_SNAP_TOLERANCE_PPM, so a
+ *   mode whose intended rate is genuinely outside the table (a 2560x1440
+ *   monitor asking for 241.5 MHz, say) is reported as unsupported rather than
+ *   silently run at a wildly different rate.
+ *
+ * Input Parameters:
+ *   pixel_clock_hz - Desired pixel clock in Hz.
+ *   bpc            - Bits per colour component the mode will run at: 8, 10,
+ *                    12 or 16.
+ *
+ * Returned Value:
+ *   The nearest synthesizable pixel clock in Hz, or 0 if the request is
+ *   invalid or nothing in the table is close enough.
+ *
+ ****************************************************************************/
+
+uint32_t rk3576_hdptxphy_snap_pixel_clock(uint32_t pixel_clock_hz,
+                                          uint8_t bpc);
+
 #endif /* CONFIG_RK3576_HDPTXPHY */
 #endif /* __VENDOR_ROCKCHIP_RK3576_RK3576_HDPTXPHY_H */

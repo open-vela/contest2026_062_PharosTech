@@ -117,6 +117,16 @@ struct kickpi_k7_video_mode_s
   uint16_t vfront_porch;
   uint16_t vback_porch;
 
+  /* Sync polarities as the sink or panel expects them (`true` = active high).
+   * This has to travel with the timing because the VOP programs the interface
+   * with it: a timing from a sink's EDID carries its own polarities, and the
+   * two CEA-861 modes this board shipped with before EDID support are both
+   * positive.  A zero-initialised mode means NEGATIVE sync, so set both.
+   */
+
+  bool hsync_positive;
+  bool vsync_positive;
+
   /* Nominal pixel clock of the mode, in Hz.  See the long note on
    * rk3576_vop_config.pixel_clock: this is the value the output interface
    * derives its own timing from, and on the DSI path it must be a rate the

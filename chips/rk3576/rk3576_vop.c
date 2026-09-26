@@ -1148,9 +1148,25 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
                     RK3576_VOP_POST_CORE_CLK_DCLK_CORE_SEL);
 
   regval = RK3576_VOP_IFACE_CLK_OUT_EN | RK3576_VOP_IFACE_OUT_EN |
-           RK3576_VOP_IFACE_VSYNC_POL | RK3576_VOP_IFACE_HSYNC_POL |
            RK3576_VOP_IFACE_REGDONE_IMD_EN |
            ((uint32_t)priv->cfg.port << RK3576_VOP_IFACE_PORT_SEL_SHIFT);
+
+  /* Sync polarity comes from the mode rather than from the register's reset
+   * value.  The reset default is positive for both, which is what CEA-861
+   * 1080p60 and the DSI panel use, but a timing decoded from a sink's EDID may
+   * specify negative sync and the sink must be given what it advertised.
+   */
+
+  if (priv->cfg.hsync_positive)
+    {
+      regval |= RK3576_VOP_IFACE_HSYNC_POL;
+    }
+
+  if (priv->cfg.vsync_positive)
+    {
+      regval |= RK3576_VOP_IFACE_VSYNC_POL;
+    }
+
   rk3576_vop_modifyreg(priv, sys_base + iface_off,
                        RK3576_VOP_IFACE_OUT_EN | RK3576_VOP_IFACE_CLK_OUT_EN |
                            RK3576_VOP_IFACE_PORT_SEL_MASK |

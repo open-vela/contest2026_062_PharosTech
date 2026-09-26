@@ -44,6 +44,7 @@
 
 #include <nuttx/config.h>
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef CONFIG_RK3576_VOP
@@ -125,6 +126,23 @@ struct rk3576_vop_config
   uint16_t vsync_len;    /* VSYNC pulse width (lines) */
   uint16_t vfront_porch; /* Vertical front porch */
   uint16_t vback_porch;  /* Vertical back porch */
+
+  /* Sync polarities as the SINK or panel expects them (`true` = active high,
+   * i.e. the interface's own reset default).
+   *
+   * These used to be hard-coded positive in rk3576_vop_configure_port(), which
+   * was correct for the two CEA-861 modes this driver shipped with (1080p60
+   * and the DSI panel both use positive sync) but not for a timing taken from
+   * a sink's EDID: 1024x768@60 and 1440x900@60 both advertise negative sync,
+   * and driving the opposite polarity to the one advertised shifts or loses
+   * the picture.
+   *
+   * MIND THE DEFAULT: `false` is NEGATIVE sync, so a zero-initialised config
+   * means inverted sync.  Every initialiser must set both fields explicitly.
+   */
+
+  bool hsync_positive;
+  bool vsync_positive;
 
   /* Nominal pixel clock to request for the video port, in Hz.
    *
