@@ -304,7 +304,7 @@
 #define KICKPI_K7_BL_PWM_CTRL 1 /* RK3576_PWM1 (PWM1 @ 0x2ADD0000) */
 #define KICKPI_K7_BL_PWM_CH   1
 #define KICKPI_K7_BL_DEVNAME  "pwm0"
-#define KICKPI_K7_BL_FREQ_HZ  1000
+#define KICKPI_K7_BL_FREQ_HZ  20000     /* 20 kHz */
 #define KICKPI_K7_BL_DUTY     (1 << 15) /* 50% duty (ub16_t) */
 
 /* Backlight PWM output pin: GPIO0_B5 muxed to PWM1_CH1_M0 (AF 0xc = 12,
@@ -914,115 +914,6 @@ static int kickpi_k7_mipi_dsi_panel_bringup(FAR struct mipi_dsi_device *dev)
   return -EIO;
 }
 
-/* Defined further down; declared here because bist_clear() needs it. */
-
-static int kickpi_k7_mipi_dsi_write2(FAR struct mipi_dsi_device *dev,
-                                     uint8_t reg, uint8_t value);
-
-/****************************************************************************
- * Name: kickpi_k7_mipi_dsi_bist_clear
- *
- * Description:
- *   Make sure the panel is not running its own test pattern.  While BIST is
- *   enabled the panel free-runs a pattern generated from its own registers, so
- *   it ignores the incoming video stream and anything seen on the glass
- *   describes the panel, not this driver.
- *
- *   Clears the pattern selection (0x2c/0x2d/0x2e) and then the enable (0x2f),
- *   and reads the enable back, because an unchecked write is not evidence that
- *   the panel left the mode.
- *
- * Returned Value:
- *   OK if the enable reads back clear, -EIO otherwise.
- *
- ****************************************************************************/
-
-static int kickpi_k7_mipi_dsi_bist_clear(FAR struct mipi_dsi_device *dev)
-{
-  static const uint8_t page4[4] = { 0xff, 0x98, 0x81, 0x04 };
-  static const uint8_t page0[4] = { 0xff, 0x98, 0x81, 0x00 };
-  struct mipi_dsi_msg msg;
-  uint8_t rb;
-  int ret;
-
-  memset(&msg, 0, sizeof(msg));
-  msg.channel = KICKPI_K7_DSI_VC;
-  msg.type = KICKPI_K7_PKT_GEN_LONG;
-  msg.tx_buf = page4;
-  msg.tx_len = sizeof(page4);
-
-  if (mipi_dsi_transfer(dev, &msg) < 0)
-    {
-      syslog(LOG_ERR, "ERROR: panel BIST: page 4 select failed\n");
-      return -EIO;
-    }
-
-  /* Clear the pattern selection first, then the enable. */
-
-  (void)kickpi_k7_mipi_dsi_write2(dev, 0x2c, 0x00);
-  (void)kickpi_k7_mipi_dsi_write2(dev, 0x2d, 0x00);
-  (void)kickpi_k7_mipi_dsi_write2(dev, 0x2e, 0x00);
-
-  if (kickpi_k7_mipi_dsi_write2(dev, 0x2f, 0x00) < 0)
-    {
-      syslog(LOG_ERR, "ERROR: panel BIST enable write failed\n");
-    }
-
-  up_udelay(200);
-
-  rb = 0xff;
-  ret = mipi_dsi_dcs_read(dev, 0x2f, &rb, 1);
-
-  if (ret != 1 || rb != 0x00)
-    {
-      syslog(LOG_ERR,
-             "ERROR: panel BIST is still enabled (FRM_EN reads 0x%02x): the "
-             "panel free-runs\n",
-             (unsigned)rb);
-      syslog(LOG_ERR,
-             "ERROR:   its own test pattern and ignores the video stream\n");
-    }
-
-  /* Back to page 0 so the normal sequence is unaffected. */
-
-  memset(&msg, 0, sizeof(msg));
-  msg.channel = KICKPI_K7_DSI_VC;
-  msg.type = KICKPI_K7_PKT_GEN_LONG;
-  msg.tx_buf = page0;
-  msg.tx_len = sizeof(page0);
-  (void)mipi_dsi_transfer(dev, &msg);
-
-  return (ret == 1 && rb == 0x00) ? OK : -EIO;
-}
-
-/****************************************************************************
- * Name: kickpi_k7_mipi_dsi_write2
- *
- * Description:
- *   Send one panel register write as a DCS long write: payload = [reg, value].
- *   This is the vendor table's own form (`39 10 02 XX YY`), and the DSI driver
- *   routes 0x39 through the long-packet path with word count = len - 1.
- *
- ****************************************************************************/
-
-static int kickpi_k7_mipi_dsi_write2(FAR struct mipi_dsi_device *dev,
-                                     uint8_t reg, uint8_t value)
-{
-  uint8_t payload[2];
-  struct mipi_dsi_msg msg;
-
-  payload[0] = reg;
-  payload[1] = value;
-
-  memset(&msg, 0, sizeof(msg));
-  msg.channel = KICKPI_K7_DSI_VC;
-  msg.type = KICKPI_K7_PKT_DCS_LONG;
-  msg.tx_buf = payload;
-  msg.tx_len = sizeof(payload);
-
-  return mipi_dsi_transfer(dev, &msg) < 0 ? -EIO : OK;
-}
-
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -1089,11 +980,6 @@ int kickpi_k7_mipi_dsi_initialize(void)
     {
       return ret;
     }
-
-  /* 3a. Make sure the panel is not free-running its own test pattern: while
-   *     BIST is enabled the panel ignores the video stream entirely. */
-
-  (void)kickpi_k7_mipi_dsi_bist_clear(dev);
 
   /* 4. Bring up the VOP framebuffer that feeds the DSI IPI on PORT0, BEFORE
    *    switching the DSI into video mode -- the order matters.
