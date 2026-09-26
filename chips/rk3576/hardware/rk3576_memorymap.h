@@ -130,6 +130,26 @@
   0x2601A000 /* VO0 GRF (SOC_CON10 = DSI IPI cfg) \
               */
 
+/* HDMI TX controller and HDMI/eDP combo PHY.
+ *
+ * The HDMITX controller and the combo PHY are two separate APB slaves:
+ * the controller (PD_VO0 domain, 0x27DA0000) implements the HDMI link
+ * layer, while the PHY (VD_HDPTXPHY domain, 0x2B000000) contains the PLL,
+ * the four serialisers and the sideband block.  The PHY's control/status
+ * GRF (0x26032000) carries the power-up controls (bias/bgr/pll enable) and
+ * the ready flags (o_pll_lock_done / o_phy_clk_rdy / o_phy_rdy).
+ *
+ * Only one of HDMI and eDP can be active at a time: they share this PHY
+ * ("the VOP can only work in HDMI or eDP mode", TRM Part 2, 11.3.3).
+ */
+
+#define RK3576_HDMITX_ADDR   0x27DA0000 /* HDMI TX controller (128KB)    */
+#define RK3576_HDPTXPHY_ADDR 0x2B000000 /* HDMI/eDP combo PHY APB (64KB) */
+#define RK3576_HDPTXPHY_GRF_ADDR \
+  0x26032000 /* HDPTX PHY control / status GRF */
+#define RK3576_VCCIO6_IOC_ADDR \
+  0x2604A000 /* VCCIO6 IOC: HPD / DDC / CEC pads */
+
 /* Rockchip FSPI (Flexible Serial Peripheral Interface) */
 
 #define RK3576_FSPI0_ADDR 0x2A340000

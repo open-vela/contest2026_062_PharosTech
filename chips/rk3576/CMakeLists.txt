@@ -97,6 +97,14 @@ if(CONFIG_RK3576_MIPI_DSI)
   list(APPEND SRCS rk3576_mipi_dsi.c)
 endif()
 
+if(CONFIG_RK3576_HDPTXPHY)
+  list(APPEND SRCS rk3576_hdptxphy.c)
+endif()
+
+if(CONFIG_RK3576_HDMI)
+  list(APPEND SRCS rk3576_hdmi.c)
+endif()
+
 if(CONFIG_RK3576_VOP)
   list(APPEND SRCS rk3576_vop.c)
 endif()

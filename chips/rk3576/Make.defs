@@ -120,6 +120,14 @@ ifeq ($(CONFIG_RK3576_MIPI_DSI),y)
 CHIP_CSRCS += rk3576_mipi_dsi.c
 endif
 
+ifeq ($(CONFIG_RK3576_HDPTXPHY),y)
+CHIP_CSRCS += rk3576_hdptxphy.c
+endif
+
+ifeq ($(CONFIG_RK3576_HDMI),y)
+CHIP_CSRCS += rk3576_hdmi.c
+endif
+
 ifeq ($(CONFIG_RK3576_VOP),y)
 CHIP_CSRCS += rk3576_vop.c
 endif

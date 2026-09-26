@@ -320,6 +320,41 @@ config RK3576_MIPI_DSI
 		Enable the RK3576 MIPI DSI host controller (DSIHOST @ 0x27d80000).
 		Depends on the MIPI DCPHY which drives the physical D-PHY lanes.
 
+config RK3576_HDPTXPHY
+	bool "HDMI/eDP combo PHY (HDPTX PHY)"
+	default n
+	---help---
+		Enable the RK3576 HDMI/eDP combo PHY (HDPTXPHY @ 0x2b000000).
+		The PHY contains the TMDS/eDP PLL, the four serialiser lanes and
+		the sideband block, and is shared between the HDMI and eDP
+		controllers -- the VOP can drive only one of them at a time.
+
+		On the HDMI path it is the PHY, not the CRU, that generates the
+		pixel clock, so it is modelled independently of the HDMI
+		controller that consumes that clock.
+
+		TMDS (HDMI/DVI) mode only; DP mode and HDMI 2.1 FRL are not
+		implemented.
+
+config RK3576_HDMI
+	bool "HDMI TX controller"
+	default n
+	depends on RK3576_HDPTXPHY
+	---help---
+		Enable the RK3576 HDMI TX controller (HDMITX @ 0x27da0000).
+
+		The controller receives the VOP's parallel pixel stream over the
+		image pixel interface (IPI) and packetises it into a TMDS stream
+		which the HDPTX PHY serialises.
+
+		Only DVI mode is implemented for now: no AVI infoframe, no audio,
+		no HDCP and no SCDC scrambling.  All of those are optional for
+		the sink at rates below 340 MHz, which covers 1080p60, and adding
+		them later does not change this driver's structure.
+
+		Routing the VOP's video port to this controller additionally
+		requires CONFIG_RK3576_VOP.
+
 config RK3576_VOP
 	bool "Video Output Processor (VOP)"
 	default n
