@@ -280,6 +280,10 @@ static int rk3576_vop_getplaneinfo(FAR struct fb_vtable_s *vtable, int planeno,
 static int rk3576_vop_open(FAR struct fb_vtable_s *vtable);
 static int rk3576_vop_close(FAR struct fb_vtable_s *vtable);
 static int rk3576_vop_setpower(FAR struct fb_vtable_s *vtable, int power);
+#ifdef CONFIG_FB_UPDATE
+static int rk3576_vop_updatearea(FAR struct fb_vtable_s *vtable,
+                                 FAR const struct fb_area_s *area);
+#endif
 
 /****************************************************************************
  * Private Data
@@ -296,6 +300,9 @@ static const struct fb_vtable_s g_rk3576_vop_vtable = {
   .open = rk3576_vop_open,
   .close = rk3576_vop_close,
   .setpower = rk3576_vop_setpower,
+#ifdef CONFIG_FB_UPDATE
+  .updatearea = rk3576_vop_updatearea,
+#endif
 };
 
 /****************************************************************************
@@ -419,6 +426,78 @@ static int rk3576_vop_setpower(FAR struct fb_vtable_s *vtable, int power)
 
   return OK;
 }
+
+#ifdef CONFIG_FB_UPDATE
+/****************************************************************************
+ * Name: rk3576_vop_updatearea
+ *
+ * Description:
+ *   Make a region of the framebuffer written by the CPU visible to the
+ *   scan-out path.
+ *
+ *   The ESMART layer reads the framebuffer with the MMU bypassed (YRGB_MST
+ *   is a physical address), so it sees DDR, not the CPU's D-cache.  A CPU
+ *   write - an application drawing through mmap(), or the fb character
+ *   driver's fb_write() - stays in the D-cache and the display keeps
+ *   scanning out stale pixels until the cache is cleaned.
+ *
+ *   The fb framework forwards FBIO_UPDATE here, which is what LVGL's fbdev
+ *   backend issues after every refresh with the area it just dirtied.
+ ****************************************************************************/
+
+static int rk3576_vop_updatearea(FAR struct fb_vtable_s *vtable,
+                                 FAR const struct fb_area_s *area)
+{
+  FAR struct rk3576_vop_s *priv = (FAR struct rk3576_vop_s *)vtable;
+  FAR uint8_t *fb;
+  uint32_t y;
+  uint32_t h;
+  uintptr_t start;
+  uintptr_t end;
+
+  DEBUGASSERT(vtable != NULL);
+
+  if (priv->fbmem == NULL)
+    {
+      return -ENODEV;
+    }
+
+  fb = (FAR uint8_t *)priv->fbmem;
+
+  /* No area information: flush everything, the always-correct choice. */
+
+  if (area == NULL)
+    {
+      up_clean_dcache((uintptr_t)fb, (uintptr_t)fb + priv->fblen);
+      return OK;
+    }
+
+  if (area->w == 0 || area->h == 0 || area->y >= priv->cfg.yres)
+    {
+      return OK;
+    }
+
+  /* Clean whole scan lines: cache maintenance works on 64-byte lines, so
+   * the rows are the smallest unit that can be flushed without leaving a
+   * half-written line behind.
+   */
+
+  y = area->y;
+  h = area->h;
+
+  if (y + h > priv->cfg.yres)
+    {
+      h = priv->cfg.yres - y;
+    }
+
+  start = (uintptr_t)fb + (size_t)y * priv->stride;
+  end = start + (size_t)h * priv->stride;
+
+  up_clean_dcache(start, end);
+
+  return OK;
+}
+#endif /* CONFIG_FB_UPDATE */
 
 /****************************************************************************
  * Name: rk3576_vop_configure_timing

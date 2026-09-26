@@ -133,6 +133,40 @@
 #define KICKPI_K7_MIPI_DSI_LANES  4
 #define KICKPI_K7_MIPI_DSI_FORMAT MIPI_DSI_FMT_RGB888
 
+/* MADCTL (36h) argument bits.  ILI9881D 5.3.20 defines the byte as
+ * "0 0 0 0 BGR 0 SS GS" with a reset default of 00h, so the vendor table's
+ * 0x03 sets only SS and GS and leaves BGR = 0.  Unlike a generic MIPI DCS
+ * MADCTL there is no MY/MX/MV: D7..D4 are reserved on this panel, so SS and
+ * GS are the ONLY orientation controls.
+ *
+ * BGR (bit3) is asserted because the panel shows red and blue exchanged
+ * without it.  This bit is one end of a single R/B swap in the pipeline:
+ * ESMART's REGION0_MST_CTL rb_swap (bit14, set in rk3576_vop.c) is the other.
+ * Exactly ONE of the two may be active -- setting both cancels out and the
+ * inversion returns.  The DSI link cannot absorb the difference either:
+ * MIPI_DSI_FMT_RGB888 names the byte order of the pixel stream (R,G,B) and
+ * the DSI-2 host has no colour-order field.
+ *
+ * SS and GS are scan-direction bits, not just sequencing flags: SS reverses
+ * the source (column) scan order and GS reverses the gate (row) scan order,
+ * so each one mirrors one axis of the picture on the glass.  The vendor's
+ * 0x03 leaves both set; the board's enclosure mounts the panel the other way
+ * up, so both are cleared below, which mirrors both axes and is therefore a
+ * 180-degree rotation of the whole picture.  Note that this is a property of
+ * the panel alone: it costs no scan-out bandwidth and needs no change to the
+ * VOP timing or to the framebuffer geometry.
+ *
+ * If the result ever comes out mirrored on a single axis instead of rotated,
+ * that means the reference orientation was the other one -- set exactly one of
+ * the two bits (GS alone or SS alone) to mirror the remaining axis.
+ */
+
+#define KICKPI_K7_MADCTL_GS (1u << 0) /* Gate scan sequence: 1 = reversed */
+#define KICKPI_K7_MADCTL_SS                                                  \
+  (1u << 1)                            /* Source scan sequence: 1 = reversed \
+                                        */
+#define KICKPI_K7_MADCTL_BGR (1u << 3) /* 0: RGB, 1: BGR */
+
 /* Pixel clock: the vendor device tree specifies 62000000 Hz, and 62526316 Hz
  * is the closest rate this board can actually produce --
  * clk_set_rate(dclk_vp0) keeps the largest divisor of gpll whose output is
@@ -541,7 +575,11 @@ static const struct kickpi_k7_mipi_dsi_cmd_s g_kickpi_k7_mipi_dsi_init[] = {
   /* Page 0x00 (normal). */
   { KICKPI_K7_PKT_GEN_LONG, 5, _PANEL_INIT(0xff, 0x98, 0x81, 0x00) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x35, 0x00) },
-  { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x36, 0x03) },
+
+  /* MADCTL: BGR plus a 180-degree rotation (SS and GS both cleared, where
+   * the vendor's 0x03 leaves them set).  See the bit notes above. */
+
+  { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x36, KICKPI_K7_MADCTL_BGR) },
 
   /* Set the interface pixel format explicitly (3Ah = 0x77 = 24 bpp RGB888).
    *

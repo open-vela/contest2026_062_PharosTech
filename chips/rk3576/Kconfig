@@ -325,6 +325,7 @@ config RK3576_VOP
 	default n
 	select DRIVERS_VIDEO
 	select VIDEO_FB
+	select FB_UPDATE
 	depends on RK3576_DMA_ALLOC
 	---help---
 		Enable the RK3576 Video Output Processor (VOP @ 0x27d00000).
@@ -335,6 +336,13 @@ config RK3576_VOP
 		The framebuffer is allocated from the RK3576 DMA heap because the
 		VOP window address register is 32-bit (MMU bypass); hence this
 		driver depends on RK3576_DMA_ALLOC.
+
+		FB_UPDATE is selected because the driver must be told when the CPU has
+		written pixels: the ESMART layer reads DDR with the MMU bypassed, so a
+		CPU write only reaches the scan-out path once the cache is cleaned.
+		The fb framework forwards FBIO_UPDATE to the driver's updatearea()
+		callback for that purpose, and clients such as LVGL's fbdev backend
+		issue it after every refresh.
 
 endmenu # Rockchip RK3576 Peripheral Selection
 
