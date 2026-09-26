@@ -25,9 +25,7 @@
  *
  * Implements the PHY start-up sequence and the TMDS PLL programming described
  * by TRM Part 2, sections 25.6.1 ("SFR Settings for HDMI mode") and 25.6.2.1
- * ("Start-Up Sequence for PHY"), plus the TMDS path of the vendor PHY driver
- * (phy-rockchip-samsung-hdptx.c in the Rockchip and mainline trees, where this
- * block is the "samsung hdptx" PHY).
+ * ("Start-Up Sequence for PHY").
  *
  * ---------------------------------------------------------------------------
  * Why the PLL is table-driven
@@ -46,9 +44,9 @@
  *
  * Not every pixel clock is expressible, the VCO must stay inside 2..4 GHz, and
  * the integer divider must be in [20, 255]; so instead of computing a setting
- * at runtime this driver matches the requested TMDS character rate against the
- * table of settings the vendor validated, and refuses the mode if there is no
- * exact match.
+ * at runtime this driver matches the requested TMDS character rate against a
+ * table of validated settings, and refuses the mode if there is no exact
+ * match.
  *
  * The 1920x1080p60 entry is worth spelling out, because it is the bring-up
  * target and because a wrong fractional setting fails in a way that looks like
@@ -117,8 +115,7 @@
  ****************************************************************************/
 
 /* Delays from the TRM start-up sequence (25.6.2.1).  It asks for 10 us after
- * each enable step and 20..30 us around the APB reset pulse; the vendor driver
- * uses those same figures, so they are kept verbatim.
+ * each enable step and 20..30 us around the APB reset pulse.
  */
 
 #define RK3576_HDPTXPHY_APB_RESET_US 25
@@ -142,7 +139,7 @@ struct rk3576_hdptxphy_seq_s
 };
 
 /* ROPLL setting for one TMDS character rate.  Field order follows the TRM
- * register summary and the vendor table so values can be compared directly.
+ * register summary so values can be compared directly.
  */
 
 struct rk3576_hdptxphy_ropll_s
@@ -189,7 +186,8 @@ static struct rk3576_hdptxphy_s g_hdptxphy = {
   .lock = NXMUTEX_INITIALIZER,
 };
 
-/* TMDS ROPLL settings, ordered as in the vendor driver.  The rate key is the
+/* TMDS ROPLL settings, ordered by descending TMDS character rate.  The rate
+ * key is the
  * TMDS character rate (pixel clock at 8 bpc), not the pixel clock at any other
  * depth; the caller's bpc is folded in before the lookup.
  */
@@ -230,7 +228,7 @@ static const struct rk3576_hdptxphy_ropll_s g_hdptxphy_tmds_ropll[] = {
 
 /* Common CMN block programming, applied before the per-mode CMN table.  These
  * are analogue bias/band-gap/PLL-helper settings; the TRM does not document
- * them field by field, so they are carried over verbatim.
+ * them field by field, so they are kept as-is.
  */
 
 static const struct rk3576_hdptxphy_seq_s g_hdptxphy_common_cmn_seq[] = {
@@ -303,8 +301,8 @@ static const struct rk3576_hdptxphy_seq_s g_hdptxphy_tmds_cmn_seq[] = {
 };
 
 /* Sideband timing-generator delay settings.  HDMI does not need the sideband
- * for video, but the vendor sequence zeroes these before the lane bring-up and
- * the analog side-band block shares the CMN power rails, so it is kept.
+ * for video, but they are zeroed before the lane bring-up and
+ * the analog side-band block shares the CMN power rails, so this is kept.
  */
 
 static const struct rk3576_hdptxphy_seq_s g_hdptxphy_common_sb_seq[] = {
@@ -339,9 +337,8 @@ static const struct rk3576_hdptxphy_seq_s
 
 /* Per-lane programming, written to all four LANE banks by adding
  * RK3576_HDPTXPHY_LANE_STRIDE per lane.  The common table is applied first and
- * the TMDS table second, so where the two overlap the TMDS value wins -- which
- * is what the vendor sequence does (common sets 0303 = 0x0c, TMDS then sets
- * 0303 = 0x2f).
+ * the TMDS table second, so where the two overlap the TMDS value wins (common
+ * sets 0303 = 0x0c, TMDS then sets 0303 = 0x2f).
  */
 
 static const struct rk3576_hdptxphy_seq_s g_hdptxphy_common_lane_seq[] = {
@@ -873,8 +870,8 @@ int rk3576_hdptxphy_initialize(void)
       goto err_unlock;
     }
 
-  /* Release the GRF and APB resets.  The bootloader normally leaves these
-   * released; doing it here keeps the driver self-contained.
+  /* Release the GRF and APB resets.  These are normally left released
+   * already; doing it here keeps the driver self-contained.
    */
 
   rk3576_hdptxphy_rst_write(priv, RK3576_HDPTXPHY_PMU1RST_APB_CON,

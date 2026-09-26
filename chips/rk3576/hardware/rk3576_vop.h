@@ -100,36 +100,27 @@
 
 /* SYS_REG_CFG_DONE (0x0000) load-enable bits (mirror -> real).
  *
- * *** THE NAMES BELOW ARE THE TRM'S OWN, AND THEY MAP ONE-FOR-ONE ONTO LINUX'S
- * RK3576 VIDEO-PORT TABLE.  THE OLD COMMENTS HERE HAD THEM WRONG. ***
+ * *** THE NAMES BELOW ARE THE TRM'S OWN. ***
  *
- *   TRM, SYS_CTRL_SYS_REG_CFG_DONE          Linux, rk3576 VP entries
- *   ------------------------------          -----------------------
- *   bit15 sw_global_regdone_en  (reset 1)   RK3568_VOP2_GLB_CFG_DONE_EN
- *   bit14 reg_load_wb_en                    RK3568_VOP2_WB_CFG_DONE
- *   bit 6 reg_load_sys2_en                  .sys_cfg_done shift 6  (VP2)
- *   bit 5 reg_load_sys1_en                  .sys_cfg_done shift 5  (VP1)
- *   bit 4 reg_load_sys0_en                  .sys_cfg_done shift 4  (VP0)
- *   bit 2 reg_load_vp2_en                   .cfg_done     bit 2    (VP2)
- *   bit 1 reg_load_vp1_en                   .cfg_done     bit 1    (VP1)
- *   bit 0 reg_load_vp0_en                   .cfg_done     bit 0    (VP0)
+ *   TRM, SYS_CTRL_SYS_REG_CFG_DONE          video port
+ *   ------------------------------          ----------
+ *   bit15 sw_global_regdone_en  (reset 1)   --
+ *   bit14 reg_load_wb_en                    --
+ *   bit 6 reg_load_sys2_en                  VP2
+ *   bit 5 reg_load_sys1_en                  VP1
+ *   bit 4 reg_load_sys0_en                  VP0
+ *   bit 2 reg_load_vp2_en                   VP2
+ *   bit 1 reg_load_vp1_en                   VP1
+ *   bit 0 reg_load_vp0_en                   VP0
  *
- * LINUX'S RK3576 COMMIT WRITES ONLY THE BITS FOR THE VIDEO PORT IT IS
- * COMMITTING.  rk3588_vop2_cfg_done():
- *
- *   val = RK3568_VOP2_GLB_CFG_DONE_EN | RK3568_VOP2_WB_CFG_DONE |
- *         (RK3568_VOP2_WB_CFG_DONE << 16) | BIT(sys_cfg_done_shift) |
- *         (BIT(sys_cfg_done_shift) << 16);
- *   vop2_writel(vop2, 0, val);
- *
- * i.e. bit15 (unmasked) + bit14 + bit4, with hiword write-enables.  Nothing
- * else.  This driver instead wrote EVERY group, including bits 1/2/5/6 --
- * VP1's and VP2's load requests.  VP1 and VP2 are not running on this board,
- * so those four bits can never be consumed and STAY SET FOR EVER, which is
- * visible in this driver's own register dump:
+ * A COMMIT MUST WRITE ONLY THE BITS FOR THE VIDEO PORT IT IS COMMITTING:
+ * bit15 (global enable) + bit14 + the port's own group bit, with hiword
+ * write-enables.  Nothing else.  This driver instead wrote EVERY group,
+ * including bits 1/2/5/6 -- VP1's and VP2's load requests.  VP1 and VP2 are
+ * not running on this board, so those four bits can never be consumed and STAY
+ * SET FOR EVER, which is visible in this driver's own register dump:
  *
  *   SYS_REG_CFG_DONE here = 0x00008066   (bits 1,2,5,6 still pending)
- *   SYS_REG_CFG_DONE in a dump from a known-working configuration = 0x00000000
  *
  * and the TRM says of each of these bits that the mirror->real copy happens
  * when ALL the requested register configuration is finished.  A commit that
@@ -138,7 +129,7 @@
  * group directly (shrink the layer to 200x200 and watch for the corner) found
  * that the WINDOW GROUP NEVER LOADS: readback perfect, glass unchanged.
  *
- * So the commit now asks for exactly what Linux asks for, and nothing more.
+ * So the commit now asks for the port's own group and nothing more.
  */
 
 #define RK3576_VOP_CFG_DONE_ALL_GROUPS \
@@ -150,8 +141,8 @@
 
 #define RK3576_VOP_CFG_DONE_VP0_GROUPS ((1 << 0) | (1 << 4))
 
-/* SYS_REG_CFG_DONE (0x0000) bit 14 = reg_load_wb_en.  Linux's
- * RK3568_VOP2_WB_CFG_DONE, which its RK3576 commit always sets. */
+/* SYS_REG_CFG_DONE (0x0000) bit 14 = reg_load_wb_en, which a frame commit
+ * always sets. */
 
 #define RK3576_VOP_CFG_DONE_WB_LOAD (1 << 14)
 
@@ -167,7 +158,7 @@
  * group's mirror->real copy never latches, i.e. RAW readback of
  * SYS_REG_CFG_DONE shows bit0 (reg_load_global0_en) still pending while
  * bit4 (reg_load_sys0_en) has already been consumed by the frame boundary.
- * Linux keeps this bit set in vop2_cfg_done().
+ * A frame commit always keeps this bit set.
  *
  * Always OR this into the cfg_done data word.
  */
@@ -212,25 +203,20 @@
  *
  * *** THE RK3572+ FRAME COMMIT -- AND THIS DRIVER HAS NEVER WRITTEN IT. ***
  *
- * Rockchip's vop2 driver commits a frame differently by generation; see
- * rk3588_vop2_cfg_done():
+ * A frame commit differs by generation:
  *
- *   if (version < VOP_VERSION_RK3572)        -> SYS_WIN_REG_CFG_DONE ...
- *   else if (version >= VOP_VERSION_RK3572)  -> VOP_MODULE_SET(vop2, vp,
- *                                                 cfg_done, 1);
+ *   before RK3572  -> SYS_WIN_REG_CFG_DONE ...
+ *   RK3572 and up  -> bit0 of the video port's own POSTx_CFG_DONE
  *
- * and for the RK3572/RK3576 video ports that module register is
- *
- *   .cfg_done = VOP_REG_MASK(RK3572_VP0_POST_CFG_DONE, 0x1, 0),
- *   #define RK3572_VP0_POST_CFG_DONE            0xCFC
- *
- * i.e. bit0 of POST0+0x0FC with a hiword write-enable, so the word to write is
- * 0x00010001 and NOT 0x00000001.  Note what is ABSENT from the RK3572+
- * branch: it does not write SYS_WIN_REG_CFG_DONE (0x000C) at all -- and that
- * is the only load trigger this driver has ever used for the layer group.  On
- * this generation the 0x000C register looks like a legacy one: it is writable
- * and its bits are consumed at a frame boundary, which is exactly what made it
- * look like a working load request, but Linux does not use it here.
+ * and for the RK3572/RK3576 video ports that register is POSTx + 0x0FC (the
+ * RK3572_VP0_POST_CFG_DONE offset), with a hiword write-enable, so the word to
+ * write is 0x00010001 and NOT 0x00000001.  Note what is ABSENT from the
+ * RK3572+ sequence: it does not write SYS_WIN_REG_CFG_DONE (0x000C) at all --
+ * and that is the only load trigger this driver has ever used for the layer
+ * group.  On this generation the 0x000C register looks like a legacy one: it
+ * is writable and its bits are consumed at a frame boundary, which is exactly
+ * what made it look like a working load request, but the RK3572+ frame commit
+ * does not use it.
  *
  * It fits the evidence better than anything else tested: every ESMART
  * register reads back in the MIRROR exactly as programmed, yet changing
@@ -279,8 +265,8 @@
  * read is ever issued), and the POST's input buffer under-runs the moment the
  * layer is enabled (the mixer waits forever for data that cannot arrive).
  *
- * The Linux driver exposes these as .calc_clk_en / .calc_aclk_cnt /
- * .calc_dclk_cnt on RK3576's video port 0, confirming the field layout.
+ * The RK3576 video port exposes these as calc_clk_en / calc_aclk_cnt /
+ * calc_dclk_cnt, confirming the field layout.
  */
 
 #define RK3576_VOP_POST_CLK_CNT_OFF    0x0F4
@@ -396,8 +382,7 @@
  * an AXI read error") and, worse, made a real output-buffer under-run look
  * like a harmless per-line event and get dismissed for many rounds.
  *
- * The bit ORDER comes from the reference driver's tables in
- * rockchip_vop2_reg.c:
+ * The bit ORDER comes from the TRM's register tables:
  *
  *   per-VP (POST) status           SYS0/SYS1 (AXI) status
  *     bit0 FS                        bit0 - (unused)
@@ -438,7 +423,7 @@
 
 #define RK3576_VOP_INT_BUS_ERRPR RK3576_VOP_SYS_INT_BUS_ERROR
 
-/* SYS_CTRL_SYS_STATUS0 @ 0x0060 is the reference driver's RK3572_VP0_STATUS:
+/* SYS_CTRL_SYS_STATUS0 @ 0x0060 is the RK3572_VP0_STATUS register:
  *   [12:0]  post_buf_empty_dsp_vcnt     the dsp_vcnt at which the output
  *                                       buffer under-ran (a CAPTURE of one
  *                                       event, not a counter)
@@ -462,11 +447,7 @@
 /* SYS_CTRL_SYS_AUTO_GATING_CTRL_IMD (0x27D00000 + 0x0008), reset 0x8155E953.
  *
  * THE CLOCK-GATING SWITCHES, AND RK3576'S DEFAULT IS ON.  Bit positions from
- * the TRM ("SYS_CTRL_SYS_AUTO_GATING_CTRL_IMD") and cross-checked against the
- * reference driver's tables, which read:
- *
- *   .auto_gating_en          = VOP_REG(RK3568_SYS_AUTO_GATING_CTRL, 0x1, 31)
- *   .aclk_pre_auto_gating_en = VOP_REG(RK3568_SYS_AUTO_GATING_CTRL, 0x1, 7)
+ * the TRM ("SYS_CTRL_SYS_AUTO_GATING_CTRL_IMD"):
  *
  *   bit31 auto_gating_en               reset 1  "default auto gating enable"
  *   bit29 axi0_aclk_static_gating_en   reset 0
@@ -474,7 +455,7 @@
  *   bit7  aclk_pre_auto_gating_en      reset 0
  *   bit24 rgb_clk_gating_en, and further per-block gating bits below it
  *
- * *** THE REFERENCE DRIVER TURNS THIS OFF, FOR RK3576 BY NAME. ***
+ * *** THESE TWO BITS MUST BE TURNED OFF ON RK3576. ***
  *
  *   auto_gating_en: "Disable auto gating, workaround to avoid display image
  *   shift when a window is enabled."
@@ -558,13 +539,13 @@
  * *** THIS DRIVER USES PHYSICAL ADDRESSES AND HAS NO IOMMU DRIVER, YET IT
  * NEVER WROTE THIS REGISTER. ***  With mmu_bypass_en at its reset value of 0
  * nothing is bypassed, so the layer's physical addresses are offered to an MMU
- * that has no page tables -- and the reference driver never has to deal with
- * that case because it drives the IOMMU itself.
+ * that has no page tables -- and a driver without an IOMMU never has to deal
+ * with that case.
  *
  * A read that lands on an unconfigured MMU need not produce an error: it can
  * simply never come back.  That matches the measurement that has resisted
  * every other explanation -- the layer is enabled, routed, clocked (its
- * register file answers reads), configured to match the reference, and yet
+ * register file answers reads), configured correctly, and yet
  * issues a read that never arrives, while the POST's input buffer stays empty
  * and the panel shows a static picture that follows neither the framebuffer's
  * content nor its address.
@@ -584,29 +565,29 @@
 
 /* SYS_CTRL_SYS_PORT_CTRL_IMD (0x27D00000 + 0x0028).
  *
- *   bit15 auto_cs_mode                 reset 0   (Linux sets 1 for vop3)
+ *   bit15 auto_cs_mode                 reset 0   (set to 1 on this generation)
  *   bit14 vp_intr_merge_en             reset 0
  *   bit10 vfp2_dma_stop_en             reset 0
  *   bit9  vfp1_dma_stop_en             reset 0
  *   bit8  vfp0_dma_stop_en             reset 0
- *   bit5  auto_cs_en                   reset 1   (Linux sets 1)
- *   bit4  dsp_vs_t_sel                 reset 1   (Linux CLEARS it for vop3)
+ *   bit5  auto_cs_en                   reset 1   (kept 1)
+ *   bit4  dsp_vs_t_sel                 reset 1   (CLEARED on this generation)
  *   bit2  vp2_interlace_frm_reg_done   reset 1
  *   bit1  vp1_interlace_frm_reg_done   reset 1
  *   bit0  vp0_interlace_frm_reg_done   reset 1
  *
- * *** TWO OF THESE DIFFER FROM WHAT THE REFERENCE DRIVER PROGRAMS FOR RK3576,
- * AND THIS DRIVER NEVER WROTE THE REGISTER AT ALL. ***  Linux, in the
- * is_vop3() branch of its CRTC enable:
+ * *** TWO OF THESE DIFFER FROM THE RESET VALUES ON RK3576,
+ * AND THIS DRIVER NEVER WROTE THE REGISTER AT ALL. ***  The values used here
+ * for this generation are:
  *
- *     VOP_CTRL_SET(vop2, dsp_vs_t_sel, 0);   // vop3: take vs/t from OUT
- *     VOP_CTRL_SET(vop2, auto_cs_en, 1);
- *     VOP_CTRL_SET(vop2, auto_cs_mode, 1);
+ *     dsp_vs_t_sel = 0;   // take vs/t from OUT
+ *     auto_cs_en   = 1;
+ *     auto_cs_mode = 1;
  *
  * dsp_vs_t_sel selects where the display's vertical sync and timing are
  * tapped: "1'b0: Dsp_vs_t_out" versus "1'b1: Dsp_vs_t_pre".  Its reset value
- * is 1 and this board reads 1, so the POST has been deriving its timing from
- * the wrong tap in the pipeline.  A POST whose timing is taken from the wrong
+ * is 1, so with the reset value left in place the POST derives its timing from
+ * the other tap in the pipeline.  A POST whose timing is taken from the wrong
  * point does not issue a coherent "I need pixels now" demand, which is
  * consistent with the one measurement that is now firm and hard to explain
  * otherwise: the layer is enabled and routed with every register correct, and
@@ -623,31 +604,27 @@
  *
  * *** THIS ONE FIELD IS DEFINED FOR RK3576 AND FOR NO OTHER SoC. ***
  *
- *   .reg_done_frm = VOP_REG_MASK(RK3576_SYS_PORT_CTRL_IMD, 0x7, 0)
+ *   reg_done_frm = bits[2:0] of RK3576_SYS_PORT_CTRL_IMD
  *
- * and Linux writes it to 0 explicitly, with the comment "Set reg done every
- * field for interlace".  The TRM gives the bit's reset value as 1 and reads
+ * and it is written to 0 explicitly, i.e. "Reg done every field for
+ * interlace". The TRM gives the bit's reset value as 1 and reads
  *
  *   1'b0: Reg done every field for interlace.
  *   1'b1: Reg done every frame for interlace.
  *
- * A register dump from this board running a working configuration reads
- * 0028 00070038, i.e. these three bits are 0 -- and this driver has never
- * written them, so they sit at their reset value of 1.
- *
  * It controls WHEN a video port's register updates become valid, which is
  * exactly the mechanism that has been failing here: a configuration that reads
- * back perfectly and never takes effect.  That makes it worth matching the
- * working value rather than leaving it at reset.
+ * back perfectly and never takes effect.  That makes it worth writing rather
+ * than leaving at reset.
  */
 
 #define RK3576_VOP_SYS_PORT_REG_DONE_FRM_MASK 0x7u
 
 /* SYS_CTRL_SYS_AXI_LUT_CTRL_IMD (0x27D00000 + 0x0024): bit9 lut_use_axi1.
- * Linux clears it for RK3576 (VOP_CTRL_SET(vop2, lut_use_axi1, 0)); the reset
- * value is 1 and this board reads 1.  Only the display LUT's own DMA uses it,
+ * It is cleared for RK3576; the reset value is 1.  Only
+ * the display LUT's own DMA uses it,
  * and this driver never enables that LUT, but it is listed and set here so the
- * global AXI configuration matches the reference rather than the reset. */
+ * global AXI configuration does not depend on the reset value. */
 
 #define RK3576_VOP_SYS_AXI_LUT_CTRL_IMD 0x0024
 #define RK3576_VOP_SYS_LUT_USE_AXI1     (1u << 9)
@@ -662,8 +639,8 @@
  *
  * A plain putreg() has bits[31:16] == 0, so such a write is DISCARDED --
  * silently, completely, and invisibly: the register keeps its old contents and
- * nothing in a readback says so.  The reference driver implements the scheme
- * explicitly in its mask write helper:
+ * nothing in a readback says so.  A masked field write therefore has to carry
+ * the mask itself in bits[31:16]:
  *
  *   v = ((v & mask) << shift) | (mask << (shift + 16));
  *
@@ -695,16 +672,11 @@
  * 0x3 bit8   bpp_lut_en       "1'b0: Disable  1'b1: Enable"             reset
  * 0 [11:10] bpp_win_sel     2'b00: Esmart0 ... 2'b11: Esmart3         reset 0
  *
- * The reference driver manages exactly this bit as the ESMART power domain and
- * turns it on before it touches anything else:
- *
- *   rk3576_esmart_pd_regs.pd = VOP_REG_MASK(RK3568_SYS_PD_CTRL, 0x1, 0);
- *
- * and its own timeout message names the offset outright: vop2_readl(vop2,
- * 0x34).  A powered-down ESMART still answers APB accesses to its
- * configuration registers, which is why every readback in this bring-up has
- * been consistent with a window that is correctly programmed and physically
- * unable to fetch.
+ * This bit is the ESMART power-domain enable and must be turned on before
+ * anything else in the block is touched.  A powered-down ESMART still answers
+ * APB accesses to its configuration registers, which is why every readback in
+ * this bring-up has been consistent with a window that is correctly programmed
+ * and physically unable to fetch.
  */
 
 #define RK3576_VOP_SYS_ESMART_PD_CTRL_IMD 0x0034
@@ -713,25 +685,16 @@
 /* SYS_ESMART_PD_CTRL_IMD [7:6] esmart_lb_mode -- how the ESMART line buffers
  * (lb) are partitioned, which decides how many of them are 4K:
  *
- *   2'b10: 3 x 4k          (VOP3_ESMART_4K_4K_4K_MODE)
- *   2'b11: 2 x 4k + 2 x 2k (VOP3_ESMART_4K_4K_2K_2K_MODE)   reset value
+ *   2'b10: 3 x 4k            (3 x 4k mode)
+ *   2'b11: 2 x 4k + 2 x 2k   (2 x 4k + 2 x 2k mode)   reset value
  *
- * THE RESET VALUE AND THE REFERENCE DRIVER'S DEFAULT ARE BOTH 3, AND THIS
- * DRIVER WAS WRITING 2.  The reference computes it in
- * vop3_get_esmart_lb_mode():
+ * THE RESET VALUE IS 3 AND THIS DRIVER WAS WRITING 2.  The encoding is:
  *
- *   vop2->esmart_lb_mode = vop2->data->esmart_lb_mode;      // no DT property
- *   ... rk3576_vop.esmart_lb_mode = VOP3_ESMART_4K_4K_2K_2K_MODE
- *   ... looked up in rk3576_esmart_lb_mode_map[]:
- *         {{VOP3_ESMART_4K_4K_4K_MODE,   2},
- *          {VOP3_ESMART_4K_4K_2K_2K_MODE, 3}}
- *   => 3
+ *   3 x 4k mode            -> 2
+ *   2 x 4k + 2 x 2k mode   -> 3
  *
- * A note here used to claim the lookup fails and falls back to map[0] = 2.  It
- * does not: 4K_4K_2K_2K_MODE IS in RK3576's map, so the lookup succeeds and
- * yields 3.  (A fallback to 2 would need a device-tree value that is absent
- * from the map, which is a different situation from having no property at
- * all.)
+ * so 3 is what the hardware itself resets to.  A note here used to claim the
+ * value falls back to 2; it does not.
  *
  * WHY IT MIGHT MATTER.  The mode names list the buffer sizes per ESMART, so
  * 4K_4K_2K_2K gives ESMART0/1 4K buffers and ESMART2/3 only 2K -- and a
@@ -741,9 +704,9 @@
  * the first place.
  *
  * It does NOT explain ESMART0's failure, because ESMART0 receives a 4K buffer
- * in either mode.  It is being set to 3 anyway because 3 is the only remaining
- * value in this driver that differs from BOTH the reference driver's default
- * and the hardware's own reset value, and that class of difference is exactly
+ * in either mode.  It is being set to 3 anyway because 3 is the reset value
+ * and 2 was the only value this driver wrote away from the hardware's own
+ * default -- and that class of difference is exactly
  * what has produced every real bug found in this bring-up.  If it changes
  * nothing, line-buffer partitioning is eliminated too.
  */
@@ -751,8 +714,7 @@
 #define RK3576_VOP_SYS_ESMART_LB_MODE_SHIFT 6
 #define RK3576_VOP_SYS_ESMART_LB_MODE_MASK \
   (0x3u << RK3576_VOP_SYS_ESMART_LB_MODE_SHIFT)
-#define RK3576_VOP_SYS_ESMART_LB_MODE_4K_4K_2K_2K \
-  3u /* reference default + reset */
+#define RK3576_VOP_SYS_ESMART_LB_MODE_4K_4K_2K_2K 3u /* reset value */
 
 /* SYS_CTRL_SYS_CLUSTER_PD_CTRL_IMD (0x27D00000 + 0x0030).
  * *** HAS THE HIWORD WRITE MASK. ***
@@ -781,13 +743,12 @@
  * the VOP's read-urgency line is high, the DDR controller's mask_ctrl module
  * "will mask all the other requests" so that this read port is served first.
  *
- * The reference driver sets them for every video port it brings up --
+ * They are set for every video port that is brought up, with the bit number
+ * following the video port (24 = VP0, 25 = VP1, 26 = VP2, per the TRM's
+ * port0/port1/port2 naming):
  *
- *   .axi0_port_urgency_en = VOP_REG(RK3576_SYS_AXI_HURRY_CTRL0_IMD, 0x1, 24),
- *   .axi1_port_urgency_en = VOP_REG(RK3576_SYS_AXI_HURRY_CTRL1_IMD, 0x1, 24),
- *
- * with the bit number following the video port (24 = VP0, 25 = VP1, 26 = VP2,
- * per the TRM's port0/port1/port2 naming).
+ *   axi0_port_urgency_en = CTRL0 bit24
+ *   axi1_port_urgency_en = CTRL1 bit24
  *
  * *** AND THE REGISTER SCAN SHOWED BOTH REGISTERS AS 0x00000000 ***, i.e. the
  * whole mechanism was off, which is consistent with the one measurement that
@@ -927,24 +888,24 @@
 /* WIN0_CTRL0 field definitions.
  *
  * *** TWO OF THESE WERE WRONG, AND THEY ARE THE KIND OF WRONG THAT MAKES A
- * WINDOW NEVER FETCH. ***  Verified field by field against RK3576's own window
- * table (Rockchip's vop2 driver, rk3576_cluster0_win_data):
+ * WINDOW NEVER FETCH. ***  Verified field by field against RK3576's window
+ * register map:
  *
- *   .enable         = CTRL0, 0x1,  0
- *   .format         = CTRL0, 0x3f, 1      <- SIX bits, unlike ESMART's five
- *   .tile_mode      = CTRL0, 0x1,  7
- *   .y2r_en         = CTRL0, 0x1,  8
- *   .r2y_en         = CTRL0, 0x1,  9
- *   .csc_mode       = CTRL0, 0x7, 10      <- was written as shift 9 here
- *   .rb_swap        = CTRL0, 0x1, 14      <- was written as bit 15 here
- *   .uv_swap        = CTRL0, 0x1, 17
- *   .dither_up      = CTRL0, 0x1, 18
- *   .yuv_clip       = CTRL0, 0x1, 19
- *   .ymirror        = CTRL0, 0x1, 21
- *   .csc_y2r_path_sel = CTRL0, 0x1, 24
+ *   enable         = CTRL0, 0x1,  0
+ *   format         = CTRL0, 0x3f, 1      <- SIX bits, unlike ESMART's five
+ *   tile_mode      = CTRL0, 0x1,  7
+ *   y2r_en         = CTRL0, 0x1,  8
+ *   r2y_en         = CTRL0, 0x1,  9
+ *   csc_mode       = CTRL0, 0x7, 10      <- was written as shift 9 here
+ *   rb_swap        = CTRL0, 0x1, 14      <- was written as bit 15 here
+ *   uv_swap        = CTRL0, 0x1, 17
+ *   dither_up      = CTRL0, 0x1, 18
+ *   yuv_clip       = CTRL0, 0x1, 19
+ *   ymirror        = CTRL0, 0x1, 21
+ *   csc_y2r_path_sel = CTRL0, 0x1, 24
  *
- * There is no rg_swap on this window (the reference data defines one only for
- * ESMART), so the old RG_SWAP macro is gone rather than left as a landmine.
+ * There is no rg_swap on this window (one is defined only for ESMART), so the
+ * old RG_SWAP macro is gone rather than left as a landmine.
  */
 
 #define RK3576_VOP_WIN0_EN               (1 << 0) /* Layer enable */
@@ -963,7 +924,7 @@
 #define RK3576_VOP_WIN0_CSC_Y2R_PATH_SEL (1 << 24)
 
 /* win0_data_fmt values (CTRL0[6:1]).  The SAME numbers as ESMART's: the format
- * enum in the reference driver is shared, so RGB888 is 1 for both. */
+ * encoding is shared, so RGB888 is 1 for both. */
 
 #define RK3576_VOP_WIN0_FMT_ARGB8888 (0x00 << RK3576_VOP_WIN0_DATA_FMT_SHIFT)
 #define RK3576_VOP_WIN0_FMT_RGB888   (0x01 << RK3576_VOP_WIN0_DATA_FMT_SHIFT)
@@ -990,9 +951,10 @@
  *   bit29  dma_stride_4k_disable
  *   bit31  frm_reset_en
  *
- * The reference driver sets frm_reset_en = 1 and dma_stride_4k_disable = 1 for
- * CLUSTER windows and NEVER sets either for an ESMART window, so a CLUSTER
- * configured without them is not a faithful copy of a working configuration.
+ * This driver scans out through an ESMART window and never programs CLUSTER,
+ * so none of these fields is written here; they are defined so that the field
+ * positions are on record and a future CLUSTER path does not have to
+ * re-derive them.  The reset value of frm_reset_en (bit31) is 0.
  */
 
 #define RK3576_VOP_CLUSTER0_CTRL_OFF          0x0100
@@ -1005,15 +967,16 @@
 #define RK3576_VOP_CLUSTER_CTRL_FRM_RESET_EN      (1u << 31)
 
 /* CLUSTER0's port select and window delay live at the same block offsets as
- * ESMART's (0x00F4 / 0x00F8) -- the reference header puts them at 0x11F4 and
- * 0x11F8 on a 0x1000 base.  DLY_NUM is 16 bits here, not 8. */
+ * ESMART's (0x00F4 / 0x00F8) -- the same registers appear as 0x11F4 and 0x11F8
+ * on a 0x1000 block base.  DLY_NUM is 16 bits here, not 8. */
 
 #define RK3576_VOP_CLUSTER0_PORT_SEL_IMD 0x00F4
 #define RK3576_VOP_CLUSTER0_DLY_NUM      0x00F8
 #define RK3576_VOP_CLUSTER0_DLY_NUM_MASK 0xffffu
 
 /* RK3576 gives CLUSTER0 its own AXI read IDs, like every other window:
- * yrgb 0x0a / uv 0x0b on the primary video port (Rockchip's window table). */
+ * yrgb 0x0a / uv 0x0b on the primary video port (per RK3576's window
+ * register map). */
 
 #define RK3576_VOP_CLUSTER0_AXI_YRGB_ID 0x0au
 #define RK3576_VOP_CLUSTER0_AXI_UV_ID   0x0bu
@@ -1027,16 +990,8 @@
  * *** bit28 IS THE ONE THAT MAKES THE OVERLAY'S LAYER SELECT TAKE EFFECT, AND
  * THIS DRIVER NEVER WROTE THIS REGISTER AT ALL. ***
  *
- * A register dump taken from this same board running a Debian image with HDMI
- * working -- i.e. a configuration KNOWN to fetch and display -- reads
- *
- *   0600 10000001
- *
- * so bit28 is set.  The vendor header names it:
- *
- *   #define RK3568_OVL_CTRL__LAYERSEL_REGDONE_IMD   BIT(28)
- *
- * and the vendor driver's comment where it asserts it states its purpose:
+ * The field is layersel_regdone_imd, and its purpose is to
+ * make the overlay's layer selection take effect immediately:
  *
  *   "Register OVERLAY_LAYER_SEL and OVERLAY_PORT_SEL should take effect
  *    immediately, than windows configuration(CLUSTER/ESMART/SMART) can take
@@ -1048,14 +1003,13 @@
  * enabled and selected by the mixer, yet never actually connected to the video
  * port. That is precisely the state this bring-up has been stuck in.
  *
- * Note that RK3576's control table in the vendor driver has NO field for this
- * bit (only rk3568 and rk3588 do), so it is not something Linux re-asserts on
- * this SoC -- it is left set by the bootloader and inherited.  Whether this
- * board's bootloader sets it has never been checked, because this driver does
- * not write 0x0600 at all.
+ * Note that this register is not re-asserted per frame on this SoC: it belongs
+ * to the one-time display setup, and a window with all its other registers
+ * correct is still not connected without it.  So the bit has to be written
+ * rather than assumed.
  *
- * bit0 is overlay_mode, which the vendor driver sets from whether the output
- * is YUV.  Ours is RGB, so it should remain 0.
+ * bit0 is overlay_mode, which selects whether the output is YUV.  Ours is RGB,
+ * so it should remain 0.
  */
 
 #define RK3576_VOP_OVERLAY_LAYERSEL_REGDONE_IMD (1u << 28)
@@ -1085,20 +1039,17 @@
  *   Cluster layer                             0
  *   The delay of the port0 last mux output    20
  *
- * and the reference driver's arithmetic agrees.  For RK3576 video output 0 its
- * per-VP constants are win_dly = 10, layer_mix_dly = 8, hdr_mix_dly = 2, and
- * with no HDR, no CGC and no sdr2hdr the SDR branch wins:
+ * and the delay arithmetic agrees.  For RK3576 video output 0 the per-VP
+ * constants are win_dly = 10, layer_mix_dly = 8, hdr_mix_dly = 2, and with no
+ * HDR, no CGC and no sdr2hdr the SDR path wins:
  *
  *   max_sdr_dly = win_dly + layer_mix_dly + sdr2hdr_dly + hdr_mix_dly
  *               = 10 + 8 + 0 + 2 = 20 = bg_dly
  *
- * An earlier version of this driver used 0x10 (16), justified with the
- * reference driver's comment "the default bg_dly is 0x10" -- but that constant
- * is RK3568's (8 + 6 + 2 = 16), not RK3576's.  It also did not write the
- * register: it merely asserted that BG_MIX_CTRL[31:24] "already holds" 0x10,
- * i.e. it trusted an inherited bootloader value that happened to match a
- * guess. The reason the early dump exists is that inherited state has to be
- * written, not assumed.
+ * An earlier version of this driver used 0x10 (16), the value that applies to
+ * RK3568 (8 + 6 + 2 = 16), not to RK3576.  It also did not write the register:
+ * it merely asserted that BG_MIX_CTRL[31:24] "already holds" 0x10, i.e. it
+ * trusted an inherited value that happened to match a guess.
  */
 
 #define RK3576_VOP_OVERLAY_BG_DLY_SHIFT 24
@@ -1127,10 +1078,10 @@
  * (factor = 0) and GLB_ALPHA is 0x00, so an un-configured mixer multiplies
  * both source and destination by zero -> the layer is silently dropped and
  * only POST's background colour (also black at reset) reaches the output.
- * A passthrough layer MUST program the SOURCE factor to Ags(=Ags with
- * glb_alpha=0xff = fully opaque) and the DESTINATION factor to the inverse,
- * exactly matching Linux vop2_setup_alpha() / vop2_parse_alpha() for an
- * alpha-less (RGB888) bottom layer.
+ * A passthrough layer MUST program the SOURCE factor to Ags (=Ags with
+ * glb_alpha=0xff = fully opaque) and the DESTINATION factor to the inverse;
+ * for an alpha-less (RGB888) bottom layer that yields the opaque copy
+ * Cd = Cs.
  */
 
 /* src/dst COLOR_CTRL field bits (0x20 / 0x24). */
@@ -1218,18 +1169,11 @@
  *   post_hs_factor[15:0]  = (src_width  / dst_width ) * 2^12
  *
  * 1.0 is therefore 0x1000, and 1:1 pass-through is 0x10001000.  That is what
- * Linux writes for an unscaled video port --
- *
- *   val  = scl_cal_scale2(vdisplay, vsize) << 16;
- *   val |= scl_cal_scale2(hdisplay, hsize);
- *   VOP_MODULE_SET(vop2, vp, post_scl_factor, val);
- *
- * -- unconditionally, 1:1 included, because scl_cal_scale2() returns 2^12 for
- * equal source and destination.  It is NOT the same helper as the window
- * scaler's vop2_scale_factor(), which returns 0 for SCALE_NONE; this driver
- * conflated the two and wrote 0 here, which is a degenerate "scale by zero"
- * rather than a pass-through.  A dump from a working configuration on this
- * board reads 0x10001000, confirming the Linux arithmetic.
+ * an unscaled video port is programmed with, unconditionally, 1:1 included:
+ * equal source and destination give 2^12 on each axis.  It is NOT the same
+ * encoding as the WINDOW scaler's factor, where a disabled scaler means 0;
+ * this driver conflated the two and wrote 0 here, which is a degenerate
+ * "scale by zero" rather than a pass-through.
  */
 
 #define RK3576_VOP_POST_SCL_FACTOR_1_1    0x10001000u
@@ -1249,8 +1193,7 @@
 /* POST_DSP_CTRL field definitions.
  *
  * BIT POSITIONS FROM THE TRM (Part 2, "POST0_CTRL_POST_DSP_CTRL",
- * 0x27D00C00 + 0x0000; cross-checked against the reference driver, whose
- * rk35xx_vop_ctrl tables put dsp_lut_en at bit 28):
+ * 0x27D00C00 + 0x0000, with dsp_lut_en at bit 28):
  *
  *   bit31 vop_standby_en_imd     reset 1  (standby on at reset)
  *   bit30 vop_fp_standby_en_imd  reset 0
@@ -1304,22 +1247,20 @@
  * picture that follows neither the framebuffer's content nor its address,
  * while every layer register reads back exactly as programmed.
  *
- * The reference driver computes it in vop2_calc_dly_num():
+ * The two values come out as:
  *
  *     pre_scan_dly = bg_dly + (roundup(hdisplay, 2) >> 1) - 1;
  *     pre_scan_dly = (pre_scan_dly << 16) | (hsync_len < 8 ? 8 : hsync_len);
  *
- * Its comment adds why the hblank half must not be small: "pre_scan_hblank
- * minimum value is 8, otherwise the win reset signal will lead to first line
- * data be zero".
+ * The hblank half must not be small: "pre_scan_hblank minimum value is 8,
+ * otherwise the win reset signal will lead to first line data be zero".
  *
- * *** bg_dly IS 20, NOT 0x10. ***  The reference driver's comment "the default
- * bg_dly is 0x10" describes RK3568 (win_dly 8 + layer_mix_dly 6 + hdr_mix_dly
- * 2).  RK3576 video output 0 uses 10 + 8 + 2 = 20, and the TRM's Table 11-4
- * states the same thing directly ("The delay of the port0 last mux output
- * 20"). An earlier version of this header claimed BG_MIX_CTRL[31:24] "already
- * holds 0x10 on this board, so the two sources agree" -- which was a guess
- * matching an inherited bootloader value, not agreement.  See
+ * *** bg_dly IS 20, NOT 0x10. ***  The value 0x10 describes RK3568 (win_dly 8
+ * + layer_mix_dly 6 + hdr_mix_dly 2).  RK3576 video output 0 uses 10 + 8 + 2 =
+ * 20, and the TRM's Table 11-4 states the same thing directly ("The delay of
+ * the port0 last mux output 20").  An earlier version of this header claimed
+ * BG_MIX_CTRL[31:24] "already holds 0x10 on this board, so the two sources
+ * agree" -- which was a guess matching an inherited value, not agreement.  See
  * RK3576_VOP_OVERLAY_BG_DLY_VP0: the register is now written explicitly, and
  * pre_scan is computed from the same 20 so the two remain consistent.
  */
@@ -1330,8 +1271,8 @@
 #define RK3576_VOP_POST_PRE_SCAN_HBLANK_MASK 0x1fffu
 
 /* POST_CORE_CLK (0x000C) field definitions — the VOP-internal pixel clock
- * dividers.  RK3576 VP0 is dual-pixel (pixel_rate = 2), so Linux's
- * rk3576_calc_cru_cfg() programs:
+ * dividers.  RK3576 VP0 is dual-pixel (pixel_rate = 2), so the clock
+ * configuration programs:
  *   core_dclk_div (dclk_core_sel, bit0) = 1  -> dclk_core = dclk / 2
  *   dclk_div2     (dclk_out_sel,  bit2) = 0  -> dclk_out  = dclk_core
  * With dclk = 64 M the scan is driven by dclk_core = 32 M, which matches
@@ -1415,12 +1356,8 @@
  * masters' requests for that port.  Without it the layer's fetches queue up
  * behind everything else and the buffer does not refill in time.
  *
- * The thresholds are the reference driver's for RK3576 video output 0:
- *
- *   static const struct vop_urgency rk3576_vp0_urgency = {
- *           .urgen_thl = 4,
- *           .urgen_thh = 6,
- *   };
+ * The thresholds for RK3576 video output 0 are urgen_thl = 4 and
+ * urgen_thh = 6.
  */
 
 #define RK3576_VOP_POST_URGENCY_EN        (1u << 8)
@@ -1430,8 +1367,8 @@
 #define RK3576_VOP_POST_URGENCY_THH_SHIFT 20
 #define RK3576_VOP_POST_URGENCY_THH_MASK \
   (0xfu << RK3576_VOP_POST_URGENCY_THH_SHIFT)
-#define RK3576_VOP_POST_URGENCY_THL_LINUX 4u
-#define RK3576_VOP_POST_URGENCY_THH_LINUX 6u
+#define RK3576_VOP_POST_URGENCY_THL_DEFAULT 4u
+#define RK3576_VOP_POST_URGENCY_THH_DEFAULT 6u
 
 /* -----------------------------------------------------------------------
  * ESMARTx registers (base + RK3576_VOP_ESMARTx_OFFSET).
@@ -1462,21 +1399,14 @@
 #define RK3576_VOP_ESMART_REGION0_SCL_FACTOR_CBR 0x0038 /* Scl factor CbCr */
 #define RK3576_VOP_ESMART_ALPHA_MAP              0x00D8 /* Region0 alpha map */
 
-/* REGION0_SCL_CTRL: the filter modes the vendor always programs.
- *
- * The working dump reads 0x00000044, which by the vendor's field map is
+/* REGION0_SCL_CTRL: the scaler filter modes.
  *
  *   [3:2] yrgb_hscl_filter_mode = 1
  *   [7:6] yrgb_vscl_filter_mode = 1
  *
- * The vendor driver sets those from the window's static filter-mode properties
- * rather than from the computed scale mode, so they are non-zero even on a 1:1
- * layer.  Writing SCL_CTRL = 0, as this driver did, is a value the vendor
- * driver never produces.
- *
- * (bit20, yrgb_anei_en, is 0 in the working dump as well -- which
- * independently confirms that the earlier attempt to set it was chasing a bit
- * that is not programmable on this silicon.)
+ * The filter modes are set independently of the computed scale mode, so they
+ * are non-zero even on a 1:1 layer.  Writing SCL_CTRL = 0, as this driver did,
+ * selects filter mode 0 on both axes instead.
  */
 
 #define RK3576_VOP_ESMART_SCL_HSCL_FILTER_SHIFT 2
@@ -1487,62 +1417,30 @@
 
 /* REGION0_SCL_CTRL bit20 = region0_yrgb_anei_en.
  *
- * *** THE REFERENCE DRIVER SETS THIS UNCONDITIONALLY ON RK3572 AND LATER, AND
- * THIS DRIVER WROTE THE WHOLE REGISTER AS ZERO. ***
+ * *** THIS DRIVER WROTE THE WHOLE REGISTER AS ZERO, AND BIT20 MUST BE 0. ***
  *
- *   rockchip_drm_vop2.c, in the window's scaler setup:
+ * The TRM lists bit20 inside "31:18 RO reserved" for this register, i.e. it is
+ * not writable here.  An earlier version of this header argued from a register
+ * table that the field must be RW on this SoC generation, and the attempt to
+ * set it changed nothing.  Writing SCL_CTRL = 0x00100000 was therefore wrong
+ * twice over: it set a bit that has no effect, and because it wrote the whole
+ * register it silently CLEARED the two filter-mode fields described above.
  *
- *     if (vop2->version >= VOP_VERSION_RK3572)
- *             VOP_SCL_SET(vop2, win, yrgb_anei_en, 1);
- *
- * and the field is declared in RK3576's own window table as
- *
- *     .yrgb_anei_en = VOP_REG(RK3568_ESMART0_REGION0_SCL_CTRL, 0x1, 20)
- *         (the vendor comment there reads: supported from rk3572)
- *
- * *** RETRACTED CLAIM, KEPT ON RECORD BECAUSE IT IS THIS PROJECT'S MOST
- * COMMON FAILURE: INFERRING A REGISTER VALUE FROM SOURCE INSTEAD OF FROM
- * WORKING SILICON. ***
- *
- * Note where that assignment sits: it is NOT inside the scaling-mode branch.
- * Every other SCL_CTRL field there is written from the computed scale modes,
- * so for a 1:1 layer they all come out 0 -- but yrgb_anei_en is set on its
- * own, for the whole SoC generation, whatever the scaling.  Writing SCL_CTRL =
- * 0, as this driver did, therefore produces a value the reference driver NEVER
- * produces on this silicon.
- *
- * The TRM lists bit20 inside "31:18 RO reserved" for this register, so it is
- * undocumented there -- but the vendor driver writes it as an ordinary RW bit
- * on exactly this generation, which is the stronger evidence.
- *
- * *** THE WORKING DUMP SAYS ALL OF THAT REASONING WAS WRONG.  IT WINS. ***
- *
- * A register dump from this same board, running a configuration that is known
- * to fetch and display, reads 0x00000044 for SCL_CTRL: filters 1, and bit20
- * ZERO. A working 1:1 window does NOT have yrgb_anei_en set.  Whatever version
- * of vop2_setup_scale() the copy being read here came from, this SoC's working
- * configuration is the ground truth, and it says 0.
- *
- * This driver wrote SCL_CTRL = 0x00100000, so it did two things wrong at once:
- * it SET bit20, and because it wrote the whole register it silently CLEARED
- * the two filter-mode fields that the working configuration has set.  The
- * second is the more dangerous kind of mistake -- the
- * plain-write-erases-reset-bits class
- * -- and it is the same mistake this driver made on REGION0_CTRL, where a
- * format write erased a reset bit22.  Both are now field writes.
+ * The second is the more dangerous kind of mistake -- the
+ * plain-write-erases-reset-bits class -- and it is the same mistake this
+ * driver made on REGION0_CTRL, where a format write erased a reset bit22.
+ * Both are now field writes.
  *
  * It matters because the scaler stage sits between the window's DMA/line
  * buffers and its output: it is the stage that decides when to ask the DMA for
- * data, and a scaler configured differently from the vendor's is a plausible
- * reason for a window that is enabled, routed and correct to issue no read at
- * all.
+ * data, and a scaler with both filter modes cleared is a plausible reason for
+ * a window that is enabled, routed and correct to issue no read at all.
  *
  * "anei" names the scaler's anti-noise edge interpolation path, i.e. it sits
  * in the window's pixel pipeline between the DMA/line buffers and the output.
- * A window whose scaler stage is not configured the way the vendor configures
- * it is a window whose data path may never run, which is the failure this
- * whole bring-up has been chasing: the registers all read back correctly and
- * no read is ever issued.
+ * A window whose scaler stage is misconfigured is a window whose data path may
+ * never run, which is the failure this whole bring-up has been chasing: the
+ * registers all read back correctly and no read is ever issued.
  */
 
 #define RK3576_VOP_ESMART_REGION0_SCL_ANE_I_EN (1u << 20)
@@ -1553,20 +1451,16 @@
  * 11.5.3.11 "ESMART0_ESMART_DLY_NUM", base 0x27D01800 + 0x00F8).
  *
  * It delays the layer's pixel stream relative to the mixing pipeline so the
- * three paths (window, background, overlay mix) meet at the right cycle.  The
- * reference driver computes it in vop2_calc_dly_num() and writes it per
- * window; this driver never wrote it at all.
+ * three paths (window, background, overlay mix) meet at the right cycle.  It
+ * is programmed per window, and this driver never wrote it at all.
  *
- * WHAT IT MUST BE, from that function's own arithmetic.  For a plain SDR layer
- * with no HDR, no CGC and no sdr2hdr -- which is this board -- every
- * intermediate delay is 0 and the branch that wins sets its own window delay
- * to 0, so:
+ * WHAT IT MUST BE.  For a plain SDR layer with no HDR, no CGC and no sdr2hdr
+ * -- which is this board -- every intermediate delay is 0, so the window's own
+ * delay comes out as 0:
  *
  *     sdr_win_dly = 0;  dly = sdr_win_dly;  win->dly_num = 0;
  *
- * which is exactly what the function's comment states: "If hdrvivid and
- * sdr2hdr is not work, the default bg_dly is 0x10.  and the default win delay
- * num is 0."
+ * and the default window delay number is 0.
  *
  * THIS BOARD READ 0x17 (23) there -- and 23 extra cycles of layer delay is
  * precisely the kind of misalignment that starves the POST's input buffer at
@@ -1599,10 +1493,9 @@
  * exactly why every readback in this project has been correct while the layer
  * issued no memory accesses at all.
  *
- * Keep it 0.  The reference driver never writes ESMART_CTRL0 (no frm_resetn
- * handling exists in it), this bit's reset value is 0, and this board's own
- * bootloader left it 0 for all four ESMARTs.  esmart_scl_num ([13:12]) is 0
- * for ESMART0, so the whole register should simply be 0 for this window.
+ * Keep it 0.  This bit's reset value is 0, and this board came up with it 0
+ * for all four ESMARTs.  esmart_scl_num ([13:12]) is 0 for ESMART0, so the
+ * whole register should simply be 0 for this window.
  *
  * RGB sources leave the color-space conversion fields at their defaults.
  */
@@ -1630,9 +1523,9 @@
  * bit is the third leg, on the window itself: the ESMART asserts its own hurry
  * read request when its line buffers are empty.
  *
- * The reference driver leaves bit28 alone, but its own device-tree
- * documentation treats the ESMART line-buffer starvation path as something to
- * tune, and the measured symptom here IS starvation (POST_BUF_EMPTY recurs
+ * The bit is left alone by default, but the ESMART line-buffer starvation path
+ * is documented as something to tune, and the measured symptom here IS
+ * starvation (POST_BUF_EMPTY recurs
  * with the layer enabled and stops when it is disabled).  With thold = 0 the
  * condition "empty lb number >= 0" holds whenever the window wants data, i.e.
  * a starving window asks for it at high priority instead of waiting its turn.
@@ -1646,7 +1539,7 @@
 /* ESMART_CTRL1 field definitions.
  *
  * BIT ORDER FROM THE TRM (Part 2, "ESMART0_ESMART_CTRL1", base 0x27D01800 +
- * 0x0004), corroborated by the reference driver's register table:
+ * 0x0004), corroborated by RK3576's window register map:
  *
  *   [23:20] esmart_yrgb_gather_num      RO
  *   [19:17] reserved                    RO
@@ -1658,8 +1551,7 @@
  *   [1:0]   esmart_esmart_axi_rlen      RW
  *
  * *** THESE IDs ARE NOT OPTIONAL AND THE RESET VALUES ARE WRONG FOR THIS
- * WINDOW. ***  The reference driver programs them per window
- * (rockchip_vop2_reg.c, rk3576_vop_win_data):
+ * WINDOW. ***  They are programmed per window:
  *
  *   Esmart0 : axi_id 0 (axi0)  yrgb 0x10  uv 0x11   <- the window used here
  *   Esmart1 : axi_id 0 (axi0)  yrgb 0x12  uv 0x13
@@ -1690,8 +1582,8 @@
  *   Esmart2 : axi_id 1 (axi1)  yrgb 0x0a  uv 0x0b
  *   Esmart3 : axi_id 1 (axi1)  yrgb 0x0c  uv 0x0d
  *
- * Values from RK3576's own window table (Rockchip's vop2 driver,
- * rk3576_vop_win_data[]).  The reset values read 0x0a/0x0b, which is Esmart2's
+ * Values from RK3576's window register map.  The reset values read 0x0a/0x0b,
+ * which is Esmart2's
  * pair, and Esmart2 fetches on axi1 while Esmart0 fetches on axi0.
  *
  * The ID travels with the read all the way into the interconnect, where it
@@ -1734,7 +1626,7 @@
  * page tables.  Both are fixed here; the writes in rk3576_vop.c are unchanged
  * because they name the bits symbolically.
  *
- * Note bit0 (dma_sop) resets to 0 and the reference driver never writes it, so
+ * Note bit0 (dma_sop) resets to 0 and this driver never writes it, so
  * it is left alone rather than guessed at.
  */
 
@@ -1761,13 +1653,14 @@
 /* REGION0_CTRL (a.k.a. REGION0_MST_CTL, offset 0x0010) field definitions.
  *
  * Bit map from the TRM's detailed section ("ESMART0_REGION0_MST_CTL") and
- * cross-checked against the reference driver's table, which reads
- *   .rb_swap = VOP_REG(RK3568_ESMART0_REGION0_CTRL, 0x1, 14)
- *   .uv_swap = VOP_REG(RK3568_ESMART0_REGION0_CTRL, 0x1, 16)
- *   .rg_swap = VOP_REG(RK3568_ESMART0_REGION0_CTRL, 0x1, 18)
- *   .dither_up = VOP_REG(RK3568_ESMART0_REGION0_CTRL, 0x1, 12)
- *   .format_argb1555 = VOP_REG(RK3568_ESMART0_REGION0_CTRL, 0x1, 7)
- *   .format = VOP_REG(RK3568_ESMART0_REGION0_CTRL, 0x1f, 1)
+ * cross-checked against RK3576's window register map:
+ *
+ *   rb_swap         = bit14
+ *   uv_swap         = bit16
+ *   rg_swap         = bit18
+ *   dither_up       = bit12
+ *   format_argb1555 = bit7
+ *   format          = [5:1]
  *
  *   bit0    region0_mst_en      Region enable
  *   [5:1]   region0_data_fmt    1 = RGB888

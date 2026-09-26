@@ -263,23 +263,23 @@ uint32_t rk3576_hdmi_pixel_clock_hz(void);
 uint32_t rk3576_hdmi_ref_clock_hz(void);
 
 /****************************************************************************
- * Name: rk3576_hdmi_report_status
+ * Name: rk3576_hdmi_start_video_path
  *
  * Description:
- *   Log the controller's internal clock state, evaluated against the vendor
- *   driver's documented readiness test (CMU_STATUS & 0x15) == 0x15.
+ *   Program the parts of the controller that only become reachable once the
+ *   interface clock is running, and start the packet scheduler.
  *
- *   Must NOT read anything in the 0x0800-0x08ff or 0x0a00-0x0aff blocks.
- *   Three measured panics came from reading HDCP2LOGIC_CONFIG0 (0x08e0),
- *   VIDEO_INTERFACE_STATUS0 (0x0814) and VIDEO_INTERFACE_CONFIG1 (0x0804);
- *   the last one aborted even with ipi_clk/vidqpclk/linkqpclk all confirmed
- *   running at 37125 Hz, so the upper block does not become readable merely
- *   because the clocks came up -- it is a power-domain boundary, not a clock
- *   gate.  Only CMU_STATUS (0xb0), MAINUNIT_STATUS0/1 (0x180/0x3010/0x3020),
- *   RESET_MANAGER_* and the IOC HPD register (0x440) are safe here.
+ *   Must be called AFTER the VOP is scanning: everything in the
+ *   0x0800-0x0aff block is clock-gated until the CMU's video clock domains
+ *   come up, and MEASURED, programming it while gated is accepted by the bus
+ *   but breaks the NEXT controller access.  See the implementation for the
+ *   measurements.
  *
- *   Writes into that window are accepted, though; the packet scheduler is
- *   programmed successfully.  It is only the read path that aborts.
+ *   Nothing in 0x0800-0x0aff is read anywhere in this driver: the reads of
+ *   0x08e0, 0x0804 and 0x0814 abort in BOTH clock states, so a read is
+ *   unreliable in a way a write is not, and nothing here needs one.  Every
+ *   value the driver checks comes from VO0_GRF / CRU / VOP (plain syscon
+ *   blocks) or from the always-on 0x0000-0x03ff block.
  *
  * Input Parameters:
  *   None.
@@ -289,46 +289,7 @@ uint32_t rk3576_hdmi_ref_clock_hz(void);
  *
  ****************************************************************************/
 
-int rk3576_hdmi_report_status(void);
-
-/****************************************************************************
- * Name: rk3576_hdmi_sweep_ipi_format
- *
- * Description:
- *   Step VO0_GRF SOC_CON8's grf_hdmitx_iipi_format field through every value
- *   the TRM names (0 RGB, 1 YCbCr 4:2:2, 2 YCbCr 4:4:4, 3 YCbCr 4:2:0),
- *   dwelling on each long enough to be seen on the glass, then restore the
- *   value the driver normally programs.
- *
- *   This exists because the IPI FORMAT is the last known difference between
- *   this driver and the vendor firmware that lights a display: the vendor
- *   sets SOC_CON8 = 0x00000020 (format 2, YCbCr 4:4:4) because its VOP emits
- *   YUV444, while this driver sends RGB888 and therefore says format 0.  That
- *   reasoning looks sound, but the equivalent reasoning about the colour
- *   DEPTH was wrong once already -- the depth in SOC_CON8 and the depth used
- *   by the MIPI path live in different fields for different consumers, and a
- *   value proven good on one says nothing about the other.
- *
- *   So rather than argue it, watch it.  Call this AFTER the framebuffer holds
- *   a visible test pattern, and have the observer report whether the screen
- *   ever changes from black during the sweep.  A single "it changed when the
- *   log said format=N" settles the question; a screen that stays black
- *   through all four values rules the IPI format out entirely.
- *
- *   The write is to VO0_GRF, a plain syscon block, so it is safe to do while
- *   the display pipeline is running, and the field is latched by the
- *   controller on the next frame.
- *
- * Input Parameters:
- *   dwell_ms - Time to hold each value, in milliseconds.  Use 0 for a
- *              default of 2000 ms, which is long enough to notice.
- *
- * Returned Value:
- *   Zero (OK) on success; -EIO if no stream has been enabled.
- *
- ****************************************************************************/
-
-int rk3576_hdmi_sweep_ipi_format(uint32_t dwell_ms);
+int rk3576_hdmi_start_video_path(void);
 
 #undef EXTERN
 #if defined(__cplusplus)

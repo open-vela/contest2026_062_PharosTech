@@ -45,7 +45,7 @@
  * entry written as RK3576_HDPTXPHY_CMN(0x51) reads as 0x144 and corresponds
  * one-to-one with the TRM's HDPTXPHY_CMN_REG0051.  Keeping the index rather
  * than the offset in the source makes every entry directly checkable against
- * the TRM and against the vendor driver's CMN_REG(0051) spelling.
+ * the TRM.
  *
  * LANE is four identical per-lane banks, 0x400 bytes apart:
  *
@@ -145,9 +145,8 @@
 #define RK3576_HDPTXPHY_GRF_PHY_RDY       (1u << 1) /* lanes ready for TX */
 #define RK3576_HDPTXPHY_GRF_SB_RDY        (1u << 0) /* sideband ready     */
 
-/* Power-up handshake timeouts.  The values mirror the vendor driver's
- * read_poll_timeout() budgets, which are generous multiples of the times the
- * TRM's start-up sequence asks for (25.6.2.1: 10 us between each step).
+/* Power-up handshake timeouts.  The values are generous multiples of the times
+ * the TRM's start-up sequence asks for (25.6.2.1: 10 us between each step).
  */
 
 #define RK3576_HDPTXPHY_PLL_LOCK_TRIES 400u  /* x 20 us  = 8 ms   */
@@ -211,7 +210,7 @@
  ****************************************************************************/
 
 /* LNTOP_REG(0200): protocol and TMDS/FRL selection.  For TMDS the whole
- * register is written as 0x06 by the vendor driver, i.e. protocol_sel = 1
+ * register is written as 0x06, i.e. protocol_sel = 1
  * (HDMI, not DP) with the TMDS/FRL select bit clear.
  */
 
@@ -284,8 +283,8 @@
 
 /* TMDS character-rate ceilings.  CE = the TMDS character rate, which equals
  * pixel_clock * bpc / 8 and therefore equals the pixel clock at 8 bpc.
- * 340 MHz is the HDMI 1.4b limit and also the point above which the vendor
- * driver switches the serialiser to a 1/40 bit-rate clock; 600 MHz is the
+ * 340 MHz is the HDMI 1.4b limit and also the point above which the
+ * serialiser switches to a 1/40 bit-rate clock; 600 MHz is the
  * HDMI 2.0 (TMDS) limit.
  */
 
