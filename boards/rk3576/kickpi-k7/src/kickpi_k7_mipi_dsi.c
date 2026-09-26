@@ -55,12 +55,15 @@
  *                                               sequence, DISPON verification
  *   4. kickpi_k7_mipi_dsi_bist_clear()       -- the panel must not free-run
  *                                               its own test pattern
- *   5. rk3576_vop_initialize()               -- register /dev/fbN; the pixel
+ *   5. kickpi_k7_video_initialize()         -- register /dev/fbN; the pixel
  *                                               clock must be live BEFORE
- *video mode is entered
+ *                                               video mode is entered
  *   6. rk3576_mipi_dsi_enable_video()        -- program IPI timing, then
  *                                               transition to Video mode
  *   7. kickpi_k7_mipi_dsi_backlight_enable() -- backlight on
+ *
+ * Steps 1-3, 6 and 7 stay here; step 5 is shared with the HDMI path and lives
+ * in kickpi_k7_video.c.
  ****************************************************************************/
 
 /****************************************************************************
@@ -81,10 +84,10 @@
 #include <nuttx/video/mipi_display.h>
 #include <nuttx/video/mipi_dsi.h>
 
+#include "kickpi_k7_video.h"
 #include "rk3576_gpio.h"
 #include "rk3576_mipi_dsi.h"
 #include "rk3576_pwm.h"
-#include "rk3576_vop.h"
 
 #ifdef CONFIG_KICKPI_K7_MIPI_DSI
 
@@ -139,13 +142,22 @@
  * MADCTL there is no MY/MX/MV: D7..D4 are reserved on this panel, so SS and
  * GS are the ONLY orientation controls.
  *
- * BGR (bit3) is asserted because the panel shows red and blue exchanged
- * without it.  This bit is one end of a single R/B swap in the pipeline:
- * ESMART's REGION0_MST_CTL rb_swap (bit14, set in rk3576_vop.c) is the other.
- * Exactly ONE of the two may be active -- setting both cancels out and the
- * inversion returns.  The DSI link cannot absorb the difference either:
- * MIPI_DSI_FMT_RGB888 names the byte order of the pixel stream (R,G,B) and
- * the DSI-2 host has no colour-order field.
+ * BGR (bit3) is NOT asserted, and that is a correction rather than an
+ * omission: it used to be, to compensate for ESMART's REGION0_MST_CTL
+ * rb_swap (bit14) being wrongly set in rk3576_vop.c.  Those two bits are the
+ * two ends of ONE R/B swap, so exactly one may be active -- asserting both
+ * cancels out and the inversion returns.  The VOP now leaves its bit clear
+ * for an RGB888 framebuffer, which is the correct setting, so the panel must
+ * not add its own.
+ *
+ * Worth recording that the swap was invisible from this file and looked like
+ * a panel defect: red and blue came out exchanged on this display for as long
+ * as the VOP bit was wrong, and asserting BGR here hid it.  The DSI link could
+ * not have revealed it either -- MIPI_DSI_FMT_RGB888 names the byte order of
+ * the pixel stream (R,G,B) and the DSI-2 host has no colour-order field, so a
+ * wrong upstream order passes through untouched.  Only a second sink on the
+ * same VOP -- here the HDMI output, which has no MADCTL to compensate with --
+ * exposed the real cause.
  *
  * SS and GS are scan-direction bits, not just sequencing flags: SS reverses
  * the source (column) scan order and GS reverses the gate (row) scan order,
@@ -162,9 +174,13 @@
  */
 
 #define KICKPI_K7_MADCTL_GS (1u << 0) /* Gate scan sequence: 1 = reversed */
-#define KICKPI_K7_MADCTL_SS                                                  \
-  (1u << 1)                            /* Source scan sequence: 1 = reversed \
-                                        */
+#define KICKPI_K7_MADCTL_SS                       \
+  (1u << 1) /* Source scan sequence: 1 = reversed \
+             */
+/* Defined only to record what D3 means; MADCTL deliberately leaves it at 0.
+ * Asserting it would be a SECOND R/B swap and the two would cancel out -- see
+ * the bit notes above. */
+
 #define KICKPI_K7_MADCTL_BGR (1u << 3) /* 0: RGB, 1: BGR */
 
 /* Pixel clock: the vendor device tree specifies 62000000 Hz, and 62526316 Hz
@@ -576,10 +592,12 @@ static const struct kickpi_k7_mipi_dsi_cmd_s g_kickpi_k7_mipi_dsi_init[] = {
   { KICKPI_K7_PKT_GEN_LONG, 5, _PANEL_INIT(0xff, 0x98, 0x81, 0x00) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x35, 0x00) },
 
-  /* MADCTL: BGR plus a 180-degree rotation (SS and GS both cleared, where
-   * the vendor's 0x03 leaves them set).  See the bit notes above. */
+  /* MADCTL: a 180-degree rotation and nothing else -- SS and GS both cleared,
+   * where the vendor's 0x03 leaves them set, and D3 (BGR) left at 0.  The R/B
+   * swap that this byte used to carry belongs to the VOP and has been removed
+   * from there; see the bit notes above. */
 
-  { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x36, KICKPI_K7_MADCTL_BGR) },
+  { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x36, 0x00) },
 
   /* Set the interface pixel format explicitly (3Ah = 0x77 = 24 bpp RGB888).
    *
@@ -614,6 +632,30 @@ static const struct rk3576_dsi_video_timing g_kickpi_k7_mipi_dsi_timing = {
   .vback_porch = KICKPI_K7_VBACK_PORCH,
   .vsync_len = KICKPI_K7_VSYNC_LEN,
   .pixel_clock = KICKPI_K7_MIPI_DSI_PIXCLK,
+};
+
+/* The same mode again, in the form the board's VOP layer wants.  The two
+ * structs are deliberately separate and both const: the DSI host needs the
+ * timing in rk3576_dsi_video_timing form, the VOP in rk3576_vop_config form,
+ * and deriving either from a third source is how the two get out of step.
+ * The timing values and the pixel clock are shared through the macros above,
+ * so there is still exactly one place to change a number.
+ */
+
+static const struct kickpi_k7_video_mode_s g_kickpi_k7_mipi_dsi_vop_mode = {
+  .name = "MIPI DSI LCD (WKS50HD072-WCT)",
+  .xres = KICKPI_K7_MIPI_DSI_XRES,
+  .yres = KICKPI_K7_MIPI_DSI_YRES,
+  .hsync_len = KICKPI_K7_HSYNC_LEN,
+  .hfront_porch = KICKPI_K7_HFRONT_PORCH,
+  .hback_porch = KICKPI_K7_HBACK_PORCH,
+  .vsync_len = KICKPI_K7_VSYNC_LEN,
+  .vfront_porch = KICKPI_K7_VFRONT_PORCH,
+  .vback_porch = KICKPI_K7_VBACK_PORCH,
+  .pixel_clock = KICKPI_K7_MIPI_DSI_PIXCLK,
+  .iface = RK3576_VOP_IFACE_MIPI_DSI,
+  .port = RK3576_VOP_PORT0,
+  .fill_rgb = 0xff00ffu,
 };
 
 /* GPIO handles claimed once in configure_pins() and cached here.  They are
@@ -927,7 +969,6 @@ int kickpi_k7_mipi_dsi_initialize(void)
   FAR struct mipi_dsi_host *host;
   FAR struct mipi_dsi_device *dev;
   struct rk3576_dsi_config dsi_cfg;
-  struct rk3576_vop_config vop_cfg;
   int ret;
 
   /* 1. Build the DSI link configuration.  rk3576_mipi_dsi_initialize()
@@ -995,44 +1036,21 @@ int kickpi_k7_mipi_dsi_initialize(void)
    *
    *    Command mode is unaffected by the VOP running: the TRM states that
    *    Command mode ignores the IPI interface.
+   *
+   *    The VOP itself is owned by kickpi_k7_video.c, which is also what the
+   *    HDMI path calls -- from a different point in its own sequence, since
+   *    the HDMI pixel clock comes from the PHY and so must exist first.  The
+   *    mode struct carries the pixel clock the DSI was programmed with; see
+   *    KICKPI_K7_MIPI_DSI_PIXCLK for why it has to be an exactly achievable
+   *    rate rather than the nominal 62 MHz.
    */
 
-  memset(&vop_cfg, 0, sizeof(vop_cfg));
-  vop_cfg.xres = KICKPI_K7_MIPI_DSI_XRES;
-  vop_cfg.yres = KICKPI_K7_MIPI_DSI_YRES;
-  vop_cfg.iface = RK3576_VOP_IFACE_MIPI_DSI;
-  vop_cfg.port = RK3576_VOP_PORT0;
-  vop_cfg.display = RK3576_VOP_DISPLAY_DEFAULT;
-  vop_cfg.plane = 0;
-  vop_cfg.hsync_len = KICKPI_K7_HSYNC_LEN;
-  vop_cfg.hfront_porch = KICKPI_K7_HFRONT_PORCH;
-  vop_cfg.hback_porch = KICKPI_K7_HBACK_PORCH;
-  vop_cfg.vsync_len = KICKPI_K7_VSYNC_LEN;
-  vop_cfg.vfront_porch = KICKPI_K7_VFRONT_PORCH;
-  vop_cfg.vback_porch = KICKPI_K7_VBACK_PORCH;
-
-  /* Same pixel clock the DSI is programmed with.  This MUST be the exactly
-   * achievable value (see KICKPI_K7_MIPI_DSI_PIXCLK): the DSI derives its IPI
-   * timing and PHY_IPI_RATIO from it, so a request the CRU only approximates
-   * would leave the controller timing its pixel path against a clock the
-   * stream does not run at.  rk3576_vop_enable_clocks() logs a warning if the
-   * achieved rate still differs. */
-
-  vop_cfg.pixel_clock = KICKPI_K7_MIPI_DSI_PIXCLK;
-
-  ret = rk3576_vop_initialize(&vop_cfg);
+  ret = kickpi_k7_video_initialize(&g_kickpi_k7_mipi_dsi_vop_mode);
   if (ret < 0)
     {
-      syslog(LOG_ERR, "ERROR: rk3576_vop_initialize failed: %d\n", ret);
+      syslog(LOG_ERR, "ERROR: kickpi_k7_video_initialize failed: %d\n", ret);
       return ret;
     }
-
-  /* Paint a solid colour before video mode starts, so the first frames the
-   * panel receives are recognisably this driver's output rather than the
-   * panel's own noise.  The application paints the real content later.
-   */
-
-  rk3576_vop_fill(0xff00ff);
 
   /* 5. Now program the DSI video timing and switch to Video mode -- with the
    *    pixel clock already running, per step 4. */

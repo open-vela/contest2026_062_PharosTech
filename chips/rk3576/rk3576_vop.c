@@ -48,6 +48,7 @@
 #include <assert.h>
 #include <debug.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -81,6 +82,20 @@
 #define RK3576_VOP_ACLK_NAME "aclk_vop"
 #define RK3576_VOP_HCLK_NAME "hclk_vop"
 #define RK3576_VOP_PCLK_NAME "pclk_vop_root"
+
+/* The HDPTX PHY's pixel-clock output, and the 1'b1 input of the three
+ * dclk_vpN final-select muxes (CLKSEL_CON147[13:11]).
+ *
+ * On the HDMI path this -- not the CRU divider chain -- is the video port's
+ * pixel clock: the PHY's own PLL synthesises it and there is no divider
+ * between the PHY and the port.  The node is registered by
+ * rk3576_clk_register_hdmi() as a fixed rate purely so that the select muxes
+ * have a registered parent to switch to; its rate does NOT track the live PHY
+ * rate, so it must never be used as a rate source.  Use
+ * rk3576_hdmi_pixel_clock_hz() for that.
+ */
+
+#define RK3576_VOP_HDMIPHY_PIXEL_CLK_NAME "clk_hdmiphy_pixel0_o"
 
 /* The ESMART window this driver scans out through.  ESMART0 is the window
  * every Rockchip reference configuration uses for VP0's primary plane, and the
@@ -733,16 +748,41 @@ static void rk3576_vop_configure_layer(FAR struct rk3576_vop_s *priv)
   rk3576_vop_putreg(priv, esmart_base + RK3576_VOP_ESMART_PORT_SEL_IMD,
                     RK3576_VOP_ESMART_PORT_VP0);
 
-  /* Enable REGION0: RGB888 + region enable.
+  /* Enable REGION0: RGB888 + region enable, with rb_swap explicitly CLEARED.
    *
-   * rb_swap is set because the TRM's swap table (11.3) gives rb_swap = 1 for
-   * RGB888 -- the layer wants BGR byte order while the framebuffer is stored
-   * R,G,B.  Clearing it exchanges red and blue on the glass.
+   * MEASURED, and the cause of the exchanged red and blue this board showed
+   * until the bit was corrected: rb_swap is NOT a "make RGB work" flag, even
+   * though the TRM's swap table (11.3) lists it against RGB888.  The reference
+   * driver states the rule outright --
+   *
+   *     static bool vop2_win_rb_swap(uint32_t format)
+   *     {
+   *       switch (format) {
+   *       case DRM_FORMAT_XBGR8888:
+   *       case DRM_FORMAT_ABGR8888:
+   *       case DRM_FORMAT_BGR888:      ... return true;   <- BGR input only
+   *       default:                     return false;
+   *     }
+   *
+   * -- it is set when the FRAMEBUFFER is already stored BGR, to tell the layer
+   * to interpret it that way.  An ordinary RGB888 framebuffer, which is what
+   * rk3576_vop_fill_bands() and any normal framebuffer console produce, must
+   * leave it clear or every R and B component is exchanged on the glass.
+   * U-Boot reaches the same rule from the other side: its is_rb_swap() returns
+   * true only for the serial RGB888_3X8 / RGB888_DUMMY_4X8 bus formats.
+   *
+   * Written as an explicit CLEAR rather than by merely not setting it, so the
+   * bit ends up correct even if an earlier stage left it set.
+   *
+   * The other end of this same swap lives in the MIPI panel's MADCTL BGR bit,
+   * which the MIPI board file had to assert for as long as this bit was wrong.
+   * Exactly one of the two may be active; fixing this one is what let that
+   * file stop asserting its own.
    */
 
   ctrl = rk3576_vop_getreg(priv, esmart_base + RK3576_VOP_ESMART_REGION0_CTRL);
-  ctrl |= RK3576_VOP_ESMART_FMT_RGB888 | RK3576_VOP_ESMART_REGION0_MST_EN |
-          RK3576_VOP_ESMART_REGION0_RB_SWAP;
+  ctrl &= ~RK3576_VOP_ESMART_REGION0_RB_SWAP;
+  ctrl |= RK3576_VOP_ESMART_FMT_RGB888 | RK3576_VOP_ESMART_REGION0_MST_EN;
   rk3576_vop_putreg(priv, esmart_base + RK3576_VOP_ESMART_REGION0_CTRL, ctrl);
 
   /* OVERLAY: connect layer0 to the window selected by RK3576_VOP_ESMART_IDX
@@ -819,9 +859,26 @@ static void rk3576_vop_configure_layer(FAR struct rk3576_vop_s *priv)
  *it -- and a gated channel BIU cannot issue an AXI transaction while every VOP
  *register still reads and writes normally and the POST still scans.
  *
- *   CRU_CLKSEL_CON19 (0x034C) selects and divides it; CRU_GATE_CON03 (0x080C)
- *   bits 1:0 gate aclk/hclk ("when high, disable clock", reset 0 = running);
- *   CRU_SOFTRST_CON06 (0x0A18) bits 1:0 are its resets ("when high, reset").
+ *   CRU_CLKSEL_CON19 (0x034C) selects and divides it; CRU_GATE_CON02 (0x0808)
+ *   bit 1 gates aclk, bit 0 gates hclk ("when high, disable clock", reset 0 =
+ *   running); CRU_SOFTRST_CON02 (0x0A08) bit 1 is aresetn, bit 0 is hresetn
+ *   ("when high, reset", reset 0 = released).
+ *
+ *   The offsets above were corrected after the first implementation wrote
+ *   one register too far: 0x080C (CRU_GATE_CON03) and 0x0A18
+ *   (CRU_SOFTRST_CON06) instead of 0x0808 and 0x0A08.  The TRM names the
+ *   exact addresses for both fields:
+ *
+ *     CRU_GATE_CON02     Operational Base(0x27200000) + offset (0x0808)
+ *       bit 1  aclk_vo0vop_channel_biu_en / bit 0 hclk_vo0vop_channel_biu_en
+ *     CRU_SOFTRST_CON02  Operational Base(0x27200000) + offset (0x0A08)
+ *       bit 1  aresetn_vo0vop_channel_biu / bit 0 hresetn_vo0vop_channel_biu
+ *
+ *   The Linux clock driver agrees: CLKGATE_CON(2) bits 0/1 carry
+ *   hclk_vo0vop_channel and aclk_vo0vop_channel, and both clocks are marked
+ *   CLK_IS_CRITICAL there.  Both wrong targets happened to reset to zero, so
+ *   the mistake was silent rather than damaging -- but it did mean this
+ *   function never actually touched the channel BIU.
  ****************************************************************************/
 
 static void rk3576_vop_channel_biu_enable(void)
@@ -832,8 +889,8 @@ static void rk3576_vop_channel_biu_enable(void)
    * running, with the hiword enabling those two low bits.
    */
 
-  putreg32(0x00030000u | 0x0000u, cru + 0x0a18u);
-  putreg32(0x00030000u | 0x0000u, cru + 0x080cu);
+  putreg32(0x00030000u | 0x0000u, cru + 0x0a08u);
+  putreg32(0x00030000u | 0x0000u, cru + 0x0808u);
   up_udelay(20);
 }
 
@@ -1238,29 +1295,95 @@ static void rk3576_vop_reparent_clocks(FAR struct rk3576_vop_s *priv)
         }
     }
 
-  /* dclk_vpN_sel: final pixel-clock select (0 = *_src, 1 = hdmiphy pixel).
-   * Force onto the src path so the divider chain below can drive the rate.
+  /* dclk_vpN: the video port's pixel clock.  Which source is correct depends
+   * on the output interface, not on the port:
+   *
+   *   HDMI: the HDPTX PHY's PLL generates the pixel clock and there is no
+   *     divider between the PHY and the video port, so the final select mux
+   *     is switched to clk_hdmiphy_pixel0_o and the CRU divider chain is
+   *     bypassed entirely.  The rate is whatever the board programmed into
+   *     the PHY (rk3576_hdmi_enable()); see RK3576_VOP_HDMIPHY_PIXEL_CLK_NAME
+   *     for why no rate is set here.
+   *
+   *   Every other interface: the pixel clock comes from the CRU divider chain
+   *     hanging off the *_src_sel PLL mux, so that mux is forced onto clk_gpll
+   *     -- the reset values point at clk_spll/clk_lpll/clk_vpll/clk_bpll, none
+   *     of which rk3576_clk_tree.c models, so clk_get_rate() would read back 0
+   *     and the ESMART/POST layers would be left unclocked.
    */
 
   mux = clk_get(g_rk3576_vop_dclk_names[priv->cfg.port]);
-  if (mux != NULL)
-    {
-      /* Reparent the *_src_sel mux (the 3-bit PLL selector) onto gpll. */
-      char src_sel_name[24];
 
-      snprintf(src_sel_name, sizeof(src_sel_name), "%s_src_sel",
-               g_rk3576_vop_dclk_names[priv->cfg.port]);
-      mux = clk_get(src_sel_name);
-      if (mux != NULL)
-        {
-          ret = clk_set_parent(mux, gpll);
-          if (ret < 0)
-            {
-              gerr("ERROR: VOP failed to reparent %s: %d\n", src_sel_name,
-                   ret);
-            }
-        }
+  if (mux == NULL)
+    {
+      gerr("ERROR: VOP failed to get %s\n",
+           g_rk3576_vop_dclk_names[priv->cfg.port]);
+      return;
     }
+
+  if (priv->cfg.iface == RK3576_VOP_IFACE_HDMI)
+    {
+      struct clk_s *phyclk = clk_get(RK3576_VOP_HDMIPHY_PIXEL_CLK_NAME);
+      char sel_name[24];
+
+      if (phyclk == NULL)
+        {
+          gerr("ERROR: VOP cannot select the HDMI pixel clock: '%s' is not "
+               "registered\n",
+               RK3576_VOP_HDMIPHY_PIXEL_CLK_NAME);
+          return;
+        }
+
+      /* Switch the final-select mux, NOT the dclk_vpN gate fetched above.
+       *
+       * dclk_vpN is a gate whose only parent is dclk_vpN_sel, so
+       * clk_set_parent() on it cannot succeed for any argument -- it returns
+       * -EINVAL because the requested parent is not in its one-entry parent
+       * list.  The node that actually chooses between the CRU divider chain
+       * and the PHY output is dclk_vpN_sel (CLKSEL_CON147[13:11]), so that is
+       * what has to be reparented.  The same mistake is why the name is built
+       * rather than reused: the dclk name fetched above is only a liveness
+       * check.
+       */
+
+      snprintf(sel_name, sizeof(sel_name), "%s_sel",
+               g_rk3576_vop_dclk_names[priv->cfg.port]);
+      mux = clk_get(sel_name);
+      if (mux == NULL)
+        {
+          gerr("ERROR: VOP cannot select the HDMI pixel clock: '%s' is not "
+               "registered\n",
+               sel_name);
+          return;
+        }
+
+      ret = clk_set_parent(mux, phyclk);
+      if (ret < 0)
+        {
+          gerr("ERROR: VOP failed to reparent %s onto %s: %d\n", sel_name,
+               RK3576_VOP_HDMIPHY_PIXEL_CLK_NAME, ret);
+        }
+
+      return;
+    }
+
+  /* Reparent the *_src_sel mux (the 3-bit PLL selector) onto gpll. */
+
+  {
+    char src_sel_name[24];
+
+    snprintf(src_sel_name, sizeof(src_sel_name), "%s_src_sel",
+             g_rk3576_vop_dclk_names[priv->cfg.port]);
+    mux = clk_get(src_sel_name);
+    if (mux != NULL)
+      {
+        ret = clk_set_parent(mux, gpll);
+        if (ret < 0)
+          {
+            gerr("ERROR: VOP failed to reparent %s: %d\n", src_sel_name, ret);
+          }
+      }
+  }
 }
 
 static int rk3576_vop_enable_clocks(FAR struct rk3576_vop_s *priv)
@@ -1301,59 +1424,83 @@ static int rk3576_vop_enable_clocks(FAR struct rk3576_vop_s *priv)
 
   rk3576_vop_reparent_clocks(priv);
 
-  /* Set the pixel clock to the rate the caller asked for (it must equal what
-   * the output interface was programmed with).  The rate propagates up through
-   * dclk_vpN_sel/_src/_src_div/_src_sel.
-   */
-
-  ret = clk_set_rate(priv->dclk, priv->cfg.pixel_clock != 0
-                                     ? priv->cfg.pixel_clock
-                                     : RK3576_VOP_DEFAULT_PCLK_HZ);
-  if (ret < 0)
+  if (priv->cfg.iface == RK3576_VOP_IFACE_HDMI)
     {
-      gerr("ERROR: VOP failed to set %s rate: %d\n",
-           g_rk3576_vop_dclk_names[priv->cfg.port], ret);
-      return ret;
+      /* Do NOT set a rate on the HDMI path.  The PHY's PLL owns the pixel
+       * rate, the video port is reparented straight onto its output, and
+       * clk_hdmiphy_pixel0_o is only a fixed-rate placeholder in the clock
+       * tree -- so a clk_set_rate() here would either fail or, worse, report
+       * a rate that has nothing to do with what the PHY is generating.
+       * rk3576_hdmi_enable() has already programmed the PHY to
+       * cfg.pixel_clock; read the result from the HDMI driver
+       * (rk3576_hdmi_pixel_clock_hz()) if it needs checking.
+       */
+
+      ginfo("VOP dclk_vp%u: HDMI path, rate owned by the HDPTX PHY "
+            "(requested %lu Hz)\n",
+            (unsigned int)priv->cfg.port,
+            (unsigned long)priv->cfg.pixel_clock);
     }
+  else
+    {
+      /* Set the pixel clock to the rate the caller asked for (it must equal
+       * what the output interface was programmed with).  The rate propagates
+       * up through dclk_vpN_sel/_src/_src_div/_src_sel.
+       */
 
-  /* Self-check the clock the whole MIPI pixel path hangs off.  clk_set_rate()
-   * is a request: the divider search keeps the largest divisor whose output is
-   * still
-   * <= the request, so the achieved rate normally sits below it by a whole
-   * divider step.  The DSI computes its IPI timing and PHY_IPI_RATIO from the
-   * value it was handed, so the board must request a rate the parent PLL
-   * divides exactly (1188/20 = 59.4 MHz, not a nominal 62 MHz).
-   *
-   * rk3576_mipi_dsi_update_pixel_clock() is deliberately NOT called to paper
-   * over this: it rewrites the timing of a live pixel datapath.
-   */
+      ret = clk_set_rate(priv->dclk, priv->cfg.pixel_clock != 0
+                                         ? priv->cfg.pixel_clock
+                                         : RK3576_VOP_DEFAULT_PCLK_HZ);
+      if (ret < 0)
+        {
+          gerr("ERROR: VOP failed to set %s rate: %d\n",
+               g_rk3576_vop_dclk_names[priv->cfg.port], ret);
+          return ret;
+        }
 
-  {
-    uint32_t requested = priv->cfg.pixel_clock != 0
-                             ? priv->cfg.pixel_clock
-                             : RK3576_VOP_DEFAULT_PCLK_HZ;
-    uint32_t achieved = (uint32_t)clk_get_rate(priv->dclk);
-    uint32_t diff =
-        achieved > requested ? achieved - requested : requested - achieved;
-    uint32_t ppm = requested != 0
-                       ? (uint32_t)(((uint64_t)diff * 1000000u) / requested)
-                       : 0;
+      /* Self-check the clock the whole MIPI pixel path hangs off.
+       * clk_set_rate() is a request: the divider search keeps the largest
+       * divisor whose output is still
+       * <= the request, so the achieved rate normally sits below it by a
+       * whole divider step.  The DSI computes its IPI timing and
+       * PHY_IPI_RATIO from the value it was handed, so the board must request
+       * a rate the parent PLL divides exactly (1188/20 = 59.4 MHz, not a
+       * nominal 62 MHz).
+       *
+       * rk3576_mipi_dsi_update_pixel_clock() is deliberately NOT called to
+       * paper over this: it rewrites the timing of a live pixel datapath.
+       */
 
-    /* 500 ppm is far below a divider step (4.2% = 42000 ppm) and far above
-     * what integer arithmetic alone can produce, so it cannot false-alarm. */
-
-    if (requested != 0 && ppm > 500)
       {
-        gerr("WARNING: VOP dclk_vp%u achieved %lu Hz but %lu Hz was "
-             "requested (%lu ppm off) -- the DSI IPI timing and "
-             "PHY_IPI_RATIO were computed from the REQUESTED value, so the "
-             "pixel timing the controller expects does not match the stream "
-             "it receives.  Request a rate the parent PLL divides into "
-             "exactly.\n",
-             (unsigned int)priv->cfg.port, (unsigned long)achieved,
-             (unsigned long)requested, (unsigned long)ppm);
+        uint32_t requested = priv->cfg.pixel_clock != 0
+                                 ? priv->cfg.pixel_clock
+                                 : RK3576_VOP_DEFAULT_PCLK_HZ;
+        uint32_t achieved = (uint32_t)clk_get_rate(priv->dclk);
+        uint32_t diff =
+            achieved > requested ? achieved - requested : requested - achieved;
+        uint32_t ppm =
+            requested != 0
+                ? (uint32_t)(((uint64_t)diff * 1000000u) / requested)
+                : 0;
+
+        /* 500 ppm is far below a divider step (4.2% = 42000 ppm) and far
+         * above what integer arithmetic alone can produce, so it cannot
+         * false-alarm. */
+
+        if (requested != 0 && ppm > 500)
+          {
+            gerr(
+                "WARNING: VOP dclk_vp%u achieved %lu Hz but %lu Hz was "
+                "requested (%lu ppm off) -- the DSI IPI timing and "
+                "PHY_IPI_RATIO were computed from the REQUESTED value, so the "
+                "pixel timing the controller expects does not match the "
+                "stream it receives.  Request a rate the parent PLL divides "
+                "into exactly.\n",
+                (unsigned int)priv->cfg.port, (unsigned long)achieved,
+                (unsigned long)requested, (unsigned long)ppm);
+          }
       }
-  }
+    }
 
   /* Do NOT re-program the DSI's IPI timing here: by this point the DSI is
    * already in video mode, so rewriting HSA/HBP/HACT/HLINE and PHY_IPI_RATIO
@@ -1752,6 +1899,559 @@ int rk3576_vop_fill(uint32_t rgb)
    * must be cleaned or the display keeps scanning out stale lines. */
 
   up_clean_dcache((uintptr_t)fb, (uintptr_t)fb + priv->fblen);
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_vop_fill_bars
+ *
+ * Description:
+ *   Fill the framebuffer with alternating vertical bars and make it visible
+ *   to the scan-out path.
+ *
+ *   This exists to answer a question that no register read-back can answer:
+ *   whether the VOP's pixel data is actually reaching the output at all.
+ *
+ *   The reason a solid fill cannot answer it: with every pixel identical, the
+ *   TMDS serialiser emits one constant symbol per lane, so the connector shows
+ *   a pure tone at the pixel rate.  A DEAD video datapath -- serialiser
+ *   running, no new pixels arriving -- produces the byte-for-byte same
+ *   waveform.  "Clean 148.5 MHz tone on every lane" is therefore consistent
+ *   with both a working and a broken data path, and that ambiguity is what
+ *   this function removes.
+ *
+ *   With bars of N pixels the serialiser's symbol sequence repeats every N
+ *   pixels, so the dominant tone moves from the pixel rate (148.5 MHz) down to
+ *   roughly 148.5/N MHz.  At the default N = 8 that is ~18.6 MHz, comfortably
+ *   inside the bandwidth of an inexpensive probe where 148.5 MHz is not.  A
+ *   live data path changes the waveform dramatically; a dead one does not
+ *   change it at all.
+ *
+ * Input Parameters:
+ *   rgb_a    - Colour of the even bars, 0xRRGGBB.
+ *   rgb_b    - Colour of the odd bars, 0xRRGGBB.
+ *   bar_px   - Width of one bar in pixels; must be non-zero.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; -ENODEV if no display is up; -EINVAL if bar_px is 0.
+ *
+ ****************************************************************************/
+
+int rk3576_vop_fill_bars(uint32_t rgb_a, uint32_t rgb_b, uint32_t bar_px)
+{
+  FAR struct rk3576_vop_s *priv = g_rk3576_vop_priv;
+  uint32_t xres;
+  uint8_t *fb;
+  size_t n;
+
+  if (priv == NULL || priv->fbmem == NULL)
+    {
+      return -ENODEV;
+    }
+
+  if (bar_px == 0u)
+    {
+      return -EINVAL;
+    }
+
+  xres = priv->cfg.xres;
+  fb = (uint8_t *)priv->fbmem;
+
+  for (n = 0; n < priv->fblen; n += 3)
+    {
+      uint32_t x = (uint32_t)(n / 3u) % xres;
+      uint32_t rgb = ((x / bar_px) & 1u) != 0u ? rgb_b : rgb_a;
+
+      fb[n + 0] = (uint8_t)(rgb >> 16);
+      fb[n + 1] = (uint8_t)(rgb >> 8);
+      fb[n + 2] = (uint8_t)rgb;
+    }
+
+  up_clean_dcache((uintptr_t)fb, (uintptr_t)fb + priv->fblen);
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_vop_fill_bands
+ *
+ * Description:
+ *   Fill the framebuffer with horizontal bands of solid colour, then clean
+ *the D-cache.
+ *
+ *   This supersedes the magenta/green bar pattern, which turned out to be a
+ *   poor test.  Both of those colours are INVARIANT under bit and byte order
+ *   reversal:
+ *
+ *     0xff00ff reversed bit-wise = 0xff00ff
+ *     0x00ff00 reversed bit-wise = 0x00ff00
+ *
+ *   so the pattern could not reveal a swapped bus order even in principle,
+ *   and two colours say nothing about per-component routing.  White, red,
+ *   green and blue are used instead:
+ *
+ *     - white (0xffffff) survives every reordering, so seeing it proves the
+ *       pixel path is alive end to end at all;
+ *     - red (0xff0000) and blue (0x0000ff) SWAP under bit or byte reversal,
+ *       so a wrong order becomes a visible colour change rather than "still
+ *       no pattern";
+ *     - each primary exercises one component, so a stuck or misrouted lane
+ *       drops one band instead of hiding behind the others.
+ *
+ *   Bands run vertically (a different colour per horizontal stripe) because
+ *   that is the easiest thing to describe from a photograph of the screen.
+ *
+ * Input Parameters:
+ *   colors - Array of RGB888 values, first band first.  Must not be NULL.
+ *   nbands - Number of entries in colors.  Must not be zero.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; -ENODEV if no display is up; -EINVAL on a bad
+ *   argument.
+ *
+ ****************************************************************************/
+
+int rk3576_vop_fill_bands(FAR const uint32_t *colors, uint32_t nbands)
+{
+  FAR struct rk3576_vop_s *priv = g_rk3576_vop_priv;
+  uint32_t yres;
+  uint32_t xres;
+  uint8_t *fb;
+  uint32_t y;
+  uint32_t x;
+
+  if (priv == NULL || priv->fbmem == NULL)
+    {
+      return -ENODEV;
+    }
+
+  if (colors == NULL || nbands == 0u)
+    {
+      return -EINVAL;
+    }
+
+  xres = priv->cfg.xres;
+  yres = priv->cfg.yres;
+  fb = (uint8_t *)priv->fbmem;
+
+  for (y = 0; y < yres; y++)
+    {
+      uint32_t rgb = colors[(y * nbands) / yres];
+
+      for (x = 0; x < xres; x++)
+        {
+          uint8_t *px = fb + ((size_t)y * priv->stride) + ((size_t)x * 3u);
+
+          px[0] = (uint8_t)(rgb >> 16);
+          px[1] = (uint8_t)(rgb >> 8);
+          px[2] = (uint8_t)rgb;
+        }
+    }
+
+  up_clean_dcache((uintptr_t)fb, (uintptr_t)fb + priv->fblen);
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_vop_background_test
+ *
+ * Description:
+ *   Bisect the pixel path AFTER the POST: turn the window off, drive the
+ *POST's own background colour generator through red, green and blue, then
+ *restore the window.
+ *
+ *   Everything up to and including the POST has been verified by register
+ *   read-back: the window is enabled (REGION0_CTRL mst_en = 1) with the right
+ *   format and swap, YRGB_MST equals the framebuffer's physical address, the
+ *   mixer factors are the opaque-bottom-layer pair (src = ONE,
+ *   dst = DST_INVERSE), the background is disabled and the active/display
+ *   sizes are the full frame.  The pixels are demonstrably in DRAM.  Yet the
+ *   screen is black, and the IPI colour format and depth -- the only settings
+ *   that differ from the vendor firmware -- have both been swept with no
+ *   effect.
+ *
+ *   That leaves exactly one untested link in the chain: whether ANY pixel
+ *   reaches the output interface at all.  The window and the background are
+ *   two independent data sources feeding the same POST output, so switching
+ *   sources answers it:
+ *
+ *     the screen shows colour -> the POST-to-interface path is alive, and the
+ *                                fault is in the window's fetch or mixing;
+ *     the screen stays black -> no POST output reaches the interface, so the
+ *                                fault is downstream of the POST and no
+ *                                amount of window configuration can fix it.
+ *
+ *   The window is disabled (mst_en = 0) during the test so that the mixer
+ *   cannot cover the background, and the background colour is deliberately
+ *   saturated so that a photograph of the screen is unambiguous.
+ *
+ * Input Parameters:
+ *   hold_ms - Time to hold each colour, in milliseconds.  Use 0 for 2000.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; -ENODEV if the VOP has not been initialised.
+ *
+ ****************************************************************************/
+
+int rk3576_vop_background_test(uint32_t hold_ms)
+{
+  FAR struct rk3576_vop_s *priv = g_rk3576_vop_priv;
+  static const char *const names[3] = { "RED", "GREEN", "BLUE" };
+  static const uint32_t rgbs[3] = { 0xff0000u, 0x00ff00u, 0x0000ffu };
+  uint32_t esmart_base;
+  uint32_t post_base;
+  uint32_t i;
+  uint32_t restore;
+
+  if (priv == NULL)
+    {
+      return -ENODEV;
+    }
+
+  if (hold_ms == 0u)
+    {
+      hold_ms = 2000u;
+    }
+
+  esmart_base = RK3576_VOP_ESMART(priv->base, RK3576_VOP_ESMART_IDX);
+  post_base = RK3576_VOP_POST(priv->base, priv->cfg.port);
+
+  /* Take the window out of the mixer so the background is what reaches the
+   * output, remembering the register so it can be put back exactly.
+   */
+
+  restore =
+      rk3576_vop_getreg(priv, esmart_base + RK3576_VOP_ESMART_REGION0_CTRL);
+  rk3576_vop_putreg(priv, esmart_base + RK3576_VOP_ESMART_REGION0_CTRL,
+                    restore & ~RK3576_VOP_ESMART_REGION0_MST_EN);
+  rk3576_vop_trigger_cfg_done(priv);
+
+  _err("VOP background test: window disabled, POST background driving the "
+       "output.  WATCH THE SCREEN.\n");
+
+  for (i = 0; i < 3u; i++)
+    {
+      uint32_t r = (rgbs[i] >> 16) & 0xffu;
+      uint32_t g = (rgbs[i] >> 8) & 0xffu;
+      uint32_t b = rgbs[i] & 0xffu;
+
+      /* The background fields are 10 bits per component, so an 8-bit value is
+       * scaled up rather than copied -- 0xff must become 0x3ff, not 0x0ff.
+       */
+
+      rk3576_vop_putreg(priv, post_base + RK3576_VOP_POST_DSP_BG,
+                        RK3576_VOP_POST_BG_DISPLAY_EN |
+                            RK3576_VOP_POST_BG_RGB(r << 2, g << 2, b << 2));
+      rk3576_vop_trigger_cfg_done(priv);
+
+      _err("  background now %s (hold %" PRIu32 " ms) -- the screen should be "
+           "that colour right now\n",
+           names[i], hold_ms);
+
+      up_mdelay(hold_ms);
+    }
+
+  /* Back to the window, background off. */
+
+  rk3576_vop_putreg(priv, esmart_base + RK3576_VOP_ESMART_REGION0_CTRL,
+                    restore);
+  rk3576_vop_modifyreg(priv, post_base + RK3576_VOP_POST_DSP_BG,
+                       RK3576_VOP_POST_BG_DISPLAY_EN, 0);
+  rk3576_vop_trigger_cfg_done(priv);
+
+  _err("VOP background test done: window restored (REGION0_CTRL %08" PRIx32
+       "), background disabled.\n",
+       rk3576_vop_getreg(priv, esmart_base + RK3576_VOP_ESMART_REGION0_CTRL));
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_vop_get_status
+ *
+ * Description:
+ *   Sample the VOP's hardware counters.  See the prototype in rk3576_vop.h
+ *   for what each reading means and why register read-backs cannot answer
+ *   the same question.
+ *
+ *   Deliberately silent: this returns data and logs nothing, so it stays out
+ *   of the way of the driver's logging convention and the caller decides what
+ *   is worth printing.
+ *
+ ****************************************************************************/
+
+int rk3576_vop_get_status(FAR struct rk3576_vop_status_s *status)
+{
+  FAR struct rk3576_vop_s *priv = g_rk3576_vop_priv;
+  uint32_t post_base;
+  uint32_t sys_base;
+  uint32_t cnt;
+
+  if (status == NULL)
+    {
+      return -EINVAL;
+    }
+
+  memset(status, 0, sizeof(*status));
+
+  if (priv == NULL)
+    {
+      return -ENODEV;
+    }
+
+  post_base = RK3576_VOP_POST(priv->base, priv->cfg.port);
+  sys_base = RK3576_VOP_SYS_CTRL(priv->base);
+
+  /* Arm the hardware clock counter and let it run its fixed window.  The
+   * window is defined by the hardware (5000 hclk cycles), so the delay only
+   * has to be long enough to cover it at any plausible hclk.
+   */
+
+  rk3576_vop_modifyreg(priv, post_base + RK3576_VOP_POST_CLK_CNT_OFF,
+                       RK3576_VOP_POST_CLK_EN, RK3576_VOP_POST_CLK_EN);
+  up_mdelay(2);
+
+  cnt = rk3576_vop_getreg(priv, post_base + RK3576_VOP_POST_CLK_CNT_OFF);
+
+  status->dclk_cnt = cnt & RK3576_VOP_POST_DCLK_CNT_MASK;
+  status->aclk_cnt =
+      (cnt & RK3576_VOP_POST_ACLK_CNT_MASK) >> RK3576_VOP_POST_ACLK_CNT_SHIFT;
+
+  rk3576_vop_modifyreg(priv, post_base + RK3576_VOP_POST_CLK_CNT_OFF,
+                       RK3576_VOP_POST_CLK_EN, 0);
+
+  /* The vertical counter, so "is the scan state machine running" is sampled
+   * rather than inferred.  Free-running: the caller compares two readings.
+   */
+
+  status->dsp_vcnt0 =
+      (rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS_STATUS0) &
+       RK3576_VOP_DSP_VCNT0_MASK) >>
+      RK3576_VOP_DSP_VCNT0_SHIFT;
+
+  /* What the clock tree believes the pixel clock is, for comparison against
+   * the hardware count above.
+   */
+
+  status->dclk_hz =
+      priv->dclk != NULL ? (uint32_t)clk_get_rate(priv->dclk) : 0;
+
+  /* The interrupt RAW registers, which are the only ones that can report
+   * anything: STATUS is masked by the per-channel enable bits and this driver
+   * never sets them, so STATUS reads 0 regardless (see the note in
+   * hardware/rk3576_vop.h).
+   *
+   * These two flags test the hypothesis that fits the measured symptom.  The
+   * TMDS side shows a constant symbol stream with no video content -- bars do
+   * not appear and no hsync/vsync structure shows up even in persistence
+   * mode.  A POST that is starved of data emits its own fixed pattern instead
+   * of the framebuffer, which produces exactly that, and this driver's own
+   * comments already warn that capping the fetch channel does it.
+   *
+   *   VP_INT_RAW_STATUS bit4 POST_BUF_EMPTY  output buffer under-ran
+   *   SYS0_INT_RAW       bit1 BUS_ERROR      the AXI read failed
+   *
+   * A set BUS_ERROR means the layer's reads are failing outright (wrong
+   * framebuffer address, MMU, or a dead AXI channel); a clean BUS_ERROR with
+   * POST_BUF_EMPTY set means the reads are valid but too slow, which points at
+   * the fetch path being throttled.
+   */
+
+  status->vp_int_raw = rk3576_vop_getreg(
+      priv, sys_base + RK3576_VOP_VP_INT_RAW_STATUS(priv->cfg.port));
+  status->sys0_int_raw =
+      rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS0_INT_RAW);
+  status->sys1_int_raw =
+      rk3576_vop_getreg(priv, sys_base + RK3576_VOP_SYS1_INT_RAW);
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_vop_get_layer_state
+ *
+ * Description:
+ *   Read back the window/mixer/post registers that decide whether the
+ *framebuffer's pixels reach the glass, plus the first bytes of the
+ *framebuffer itself.
+ *
+ *   This exists because "the display is black" has two very different causes
+ *   that look identical from outside, and the VOP's own logging (gerr/ginfo)
+ *   is gated off in this build so the registers cannot be read from a log:
+ *
+ *     1. The window's data never reaches the POST.  The OVERLAY mixers have
+ *        their source/destination factors reset to 0, so an un-configured
+ *        mixer discards the layer and substitutes the port's own background
+ *        -- black.  Wrong or unmapped YRGB_MST lands in exactly the same
+ *        place, because the fetch returns zeros.
+ *     2. The data does reach the POST but the pixels in memory are zero, so
+ *        there is nothing to show.  On this SoC that is a live risk: the
+ *        ESMART layer reads DRAM with the MMU bypassed and therefore ignores
+ *        the D-cache, so a buffer the CPU has only written into cache reads
+ *        back as uninitialised DRAM.
+ *
+ *   The fb_words[] sample separates them.  Non-zero pixels in memory with a
+ *   black screen means the scan-out side is at fault; zero pixels means no
+ *   register is at fault and the writer never reached memory.
+ *
+ *   Each register read is annotated with the value the working vendor
+ *   firmware leaves it at, where that value is known, so a mismatch is
+ *   obvious without a second lookup.
+ *
+ * Input Parameters:
+ *   state - Receives the sample.  Must not be NULL.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; -ENODEV if the VOP has not been initialised;
+ *   -EINVAL if state is NULL.
+ *
+ ****************************************************************************/
+
+int rk3576_vop_get_layer_state(FAR struct rk3576_vop_layer_state_s *state)
+{
+  FAR struct rk3576_vop_s *priv = g_rk3576_vop_priv;
+  uint32_t esmart_base;
+  uint32_t ovl_base;
+  uint32_t post_base;
+  FAR const uint32_t *words;
+  int i;
+
+  if (state == NULL)
+    {
+      return -EINVAL;
+    }
+
+  memset(state, 0, sizeof(*state));
+
+  if (priv == NULL || priv->fbmem == NULL)
+    {
+      return -ENODEV;
+    }
+
+  esmart_base = RK3576_VOP_ESMART(priv->base, RK3576_VOP_ESMART_IDX);
+  ovl_base = RK3576_VOP_OVERLAY_PORT(priv->base, priv->cfg.port);
+  post_base = RK3576_VOP_POST(priv->base, priv->cfg.port);
+
+  /* Report the indices too: the caller has no way to know which window and
+   * port this instance is using, and every register below is only meaningful
+   * together with them.
+   */
+
+  state->esmart_idx = RK3576_VOP_ESMART_IDX;
+  state->port = priv->cfg.port;
+
+  /* What the layer is actually told to read, and whether it is enabled.  The
+   * address is a physical one (AXI_CTRL_IMD has MMU bypass set), so the two
+   * values printed together must match or the fetch reads someone else's
+   * memory.
+   */
+
+  state->fb_pa = (uint32_t)up_addrenv_va_to_pa(priv->fbmem);
+  state->fb_len = (uint32_t)priv->fblen;
+  state->stride = priv->stride;
+
+  state->region0_ctrl =
+      rk3576_vop_getreg(priv, esmart_base + RK3576_VOP_ESMART_REGION0_CTRL);
+  state->region0_yrgb_mst = rk3576_vop_getreg(
+      priv, esmart_base + RK3576_VOP_ESMART_REGION0_YRGB_MST);
+  state->axi_ctrl_imd =
+      rk3576_vop_getreg(priv, esmart_base + RK3576_VOP_ESMART_AXI_CTRL_IMD);
+
+  /* The mixer chain, from the window mux through to the POST. */
+
+  state->layer_sel =
+      rk3576_vop_getreg(priv, ovl_base + RK3576_VOP_OVERLAY_LAYER_SEL);
+  state->mix0_src_alpha = rk3576_vop_getreg(
+      priv, ovl_base + RK3576_VOP_OVERLAY_MIX0_SRC_ALPHA_CTRL);
+  state->mix0_dst_alpha = rk3576_vop_getreg(
+      priv, ovl_base + RK3576_VOP_OVERLAY_MIX0_DST_ALPHA_CTRL);
+  state->bg_mix_ctrl =
+      rk3576_vop_getreg(priv, ovl_base + RK3576_VOP_OVERLAY_BG_MIX_CTRL);
+
+  state->dsp_ctrl =
+      rk3576_vop_getreg(priv, post_base + RK3576_VOP_POST_DSP_CTRL);
+  state->dsp_bg = rk3576_vop_getreg(priv, post_base + RK3576_VOP_POST_DSP_BG);
+
+  /* Decode here, once.  Every bit position comes from the definitions in
+   * hardware/rk3576_vop.h and nowhere else.
+   *
+   * The first version of this diagnostic decoded these fields at the call
+   * site, from memory, and got REGION0_CTRL's enable, format and swap bits
+   * (and AXI_CTRL_IMD's bypass bit) all wrong -- which produced a log
+   * accusing a correctly programmed layer of being disabled.  A bring-up
+   * diagnostic that misleads costs more than having none, so the layout is
+   * now stated exactly once.
+   */
+
+  state->mst_en =
+      (state->region0_ctrl & RK3576_VOP_ESMART_REGION0_MST_EN) ? 1u : 0u;
+  state->fmt = (state->region0_ctrl & RK3576_VOP_ESMART_REGION0_FMT_MASK) >>
+               RK3576_VOP_ESMART_REGION0_FMT_SHIFT;
+  state->rb_swap =
+      (state->region0_ctrl & RK3576_VOP_ESMART_REGION0_RB_SWAP) ? 1u : 0u;
+
+  state->mmu_bypass =
+      (state->axi_ctrl_imd & RK3576_VOP_ESMART_AXI_MMU_BYPASS) ? 1u : 0u;
+
+  state->layer0_sel = (state->layer_sel & RK3576_VOP_LAYER_SEL_MASK) >>
+                      RK3576_VOP_LAYER_SEL_SHIFT0;
+
+  state->src_factor =
+      (state->mix0_src_alpha & RK3576_VOP_MIX_ALPHA_FACTOR_MASK) >>
+      RK3576_VOP_MIX_ALPHA_FACTOR_SHIFT;
+  state->dst_factor =
+      (state->mix0_dst_alpha & RK3576_VOP_MIX_ALPHA_FACTOR_MASK) >>
+      RK3576_VOP_MIX_ALPHA_FACTOR_SHIFT;
+
+  state->bg_display_en =
+      (state->dsp_bg & RK3576_VOP_POST_BG_DISPLAY_EN) ? 1u : 0u;
+
+  /* Decode here, once.  Every bit position comes from the definitions in
+   * hardware/rk3576_vop.h; nothing about the layout is repeated at the call
+   * site, because doing that is how this diagnostic first went wrong.
+   */
+
+  state->mst_en =
+      (state->region0_ctrl & RK3576_VOP_ESMART_REGION0_MST_EN) ? 1u : 0u;
+  state->fmt = (state->region0_ctrl & RK3576_VOP_ESMART_REGION0_FMT_MASK) >>
+               RK3576_VOP_ESMART_REGION0_FMT_SHIFT;
+  state->rb_swap =
+      (state->region0_ctrl & RK3576_VOP_ESMART_REGION0_RB_SWAP) ? 1u : 0u;
+
+  state->mmu_bypass =
+      (state->axi_ctrl_imd & RK3576_VOP_ESMART_AXI_MMU_BYPASS) ? 1u : 0u;
+
+  state->layer0_sel = (state->layer_sel & RK3576_VOP_LAYER_SEL_MASK) >>
+                      RK3576_VOP_LAYER_SEL_SHIFT0;
+
+  state->src_factor =
+      (state->mix0_src_alpha & RK3576_VOP_MIX_ALPHA_FACTOR_MASK) >>
+      RK3576_VOP_MIX_ALPHA_FACTOR_SHIFT;
+  state->dst_factor =
+      (state->mix0_dst_alpha & RK3576_VOP_MIX_ALPHA_FACTOR_MASK) >>
+      RK3576_VOP_MIX_ALPHA_FACTOR_SHIFT;
+
+  state->bg_display_en =
+      (state->dsp_bg & RK3576_VOP_POST_BG_DISPLAY_EN) ? 1u : 0u;
+
+  /* The framebuffer's first 16 bytes, read through the CPU's mapping.
+   *
+   * Deliberately read AFTER everything that could have dirtied the cache, and
+   * with a cache operation first so that what is reported is what DRAM holds
+   * rather than what the D-cache holds.  A mismatch between these values and
+   * a black screen is the signature of a missing cache clean.
+   */
+
+  up_clean_dcache((uintptr_t)priv->fbmem,
+                  (uintptr_t)priv->fbmem + priv->fblen);
+
+  words = (FAR const uint32_t *)priv->fbmem;
+  for (i = 0; i < 4; i++)
+    {
+      state->fb_words[i] = words[i];
+    }
 
   return OK;
 }

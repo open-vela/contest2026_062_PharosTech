@@ -76,7 +76,8 @@
  *
  *   release init reset  -> enable PLL       -> wait o_phy_clk_rdy
  *   release cmn reset                         (datapath clocks stable)
- *   release lane reset  -> enable lanes     -> wait o_phy_rdy && o_pll_lock_done
+ *   release lane reset  -> enable lanes     -> wait o_phy_rdy &&
+ *o_pll_lock_done
  *
  * A caller that skips the first wait and starts the HDMI controller anyway
  * gets a PHY whose serialisers are still coming up; the controller then
@@ -120,9 +121,9 @@
  * uses those same figures, so they are kept verbatim.
  */
 
-#define RK3576_HDPTXPHY_APB_RESET_US  25
-#define RK3576_HDPTXPHY_STEP_US       15
-#define RK3576_HDPTXPHY_SETTLE_US     10
+#define RK3576_HDPTXPHY_APB_RESET_US 25
+#define RK3576_HDPTXPHY_STEP_US      15
+#define RK3576_HDPTXPHY_SETTLE_US    10
 
 /* Number of serialiser lanes (three TMDS data + one TMDS clock). */
 
@@ -165,10 +166,10 @@ struct rk3576_hdptxphy_s
 {
   mutex_t lock;
 
-  uintptr_t base;   /* PHY SFR bank        (RK3576_HDPTXPHY_ADDR)     */
-  uintptr_t grf;    /* PHY control/status  (RK3576_HDPTXPHY_GRF_ADDR) */
-  uintptr_t pmu1;   /* PMU1CRU             (RK3576_PMU1_CRU_ADDR)     */
-  uintptr_t cru;    /* main CRU            (RK3576_CRU_ADDR)          */
+  uintptr_t base; /* PHY SFR bank        (RK3576_HDPTXPHY_ADDR)     */
+  uintptr_t grf;  /* PHY control/status  (RK3576_HDPTXPHY_GRF_ADDR) */
+  uintptr_t pmu1; /* PMU1CRU             (RK3576_PMU1_CRU_ADDR)     */
+  uintptr_t cru;  /* main CRU            (RK3576_CRU_ADDR)          */
 
   struct clk_s *pclk_apb; /* pclk_hdptx_apb */
   struct clk_s *pclk_grf; /* pclk_hdptx_grf */
@@ -198,50 +199,33 @@ static const struct rk3576_hdptxphy_ropll_s g_hdptxphy_tmds_ropll[] = {
    *   num, deno
    */
 
-  { 594000000u,   124,   124,    1,    1,    0,  1,   62,    1,  16,  5,
-      0,    1 }, /* 3840x2160p30 / 4096x2160p30 */
-  { 461101250u,    97,    97,    1,    1,    0,  1,   71,    1,  53,  2,
-      6,   35 },
-  { 371250000u,   155,   155,    1,    1,    1,  1,   62,    1,  16,  5,
-      0,    1 }, /* 1920x1080p120 / 2560x1440p60 */
-  { 297000000u,   124,   124,    1,    1,    1,  1,   62,    1,  16,  5,
-      0,    1 }, /* 3840x2160p30 / 1920x1080p60 (12 bpc) */
-  { 185625000u,   155,   155,    1,    1,    3,  1,   62,    1,  16,  5,
-      0,    1 },
-  { 162000000u,   135,   135,    1,    1,    3,  0,    4,    0,   3,  5,
-      5,   16 },
-  { 154000000u,   193,   193,    1,    1,    5,  1,  193,    1,  32,  2,
-      1,    1 },
-  { 148500000u,   123,   123,    1,    1,    3,  1,    4,    0,   3,  5,
-      5,   16 }, /* 1920x1080p60  (bring-up target)     */
-  { 146250000u,   122,   122,    1,    1,    3,  1,  244,    1,  16,  2,
-      1,    1 },
-  { 119000000u,   149,   149,    1,    1,    5,  1,  149,    1,  16,  2,
-      1,    1 },
-  { 108000000u,   135,   135,    1,    1,    5,  0,    9,    0,   5,  0,
-     20,   24 },
-  { 106500000u,    89,    89,    1,    1,    3,  1,   89,    1,  16,  1,
-      0,    1 },
-  {  92812500u,   155,   155,    1,    1,    7,  1,   62,    1,  16,  5,
-      0,    1 },
-  {  85500000u,   214,   214,    1,    1,   11,  1,  214,    1,  16,  2,
-      1,    1 },
-  {  83500000u,   105,   105,    1,    1,    5,  1,   42,    1,  16,  1,
-      0,    1 },
-  {  74250000u,   124,   124,    1,    1,    7,  1,   62,    1,  16,  5,
-      0,    1 }, /* 1920x1080p50 / 1280x720p60      */
-  {  65000000u,   162,   162,    1,    1,   11,  1,   54,    0,  16,  4,
-      1,    1 },
-  {  50250000u,    84,    84,    1,    1,    7,  1,   11,    1,   4,  5,
-      4,   11 },
-  {  40000000u,   100,   100,    1,    1,   11,  0,    9,    0,   5,  0,
-     20,   24 },
-  {  33750000u,   112,   112,    1,    1,   15,  1,    2,    0,   1,  5,
-      1,    1 },
-  {  27000000u,    90,    90,    1,    1,   15,  0,    9,    0,   5,  0,
-     20,   24 },
-  {  25175000u,    84,    84,    1,    1,   15,  1,  168,    1,  16,  4,
-      1,    1 }, /* 640x480p60 */
+  { 594000000u, 124, 124, 1, 1, 0, 1, 62, 1, 16, 5, 0,
+    1 }, /* 3840x2160p30 / 4096x2160p30 */
+  { 461101250u, 97, 97, 1, 1, 0, 1, 71, 1, 53, 2, 6, 35 },
+  { 371250000u, 155, 155, 1, 1, 1, 1, 62, 1, 16, 5, 0,
+    1 }, /* 1920x1080p120 / 2560x1440p60 */
+  { 297000000u, 124, 124, 1, 1, 1, 1, 62, 1, 16, 5, 0,
+    1 }, /* 3840x2160p30 / 1920x1080p60 (12 bpc) */
+  { 185625000u, 155, 155, 1, 1, 3, 1, 62, 1, 16, 5, 0, 1 },
+  { 162000000u, 135, 135, 1, 1, 3, 0, 4, 0, 3, 5, 5, 16 },
+  { 154000000u, 193, 193, 1, 1, 5, 1, 193, 1, 32, 2, 1, 1 },
+  { 148500000u, 123, 123, 1, 1, 3, 1, 4, 0, 3, 5, 5,
+    16 }, /* 1920x1080p60  (bring-up target)     */
+  { 146250000u, 122, 122, 1, 1, 3, 1, 244, 1, 16, 2, 1, 1 },
+  { 119000000u, 149, 149, 1, 1, 5, 1, 149, 1, 16, 2, 1, 1 },
+  { 108000000u, 135, 135, 1, 1, 5, 0, 9, 0, 5, 0, 20, 24 },
+  { 106500000u, 89, 89, 1, 1, 3, 1, 89, 1, 16, 1, 0, 1 },
+  { 92812500u, 155, 155, 1, 1, 7, 1, 62, 1, 16, 5, 0, 1 },
+  { 85500000u, 214, 214, 1, 1, 11, 1, 214, 1, 16, 2, 1, 1 },
+  { 83500000u, 105, 105, 1, 1, 5, 1, 42, 1, 16, 1, 0, 1 },
+  { 74250000u, 124, 124, 1, 1, 7, 1, 62, 1, 16, 5, 0,
+    1 }, /* 1920x1080p50 / 1280x720p60      */
+  { 65000000u, 162, 162, 1, 1, 11, 1, 54, 0, 16, 4, 1, 1 },
+  { 50250000u, 84, 84, 1, 1, 7, 1, 11, 1, 4, 5, 4, 11 },
+  { 40000000u, 100, 100, 1, 1, 11, 0, 9, 0, 5, 0, 20, 24 },
+  { 33750000u, 112, 112, 1, 1, 15, 1, 2, 0, 1, 5, 1, 1 },
+  { 27000000u, 90, 90, 1, 1, 15, 0, 9, 0, 5, 0, 20, 24 },
+  { 25175000u, 84, 84, 1, 1, 15, 1, 168, 1, 16, 4, 1, 1 }, /* 640x480p60 */
 };
 
 /* Common CMN block programming, applied before the per-mode CMN table.  These
@@ -344,13 +328,14 @@ static const struct rk3576_hdptxphy_seq_s g_hdptxphy_tmds_lntop_lowbr_seq[] = {
   { RK3576_HDPTXPHY_LNTOP(0x205), 0x1f },
 };
 
-static const struct rk3576_hdptxphy_seq_s g_hdptxphy_tmds_lntop_highbr_seq[] = {
-  { RK3576_HDPTXPHY_LNTOP(0x201), 0x00 },
-  { RK3576_HDPTXPHY_LNTOP(0x202), 0x00 },
-  { RK3576_HDPTXPHY_LNTOP(0x203), 0x0f },
-  { RK3576_HDPTXPHY_LNTOP(0x204), 0xff },
-  { RK3576_HDPTXPHY_LNTOP(0x205), 0xff },
-};
+static const struct rk3576_hdptxphy_seq_s
+    g_hdptxphy_tmds_lntop_highbr_seq[] = {
+      { RK3576_HDPTXPHY_LNTOP(0x201), 0x00 },
+      { RK3576_HDPTXPHY_LNTOP(0x202), 0x00 },
+      { RK3576_HDPTXPHY_LNTOP(0x203), 0x0f },
+      { RK3576_HDPTXPHY_LNTOP(0x204), 0xff },
+      { RK3576_HDPTXPHY_LNTOP(0x205), 0xff },
+    };
 
 /* Per-lane programming, written to all four LANE banks by adding
  * RK3576_HDPTXPHY_LANE_STRIDE per lane.  The common table is applied first and
@@ -371,8 +356,7 @@ static const struct rk3576_hdptxphy_seq_s g_hdptxphy_common_lane_seq[] = {
 
 static const struct rk3576_hdptxphy_seq_s g_hdptxphy_tmds_lane_seq[] = {
   { RK3576_HDPTXPHY_LANE(0x312), 0x00 }, { RK3576_HDPTXPHY_LANE(0x303), 0x2f },
-  { RK3576_HDPTXPHY_LANE(0x305), 0x03 },
-  { RK3576_HDPTXPHY_LANE(0x306), 0x1c },
+  { RK3576_HDPTXPHY_LANE(0x305), 0x03 }, { RK3576_HDPTXPHY_LANE(0x306), 0x1c },
   { RK3576_HDPTXPHY_LANE(0x31e), 0x02 },
 };
 
@@ -481,9 +465,8 @@ static uint32_t rk3576_hdptxphy_status(struct rk3576_hdptxphy_s *priv)
  *   OK once the bits are set, -ETIMEDOUT if they never appear.
  ****************************************************************************/
 
-static int rk3576_hdptxphy_poll(struct rk3576_hdptxphy_s *priv,
-                                uint32_t mask, uint32_t tries,
-                                uint32_t delay_us)
+static int rk3576_hdptxphy_poll(struct rk3576_hdptxphy_s *priv, uint32_t mask,
+                                uint32_t tries, uint32_t delay_us)
 {
   uint32_t i;
 
@@ -509,9 +492,9 @@ static int rk3576_hdptxphy_poll(struct rk3576_hdptxphy_s *priv,
  *   stride each time, and applies the lane-3 skew override on the last pass.
  ****************************************************************************/
 
-static void rk3576_hdptxphy_write_seq(
-    struct rk3576_hdptxphy_s *priv,
-    const struct rk3576_hdptxphy_seq_s *seq, size_t n)
+static void rk3576_hdptxphy_write_seq(struct rk3576_hdptxphy_s *priv,
+                                      const struct rk3576_hdptxphy_seq_s *seq,
+                                      size_t n)
 {
   size_t i;
 
@@ -521,9 +504,10 @@ static void rk3576_hdptxphy_write_seq(
     }
 }
 
-static void rk3576_hdptxphy_write_lane_seq(
-    struct rk3576_hdptxphy_s *priv,
-    const struct rk3576_hdptxphy_seq_s *seq, size_t n)
+static void
+rk3576_hdptxphy_write_lane_seq(struct rk3576_hdptxphy_s *priv,
+                               const struct rk3576_hdptxphy_seq_s *seq,
+                               size_t n)
 {
   uint32_t lane;
   size_t i;
@@ -539,16 +523,13 @@ static void rk3576_hdptxphy_write_lane_seq(
            */
 
           if (lane == (RK3576_HDPTXPHY_NLANES - 1u) &&
-              seq[i].offset ==
-                  RK3576_HDPTXPHY_LANE(0x31e) &&
-              value == 0x02)
+              seq[i].offset == RK3576_HDPTXPHY_LANE(0x31e) && value == 0x02)
             {
               value = RK3576_HDPTXPHY_LANE3_SKEW_VALUE;
             }
 
           rk3576_hdptxphy_putreg(
-              priv, seq[i].offset + lane * RK3576_HDPTXPHY_LANE_STRIDE,
-              value);
+              priv, seq[i].offset + lane * RK3576_HDPTXPHY_LANE_STRIDE, value);
         }
     }
 }
@@ -614,7 +595,7 @@ static int rk3576_hdptxphy_post_enable_pll(struct rk3576_hdptxphy_s *priv)
                              RK3576_HDPTXPHY_PLL_LOCK_DELAY);
   if (ret < 0)
     {
-      gerr("ERROR: HDPTXPHY datapath clock never became ready "
+      _err("ERROR: HDPTXPHY datapath clock never became ready "
            "(STATUS0=%08" PRIx32 ")\n",
            rk3576_hdptxphy_status(priv));
       return ret;
@@ -645,14 +626,12 @@ static int rk3576_hdptxphy_post_enable_lane(struct rk3576_hdptxphy_s *priv)
                             RK3576_HDPTXPHY_LNTOP0207_LANE_MASK,
                             RK3576_HDPTXPHY_LNTOP0207_ALL_LANES);
 
-  ret = rk3576_hdptxphy_poll(priv,
-                             RK3576_HDPTXPHY_GRF_PHY_RDY |
-                                 RK3576_HDPTXPHY_GRF_PLL_LOCK_DONE,
-                             RK3576_HDPTXPHY_LANE_RDY_TRIES,
-                             RK3576_HDPTXPHY_LANE_RDY_DELAY);
+  ret = rk3576_hdptxphy_poll(
+      priv, RK3576_HDPTXPHY_GRF_PHY_RDY | RK3576_HDPTXPHY_GRF_PLL_LOCK_DONE,
+      RK3576_HDPTXPHY_LANE_RDY_TRIES, RK3576_HDPTXPHY_LANE_RDY_DELAY);
   if (ret < 0)
     {
-      gerr("ERROR: HDPTXPHY lanes never became ready "
+      _err("ERROR: HDPTXPHY lanes never became ready "
            "(STATUS0=%08" PRIx32 ")\n",
            rk3576_hdptxphy_status(priv));
       return ret;
@@ -709,9 +688,9 @@ rk3576_hdptxphy_ropll_lookup(uint32_t char_rate)
  *   OK on success, or the handshake's negated errno on failure.
  ****************************************************************************/
 
-static int rk3576_hdptxphy_ropll_config(struct rk3576_hdptxphy_s *priv,
-                                        uint8_t bpc,
-                                        const struct rk3576_hdptxphy_ropll_s *cfg)
+static int
+rk3576_hdptxphy_ropll_config(struct rk3576_hdptxphy_s *priv, uint8_t bpc,
+                             const struct rk3576_hdptxphy_ropll_s *cfg)
 {
   rk3576_hdptxphy_pre_power_up(priv);
 
@@ -756,8 +735,7 @@ static int rk3576_hdptxphy_ropll_config(struct rk3576_hdptxphy_s *priv,
     }
 
   rk3576_hdptxphy_modifyreg(
-      priv, RK3576_HDPTXPHY_CMN0064_OFF,
-      RK3576_HDPTXPHY_CMN0064_NUM_SIGN_RBR,
+      priv, RK3576_HDPTXPHY_CMN0064_OFF, RK3576_HDPTXPHY_CMN0064_NUM_SIGN_RBR,
       cfg->sdm_num_sign ? RK3576_HDPTXPHY_CMN0064_NUM_SIGN_RBR : 0u);
 
   rk3576_hdptxphy_putreg(priv, RK3576_HDPTXPHY_CMN(0x60), cfg->sdm_deno);
@@ -775,20 +753,18 @@ static int rk3576_hdptxphy_ropll_config(struct rk3576_hdptxphy_s *priv,
    */
 
   rk3576_hdptxphy_modifyreg(
-      priv, RK3576_HDPTXPHY_CMN0086_OFF,
-      RK3576_HDPTXPHY_CMN0086_POSTDIV_MASK,
+      priv, RK3576_HDPTXPHY_CMN0086_OFF, RK3576_HDPTXPHY_CMN0086_POSTDIV_MASK,
       ((uint32_t)cfg->sdiv << 4) /* POSTDIV_SEL is [7:4] */);
 
   rk3576_hdptxphy_modifyreg(
-      priv, RK3576_HDPTXPHY_CMN0086_OFF,
-      RK3576_HDPTXPHY_CMN0086_CLK_SEL_MASK,
+      priv, RK3576_HDPTXPHY_CMN0086_OFF, RK3576_HDPTXPHY_CMN0086_CLK_SEL_MASK,
       ((uint32_t)((bpc - 8u) >> 1u) << 1u) /* CLK_SEL is [3:1] */);
 
   rk3576_hdptxphy_modifyreg(priv, RK3576_HDPTXPHY_CMN0086_OFF,
                             RK3576_HDPTXPHY_CMN0086_CLK_EN,
                             RK3576_HDPTXPHY_CMN0086_CLK_EN);
 
-  ginfo("HDPTXPHY TMDS ROPLL: rate=%" PRIu32 " mdiv=%u sdiv=%u sdm_en=%u "
+  _info("HDPTXPHY TMDS ROPLL: rate=%" PRIu32 " mdiv=%u sdiv=%u sdm_en=%u "
         "num_sign=%u num=%u deno=%u sdc_n=%u\n",
         cfg->rate, cfg->mdiv, cfg->sdiv + 1u, cfg->sdm_en, cfg->sdm_num_sign,
         cfg->sdm_num, cfg->sdm_deno, cfg->sdc_n + 3u);
@@ -875,7 +851,7 @@ int rk3576_hdptxphy_initialize(void)
   priv->pclk_grf = clk_get("pclk_hdptx_grf");
   if (priv->pclk_apb == NULL || priv->pclk_grf == NULL)
     {
-      gerr("ERROR: HDPTXPHY missing APB/GRF clock\n");
+      _err("ERROR: HDPTXPHY missing APB/GRF clock\n");
       ret = -ENODEV;
       goto err_unlock;
     }
@@ -885,14 +861,14 @@ int rk3576_hdptxphy_initialize(void)
   ret = clk_enable(priv->pclk_grf);
   if (ret < 0)
     {
-      gerr("ERROR: HDPTXPHY failed to enable GRF clock: %d\n", ret);
+      _err("ERROR: HDPTXPHY failed to enable GRF clock: %d\n", ret);
       goto err_unlock;
     }
 
   ret = clk_enable(priv->pclk_apb);
   if (ret < 0)
     {
-      gerr("ERROR: HDPTXPHY failed to enable APB clock: %d\n", ret);
+      _err("ERROR: HDPTXPHY failed to enable APB clock: %d\n", ret);
       clk_disable(priv->pclk_grf);
       goto err_unlock;
     }
@@ -940,7 +916,7 @@ int rk3576_hdptxphy_power_on(uint32_t pixel_clock_hz, uint8_t bpc)
 
   if (bpc != 8 && bpc != 10 && bpc != 12 && bpc != 16)
     {
-      gerr("ERROR: HDPTXPHY unsupported colour depth: %u bpc\n", bpc);
+      _err("ERROR: HDPTXPHY unsupported colour depth: %u bpc\n", bpc);
       return -EINVAL;
     }
 
@@ -955,7 +931,7 @@ int rk3576_hdptxphy_power_on(uint32_t pixel_clock_hz, uint8_t bpc)
   cfg = rk3576_hdptxphy_ropll_lookup((uint32_t)char_rate);
   if (cfg == NULL)
     {
-      gerr("ERROR: HDPTXPHY no TMDS PLL setting for pixel clock %" PRIu32
+      _err("ERROR: HDPTXPHY no TMDS PLL setting for pixel clock %" PRIu32
            " Hz at %u bpc (character rate %" PRIu64 " Hz)\n",
            pixel_clock_hz, bpc, char_rate);
       return -EINVAL;
@@ -965,7 +941,7 @@ int rk3576_hdptxphy_power_on(uint32_t pixel_clock_hz, uint8_t bpc)
 
   if (!priv->initialized)
     {
-      gerr("ERROR: HDPTXPHY not initialized\n");
+      _err("ERROR: HDPTXPHY not initialized\n");
       nxmutex_unlock(&priv->lock);
       return -EINVAL;
     }
@@ -1054,10 +1030,8 @@ int rk3576_hdptxphy_power_off(void)
 bool rk3576_hdptxphy_is_ready(void)
 {
   return (rk3576_hdptxphy_status(&g_hdptxphy) &
-          (RK3576_HDPTXPHY_GRF_PHY_RDY |
-           RK3576_HDPTXPHY_GRF_PLL_LOCK_DONE)) ==
-         (RK3576_HDPTXPHY_GRF_PHY_RDY |
-          RK3576_HDPTXPHY_GRF_PLL_LOCK_DONE);
+          (RK3576_HDPTXPHY_GRF_PHY_RDY | RK3576_HDPTXPHY_GRF_PLL_LOCK_DONE)) ==
+         (RK3576_HDPTXPHY_GRF_PHY_RDY | RK3576_HDPTXPHY_GRF_PLL_LOCK_DONE);
 }
 
 uint32_t rk3576_hdptxphy_pixel_clock_hz(void)

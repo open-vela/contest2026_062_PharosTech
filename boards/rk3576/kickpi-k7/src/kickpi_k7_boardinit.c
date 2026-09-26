@@ -452,6 +452,21 @@ void board_late_initialize(void)
   }
 #endif
 
+#ifdef CONFIG_KICKPI_K7_HDMI
+  /* Bring up the HDMI output (HDMI TX + HDPTX PHY + VOP).  Mutually
+   * exclusive with the MIPI DSI panel above: rk3576_vop.c drives a single
+   * output instance, so only one of the two may be selected.
+   */
+
+  {
+    int ret = kickpi_k7_hdmi_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: kickpi_k7_hdmi_initialize failed: %d\n", ret);
+      }
+  }
+#endif
+
 #ifdef CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT
   {
     int ret = kickpi_k7_storage_initialize(

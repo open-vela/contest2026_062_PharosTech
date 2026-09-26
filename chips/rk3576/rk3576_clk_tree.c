@@ -2950,6 +2950,13 @@ static void rk3576_clk_register_vo0(void)
     "clk_bpll", /* 2'b11: clk_bpll_src -- not registered yet */
   };
 
+  static const char *hclk_vo0_root_parents[] = {
+    "clk_gpll_div6",  /* 2'b00 */
+    "clk_cpll_div10", /* 2'b01 */
+    "clk_cpll_div20", /* 2'b10 */
+    "xin_osc0",       /* 2'b11 */
+  };
+
   static const char *pclk_vo0_root_parents[] = {
     "clk_gpll_div8",  /* 2'b00 */
     "clk_cpll_div10", /* 2'b01 */
@@ -2977,6 +2984,29 @@ static void rk3576_clk_register_vo0(void)
                           CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
                               CLK_PARENT_NAME_IS_STATIC,
                           cru + RK3576_CRU_GATE_CON(63), 0,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  clk = clk_register_mux("hclk_vo0_root_sel", hclk_vo0_root_parents,
+                         nitems(hclk_vo0_root_parents),
+                         CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC |
+                             CLK_MUX_SET_RATE_NO_REPARENT,
+                         cru + RK3576_CRU_CLKSEL_CON(149), 7, 2,
+                         CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  /* The VO0 high-speed peripheral clock.  Its only consumer right now is the
+   * HDMI controller, whose device tree node names it "hclk_vo1" (the
+   * HCLK_VO0_ROOT dt-binding id -- the label is inherited from RK3588, where
+   * the same gate serves VO1).  The controller's register file is not clocked
+   * by its APB gate alone: the 0x0000-0x03ff block answers from
+   * pclk_hdmitx0, but the block above it needs this one too, and reading
+   * 0x08e0 with it gated aborted on the bus.
+   */
+
+  clk = clk_register_gate("hclk_vo0_root", "hclk_vo0_root_sel",
+                          CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(63), 1,
                           CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
   _assert_registered(clk);
 

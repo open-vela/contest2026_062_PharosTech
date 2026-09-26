@@ -104,7 +104,7 @@
 
 /* Byte offset of SFR index n within each bank. */
 
-#define RK3576_HDPTXPHY_REG(n) ((uintptr_t)((n) * 4u))
+#define RK3576_HDPTXPHY_REG(n)   ((uintptr_t)((n)*4u))
 
 #define RK3576_HDPTXPHY_CMN(n)   RK3576_HDPTXPHY_REG(n) /* CMN   bank */
 #define RK3576_HDPTXPHY_SB(n)    RK3576_HDPTXPHY_REG(n) /* SB    bank */
@@ -120,7 +120,7 @@
 /* GRF hiword write mask: bit 16+N enables writing bit N. */
 
 #define RK3576_HDPTXPHY_GRF_WM16(bit, val) \
-  (((uint32_t)1u << ((bit) + 16u)) | (((val) & 1u) << (bit)))
+  (((uint32_t)1u << ((bit) + 16u)) | (((val)&1u) << (bit)))
 
 /****************************************************************************
  * HDPTXPHY_GRF (RK3576_HDPTXPHY_GRF_ADDR)
@@ -128,7 +128,7 @@
 
 /* Control register 0.  Every field here is a single bit. */
 
-#define RK3576_HDPTXPHY_GRF_CON0_OFF 0x00
+#define RK3576_HDPTXPHY_GRF_CON0_OFF       0x00
 
 #define RK3576_HDPTXPHY_GRF_LC_REF_CLK_SEL 11 /* ROPLL ref: 0 = crystal */
 #define RK3576_HDPTXPHY_GRF_PLL_EN         7  /* PLL block enable      */
@@ -138,7 +138,7 @@
 
 /* Status register: the PHY's ready handshakes. */
 
-#define RK3576_HDPTXPHY_GRF_STATUS0_OFF 0x80
+#define RK3576_HDPTXPHY_GRF_STATUS0_OFF   0x80
 
 #define RK3576_HDPTXPHY_GRF_PLL_LOCK_DONE (1u << 3) /* PLL locked, clks OK */
 #define RK3576_HDPTXPHY_GRF_PHY_CLK_RDY   (1u << 2) /* datapath clks OK   */
@@ -161,7 +161,7 @@
 
 /* CMN_REG(0059): ROPLL pre-divider and reference divider. */
 
-#define RK3576_HDPTXPHY_CMN0059_OFF          RK3576_HDPTXPHY_CMN(0x59)
+#define RK3576_HDPTXPHY_CMN0059_OFF RK3576_HDPTXPHY_CMN(0x59)
 #define RK3576_HDPTXPHY_CMN0059_PDIV_MASK \
   RK3576_HDPTXPHY_GENMASK(7, 4) /* ana_ropll_pms_pdiv   */
 #define RK3576_HDPTXPHY_CMN0059_REFDIV_MASK \
@@ -171,7 +171,7 @@
  * RBR field is used for TMDS (see CMN_REG(0059)/dp_tx_link_bw note below).
  */
 
-#define RK3576_HDPTXPHY_CMN005A_OFF            RK3576_HDPTXPHY_CMN(0x5a)
+#define RK3576_HDPTXPHY_CMN005A_OFF RK3576_HDPTXPHY_CMN(0x5a)
 #define RK3576_HDPTXPHY_CMN005A_SDIV_RBR_MASK \
   RK3576_HDPTXPHY_GENMASK(7, 4) /* ropll_pms_sdiv_rbr */
 #define RK3576_HDPTXPHY_CMN005A_SDIV_HBR_MASK \
@@ -179,18 +179,18 @@
 
 /* CMN_REG(005e): SDM (sigma-delta) fractional-divider enable and resets. */
 
-#define RK3576_HDPTXPHY_CMN005E_OFF            RK3576_HDPTXPHY_CMN(0x5e)
-#define RK3576_HDPTXPHY_CMN005E_SDM_EN         (1u << 6)
+#define RK3576_HDPTXPHY_CMN005E_OFF             RK3576_HDPTXPHY_CMN(0x5e)
+#define RK3576_HDPTXPHY_CMN005E_SDM_EN          (1u << 6)
 #define RK3576_HDPTXPHY_CMN005E_RSVD_LOW_NIBBLE 0x0fu
 
 /* CMN_REG(0064): sign of the SDM numerator, per link-rate bank. */
 
-#define RK3576_HDPTXPHY_CMN0064_OFF            RK3576_HDPTXPHY_CMN(0x64)
+#define RK3576_HDPTXPHY_CMN0064_OFF          RK3576_HDPTXPHY_CMN(0x64)
 #define RK3576_HDPTXPHY_CMN0064_NUM_SIGN_RBR (1u << 3)
 
 /* CMN_REG(0069): SDC (clock generation) divide-ratio selection. */
 
-#define RK3576_HDPTXPHY_CMN0069_OFF       RK3576_HDPTXPHY_CMN(0x69)
+#define RK3576_HDPTXPHY_CMN0069_OFF RK3576_HDPTXPHY_CMN(0x69)
 #define RK3576_HDPTXPHY_CMN0069_SDC_N_MASK \
   RK3576_HDPTXPHY_GENMASK(2, 0) /* ropll_sdc_n_rbr */
 
@@ -199,7 +199,7 @@
  * depth as (bpc - 8) / 2.
  */
 
-#define RK3576_HDPTXPHY_CMN0086_OFF           RK3576_HDPTXPHY_CMN(0x86)
+#define RK3576_HDPTXPHY_CMN0086_OFF RK3576_HDPTXPHY_CMN(0x86)
 #define RK3576_HDPTXPHY_CMN0086_POSTDIV_MASK \
   RK3576_HDPTXPHY_GENMASK(7, 4) /* pll_pcg_postdiv_sel */
 #define RK3576_HDPTXPHY_CMN0086_CLK_SEL_MASK \
@@ -222,11 +222,12 @@
 
 /* LNTOP_REG(0206): serialiser data-bus width.  TMDS uses 40 bits. */
 
-#define RK3576_HDPTXPHY_LNTOP0206_OFF            RK3576_HDPTXPHY_LNTOP(0x206)
+#define RK3576_HDPTXPHY_LNTOP0206_OFF RK3576_HDPTXPHY_LNTOP(0x206)
 #define RK3576_HDPTXPHY_LNTOP0206_BUS_WIDTH_MASK \
-  RK3576_HDPTXPHY_GENMASK(2, 1)                       /* data_bus_width     */
-#define RK3576_HDPTXPHY_LNTOP0206_BUS_WIDTH_SEL (1u << 0) /* bus_width_sel      */
-#define RK3576_HDPTXPHY_LNTOP0206_TMDS_VALUE    0x07u     /* 40-bit, sel = 1    */
+  RK3576_HDPTXPHY_GENMASK(2, 1) /* data_bus_width     */
+#define RK3576_HDPTXPHY_LNTOP0206_BUS_WIDTH_SEL \
+  (1u << 0)                                        /* bus_width_sel      */
+#define RK3576_HDPTXPHY_LNTOP0206_TMDS_VALUE 0x07u /* 40-bit, sel = 1    */
 
 /* LNTOP_REG(0207): per-lane enable.  One bit per serialiser lane; HDMI TMDS
  * enables all four (three data + one clock).
@@ -258,14 +259,14 @@
  * rk3576_sai.c and rk3576_saradc.c use).
  */
 
-#define RK3576_HDPTXPHY_PMU1RST_APB_CON 0
-#define RK3576_HDPTXPHY_PMU1RST_APB_BIT 1
-#define RK3576_HDPTXPHY_PMU1RST_GRF_BIT 0
+#define RK3576_HDPTXPHY_PMU1RST_APB_CON     0
+#define RK3576_HDPTXPHY_PMU1RST_APB_BIT     1
+#define RK3576_HDPTXPHY_PMU1RST_GRF_BIT     0
 
-#define RK3576_HDPTXPHY_PMU1RST_SEQ_CON  1
-#define RK3576_HDPTXPHY_PMU1RST_INIT_BIT 9
-#define RK3576_HDPTXPHY_PMU1RST_CMN_BIT  10
-#define RK3576_HDPTXPHY_PMU1RST_LANE_BIT 11
+#define RK3576_HDPTXPHY_PMU1RST_SEQ_CON     1
+#define RK3576_HDPTXPHY_PMU1RST_INIT_BIT    9
+#define RK3576_HDPTXPHY_PMU1RST_CMN_BIT     10
+#define RK3576_HDPTXPHY_PMU1RST_LANE_BIT    11
 
 #define RK3576_HDPTXPHY_CRU_LINKSYM_RST_CON 75
 #define RK3576_HDPTXPHY_CRU_LINKSYM_RST_BIT 1

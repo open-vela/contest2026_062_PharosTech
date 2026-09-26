@@ -13,8 +13,16 @@ if(CONFIG_KICKPI_K7_WIFI)
       "-Wa,-I${NUTTX_BOARD_DIR}/../../../drivers/drivers/sv6621/firmware")
 endif()
       
+if(CONFIG_KICKPI_K7_VIDEO)
+  list(APPEND SRCS kickpi_k7_video.c)
+endif()
+
 if(CONFIG_KICKPI_K7_MIPI_DSI)
   list(APPEND SRCS kickpi_k7_mipi_dsi.c)
+endif()
+
+if(CONFIG_KICKPI_K7_HDMI)
+  list(APPEND SRCS kickpi_k7_hdmi.c)
 endif()
 
 if(CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT)

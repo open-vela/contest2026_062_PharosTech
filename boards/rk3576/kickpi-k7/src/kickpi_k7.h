@@ -111,5 +111,33 @@ int kickpi_k7_usbhost_initialize(void);
 int kickpi_k7_mipi_dsi_initialize(void);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_HDMI
+/****************************************************************************
+ * Name: kickpi_k7_hdmi_initialize
+ *
+ * Description:
+ *   Board-level wiring for the HDMI output in DVI mode over TMDS: bring up
+ *   the HDMI TX controller (clocks, resets, VO0_GRF routing, register file),
+ *   power the HDPTX PHY and its TMDS PLL to the mode's pixel rate, then
+ *   register the VOP framebuffer that feeds the controller over the IPI.
+ *
+ *   The order is PHY-first, not VOP-first: on the HDMI path the PHY's own
+ *   PLL generates the pixel clock and rk3576_vop.c reparents the video port
+ *   straight onto it, so the VOP has no clock until the PHY is running.
+ *
+ *   Mutually exclusive with CONFIG_KICKPI_K7_MIPI_DSI -- see the choice in
+ *   the board Kconfig.
+ *
+ *   Caller must have brought up the RK3576 clock tree
+ *   (rk3576_clk_tree_initialize() in board_late_initialize()).
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int kickpi_k7_hdmi_initialize(void);
+#endif
+
 #endif /* __ASSEMBLY__ */
 #endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */

@@ -189,18 +189,73 @@ config KICKPI_K7_USBHOST
 		Enable GPIO3_D6 VBUS and initialize USB1 xHCI for the on-board
 		GL3510 SuperSpeed hub and the three external USB-A ports.
 
+choice
+	prompt "kickpi-k7 primary display output"
+	default KICKPI_K7_MIPI_DSI
+	depends on RK3576_VOP && RK3576_GPIO
+	---help---
+		Select which display output this board brings up at boot.
+
+		Only ONE may be selected.  This is not a hardware limit: the RK3576
+		VOP has three independent video ports, and HDMI and MIPI DSI share
+		no register at all (they do not even share a PHY -- the HDPTX combo
+		PHY is shared with eDP, while DSI has its own DCPHY).  The limit is
+		in rk3576_vop.c, which currently drives a single output instance:
+		one global framebuffer handle, and ESMART0 plus video port 0 wired
+		in unconditionally.  A second output would take over the first
+		one's layer and video port.
+
+		Making the choice explicit means a misconfiguration is caught at
+		configure time instead of two drivers silently fighting at boot.
+		kickpi_k7_video_initialize() also refuses a second claim at
+		runtime as a backstop.
+
 config KICKPI_K7_MIPI_DSI
-	bool "On-board MIPI DSI LCD panel (DCPHY + DSI + VOP)"
-	default n
+	bool "MIPI DSI LCD panel (DCPHY + DSI-2 + VOP)"
 	depends on RK3576_MIPI_DCPHY
 	depends on RK3576_MIPI_DSI
-	depends on RK3576_VOP
 	depends on RK3576_PWM
-	depends on RK3576_GPIO
 	---help---
 		Wire up the on-board MIPI DSI LCD panel: configure the panel control
 		pins (reset / power-enable) and backlight PWM, bring up the RK3576
-		DCPHY + DSI-2 host, send the panel DCS init sequence, then enable
-		video and register the VOP framebuffer (/dev/fbN).
+		DCPHY + DSI-2 host, send the panel DCS init sequence, register the
+		VOP framebuffer (/dev/fbN), then switch the host into video mode
+		and turn the backlight on.
+
+		The VOP must be started BEFORE the host enters video mode, because
+		entering video mode starts the IPI timing generator counting lines
+		against the pixel clock.
+
+config KICKPI_K7_HDMI
+	bool "HDMI output (HDMI TX + HDPTX PHY, DVI/TMDS 1080p60)"
+	depends on RK3576_HDPTXPHY
+	depends on RK3576_HDMI
+	depends on RK3576_GPIO
+	---help---
+		Bring up the HDMI output in DVI mode over TMDS at 1080p60: the
+		DesignWare HDMI QP transmitter, the HDPTX PHY and its TMDS PLL, and
+		the VOP framebuffer that feeds the transmitter over the IPI.
+
+		The VOP must be started AFTER the PHY, because on this path the
+		PHY's own PLL -- not the CRU -- generates the pixel clock, and the
+		video port is reparented straight onto it.  Starting the VOP first
+		would leave the video port with no clock at all.
+
+		DVI mode only: no infoframes, no audio, no HDCP, no SCDC
+		scrambling and no HDMI 2.1 FRL, so a sink that requires any of
+		those will show nothing.
+endchoice
+
+config KICKPI_K7_VIDEO
+	bool
+	default y if KICKPI_K7_MIPI_DSI || KICKPI_K7_HDMI
+	---help---
+		Derived symbol: set whenever this board brings up a display output,
+		i.e. whenever one of the two choice entries above is selected.
+
+		It exists so that the build and the shared VOP layer can test one
+		unambiguous symbol instead of an OR of the two, which is what would
+		otherwise have to be spelled out (and kept in sync) in the Makefile,
+		in CMakeLists.txt and in the kickpi_k7_video.c preprocessor guard.
 
 endif # ARCH_BOARD_KICKPI_K7
