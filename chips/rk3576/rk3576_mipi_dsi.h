@@ -74,22 +74,37 @@ struct rk3576_dsi_config
   uint8_t lanes;       /* D-PHY data lanes in use (1..4). */
   uint8_t format;      /* MIPI_DSI_FMT_* pixel format (RGB888/666/565). */
   uint8_t video_mode;  /* DSI2_VID_MODE_* video-mode packet type. */
-  bool continuous_clk; /* true = clock lane stays in HS (continuous) for
-                        * panels that keep HSCM across the whole frame.
-                        * ILI9881D is NON-continuous: its clock lane
-                        * returns to LP-11 after every HS burst (Table 46
-                        * THS-EXIT), so it must be false for that panel. */
+  bool continuous_clk; /* true = clock lane stays in HS (continuous) for the
+                        * whole frame, instead of returning to LP-11 after
+                        * every HS burst.
+                        *
+                        * Both values work on this SoC and with the ILI9881D
+                        * this board uses, and both have been measured.  The
+                        * panel's datasheet documents the NON-continuous
+                        * behaviour (Table 46: THS-EXIT returns the lane to
+                        * LP-11 after each burst), yet a continuous lane drives
+                        * it correctly too.
+                        *
+                        * The parameter exists because the choice is real, not
+                        * because either value is broken.  A non-continuous
+                        * lane is what hurt on this board, and only in
+                        * combination with VIDEO_BURST -- a static per-line
+                        * phase error on the glass.  This field carries the
+                        * board's choice. */
   uint32_t hs_rate;    /* Requested lane high-speed data rate in Hz
                         * (80 Mbps .. 2.5 Gbps). */
   bool eotp;           /* true = transmit EoTp at the end of each HS burst
                         * (DSI2_DSI_GENERAL_CFG.eotp_tx_en).
                         *
-                        * Either value is valid: EoTp is optional in D-PHY
-                        * and changes what a receiver sees at the end of every
-                        * HS burst, so the board decides it per panel.  A
-                        * configuration that sets MIPI_DSI_MODE_EOT_PACKET
-                        * disables EoTp in HS mode; boards that do not set it
-                        * get EoTp enabled.
+                        * Either value is valid: EoTp is optional in D-PHY and
+                        * changes what a receiver sees at the end of every HS
+                        * burst, so the board decides it per panel.  This board
+                        * measured it and runs it ON.
+                        *
+                        * Not load-bearing either way: with a continuous clock
+                        * lane (where EoTp matters in principle, there being no
+                        * LP-11 return to delimit a transmission) the panel
+                        * displays correctly with EoTp both on and off.
                         *
                         * Zero-initialised rk3576_dsi_config therefore means
                         * "no EoTp". */

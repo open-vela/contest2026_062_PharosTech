@@ -38,8 +38,7 @@
  *
  * WKS50HD072-WCT:
  *   - 720 x 1280 portrait, RGB888, 4 data lanes, 62 MHz pixel clock
- *   - Timing (vendor-supplied; identical to the mainline 5" ILI9881D modes
- *     bananapi,lhr050h41 and startek,kd050hdfia020):
+ *   - Timing (vendor-supplied):
  *             HFP=10 HSYNC=20 HBP=30 (htotal=780),
  *             VFP=10 VSYNC=10 VBP=20 (vtotal=1320)  -> ~60 Hz
  *   - 780 and 1320 are both 4-pixel aligned, which the RK3576 DSI-2 TRM 18.2.1
@@ -109,30 +108,91 @@
 #define KICKPI_K7_DSI_VID_MODE_NON_BURST_SYNC_EVENTS (0x1)
 #define KICKPI_K7_DSI_VID_MODE_BURST                 (0x2)
 
-/* Video transmission mode.  BURST, because this VOP/IPI combination does not
- * deliver usable per-line sync to the IPI: with a non-burst mode the IPI
- * accepts pixels but its state machine never observes a line boundary, so no
- * packet is ever built.  BURST does not depend on those signals.
+/* Video transmission mode.  NON-BURST WITH SYNC EVENTS, which is what this
+ * board has measured working on the glass (see the history below).
+ *
+ * The configuration used to be BURST, on the stated grounds that with a
+ * non-burst mode "this IPI accepted pixels but never observed a line
+ * boundary, so no packet was ever built".  That observation was made while
+ * the DSI horizontal-timing registers were 16x wrong (commit d86c78e fixed
+ * them); with HLINE/HACT/HSA/HBP off by 16x the video state machine cannot
+ * lock onto a line at all, which is exactly that symptom.  Re-tested on the
+ * glass with the timing corrected, non-burst displays normally, so that
+ * rationale was a property of the broken timing -- burst was never required.
+ *
+ * Burst is worse than merely unnecessary here: it is half of the only
+ * combination in which this board has ever shown a static per-line edge
+ * artifact.  All four combinations have been on the glass --
+ *
+ *   burst      + non-continuous clock  -> ragged edges   (the old default)
+ *   burst      + continuous clock      -> clean
+ *   non-burst  + continuous clock      -> clean
+ *   non-burst  + non-continuous clock  -> clean
+ *
+ * -- so neither knob decides it on its own: the bad cell needed both at once.
+ * Do not pair BURST with a non-continuous clock lane.
+ *
+ * The lane rate follows the mode automatically: KICKPI_K7_MIPI_DSI_HS_RATE
+ * drops the burst headroom and runs at the raw pixel-derived rate.
  *
  * mode_type is reported on the console by enable_video(), so every captured
  * log states which one was actually programmed. */
 
-#define KICKPI_K7_DSI_VID_MODE KICKPI_K7_DSI_VID_MODE_BURST
+#define KICKPI_K7_DSI_VID_MODE KICKPI_K7_DSI_VID_MODE_NON_BURST_SYNC_EVENTS
 
-/* Clock-lane behaviour.  The clock lane returns to LP-11 after each HS burst,
- * which is what the panel's own datasheet documents (THS-EXIT) and what the
- * mainline peers with identical timing require; a continuous clock lane also
- * leaves the IPI pixel FIFO empty on this board, i.e. pixels never reach the
- * link. */
+/* Clock-lane behaviour: true holds the clock lane in high speed for the whole
+ * frame (continuous); false lets it return to LP-11 between transmissions.
+ *
+ * Both drive this panel, so the value is a board decision rather than a panel
+ * requirement; see the clk_type note in rk3576_dsi_phy_link_cfg().  The board
+ * used to run false, alongside the burst video mode that was the old default,
+ * and that pair is the only one of the four combinations ever observed to
+ * show a static per-line edge artifact:
+ *
+ *   burst      + non-continuous clock  -> ragged edges   (the old default)
+ *   burst      + continuous clock      -> clean
+ *   non-burst  + continuous clock      -> clean
+ *   non-burst  + non-continuous clock  -> clean
+ *
+ * So neither knob alone caused it.  The symptom, for the record: thin glyph
+ * strokes and control outlines came out ragged -- stair-stepped, as if every
+ * line were offset by a fraction of a pixel -- while large flat fills were
+ * clean, and the same framebuffer was smooth over HDMI.
+ *
+ * Mechanism consistent with that table, though never isolated beyond it: a
+ * panel with no frame memory recovers its line period from the link, so a lane
+ * that leaves high speed in every blanking interval re-enters HS once per line
+ * and each re-acquisition can land with its own fractional phase error, which
+ * nudges the panel's pixel counter by a fraction of a pixel per line.  A
+ * whole-line shift is invisible in a flat fill, since every pixel in the run
+ * moves together, but a vertical edge lands slightly differently on each line
+ * -- the raggedness.  The timing is deterministic, so the error is static
+ * rather than shimmering, which is why it read as a rendering fault.  Burst
+ * compresses the active pixels into a fraction of the line and so widens the
+ * blanking gap, which is presumably why the error only showed up with it.
+ *
+ * History, because a wrong conclusion here already cost a wrong turn: the
+ * value was once left false on the strength of a measured "a continuous clock
+ * lane leaves the IPI pixel FIFO empty".  That observation was real but
+ * belongs to the configuration it was made in -- commit d86c78e, which fixed
+ * this driver's horizontal-timing units, so it ran with HLINE/HACT/HSA/HBP all
+ * 16x wrong and in that state the video state machine can never lock onto a
+ * line at all.  The lesson generalises: a negated experiment is only as
+ * trustworthy as the rest of the configuration it ran in. */
 
-#define KICKPI_K7_DSI_CONTINUOUS_CLK false
+#define KICKPI_K7_DSI_CONTINUOUS_CLK true
 
-/* EoTp off, matching every reference for this panel IC and this SoC: Linux's
- * MIPI_DSI_MODE_EOT_PACKET means "disable EoT packets in HS mode", and
- * Rockchip's own ILI9881D DTS node sets it while every RK3576 reference panel
- * node sets MIPI_DSI_MODE_NO_EOT_PACKET. */
+/* EoTp: transmit the end-of-transmission packet at the end of each HS burst.
+ *
+ * Set: EoTp is optional in D-PHY, and this board runs it ON.
+ *
+ * It is NOT load-bearing.  The panel displays correctly with EoTp both on and
+ * off, measured with a continuous clock lane, which is the case where EoTp
+ * matters in principle -- no LP-11 return delimits a transmission there, so
+ * the packet is the only in-band end marker.  If it ever needs reverting, it
+ * is a one-line change and nothing else in the tree depends on it. */
 
-#define KICKPI_K7_DSI_DEFAULT_EOTP false
+#define KICKPI_K7_DSI_DEFAULT_EOTP true
 
 /* Panel geometry and link configuration. */
 #define KICKPI_K7_MIPI_DSI_XRES   720
@@ -146,22 +206,16 @@
  * MADCTL there is no MY/MX/MV: D7..D4 are reserved on this panel, so SS and
  * GS are the ONLY orientation controls.
  *
- * BGR (bit3) is NOT asserted, and that is a correction rather than an
- * omission: it used to be, to compensate for ESMART's REGION0_MST_CTL
- * rb_swap (bit14) being wrongly set in rk3576_vop.c.  Those two bits are the
- * two ends of ONE R/B swap, so exactly one may be active -- asserting both
- * cancels out and the inversion returns.  The VOP now leaves its bit clear
- * for an RGB888 framebuffer, which is the correct setting, so the panel must
- * not add its own.
+ * BGR (bit3) is NOT asserted: it is the panel end of the same R/B swap whose
+ * other end is ESMART's REGION0_MST_CTL rb_swap in rk3576_vop.c, and exactly
+ * one of the two may be active because they cancel.  The VOP leaves its bit
+ * clear for an RGB888 framebuffer, so the panel must not add its own.
  *
- * Worth recording that the swap was invisible from this file and looked like
- * a panel defect: red and blue came out exchanged on this display for as long
- * as the VOP bit was wrong, and asserting BGR here hid it.  The DSI link could
- * not have revealed it either -- MIPI_DSI_FMT_RGB888 names the byte order of
- * the pixel stream (R,G,B) and the DSI-2 host has no colour-order field, so a
- * wrong upstream order passes through untouched.  Only a second sink on the
- * same VOP -- here the HDMI output, which has no MADCTL to compensate with --
- * exposed the real cause.
+ * The DSI link cannot expose a colour-order mistake either way:
+ * MIPI_DSI_FMT_RGB888 names the byte order of the pixel stream and the DSI-2
+ * host has no colour-order field, so a wrong upstream order passes through
+ * untouched.  Only a second sink on the same VOP with no MADCTL of its own --
+ * here the HDMI output -- makes it visible.
  *
  * SS and GS are scan-direction bits, not just sequencing flags: SS reverses
  * the source (column) scan order and GS reverses the gate (row) scan order,
@@ -170,22 +224,22 @@
  * Which of the two is left set is not decided here: it comes from the board's
  * single panel-mounting choice, KICKPI_K7_PANEL_ORIENTATION, because the same
  * physical fact has to be applied to the touch coordinates as well, and
- * kickpi_k7_touch.c reads the same two derived symbols.  The vendor's table
- * (0x03 = both set) is the reference orientation; a mirrored axis is that
+ * kickpi_k7_touch.c reads the same two derived symbols.  The vendor table's
+ * value (0x03 = both set) is the panel's orientation; a mirrored axis is that
  * axis' bit inverted.  Note that this is a property of the panel mounting
  * alone: it costs no scan-out bandwidth and needs no change to the VOP timing
  * or to the framebuffer geometry.
  *
  * If the result ever comes out mirrored on a single axis while the orientation
- * option says otherwise, the reference orientation was the other one -- that
- * is a panel/module question, not something to work around here.
+ * option says otherwise, the vendor table's orientation was the other one --
+ * that is a panel/module question, not something to work around here.
  */
 
 /* The MADCTL argument is assembled from the board's panel-mounting choice.
  * KICKPI_K7_PANEL_MIRROR_X/Y say which axes of the picture have to be reversed
- * relative to the vendor's reference, and a reversed axis is the vendor's
+ * relative to the vendor table, and a reversed axis is the vendor table's
  * value of the corresponding scan bit inverted -- i.e. the bit is cleared,
- * since the reference sets both.  Clearing both is therefore a 180 degree
+ * since the vendor table sets both.  Clearing both is therefore a 180 degree
  * rotation of the whole picture, which is what this board's enclosure needs.
  */
 
@@ -214,8 +268,8 @@
 
 #define KICKPI_K7_MADCTL_BGR (1u << 3) /* 0: RGB, 1: BGR */
 
-/* Pixel clock: the vendor device tree specifies 62000000 Hz, and 62526316 Hz
- * is the closest rate this board can actually produce --
+/* Pixel clock: the panel specifies 62000000 Hz, and 62526316 Hz is the
+ * closest rate this board can actually produce --
  * clk_set_rate(dclk_vp0) keeps the largest divisor of gpll whose output is
  * still <= the request, and 1188/19 = 62.5263 MHz is above 62.000 MHz, so
  * requesting exactly 62 MHz silently lands on divisor 20 and loses 4.2%:
@@ -234,21 +288,20 @@
 
 /* Link rate implied by the pixel stream, derived from the pixel clock rather
  * than chosen for roundness: 62526316 Hz * 24 bpp / 4 lanes = 375157896 bps
- * per lane.  Burst mode then takes 10/9 of it, exactly as the reference driver
- * does, so a burst build runs at ~416.8 Mbps. */
+ * per lane.  Burst mode then takes 10/9 of it (see the headroom note below),
+ * so a burst build runs at ~416.8 Mbps while the non-burst modes (what this
+ * board runs) use the raw figure. */
 
 #define KICKPI_K7_MIPI_DSI_HS_RATE_RAW 375160000u
 
 /* Burst headroom: burst transmission time-compresses a line's active pixels
  * into one packet sent as fast as possible, so the link must deliver pixels
  * faster than the raw pixel rate or the burst cannot fit inside the line and
- * every horizontal boundary shifts.  The reference driver applies exactly this
- * factor (dw_mipi_dsi2_get_lane_mbps(): "take 1 / 0.9, since Mbps must big
- * than bandwidth of RGB").  Set to 1/1 to run burst at the raw rate.
+ * every horizontal boundary shifts.  Set to 1/1 to run burst at the raw rate.
  *
- * A non-burst stream has no such margin by design -- its payload occupies the
- * active period 1:1 -- which is why the data lanes then stay in high speed
- * across the whole active frame.  That is a property of the mode, not a fault.
+ * A non-burst stream preserves the panel timing 1:1 -- its payload is sent at
+ * the pixel rate itself -- so it needs no such margin.  The board runs a
+ * non-burst mode, so this headroom is not applied.
  */
 
 #define KICKPI_K7_MIPI_DSI_BURST_HEADROOM_NUM 10u
@@ -269,13 +322,10 @@
 
 /* Panel timing (porches / sync, in pixels / lines).
  *
- * Vendor-supplied values.  They match the mainline Linux modes for the two
- * 5" 720x1280 ILI9881D panels (bananapi,lhr050h41 and
- * startek,kd050hdfia020) EXACTLY: clock = 62000000, hsync_start = 720 + 10,
+ * Vendor-supplied values: clock = 62000000, hsync_start = 720 + 10,
  * hsync_end = 720 + 10 + 20, htotal = 720 + 10 + 20 + 30; vsync_start =
  * 1280 + 10, vsync_end = 1280 + 10 + 10, vtotal = 1280 + 10 + 10 + 20.
- * The vendor DT also leaves the HSYNC/VSYNC/DE polarity properties unset,
- * i.e. DRM's default (positive / active-high) -- which is what the VOP's
+ * Both syncs are positive / active-high, which is what the VOP's
  * MIPI0_INFACE_CTRL already programs (hsync_pol = vsync_pol = 1).
  */
 
@@ -300,9 +350,9 @@
  * panel IC can keep whatever state the previous session left it in and refuse
  * to latch the init sequence.
  *
- * Follows the vendor DT (power-delay-ms = <10>) and mainline
- * ili9881c_prepare(), extended on the release side because this panel's DCS
- * table needs more settle time before its first command.
+ * Follows the vendor's power sequencing (power-delay-ms = 10), extended on
+ * the release side because this panel's DCS table needs more settle time
+ * before its first command.
  */
 
 #define KICKPI_K7_POWER_OFF_MS    30 /* PWREN low: let the rails decay */
@@ -363,7 +413,7 @@
 /* MIPI packet types used by this panel's DCS init sequence.
  *
  * 0x39 is DCS long write: payload[0] is the command, the rest are parameters.
- * The vendor device tree uses it for the WHOLE sequence, including the 2-byte
+ * The vendor sequence uses it for the WHOLE sequence, including the 2-byte
  * register writes that this table used to send as 0x23 (generic short write,
  * 2 parameters).  Both forms carry the same bytes, but a page write that
  * silently does not latch is invisible from the host -- the panel still
@@ -380,7 +430,7 @@
 
 /* One entry of the panel DCS init sequence.  `data` carries the payload
  * bytes (after the DSI type/delay/word-count header), `type` is the raw
- * MIPI packet type to transmit (kept verbatim from the panel DT node), and
+ * MIPI packet type to transmit (kept verbatim from the vendor sequence), and
  * `delay_ms` is the wait after sending the command.
  */
 
@@ -400,12 +450,12 @@ struct kickpi_k7_mipi_dsi_cmd_s
   .data = (uint8_t[]){ __VA_ARGS__ }, \
   .len = sizeof((uint8_t[]){ __VA_ARGS__ }) / sizeof(uint8_t)
 
-/* Consolidated init sequence.  Each entry reproduces one line of the
- * `panel-init-sequence` DT node verbatim.  `type` is the raw MIPI packet
- * type (0x23 = DCS write, 0x39 = generic long write), `delay_ms` is the
- * post-command wait decoded from the DT second byte (0x78 = 120 ms for
- * sleep-out, 0x14 = 20 ms for display-on), and `data`/`len` are the payload
- * bytes that follow the word-count field.
+/* Consolidated init sequence.  Each entry reproduces one line of the vendor
+ * init sequence verbatim.  `type` is the raw MIPI packet type (0x23 = DCS
+ * write, 0x39 = generic long write), `delay_ms` is the post-command wait the
+ * vendor sequence specifies (0x78 = 120 ms for sleep-out, 0x14 = 20 ms for
+ * display-on), and `data`/`len` are the payload bytes that follow the
+ * word-count field.
  */
 
 /* NOTE on page-switch timing: every vendor page switch (0xFF 98 81 xx)
@@ -638,9 +688,8 @@ static const struct kickpi_k7_mipi_dsi_cmd_s g_kickpi_k7_mipi_dsi_init[] = {
    * panel this is normally a no-op.  It is written anyway because "the panel
    * is set to something other than what the host transmits" is otherwise an
    * invisible degree of freedom: the host sends RGB888 either way, and any
-   * TCON configured for 16/18 bpp would reinterpret every pixel.  Reading
-   * 0Ch back (see the panel status probes) now closes that question instead
-   * of assuming it. */
+   * TCON configured for 16/18 bpp would reinterpret every pixel.  Writing it
+   * explicitly closes that question instead of assuming it. */
 
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x3a, 0x77) },
 
@@ -1016,7 +1065,11 @@ int kickpi_k7_mipi_dsi_initialize(void)
   dsi_cfg.video_mode = KICKPI_K7_DSI_VID_MODE;
   dsi_cfg.hs_rate = KICKPI_K7_MIPI_DSI_HS_RATE;
 
-  /* Non-continuous clock lane; see KICKPI_K7_DSI_CONTINUOUS_CLK. */
+  /* Clock lane and EoTp.  See KICKPI_K7_DSI_CONTINUOUS_CLK and
+   * KICKPI_K7_DSI_DEFAULT_EOTP, which carry the measurement behind them (only
+   * BURST together with a non-continuous clock lane produced the edge
+   * artifact).
+   */
 
   dsi_cfg.continuous_clk = KICKPI_K7_DSI_CONTINUOUS_CLK;
   dsi_cfg.eotp = KICKPI_K7_DSI_DEFAULT_EOTP;
@@ -1064,9 +1117,7 @@ int kickpi_k7_mipi_dsi_initialize(void)
    *    and then having the clock appear and be interrupted once more by the
    *    VOP's dclk reset pulse, leaves that generator waiting for a boundary
    *    that never comes: pixels pile up in ipi_data, no line packet is built
-   *    and the lanes stay idle.  Linux has the same order -- the CRTC (dclk,
-   *    MIPI interface, scan-out) is enabled before the DSI encoder's
-   *    atomic_enable() switches the host into video mode.
+   *    and the lanes stay idle.
    *
    *    Command mode is unaffected by the VOP running: the TRM states that
    *    Command mode ignores the IPI interface.

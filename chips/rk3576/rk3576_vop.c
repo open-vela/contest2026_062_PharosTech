@@ -740,24 +740,17 @@ static void rk3576_vop_configure_layer(FAR struct rk3576_vop_s *priv)
 
   /* Enable REGION0: RGB888 + region enable, with rb_swap explicitly CLEARED.
    *
-   * MEASURED, and the cause of the exchanged red and blue this board showed
-   * until the bit was corrected: rb_swap is NOT a "make RGB work" flag, even
-   * though the TRM's swap table (11.3) lists it against RGB888.  It means the
-   * FRAMEBUFFER is already stored as BGR, so the layer must interpret it that
-   * way: it is set for BGR input formats (XBGR8888/ABGR8888/BGR888) and clear
-   * for every other format.  An ordinary RGB888 framebuffer, which is what
-   * rk3576_vop_fill_bands() and any normal framebuffer console produce, must
-   * leave it clear or every R and B component is exchanged on the glass.  The
-   * same rule holds from the interface side: the serial RGB888_3X8 /
-   * RGB888_DUMMY_4X8 bus formats are the only ones that set the swap.
+   * rb_swap is NOT a "make RGB work" flag, despite the TRM's swap table (11.3)
+   * listing it against RGB888.  It says the FRAMEBUFFER is already stored as
+   * BGR, so it is set for the BGR input formats (XBGR8888/ABGR8888/BGR888) and
+   * clear for every other one -- including the plain RGB888 framebuffer that
+   * rk3576_vop_fill_bands() and any normal console produce.  Left set, it
+   * exchanges every R and B component on the glass, which a white or black
+   * test pattern will not reveal.  The interface side follows the same rule:
+   * only the serial RGB888_3X8 / RGB888_DUMMY_4X8 bus formats set the swap.
    *
-   * Written as an explicit CLEAR rather than by merely not setting it, so the
-   * bit ends up correct even if an earlier stage left it set.
-   *
-   * The other end of this same swap lives in the MIPI panel's MADCTL BGR bit,
-   * which the MIPI board file had to assert for as long as this bit was wrong.
-   * Exactly one of the two may be active; fixing this one is what let that
-   * file stop asserting its own.
+   * See the MIPI panel's MADCTL BGR bit for the other end of this one swap:
+   * exactly one of the two may be active, because they cancel.
    */
 
   ctrl = rk3576_vop_getreg(priv, esmart_base + RK3576_VOP_ESMART_REGION0_CTRL);
@@ -1006,15 +999,11 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
    * Set out_en + clk_out_en + port_sel, and keep hsync/vsync Positive +
    * regdone_imd_en (mirror -> real immediately).  cmd_mode stays 0 (Video).
    *
-   * CRITICAL pixel-clock configuration:
-   * RK3576 VP0 is dual-pixel (pixel_rate=2), so the POST scan clock must be
-   * HALF the panel pixel clock.  With dclk=64M the VOP-internal dclk_core
-   * must be 32M (dclk/2), selected by POST_CORE_CLK.dclk_core_sel=1.  The
-   * MIPI interface then takes dclk_core directly (mipi0_dclk_sel=0) and
-   * divides by 2 (mipi0_pixclk_div=0) to feed the DSI IPI 16M
-   * (= crtc_clock/4, matching PHY_IPI_RATIO=1.5).  Leaving dclk_core_sel=0
-   * doubles the scan rate: dsp_vcnt0 runs at 2x and the pixel stream never
-   * aligns with the DSI IPI clock domain -> all-black.
+   * Pixel-clock configuration: RK3576 VP0 is dual-pixel (pixel_rate = 2), so
+   * POST_CORE_CLK.dclk_core_sel = 1 divides dclk by 2 for the scan clock.  The
+   * MIPI interface then takes dclk_core directly (mipi0_dclk_sel = 0) and
+   * divides by 2 again, which is the crtc_clock/4 the DSI computes its
+   * PHY_IPI_RATIO against.
    */
 
   /* Pre-scan: how early the layers ask for their pixels (TRM 11.4 "H.
@@ -1027,9 +1016,8 @@ static void rk3576_vop_configure_port(FAR struct rk3576_vop_s *priv)
    * makes the first line's data zero)
    *
    * bg_dly is 20 for RK3576 port0 (TRM Table 11-4: win_dly 10 + layer_mix_dly
-   * 8
-   * + hdr_mix_dly 2), not RK3568's 16.  OVERLAY_BG_MIX_CTRL and this register
-   * are measured against the same mux output, so both are written.
+   * 8 + hdr_mix_dly 2), not RK3568's 16.  OVERLAY_BG_MIX_CTRL and this
+   * register are measured against the same mux output, so both are written.
    */
 
   {

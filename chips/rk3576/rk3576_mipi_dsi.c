@@ -712,27 +712,24 @@ static int rk3576_dsi_phy_power_up(FAR struct rk3576_dsi_s *priv)
  * Name: rk3576_dsi_phy_link_cfg
  *
  * Description:
- *   Configure the DSI-2 controller's PHY-facing link options that the CRI
- *   command path depends on but which are left at their reset values by
- *   rk3576_dsi_phy_power_up().  These are required for the very first DCS
- *   init command to complete:
+ *   Configure the DSI-2 controller's PHY-facing link options, about which two
+ *   things are worth knowing up front: every one of them resets to a value
+ *   that does NOT work (0 disables the escape clock, 0 disables both clock
+ *   ratios, 0 leaves the PHY switching times unspecified), so the CRI cannot
+ *   send even the first DCS command until this has run; and the clk_type it
+ *   programs is the board's choice rather than a fixed requirement.
  *
- *   - DSI2_PHY_CLK_CFG.phy_lptx_clk_div: the TX Escape clock.  Reset value
- *     0 turns the escape clock OFF (TRM 18.4.x: 5'b00000 = "phy_lptx_clk
- *     turned off").  The escape clock drives the LP TX driver and is the
- *     timebase for every controller timeout, so without it the CRI cannot
- *     complete even the LP->HS (SoT) handshake that precedes a command, and
- *     DSI2_CORE_STATUS.cri_busy never clears.  The Escape clock must be <=
- *     20 MHz (D-PHY spec is 20 MHz max), so divide sys_clk down to at most
- *     20 MHz: phy_lptx_clk = sys_clk / (2 * div).
+ *   - DSI2_PHY_CLK_CFG.phy_lptx_clk_div: the TX Escape clock.  It drives the
+ *     LP TX driver and is the timebase for every controller timeout, so
+ *     without it the CRI cannot complete even the LP->HS (SoT) handshake that
+ *     precedes a command.  D-PHY caps it at 20 MHz.
  *
- *   - DSI2_PHY_CLK_CFG.clk_type: non-continuous clock lane by default
- *     (matches ILI9881D, whose clock lane returns to LP-11 after each HS
- *     burst per Table 46).  Set continuous_clk only for a panel that keeps
- *     HSCM for the whole frame.
+ *   - DSI2_PHY_CLK_CFG.clk_type: continuous or non-continuous clock lane,
+ *     from the board's config.  Both work with this panel IC; see the note at
+ *     the assignment for which this board uses and why.
  *
  *   - DSI2_DSI_GENERAL_CFG.BTA_EN / EOTP_TX_EN: Bus Turnaround (needed for
- *     DCS reads) and End-of-Transmission packet (long packets).
+ *     DCS reads) and End-of-Transmission packet.
  *
  *   Called once from rk3576_mipi_dsi_initialize(), after the DCPHY is up
  *   but before the host enters Command mode.
@@ -744,12 +741,11 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
   uint32_t esc_div;
   uint32_t clk_cfg;
 
-  /* Escape clock: phy_lptx_clk = sys_clk / (2 * esc_div) <= 20 MHz. */
+  /* phy_lptx_clk = sys_clk / (2 * esc_div), kept <= 20 MHz, so esc_div =
+   * ceil(sclk_rate / 40 MHz).  Clamped to the 5-bit field, whose 0 means
+   * "escape clock off". */
 
   sclk_rate = priv->sclk != NULL ? clk_get_rate(priv->sclk) : 0;
-
-  /* ceil(sclk_rate / 40 MHz): phy_lptx_clk = sys_clk / (2 * esc_div) <= 20
-   * MHz. */
 
   esc_div = (sclk_rate + 40000000u - 1u) / 40000000u;
   if (esc_div == 0)
@@ -769,24 +765,35 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
    * 396M/(2*10) = 19.8 MHz, within the 20 MHz limit.
    */
 
-  /* clk_type for the panel.  ILI9881D (ILI9881D_spec.txt) is a
-   * NON-continuous clock lane: Table 46 defines THS-EXIT as "time to drive
-   * LP-11 after HS burst", i.e. the clock lane returns to LP-11 (LPM)
-   * after every HS burst (Figure 5: HSCM => HS-0 => LP-11), and it must
-   * therefore be non-continuous before the
-   * initial deskew calibration as well.  A continuous clock lane leaves the
-   * lane in HS (never dropping to LP-11), which on this IP stalls the Host↔PHY
-   * TXPPI handshake AND -- per the panel -- breaks the per-line SoT/HSDT
-   * handshake (all data-lane stopstate bits collapse to 0, observed when
-   * continuous was force-tested).  continuous_clk is only honored for a
-   * panel that truly keeps HSCM across the whole frame; ILI9881D does not.
+  /* clk_type for the panel, taken from priv->cfg.continuous_clk.
+   *
+   * The panel IC (ILI9881D) documents a NON-continuous clock lane: Table 46
+   * defines THS-EXIT as "time to drive LP-11 after HS burst", i.e. its clock
+   * lane returns to LP-11 (LPM) after every HS burst (Figure 5:
+   * HSCM => HS-0 => LP-11).  That does NOT mean it needs one.  An earlier
+   * revision of this driver read it that way and forbade a continuous clock,
+   * on the strength of a force-test that appeared to stall the Host-PHY TXPPI
+   * handshake and collapse every data-lane stopstate bit.  That force-test was
+   * recorded in commit d86c78e, the commit that fixed this driver's
+   * horizontal-timing units, so it ran with HLINE/HACT/HSA/HBP all 16x wrong
+   * -- in that configuration the video state machine can never lock onto a
+   * line and no pixel reaches the IPI FIFO, which is the very symptom that got
+   * attributed to the clock lane.  Measured since: both types drive this
+   * panel, so the hardware keeps a choice here rather than a mandated value
+   * and this field simply carries the board's answer.  See
+   * KICKPI_K7_DSI_CONTINUOUS_CLK for the four-combination measurement: only a
+   * non-continuous lane together with VIDEO_BURST showed a fault (a static
+   * per-line phase error on the glass).
+   *
+   * A non-continuous clock lane is still required before the initial deskew
+   * calibration, if that is the configured type.
    */
 
   clk_cfg = (uint32_t)esc_div << DSI2_PHY_CLK_LPTX_DIV_SHIFT;
   if (priv->cfg.continuous_clk)
     {
-      /* Clock lane stays in HS for the whole frame (continuous).  Only for
-       * panels that keep HSCM; ILI9881D is not one of them (see above). */
+      /* Clock lane stays in HS for the whole frame (continuous).  Measured to
+       * work with this panel IC; see the note above. */
       clk_cfg |= DSI2_PHY_CLK_TYPE_CONTINUOUS;
     }
   else
@@ -796,17 +803,19 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
 
   rk3576_dsi_putreg(priv->base, RK3576_DSI2_PHY_CLK_CFG, clk_cfg);
 
-  /* BTA (Bus Turnaround) for DCS reads, plus EoTp TX.  EOTP_TX_EN is cleared
-   * only for panels that explicitly declare MIPI_DSI_MODE_NO_EOT_PACKET.
+  /* BTA (Bus Turnaround) for DCS reads, plus EoTp TX, which is optional in
+   * D-PHY and enabled on this board (see the eotp field in struct
+   * rk3576_dsi_config).
    *
-   * Why EoTp matters here specifically: with a CONTINUOUS clock lane (which is
-   * what a burst-mode panel is driven with -- see the board's
-   * KICKPI_K7_DSI_CONTINUOUS_CLK) the clock never returns to LP-11, so the
-   * End-of-Transmission packet is the ONLY in-band marker that tells the panel
-   * where a transmission ends.  Without it the panel has no framing reference
-   * at all: the lanes transmit correctly and the panel still shows nothing.
-   * With a NON-continuous clock the LP-11 return provides that marker, so EoTp
-   * is merely optional there.
+   * Why EoTp was worth testing rather than assuming: with a CONTINUOUS clock
+   * lane (see the clk_type note above) the clock never returns to LP-11, so
+   * the End-of-Transmission packet is the only in-band marker telling the
+   * panel where a transmission ends, which made it a candidate for a static
+   * per-line edge artifact this board had.  It was tested directly: EoTp ON
+   * and EoTp OFF both drove the panel correctly, so the panel does not depend
+   * on it -- the artifact turned out to need BURST together with a
+   * non-continuous clock lane.  With a NON-continuous clock the LP-11 return
+   * provides the marker instead, so EoTp is optional there as well.
    *
    * NOTE: an earlier revision of this driver disabled EoTp because enabling it
    * appeared to stall the HS send FSM.  That observation was made on a
@@ -915,16 +924,14 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
                       hs2lp_time & DSI2_PHY_HS2LP_TIME_MASK);
 
     /* The remaining LP/Escape timing registers (MAX_RD_T / ESC_CMD_T /
-     * ESC_BYTE_T) are left at their reset value 0 by the DCPHY power-up
-     * sequence, but the clock lane's low-power (LP-11 / Escape) state
-     * machine depends on them: with zero timing the clock lane cannot
-     * complete the HS->LP-11 transition, so phy_clk_stopstate stays 0 and
-     * phy_tx_ready FSM never leaves INIT (all-black video).
+     * ESC_BYTE_T) reset to 0, and the clock lane's low-power (LP-11 / Escape)
+     * state machine depends on them: with zero timing it cannot complete the
+     * HS->LP-11 transition, so phy_clk_stopstate stays 0 and phy_tx_ready
+     * never leaves INIT.
      *
-     * Program them from the D-PHY standard temps, expressed as a 13.16
-     * fixed-point count of phy_hstx_clk (= hs_rate/16) periods, matching
-     * the LP2HS/HS2LP units above.  MAX_RD_T is a plain integer count
-     * (no fractional bits).
+     * Program them from the D-PHY standard times as a 13.16 fixed-point
+     * count of phy_hstx_clk (= hs_rate/16) periods, matching the LP2HS/HS2LP
+     * units above.  MAX_RD_T is a plain integer count (no fractional bits).
      *
      *   esc_cmd:  one Escape-mode command  -> 20 ns + 4*TLPX(~50ns)
      *             conservatively ~ 200 ns.
@@ -969,10 +976,8 @@ static void rk3576_dsi_phy_link_cfg(FAR struct rk3576_dsi_s *priv)
  *   data the PHY never accepts.  TRM 18.3.1.1 (Idle Mode) states that an
  *   operating-mode change is only accepted once "all the remaining packets
  *   from these sources are sent, and their respective FIFOs are empty";
- *   while the FIFO cannot drain, MODE_CTRL is simply ignored -- the host is
- *   wedged in Video mode and cannot even be asked to go back to Command
- *   mode.  Observed exactly that: MODE_STATUS stayed 3 after a
- *   (1000000 x 1 us) poll of MODE_CTRL=COMMAND.
+ *   while the FIFO cannot drain, MODE_CTRL is simply ignored and the host
+ *   stays wedged in Video mode, unable to be asked back to Command mode.
  *
  *   The host is therefore reset on EVERY mode set: a SOFT_RESET pulse plus a
  *   PWR_UP down/up cycle, followed by a re-run of the PHY init and landing in
@@ -1240,24 +1245,17 @@ rk3576_mipi_dsi_initialize(FAR const struct rk3576_dsi_config *config)
    * disabled), which is why INT_ST_TO stays 0 in a system that never enables
    * them.
    *
-   * The HS-TX-READY timeout is ENABLED here: err_to_hstxrdy means "I asked the
-   * PHY to transmit in high speed and it never became ready", which is a PPI
-   * handshake failure no working link produces.  It is a genuine fault report.
+   * The HS-TX-READY timeout is ENABLED: err_to_hstxrdy means "I asked the PHY
+   * to transmit in high speed and it never became ready", a PPI handshake
+   * failure no working link produces, so it is a genuine fault report.
    *
-   * The HS-TX timeout is deliberately LEFT DISABLED (0).  Reason,
-   * learned the hard way: the counter ticks on phy_lptx_clk (~19.8 MHz) and
-   * the field is 16 bits, so the largest window it can express is 0xffff =
-   * ~3.3 ms. A normal non-burst video stream on a link with only a few percent
-   * of rate margin has NO time to leave high speed per line, so the controller
-   * sends whole frames as one continuous burst (measured: one LP-11 -> HS
-   * transition per FRAME): every frame therefore contains an HS burst far
-   * longer than 3.3 ms and err_to_hstx latches once per frame on a stream that
-   * is working exactly as designed.  Enabling it turned a normal condition
-   * into what read like a hardware fault for several rounds of this bring-up.
-   * Enable it deliberately when diagnosing a phantom "nothing is transmitted"
-   * symptom, and interpret it as "an HS burst exceeded 3.3 ms", not as an
-   * error.
-   */
+   * The HS-TX timeout is LEFT DISABLED, and the reason is a trap: the counter
+   * ticks on phy_lptx_clk (~19.8 MHz) and the field is 16 bits, so the longest
+   * window it can express is 0xffff = ~3.3 ms.  A single HS transmission can
+   * exceed that -- Data Stream mode sends a whole frame as one, well past
+   * 3.3 ms -- so err_to_hstx would latch on a link that is working exactly as
+   * designed.  If it is ever enabled, read it as "an HS transmission exceeded
+   * the 3.3 ms window", not as an error. */
 
   rk3576_dsi_putreg(priv->base, RK3576_DSI2_TIMEOUT_HSTX_CFG, 0);
   rk3576_dsi_putreg(priv->base, RK3576_DSI2_TIMEOUT_HSTXRDY_CFG, 0xffff);
@@ -1818,31 +1816,15 @@ int rk3576_mipi_dsi_enable_video(
   rk3576_dsi_putreg(base, RK3576_DSI2_IPI_VID_VFP_MAN_CFG,
                     timing->vfront_porch & DSI2_IPI_VFP_LINES_MASK);
 
-  /* Pixels per video packet -- HACTIVE.
-   *
-   * This is a REVERT of our own change (0), and the reason is worth keeping:
-   * the TRM (18.4.3) says max_pix_pkt is "used in Video mode (for non-burst
-   * modes) and Data Stream mode", that "a value of 0 or bigger than the HACT
-   * pixels will originate one single video packet per line", and (18.2.1)
-   * that "the minimum value for the max_pix_pkt field should be 48 pixels".
-   * We read the first sentence as "0 means one packet per line" and wrote 0
-   * everywhere.
-   *
-   * A size limit of 0 is the ambiguous way to say the same thing and may
-   * easily mean "no limit" to the hardware, in which case the packet is
-   * sized by the LINE instead of the ACTIVE WINDOW -- 780 pixels instead of
-   * 720 on this panel.  That is not a cosmetic difference: 60 extra pixels
-   * per line make the panel's pixel counter drift 60 pixels per line, the
-   * picture shears diagonally, and the image stays wrong no matter what is
-   * painted into the framebuffer (each frame it re-syncs at the frame start,
-   * so the shear is static).  The scope evidence points that way: the data
-   * lane is in HS for ~89% of a 13.4 us line, whereas a 720-pixel packet
-   * plus the blanking should leave HS at ~80% and LP at ~20% (~2.7 us).
-   *
-   * So HACTIVE is written, and it is also what the other two
-   * paths in THIS file already write (the FSM sweep and the vertical-timing
-   * refresh), which means the running configuration was the odd one out.
-   */
+  /* Pixels per video packet = HACTIVE (the panel's active width, not the
+   * line total).  TRM 18.4.3: max_pix_pkt is used in Video mode for non-burst
+   * modes and in Data Stream mode, and "a value of 0 or bigger than the HACT
+   * pixels will originate one single video packet per line".  That reads as
+   * "0 is another way to say one packet per line", but 0 is also how a limit
+   * is spelled when there is none, in which case the packet is sized by the
+   * LINE (720 + blanking) instead of the ACTIVE window and every line drifts
+   * by the blanking width.  Write the width explicitly, which is also what
+   * the other writers of this register in this file do. */
 
   rk3576_dsi_putreg(base, RK3576_DSI2_IPI_PIX_PKT_CFG,
                     (uint32_t)timing->hactive & DSI2_IPI_PIX_PKT_MAX_MASK);
@@ -1851,8 +1833,11 @@ int rk3576_mipi_dsi_enable_video(
    *
    * vid_mode_type (TRM 18.3.1.2): 0 = non-burst with sync pulses,
    * 1 = non-burst with sync events, 2 = burst.  Every blk_*_hs_en bit is
-   * left 0 so the controller is allowed to return to low power in each
-   * blanking region, which a NON-continuous clock lane requires.
+   * left 0, so the DATA lanes are allowed to return to low power in each
+   * blanking region.  That is independent of the clock-lane type and legal
+   * in either: with a continuous clock lane the clock stays in high speed
+   * while the data lanes drop to LP between packets, which is the ordinary
+   * arrangement for video mode.  These bits are only about the data lanes.
    *
    * The mode is a BOARD property (like the porches), but it is logged here
    * together with the clock-lane type: a "still black" report is only
