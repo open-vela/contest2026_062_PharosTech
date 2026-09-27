@@ -55,6 +55,10 @@ ifeq ($(CONFIG_KICKPI_K7_MIPI_DSI),y)
 CSRCS += kickpi_k7_mipi_dsi.c
 endif
 
+ifeq ($(CONFIG_KICKPI_K7_TOUCH),y)
+CSRCS += kickpi_k7_touch.c
+endif
+
 ifeq ($(CONFIG_KICKPI_K7_HDMI),y)
 CSRCS += kickpi_k7_hdmi.c
 endif

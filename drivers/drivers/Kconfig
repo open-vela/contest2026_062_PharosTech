@@ -12,5 +12,6 @@ if NYABULA_CUSTOM_DRIVERS
 source "$BINDIR/drivers/platform/drivers/st77916/Kconfig"
 source "$BINDIR/drivers/platform/drivers/pcf8563/Kconfig"
 source "$BINDIR/drivers/platform/drivers/sv6621/Kconfig"
+source "$BINDIR/drivers/platform/drivers/gt911/Kconfig"
 
 endif

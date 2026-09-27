@@ -255,4 +255,20 @@ CONFIG_LV_LOG_LEVEL_WARN=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_USE_DEMO_WIDGETS=y
+CONFIG_LV_USE_NUTTX_TOUCHSCREEN=y
 CONFIG_EXAMPLES_LVGLDEMO=y
+
+CONFIG_INPUT_GT911=y
+CONFIG_KICKPI_K7_TOUCH=y
+
+# Panel mounting orientation: the module sits 180 degrees from the orientation
+# its vendor reference describes, so the picture and the touch coordinates are
+# both mirrored on both axes.
+#
+# Measured on the board, and stated once here because the two ends are two views
+# of the same glass: kickpi_k7_mipi_dsi.c turns it into the panel's MADCTL scan
+# directions and kickpi_k7_touch.c into the GT911 driver's coordinate transform,
+# so they cannot disagree.  See KICKPI_K7_PANEL_ORIENTATION for what the other
+# three settings mean and why a quarter turn is not among them.
+
+CONFIG_KICKPI_K7_PANEL_ORIENT_180=y

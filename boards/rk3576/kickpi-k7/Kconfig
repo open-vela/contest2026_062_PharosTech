@@ -258,4 +258,210 @@ config KICKPI_K7_VIDEO
 		otherwise have to be spelled out (and kept in sync) in the Makefile,
 		in CMakeLists.txt and in the kickpi_k7_video.c preprocessor guard.
 
+choice
+	prompt "kickpi-k7 panel mounting orientation"
+	default KICKPI_K7_PANEL_ORIENT_180
+	depends on KICKPI_K7_MIPI_DSI
+	---help---
+		Which way round the panel module is mounted in the enclosure,
+		relative to the orientation its vendor reference describes.  The
+		vendor's DCS init sequence and its GT911 configuration table are
+		both written for that reference, and this board's enclosure holds
+		the module 180 degrees from it, so both ends have to be corrected.
+
+		One setting, because there is one physical fact: the picture and
+		the coordinates are two views of the same glass.  Setting it here
+		rather than in the display code and the touch driver separately is
+		the point -- the two are read by kickpi_k7_mipi_dsi.c (the panel's
+		MADCTL scan-direction bits) and by kickpi_k7_touch.c (the GT911
+		driver's coordinate transform) through the two derived symbols
+		below, so they cannot drift apart.
+
+		Only the four orientations that both ends can actually express are
+		offered.  The panel has no frame memory and its MADCTL (36h) has
+		only SS and GS -- there is no MV/MX/MY as on a generic MIPI DCS
+		panel -- so clearing or setting those two bits is a mirror of one
+		axis each and two of them are a 180 degree rotation.  A quarter
+		turn is not expressible at all: the panel's pixel grid stays
+		720 x 1280 however it is scanned, so landscape needs the framebuffer
+		rotated (which is an application/compositor matter, LVGL included)
+		and would additionally want the touch axes swapped, which
+		gt911_register() can already express.
+
+		HDMI is unaffected: it has no MADCTL of its own to set, so a sink's
+		orientation is the sink's business.
+
+config KICKPI_K7_PANEL_ORIENT_0
+	bool "0 degrees (the vendor reference orientation)"
+	---help---
+		The module is mounted the way the vendor's reference describes:
+		the display's scan directions keep the values the vendor's init
+		sequence uses and the touch coordinates are reported as they are.
+
+config KICKPI_K7_PANEL_ORIENT_MIRROR_X
+	bool "Mirrored horizontally"
+	---help---
+		The module is mounted with its horizontal axis reversed (flipped
+		about the vertical axis): the picture is mirrored left to right and
+		the touch coordinates are mirrored on their X axis.
+
+config KICKPI_K7_PANEL_ORIENT_MIRROR_Y
+	bool "Mirrored vertically"
+	---help---
+		The module is mounted with its vertical axis reversed (flipped
+		about the horizontal axis): the picture is mirrored top to bottom
+		and the touch coordinates are mirrored on their Y axis.
+
+config KICKPI_K7_PANEL_ORIENT_180
+	bool "180 degrees (module mounted upside down)"
+	---help---
+		The module is mounted the other way up from the vendor reference,
+		which is what this board's enclosure does: the picture is rotated
+		180 degrees on the glass and the touch coordinates are mirrored on
+		both axes.
+
+		This is the measured, working setting.  It is the default so that a
+		configuration which says nothing about the orientation still comes
+		up with the display and the touchscreen agreeing.
+endchoice
+
+config KICKPI_K7_PANEL_MIRROR_X
+	bool
+	default y if KICKPI_K7_PANEL_ORIENT_MIRROR_X || KICKPI_K7_PANEL_ORIENT_180
+	---help---
+		Derived symbol: the picture and the coordinates both have to be
+		mirrored on the X axis relative to the vendor reference.
+
+		This is what the two consumers read -- kickpi_k7_mipi_dsi.c inverts
+		the panel's source-scan bit (SS) for it, kickpi_k7_touch.c sets
+		mirrorx in struct gt911_orientation_s -- so "which axes are
+		reversed" is decided once, here, instead of in each driver.
+
+config KICKPI_K7_PANEL_MIRROR_Y
+	bool
+	default y if KICKPI_K7_PANEL_ORIENT_MIRROR_Y || KICKPI_K7_PANEL_ORIENT_180
+	---help---
+		Derived symbol: the picture and the coordinates both have to be
+		mirrored on the Y axis relative to the vendor reference.  See
+		KICKPI_K7_PANEL_MIRROR_X; this one is the panel's gate-scan bit (GS)
+		and the touch driver's mirrory.
+
+config KICKPI_K7_TOUCH
+	bool "On-board Goodix GT911 touch panel (I2C0 M1)"
+	default n
+	depends on KICKPI_K7_MIPI_DSI
+	depends on INPUT_GT911
+	---help---
+		Register the capacitive touch controller that sits on the same
+		module as the MIPI DSI panel as /dev/input0, driven by the platform
+		GT911 driver (CONFIG_INPUT_GT911).
+
+		This muxes the I2C0 SCL (GPIO0_C1) and SDA (GPIO0_C2) pins to
+		alternate function 9, brings up the I2C0 controller, resets the
+		controller and registers the touchscreen framework device.  The
+		controller's INT pin (GPIO0_C5) is wired as an interrupt and RST
+		(GPIO0_D0) as the reset line.
+
+		The panel supply is shared with the display, so this is tied to the
+		MIPI DSI output -- the DSI bring-up powers the module first and then
+		calls into the touch bring-up (see kickpi_k7_mipi_dsi.c).
+
+		The controller is consumed by LVGL through LV_USE_NUTTX_TOUCHSCREEN
+		(default input path /dev/input0); no additional application-side
+		wiring is needed.
+
+choice
+	prompt "On-board GT911 touch module configuration table"
+	default KICKPI_K7_TOUCH_CFG_VENDOR
+	depends on KICKPI_K7_TOUCH
+	---help---
+		The GT911 keeps its sensing configuration (X/Y output range,
+		contact limit, sensing channel map, drive frequency, gains) in
+		its own non-volatile memory.  A module can be delivered with that
+		area blank -- it answers on I2C and senses nothing at all, because
+		with no output range and no channel map it never scans, never
+		reports a frame and never raises INT, which is indistinguishable
+		from a driver fault.  A table exists here for that case, exactly as
+		the vendor's own driver has one (its device trees carry it in
+		goodix,cfg-group0 and flash it on every probe).
+
+		The module on this board turned out to be programmed already: it
+		reports version 0x49, a 720 x 1280 range and 5 contacts, i.e. the
+		table below, and the driver therefore leaves it alone.  What made
+		this board's touchscreen look dead was not a blank configuration at
+		all but the reset sequence -- the controller answers on I2C without
+		its sensing engine ever starting unless INT is held low for 50 ms
+		after reset, which is what both mainline and Goodix's own driver do.
+		See kickpi_k7_touch.c.
+
+		The driver writes the selected table only when the controller
+		reports no usable configuration of its own, so a module that has
+		already been programmed -- at the factory, or by the vendor's
+		driver -- is left alone.  CONFIG_INPUT_GT911_CONFIG_FORCE
+		overrides that.
+
+		Note that the controller stores only one configuration and refuses
+		a version lower than the one it holds, so a table with a higher
+		version number locks out every lower one.  That is why the vendor
+		table (version 0x49) has to be applied to a blank module first.
+
+config KICKPI_K7_TOUCH_CFG_NONE
+	bool "None (leave the module's own configuration alone)"
+	---help---
+		Do not download anything.  Right for a module that is already
+		programmed, and the way to check what a module reports about
+		itself without changing it.
+
+config KICKPI_K7_TOUCH_CFG_VENDOR
+	bool "Panel vendor table, 720 x 1280, 5 contacts (version 0x49)"
+	---help---
+		The panel vendor's own configuration for this module, supplied as
+		"GT911_Config_720X1280_0x49" (2025-11-05).
+
+		Its X/Y output range is 720 x 1280 -- the same frame as the
+		display, so the reported coordinates need no rescaling -- and its
+		0x804d value has the axis-exchange bit set, which means the
+		controller does that swap internally.  The touch driver's own
+		axis swap therefore stays off, and the only correction left to make
+		is the module's mounting, which is what
+		KICKPI_K7_PANEL_ORIENTATION decides for this end and for the
+		picture at the same time.
+
+		This is the table to use.
+
+		The board's Debian image also carries four goodix,cfg-group0
+		tables in its Linux device trees, but each belongs to a different
+		panel variant (800 x 1280 frames, one with the axes exchanged for
+		its landscape panel) rather than to this module, and the
+		controller's version check makes a wrong table awkward to undo --
+		a table with a higher version number permanently locks out every
+		lower one.  They are therefore deliberately not shipped here; the
+		numbers are recorded in the repository's notes if they are ever
+		needed.
+
+config KICKPI_K7_TOUCH_CFG_ALTERNATES
+	bool "Also try the vendor's other configuration tables"
+	default y
+	depends on KICKPI_K7_TOUCH_CFG_VENDOR
+	---help---
+		Try the tables the vendor ships in their Linux device trees after
+		the one they supplied for this module.
+
+		The vendor has one table per panel variant, and the panel whose
+		init sequence matches this board's panel is paired with an
+		800 x 1280 sensor table in those device trees (with its touch
+		node enabled) rather than with the 720 x 1280 table handed to us
+		separately.  Since a configuration describes the touch sensor --
+		its channel map, frequency and gains -- and only the vendor can
+		attribute a sensor to a module, the table that matches is worth
+		letting the driver find rather than assuming.
+
+		Trying a table costs nothing here: this module does not retain a
+		configuration across a reset, so no version ordering can be locked
+		in by an attempt, and the driver reports a table as correct only
+		when the controller's sensing engine starts reporting a
+		coordinate range -- never merely because the write verified.
+
+endchoice
+
 endif # ARCH_BOARD_KICKPI_K7

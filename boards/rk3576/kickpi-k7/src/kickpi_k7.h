@@ -75,6 +75,29 @@ int kickpi_k7_wifi_abort_sleep(void);
 int kickpi_k7_rtc_initialize(void);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_TOUCH
+/****************************************************************************
+ * Name: kickpi_k7_touch_initialize
+ *
+ * Description:
+ *   Board-level wiring for the on-board Goodix GT911 capacitive touch
+ *   controller that sits on the MIPI DSI panel module: mux the I2C0 M1 pins
+ *   (SCL GPIO0_C1 / SDA GPIO0_C2, AF9), bring up I2C0, claim the reset
+ *   (GPIO0_D0) and interrupt (GPIO0_C5) pins and register the controller as
+ *   /dev/input0 through the platform GT911 driver.
+ *
+ *   The module supply is shared with the display, so this must run after the
+ *   display bring-up has powered it; kickpi_k7_mipi_dsi_initialize() calls it
+ *   at the end of its own sequence.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int kickpi_k7_touch_initialize(void);
+#endif
+
 #ifdef CONFIG_KICKPI_K7_LCD
 
 #ifdef CONFIG_RK3576_SDMMC

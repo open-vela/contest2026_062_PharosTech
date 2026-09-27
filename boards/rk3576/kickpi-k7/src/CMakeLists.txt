@@ -21,6 +21,10 @@ if(CONFIG_KICKPI_K7_MIPI_DSI)
   list(APPEND SRCS kickpi_k7_mipi_dsi.c)
 endif()
 
+if(CONFIG_KICKPI_K7_TOUCH)
+  list(APPEND SRCS kickpi_k7_touch.c)
+endif()
+
 if(CONFIG_KICKPI_K7_HDMI)
   list(APPEND SRCS kickpi_k7_hdmi.c)
 endif()

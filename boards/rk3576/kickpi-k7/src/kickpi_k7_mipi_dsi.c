@@ -61,9 +61,12 @@
  *   6. rk3576_mipi_dsi_enable_video()        -- program IPI timing, then
  *                                               transition to Video mode
  *   7. kickpi_k7_mipi_dsi_backlight_enable() -- backlight on
+ *   8. kickpi_k7_touch_initialize()          -- the GT911 touch controller
+ *                                               on the same module
  *
  * Steps 1-3, 6 and 7 stay here; step 5 is shared with the HDMI path and lives
- * in kickpi_k7_video.c.
+ * in kickpi_k7_video.c; step 8 lives in kickpi_k7_touch.c and runs last
+ * because the touch controller shares the module supply with the panel.
  ****************************************************************************/
 
 /****************************************************************************
@@ -84,6 +87,7 @@
 #include <nuttx/video/mipi_display.h>
 #include <nuttx/video/mipi_dsi.h>
 
+#include "kickpi_k7.h"
 #include "kickpi_k7_video.h"
 #include "rk3576_gpio.h"
 #include "rk3576_mipi_dsi.h"
@@ -161,22 +165,49 @@
  *
  * SS and GS are scan-direction bits, not just sequencing flags: SS reverses
  * the source (column) scan order and GS reverses the gate (row) scan order,
- * so each one mirrors one axis of the picture on the glass.  The vendor's
- * 0x03 leaves both set; the board's enclosure mounts the panel the other way
- * up, so both are cleared below, which mirrors both axes and is therefore a
- * 180-degree rotation of the whole picture.  Note that this is a property of
- * the panel alone: it costs no scan-out bandwidth and needs no change to the
- * VOP timing or to the framebuffer geometry.
+ * so each one mirrors one axis of the picture on the glass.
  *
- * If the result ever comes out mirrored on a single axis instead of rotated,
- * that means the reference orientation was the other one -- set exactly one of
- * the two bits (GS alone or SS alone) to mirror the remaining axis.
+ * Which of the two is left set is not decided here: it comes from the board's
+ * single panel-mounting choice, KICKPI_K7_PANEL_ORIENTATION, because the same
+ * physical fact has to be applied to the touch coordinates as well, and
+ * kickpi_k7_touch.c reads the same two derived symbols.  The vendor's table
+ * (0x03 = both set) is the reference orientation; a mirrored axis is that
+ * axis' bit inverted.  Note that this is a property of the panel mounting
+ * alone: it costs no scan-out bandwidth and needs no change to the VOP timing
+ * or to the framebuffer geometry.
+ *
+ * If the result ever comes out mirrored on a single axis while the orientation
+ * option says otherwise, the reference orientation was the other one -- that
+ * is a panel/module question, not something to work around here.
  */
 
-#define KICKPI_K7_MADCTL_GS (1u << 0) /* Gate scan sequence: 1 = reversed */
-#define KICKPI_K7_MADCTL_SS                       \
-  (1u << 1) /* Source scan sequence: 1 = reversed \
+/* The MADCTL argument is assembled from the board's panel-mounting choice.
+ * KICKPI_K7_PANEL_MIRROR_X/Y say which axes of the picture have to be reversed
+ * relative to the vendor's reference, and a reversed axis is the vendor's
+ * value of the corresponding scan bit inverted -- i.e. the bit is cleared,
+ * since the reference sets both.  Clearing both is therefore a 180 degree
+ * rotation of the whole picture, which is what this board's enclosure needs.
+ */
+
+#define KICKPI_K7_MADCTL_GS_BIT (1u << 0) /* Gate scan: 1 = order reversed */
+#define KICKPI_K7_MADCTL_SS_BIT                \
+  (1u << 1) /* Source scan: 1 = order reversed \
              */
+
+#ifdef CONFIG_KICKPI_K7_PANEL_MIRROR_X
+#define KICKPI_K7_MADCTL_SS 0u /* Column scan order is not reversed */
+#else
+#define KICKPI_K7_MADCTL_SS KICKPI_K7_MADCTL_SS_BIT
+#endif
+
+#ifdef CONFIG_KICKPI_K7_PANEL_MIRROR_Y
+#define KICKPI_K7_MADCTL_GS 0u /* Row scan order is not reversed */
+#else
+#define KICKPI_K7_MADCTL_GS KICKPI_K7_MADCTL_GS_BIT
+#endif
+
+#define KICKPI_K7_MADCTL_ORIENT (KICKPI_K7_MADCTL_SS | KICKPI_K7_MADCTL_GS)
+
 /* Defined only to record what D3 means; MADCTL deliberately leaves it at 0.
  * Asserting it would be a SECOND R/B swap and the two would cancel out -- see
  * the bit notes above. */
@@ -592,12 +623,13 @@ static const struct kickpi_k7_mipi_dsi_cmd_s g_kickpi_k7_mipi_dsi_init[] = {
   { KICKPI_K7_PKT_GEN_LONG, 5, _PANEL_INIT(0xff, 0x98, 0x81, 0x00) },
   { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x35, 0x00) },
 
-  /* MADCTL: a 180-degree rotation and nothing else -- SS and GS both cleared,
-   * where the vendor's 0x03 leaves them set, and D3 (BGR) left at 0.  The R/B
-   * swap that this byte used to carry belongs to the VOP and has been removed
-   * from there; see the bit notes above. */
+  /* MADCTL: the scan directions that bring the picture upright in this
+   * enclosure, derived from KICKPI_K7_PANEL_ORIENTATION so that the touch
+   * coordinates are corrected in exactly the same way.  D3 (BGR) stays 0: the
+   * R/B swap belongs to the VOP and has been removed from there; see the bit
+   * notes above. */
 
-  { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x36, 0x00) },
+  { KICKPI_K7_PKT_DCS_LONG, 0, _PANEL_INIT(0x36, KICKPI_K7_MADCTL_ORIENT) },
 
   /* Set the interface pixel format explicitly (3Ah = 0x77 = 24 bpp RGB888).
    *
@@ -1068,6 +1100,25 @@ int kickpi_k7_mipi_dsi_initialize(void)
    * is lit while nothing is being transmitted. */
 
   kickpi_k7_mipi_dsi_backlight_enable();
+
+#ifdef CONFIG_KICKPI_K7_TOUCH
+  /* 7. Touch controller.  The GT911 sits on the same module as the panel and
+   * is powered by the same supply, so its reset sequence can only run now that
+   * the module is powered.  It owns its own I2C bus (I2C0 M1), its own
+   * interrupt and its own reset line (see kickpi_k7_touch.c) and registers
+   * /dev/input0 for LVGL.
+   *
+   * Its failure is reported but not propagated: a mis-wired or absent touch
+   * controller must not take a working display down with it, and the panel is
+   * already live at this point.
+   */
+
+  ret = kickpi_k7_touch_initialize();
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: kickpi_k7_touch_initialize failed: %d\n", ret);
+    }
+#endif
 
   /* Completing the software sequence says nothing about whether the panel
    * displays anything; the framebuffer is registered as /dev/fbN from here on.
