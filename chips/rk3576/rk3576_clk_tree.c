@@ -4186,12 +4186,22 @@ static void rk3576_clk_register_vicap(void)
  *   aclk_vicap hangs off aclk_vi_root.
  *
  *   Rate policy: exactly the one used for the VI/VO0 roots.  The core
- *   selector is registered with CLK_MUX_SET_RATE_NO_REPARENT so that a
- *   clk_set_rate() on any descendant can never re-select a source -- in
- *   particular it can never land on LPLL and reprogram the CPU clock (the
- *   hazard documented at length in rk3576_clk_register_vop()).  Explicit
- *   clk_set_parent() still works, and is how the encoder driver should pin
- *   a source once it wants to program RK3576_VEPU_CORE_HZ.
+ *   selector carries CLK_MUX_SET_RATE_NO_REPARENT so that a clk_set_rate()
+ *   on any descendant can never re-select a source -- in particular it can
+ *   never land on LPLL and reprogram the CPU clock (the hazard documented at
+ *   length in rk3576_clk_register_vop()).  Explicit clk_set_parent() still
+ *   works, and is how the encoder driver pins a source before programming
+ *   RK3576_VEPU_CORE_HZ.
+ *
+ *   That flag has to be passed as clk_register_mux()'s mux-flags argument,
+ *   the last one.  Its first flags argument is the common clock namespace,
+ *   where the same value 0x08 means CLK_OPS_PARENT_ENABLE instead -- so a
+ *   misplaced flag does not merely fail to prevent the reparenting, it asks
+ *   for something else.  This was not academic: with the flag in the common
+ *   argument, a clk_set_rate() on the core clock reparented its selector
+ *   onto LPLL -- the CPU's PLL -- and divided that down, giving 600 MHz
+ *   where the intended source gives 594.  Close enough to a plausible
+ *   answer to pass unnoticed, and coupled to the CPU clock.
  *
  *   Caveat the encoder driver must know about: the reset value of the core
  *   selector is 2'b010 = SPLL.  SPLL is not modelled by this clock tree
@@ -4244,11 +4254,10 @@ static void rk3576_clk_register_vepu(void)
 
   clk = clk_register_mux(
       "clk_vepu0_core_sel", vepu0_core_parents, nitems(vepu0_core_parents),
-      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC |
-          CLK_MUX_SET_RATE_NO_REPARENT,
+      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
       cru + RK3576_CRU_CLKSEL_CON(RK3576_VEPU_CRU_CLKSEL_CON),
       RK3576_VEPU_CORE_SEL_SHIFT, RK3576_VEPU_CORE_SEL_MASK,
-      CLK_MUX_HIWORD_MASK);
+      CLK_MUX_HIWORD_MASK | CLK_MUX_SET_RATE_NO_REPARENT);
   _assert_registered(clk);
 
   clk = clk_register_divider(
@@ -4269,14 +4278,13 @@ static void rk3576_clk_register_vepu(void)
 
   /* aclk_vepu0_root: mux + divider + gate. */
 
-  clk =
-      clk_register_mux("aclk_vepu0_root_sel", vepu0_aclk_root_parents,
-                       nitems(vepu0_aclk_root_parents),
-                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC |
-                           CLK_MUX_SET_RATE_NO_REPARENT,
-                       cru + RK3576_CRU_CLKSEL_CON(RK3576_VEPU_CRU_CLKSEL_CON),
-                       RK3576_VEPU_ACLK_ROOT_SEL_SHIFT,
-                       RK3576_VEPU_ACLK_ROOT_SEL_MASK, CLK_MUX_HIWORD_MASK);
+  clk = clk_register_mux(
+      "aclk_vepu0_root_sel", vepu0_aclk_root_parents,
+      nitems(vepu0_aclk_root_parents),
+      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(RK3576_VEPU_CRU_CLKSEL_CON),
+      RK3576_VEPU_ACLK_ROOT_SEL_SHIFT, RK3576_VEPU_ACLK_ROOT_SEL_MASK,
+      CLK_MUX_HIWORD_MASK | CLK_MUX_SET_RATE_NO_REPARENT);
   _assert_registered(clk);
 
   clk = clk_register_divider(

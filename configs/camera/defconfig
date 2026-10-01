@@ -257,8 +257,14 @@ CONFIG_RK3576_VICAP=y
 # Hardware video encoder (VEPU510 @ 0x27a00000): power, resets and clocks for
 # PD_VEPU0, the H.264 fixed-QP encode path, and the V4L2 mem-to-mem device
 # that presents it as /dev/video1.
+#
+# Both self-tests are named rather than inherited: they are how this board's
+# encoder is known to work, and leaving them to a Kconfig default would mean
+# losing them the day that default changes, quietly.
 CONFIG_RK3576_VEPU=y
+CONFIG_RK3576_VEPU_SELFTEST=y
 CONFIG_RK3576_VEPU_CODEC=y
+CONFIG_RK3576_VEPU_CODEC_SELFTEST=y
 
 CONFIG_DRIVERS_VIDEO=y
 CONFIG_VIDEO_STREAM=y
