@@ -67,7 +67,7 @@
  */
 
 #if defined(__ARM_NEON__) || defined(__ARM_NEON)
-#  include <arm_neon.h>
+#include <arm_neon.h>
 #endif
 
 #include <nuttx/arch.h>
@@ -286,8 +286,8 @@ struct rk3576_vicap_s
   uint32_t drop_nobuf;   /* Framework had not offered a buffer */
   uint32_t drop_stale;   /* Stream ended under the frame */
   uint32_t drop_queue;   /* Work queue refused the frame */
-  uint32_t errstat;    /* Sticky OR of VICAP error interrupt bits */
-  uint32_t frame_us;   /* Accumulated CPU time spent producing frames */
+  uint32_t errstat;      /* Sticky OR of VICAP error interrupt bits */
+  uint32_t frame_us;     /* Accumulated CPU time spent producing frames */
 
   /* Frame boundaries seen, counted where they are noticed.  A copy taken
    * across one of these may straddle two frames, so comparing the count
@@ -386,8 +386,8 @@ static int rk3576_vicap_start_capture(FAR struct imgdata_s *data,
                                       FAR void *arg);
 static int rk3576_vicap_stop_capture(FAR struct imgdata_s *data);
 static void rk3576_vicap_wb_update(FAR struct rk3576_vicap_s *priv,
-                                   uint64_t accr, uint64_t accg,
-                                   uint64_t accb, uint64_t accn);
+                                   uint64_t accr, uint64_t accg, uint64_t accb,
+                                   uint64_t accn);
 
 static const struct imgdata_ops_s g_rk3576_vicap_ops = {
   .init = rk3576_vicap_init,
@@ -926,37 +926,37 @@ static void rk3576_vicap_debayer_scalar(FAR struct rk3576_vicap_s *priv,
  *
  * Description:
  *   Steer the gains towards a frame whose three channels average alike.
-   *
-   * The common value the channels are steered to is the one that
-   * reproduces the frame's original luma, not simply any equal value.
-   * Requiring only that the three be equal would also change the
-   * brightness of the picture, and correcting a colour cast should not
-   * re-expose the frame -- the level already belongs to the exposure, and
-   * raising it would push the brighter parts of the scene into clipping.
-   * The weights below are the same ones the luma computation uses, so the
-   * level being preserved is the one the picture actually has.
-   *
-   * The averages are over the samples that were counted, not over the
-   * frame: the saturated ones were left out above, and dividing by the
-   * whole frame would treat them as if they had contributed zero, which
-   * would scale every gain down and darken the picture.
-   *
-   * A fractional step rather than a full one is what stops the loop from
-   * oscillating between frames and from swinging on a scene that genuinely
-   * is not neutral.
-   *
-   * No counted samples, or a luma that rounds to zero, means the frame
-   * carried no usable signal; either way there is nothing to measure and
-   * the gains are best left as they are.
-   *
-   * Both demosaicers hand their measurement here rather than each carrying
-   * their own copy: they differ in how the accumulators are built, not in
-   * what is done with them.
-   */
+ *
+ * The common value the channels are steered to is the one that
+ * reproduces the frame's original luma, not simply any equal value.
+ * Requiring only that the three be equal would also change the
+ * brightness of the picture, and correcting a colour cast should not
+ * re-expose the frame -- the level already belongs to the exposure, and
+ * raising it would push the brighter parts of the scene into clipping.
+ * The weights below are the same ones the luma computation uses, so the
+ * level being preserved is the one the picture actually has.
+ *
+ * The averages are over the samples that were counted, not over the
+ * frame: the saturated ones were left out above, and dividing by the
+ * whole frame would treat them as if they had contributed zero, which
+ * would scale every gain down and darken the picture.
+ *
+ * A fractional step rather than a full one is what stops the loop from
+ * oscillating between frames and from swinging on a scene that genuinely
+ * is not neutral.
+ *
+ * No counted samples, or a luma that rounds to zero, means the frame
+ * carried no usable signal; either way there is nothing to measure and
+ * the gains are best left as they are.
+ *
+ * Both demosaicers hand their measurement here rather than each carrying
+ * their own copy: they differ in how the accumulators are built, not in
+ * what is done with them.
+ */
 
 static void rk3576_vicap_wb_update(FAR struct rk3576_vicap_s *priv,
-                                   uint64_t accr, uint64_t accg,
-                                   uint64_t accb, uint64_t accn)
+                                   uint64_t accr, uint64_t accg, uint64_t accb,
+                                   uint64_t accn)
 {
   if (accn > 0u && accr > 0u && accg > 0u && accb > 0u)
     {
@@ -1201,9 +1201,8 @@ static inline void rk3576_vicap_pick(uint16x8_t mred, uint16x8_t mblue,
 
 static inline uint16x8_t rk3576_vicap_gain(uint16x8_t c, int16x8_t gain)
 {
-  return vminq_u16(vreinterpretq_u16_s16(
-                       vqdmulhq_s16(vshlq_n_s16(vreinterpretq_s16_u16(c), 5),
-                                    gain)),
+  return vminq_u16(vreinterpretq_u16_s16(vqdmulhq_s16(
+                       vshlq_n_s16(vreinterpretq_s16_u16(c), 5), gain)),
                    vdupq_n_u16(255));
 }
 
@@ -1385,8 +1384,7 @@ static void rk3576_vicap_debayer_neon(FAR struct rk3576_vicap_s *priv,
            * sample of the block carries its block's verdict.
            */
 
-          mask = vcltq_u16(vmaxq_u16(vpmaxq_u16(p1, p1),
-                                     vpmaxq_u16(p2, p2)),
+          mask = vcltq_u16(vmaxq_u16(vpmaxq_u16(p1, p1), vpmaxq_u16(p2, p2)),
                            vdupq_n_u16(RK3576_VICAP_WB_SAT_OWN));
           vcnt = vaddw_u16(vcnt, vshr_n_u16(vget_low_u16(mask), 15));
           mask = vzipq_u16(mask, mask).val[0];
@@ -1432,15 +1430,15 @@ static void rk3576_vicap_debayer_neon(FAR struct rk3576_vicap_s *priv,
           yv = vmlaq_n_u16(yv, ru, 66);
           yv = vmlaq_n_u16(yv, gu, 129);
           yv = vmlaq_n_u16(yv, bu, 25);
-          vst1_u8(o0 + x, vmovn_u16(vaddq_u16(vshrq_n_u16(yv, 8),
-                                              vdupq_n_u16(16))));
+          vst1_u8(o0 + x,
+                  vmovn_u16(vaddq_u16(vshrq_n_u16(yv, 8), vdupq_n_u16(16))));
 
           yv = vdupq_n_u16(128);
           yv = vmlaq_n_u16(yv, rl, 66);
           yv = vmlaq_n_u16(yv, gl, 129);
           yv = vmlaq_n_u16(yv, bl, 25);
-          vst1_u8(o1 + x, vmovn_u16(vaddq_u16(vshrq_n_u16(yv, 8),
-                                              vdupq_n_u16(16))));
+          vst1_u8(o1 + x,
+                  vmovn_u16(vaddq_u16(vshrq_n_u16(yv, 8), vdupq_n_u16(16))));
 
           /* Chroma of each 2x2 block, from the average of its four gained
            * and clamped samples.  Every intermediate here stays inside a
@@ -1452,13 +1450,16 @@ static void rk3576_vicap_debayer_neon(FAR struct rk3576_vicap_s *priv,
           {
             uint16x4_t rs = vshr_n_u16(
                 vadd_u16(vpadd_u16(vget_low_u16(ru), vget_high_u16(ru)),
-                         vpadd_u16(vget_low_u16(rl), vget_high_u16(rl))), 2);
+                         vpadd_u16(vget_low_u16(rl), vget_high_u16(rl))),
+                2);
             uint16x4_t gs = vshr_n_u16(
                 vadd_u16(vpadd_u16(vget_low_u16(gu), vget_high_u16(gu)),
-                         vpadd_u16(vget_low_u16(gl), vget_high_u16(gl))), 2);
+                         vpadd_u16(vget_low_u16(gl), vget_high_u16(gl))),
+                2);
             uint16x4_t bs = vshr_n_u16(
                 vadd_u16(vpadd_u16(vget_low_u16(bu), vget_high_u16(bu)),
-                         vpadd_u16(vget_low_u16(bl), vget_high_u16(bl))), 2);
+                         vpadd_u16(vget_low_u16(bl), vget_high_u16(bl))),
+                2);
             int16x4_t cb;
             int16x4_t cr;
             int16x4x2_t z;
@@ -2268,10 +2269,10 @@ static void rk3576_vicap_dump_locked(FAR struct rk3576_vicap_s *priv)
   size_num = rk3576_vicap_getreg(base, RK3576_VICAP_MIPI_SIZE_NUM_ID0(input) +
                                            id * 4u);
 
-  _info("VICAP: frames %" PRIu32 ", drops %" PRIu32
-        " (overrun %" PRIu32 ", no buffer %" PRIu32 ", stale %" PRIu32
-        ", queue %" PRIu32 "), errstat 0x%08" PRIx32
-        ", %" PRIu32 " us/frame, races %" PRIu32 "%s\n",
+  _info("VICAP: frames %" PRIu32 ", drops %" PRIu32 " (overrun %" PRIu32
+        ", no buffer %" PRIu32 ", stale %" PRIu32 ", queue %" PRIu32
+        "), errstat 0x%08" PRIx32 ", %" PRIu32 " us/frame, races %" PRIu32
+        "%s\n",
         priv->framecount, priv->dropcount, priv->drop_overrun,
         priv->drop_nobuf, priv->drop_stale, priv->drop_queue, priv->errstat,
         priv->framecount > 0u ? priv->frame_us / priv->framecount : 0u,
@@ -2301,8 +2302,8 @@ static void rk3576_vicap_dump_locked(FAR struct rk3576_vicap_s *priv)
     _info("VICAP: interval %" PRIu32 " us, demosaic %" PRIu32
           " us (in place %" PRIu32 " us over %" PRIu32 ", copied %" PRIu32
           " us over %" PRIu32 "), copy %" PRIu32 " us\n",
-          interval_us, demosaic_us, inplace_us, priv->inplace_frames,
-          copy_us, priv->copy_frames,
+          interval_us, demosaic_us, inplace_us, priv->inplace_frames, copy_us,
+          priv->copy_frames,
           priv->framecount > 0u ? priv->copy_us / priv->framecount : 0u);
   }
 
@@ -2338,8 +2339,8 @@ static void rk3576_vicap_dump_locked(FAR struct rk3576_vicap_s *priv)
    */
 
   _info("VICAP: set_size 0x%08" PRIx32 ", vlw %" PRIu32
-        ", size_num 0x%08" PRIx32 " (line %" PRIu32
-        ", payload %" PRIu32 " as read)\n",
+        ", size_num 0x%08" PRIx32 " (line %" PRIu32 ", payload %" PRIu32
+        " as read)\n",
         rk3576_vicap_getreg(base,
                             RK3576_VICAP_MIPI_ID0_SET_SIZE(input) + id * 4u),
         priv->stride, size_num,

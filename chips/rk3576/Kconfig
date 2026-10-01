@@ -438,6 +438,84 @@ config RK3576_VICAP
 		DMA and the buffer handed to the framework separate, and it avoids
 		having to extend the shared format tables.
 
+config RK3576_VEPU
+	bool "Video Encoder (VEPU510)"
+	default n
+	---help---
+		Enable the RK3576 hardware video encoder (VEPU510 at 0x27a00000),
+		which implements H.264/H.265 and JPEG encoding.  Only the H.264
+		fixed-QP path is driven so far.
+
+		This provides power-domain, reset and clock bring-up, the
+		register layer that programs an encode, the job layer that runs
+		one on the hardware, and a V4L2 mem-to-mem device that presents
+		the result to applications.
+
+		The probe validates the whole power/clock/reset path in one step by
+		reading the VEPU510 version register, which cannot answer until
+		PD_VEPU0 is out of its memory-repair initial reset and its register
+		bus is clocked -- so a version read is a genuine end-to-end check
+		rather than a smoke test.
+
+if RK3576_VEPU
+
+config RK3576_VEPU_SELFTEST
+        bool "Encode one synthetic picture at boot"
+        default y
+        ---help---
+                At boot, hand the encoder a small picture built in memory and log
+                what comes back: the bitstream length, the distortion figure, the
+                interrupt status and the first bytes of the output.
+
+                This is the acceptance test for the encode path itself, the way the
+                version probe is for the clocks and resets. The picture is
+                synthesised rather than captured, so a failure cannot be the
+                camera's fault, and the configuration is the plainest one the
+                register layer supports, so it cannot be a syntax bug either.
+
+                It costs about a megabyte of the DMA heap for the duration of the
+                test, which is released as soon as the result is logged. Turn it off
+                once the path is known good.
+
+endif # RK3576_VEPU
+
+config RK3576_VEPU_CODEC
+        bool "V4L2 memory-to-memory encoder device"
+        default n
+        depends on RK3576_VEPU
+        depends on VIDEO_STREAM
+        ---help---
+                Present the encoder as a /dev/videoN node that takes NV12 frames
+                on its output side and returns an H.264 elementary stream on its
+                capture side, using the V4L2 mem-to-mem framework.
+
+                The output is annex-B and the stream's first frame carries the
+                sequence and picture parameter sets in front of it, so what comes
+                out of the device can be written to a file and played directly.
+
+                This is a fixed-QP encoder: every frame is an IDR at the QP the
+                application sets. There is no rate control, and the frame rate
+                only reaches the bitstream as VUI timing.
+
+if RK3576_VEPU_CODEC
+
+config RK3576_VEPU_CODEC_SELFTEST
+        bool "Run the encoder through its own V4L2 interface at boot"
+        default y
+        ---help---
+                At boot, open the encoder's device node and drive it the way an
+                application has to: negotiate both formats, request and map
+                buffers, stream, and check the bitstream that comes back.
+
+                This is the counterpart of RK3576_VEPU_SELFTEST one layer up.
+                That one proves the hardware encodes a frame; this one proves an
+                application can reach it, which is a different claim. The three
+                frames it encodes have different amounts of detail in them, so
+                the sizes coming back in the right order is what says the encoder
+                is responding to the picture.
+
+endif # RK3576_VEPU_CODEC
+
 endmenu # Rockchip RK3576 Peripheral Selection
 
 if RK3576_SARADC

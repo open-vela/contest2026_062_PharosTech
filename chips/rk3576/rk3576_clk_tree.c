@@ -52,6 +52,7 @@
 #include "arm64_arch.h"
 #include "hardware/rk3576_cru.h"
 #include "hardware/rk3576_memorymap.h"
+#include "hardware/rk3576_vepu.h"
 #include "rk3576_clk_tree.h"
 
 /****************************************************************************
@@ -4151,6 +4152,201 @@ static void rk3576_clk_register_vicap(void)
 }
 
 /****************************************************************************
+ * Name: rk3576_clk_register_vepu
+ *
+ * Description:
+ *   Register the VEPU (video encoder) clocks of the RK3576 VPU cluster.
+ *
+ *   VEPU0 and VEPU1 are two instances of the same VEPU510 IP, each in its
+ *   own power domain.  Only VEPU0 is modelled here; VEPU1's selectors are
+ *   in different registers (CLKSEL_CON178/180) and only VEPU0 has an
+ *   interrupt claimed by this tree so far.
+ *
+ *   All three VEPU0 branches are described by CLKSEL_CON124, and all of
+ *   its gates live in GATE_CON51:
+ *
+ *     clk_vepu0_core -- the encoder clock.
+ *       selector  CLKSEL_CON124[15:13]  3 bits, 0 gpll / 1 cpll /
+ *                                       2 spll / 3 lpll / 4 bpll
+ *       divider   CLKSEL_CON124[12:8]   5 bits, divide by (div_con + 1)
+ *       gate      GATE_CON51[6]
+ *
+ *     aclk_vepu0_root -- the AXI root feeding the register and DMA path.
+ *       selector  CLKSEL_CON124[7]      1 bit,  0 gpll / 1 cpll
+ *       divider   CLKSEL_CON124[6:2]    5 bits, divide by (div_con + 1)
+ *       gate      GATE_CON51[1]
+ *
+ *     hclk_vepu0_root -- the AHB root.
+ *       selector  CLKSEL_CON124[1:0]    2 bits, 0 gpll_div6 / 1 cpll_div10 /
+ *                                       2 cpll_div20 / 3 xin_osc0
+ *       gate      GATE_CON51[0]
+ *
+ *   The consumer gates (aclk_vepu0, hclk_vepu0) and the two bus-interface
+ *   gates (aclk_vepu0_biu, hclk_vepu0_biu) hang off those roots, like
+ *   aclk_vicap hangs off aclk_vi_root.
+ *
+ *   Rate policy: exactly the one used for the VI/VO0 roots.  The core
+ *   selector is registered with CLK_MUX_SET_RATE_NO_REPARENT so that a
+ *   clk_set_rate() on any descendant can never re-select a source -- in
+ *   particular it can never land on LPLL and reprogram the CPU clock (the
+ *   hazard documented at length in rk3576_clk_register_vop()).  Explicit
+ *   clk_set_parent() still works, and is how the encoder driver should pin
+ *   a source once it wants to program RK3576_VEPU_CORE_HZ.
+ *
+ *   Caveat the encoder driver must know about: the reset value of the core
+ *   selector is 2'b010 = SPLL.  SPLL is not modelled by this clock tree
+ *   (it is a spread-spectrum audio PLL), so until the driver calls
+ *   clk_set_parent() on clk_vepu0_core_sel, clk_get_rate(clk_vepu0_core)
+ *   cannot resolve and reads back as 0.  That is a reporting limitation,
+ *   not a hardware problem: clk_enable() still walks the chain and
+ *   programs the gates correctly, which is all bring-up needs.  The aclk
+ *   and hclk roots are unaffected -- both reset to a modelled source
+ *   (gpll and gpll_div6 respectively).
+ *
+ ****************************************************************************/
+
+static void rk3576_clk_register_vepu(void)
+{
+  const unsigned long cru = RK3576_CRU_ADDR;
+  FAR struct clk_s *clk;
+
+  /* clk_vepu0_core 3-bit mux parents (CLKSEL_CON124[15:13]).  spll and
+   * bpll are placeholders so that the array index keeps matching the
+   * register encoding; neither is registered, and the reset value picks
+   * the (unmodelled) spll entry -- see the caveat above.
+   */
+
+  static const char *vepu0_core_parents[] = {
+    "clk_gpll", /* 3'b000 */
+    "clk_cpll", /* 3'b001 */
+    "clk_spll", /* 3'b010 (the reset value) -- not modelled */
+    "clk_lpll", /* 3'b011 */
+    "clk_bpll", /* 3'b100 -- not modelled */
+  };
+
+  /* aclk_vepu0_root 1-bit mux parents (CLKSEL_CON124[7]). */
+
+  static const char *vepu0_aclk_root_parents[] = {
+    "clk_gpll", /* 1'b0 (the reset value) */
+    "clk_cpll", /* 1'b1 */
+  };
+
+  /* hclk_vepu0_root 2-bit mux parents (CLKSEL_CON124[1:0]). */
+
+  static const char *vepu0_hclk_root_parents[] = {
+    "clk_gpll_div6",  /* 2'b00 (the reset value) */
+    "clk_cpll_div10", /* 2'b01 */
+    "clk_cpll_div20", /* 2'b10 */
+    "xin_osc0",       /* 2'b11 */
+  };
+
+  /* clk_vepu0_core: mux + divider + gate. */
+
+  clk = clk_register_mux(
+      "clk_vepu0_core_sel", vepu0_core_parents, nitems(vepu0_core_parents),
+      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC |
+          CLK_MUX_SET_RATE_NO_REPARENT,
+      cru + RK3576_CRU_CLKSEL_CON(RK3576_VEPU_CRU_CLKSEL_CON),
+      RK3576_VEPU_CORE_SEL_SHIFT, RK3576_VEPU_CORE_SEL_MASK,
+      CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_divider(
+      "clk_vepu0_core_div", "clk_vepu0_core_sel",
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(RK3576_VEPU_CRU_CLKSEL_CON),
+      RK3576_VEPU_CORE_DIV_SHIFT, RK3576_VEPU_CORE_DIV_WIDTH,
+      CLK_DIVIDER_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("clk_vepu0_core", "clk_vepu0_core_div",
+                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                              CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(RK3576_VEPU_CRU_GATE_CON),
+                          RK3576_VEPU_CORE_CLK_EN_BIT,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  /* aclk_vepu0_root: mux + divider + gate. */
+
+  clk =
+      clk_register_mux("aclk_vepu0_root_sel", vepu0_aclk_root_parents,
+                       nitems(vepu0_aclk_root_parents),
+                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC |
+                           CLK_MUX_SET_RATE_NO_REPARENT,
+                       cru + RK3576_CRU_CLKSEL_CON(RK3576_VEPU_CRU_CLKSEL_CON),
+                       RK3576_VEPU_ACLK_ROOT_SEL_SHIFT,
+                       RK3576_VEPU_ACLK_ROOT_SEL_MASK, CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_divider(
+      "aclk_vepu0_root_div", "aclk_vepu0_root_sel",
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(RK3576_VEPU_CRU_CLKSEL_CON),
+      RK3576_VEPU_ACLK_ROOT_DIV_SHIFT, RK3576_VEPU_ACLK_ROOT_DIV_WIDTH,
+      CLK_DIVIDER_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("aclk_vepu0_root", "aclk_vepu0_root_div",
+                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                              CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(RK3576_VEPU_CRU_GATE_CON),
+                          RK3576_VEPU_ACLK0_ROOT_EN_BIT,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  /* hclk_vepu0_root: mux + gate (no rate flags -- a fixed bus source). */
+
+  clk =
+      clk_register_mux("hclk_vepu0_root_sel", vepu0_hclk_root_parents,
+                       nitems(vepu0_hclk_root_parents),
+                       CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                       cru + RK3576_CRU_CLKSEL_CON(RK3576_VEPU_CRU_CLKSEL_CON),
+                       RK3576_VEPU_HCLK_ROOT_SEL_SHIFT,
+                       RK3576_VEPU_HCLK_ROOT_SEL_MASK, CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("hclk_vepu0_root", "hclk_vepu0_root_sel",
+                          CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(RK3576_VEPU_CRU_GATE_CON),
+                          RK3576_VEPU_HCLK0_ROOT_EN_BIT,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  /* Consumer gates: aclk_vepu0 / hclk_vepu0 feed VEPU0 itself, and the two
+   * BIU gates open its AXI/AHB bus interfaces.  A module whose BIU is held
+   * idle programs and reads its registers perfectly while being unable to
+   * issue a single memory transaction -- see the note in rk3576_vicap.c.
+   */
+
+  clk = clk_register_gate("aclk_vepu0", "aclk_vepu0_root", CLK_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(RK3576_VEPU_CRU_GATE_CON),
+                          RK3576_VEPU_ACLK0_EN_BIT,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("hclk_vepu0", "hclk_vepu0_root", CLK_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(RK3576_VEPU_CRU_GATE_CON),
+                          RK3576_VEPU_HCLK0_EN_BIT,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("aclk_vepu0_biu", "aclk_vepu0_root",
+                          CLK_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(RK3576_VEPU_CRU_GATE_CON),
+                          RK3576_VEPU_ACLK0_BIU_EN_BIT,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("hclk_vepu0_biu", "hclk_vepu0_root",
+                          CLK_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(RK3576_VEPU_CRU_GATE_CON),
+                          RK3576_VEPU_HCLK0_BIU_EN_BIT,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -4371,4 +4567,8 @@ void rk3576_clk_tree_initialize(void)
   rk3576_clk_register_vi();
   rk3576_clk_register_csi();
   rk3576_clk_register_vicap();
+
+  /* Video encode side: the VEPU510 encoder clocks in the VPU cluster. */
+
+  rk3576_clk_register_vepu();
 }
