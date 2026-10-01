@@ -60,8 +60,19 @@
 #include <string.h>
 #include <sys/time.h>
 
+/* The demosaicer has a vector path on AArch64.  Asking the compiler rather
+ * than the architecture is what makes the two agree: a build that has had
+ * the FP/SIMD registers taken away from it -- -mgeneral-regs-only -- would
+ * reject the intrinsics, so it must fall back to the scalar form as well.
+ */
+
+#if defined(__ARM_NEON__) || defined(__ARM_NEON)
+#  include <arm_neon.h>
+#endif
+
 #include <nuttx/arch.h>
 #include <nuttx/clk/clk.h>
+#include <nuttx/clock.h>
 #include <nuttx/compiler.h>
 #include <nuttx/irq.h>
 #include <nuttx/kmalloc.h>
@@ -189,6 +200,27 @@
 
 #define RK3576_VICAP_WB_SAT_OWN 250u
 
+/* How much room the demosaic has to leave inside a frame interval before the
+ * frame may be read where it lies.
+ *
+ * The buffer just finished is stable for exactly one frame interval, and the
+ * margin covers what the measurement does not: it is the average interval
+ * rather than this frame's, it was taken from a previous frame whose cache
+ * state differed, and the worker can be scheduled late.  A wrong answer here
+ * is not a slow frame but a torn one, so the value is deliberately large.
+ */
+
+#define RK3576_VICAP_INPLACE_MARGIN 3u
+
+/* Bayer 2x2 colour at (row parity, column parity); 0 = R, 1 = G, 2 = B. */
+
+static const uint8_t g_vicap_bayer[4][4] = {
+  { 2, 1, 1, 0 }, /* BGGR */
+  { 1, 2, 0, 1 }, /* GBRG */
+  { 1, 0, 2, 1 }, /* GRBG */
+  { 0, 1, 1, 2 }, /* RGGB */
+};
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -240,6 +272,20 @@ struct rk3576_vicap_s
 
   uint32_t framecount; /* Frames delivered to the framework */
   uint32_t dropcount;  /* Frames VICAP finished but we could not take */
+
+  /* Why those frames were dropped, counted apart.
+   *
+   * A single total cannot be acted on: a frame missed because the worker had
+   * not finished the previous one means the host is too slow, one missed
+   * because the framework had not offered a buffer means the application is,
+   * and the two call for opposite responses.  Reported as a breakdown so the
+   * question can be answered from the log instead of guessed at.
+   */
+
+  uint32_t drop_overrun; /* Previous frame still being demosaiced */
+  uint32_t drop_nobuf;   /* Framework had not offered a buffer */
+  uint32_t drop_stale;   /* Stream ended under the frame */
+  uint32_t drop_queue;   /* Work queue refused the frame */
   uint32_t errstat;    /* Sticky OR of VICAP error interrupt bits */
   uint32_t frame_us;   /* Accumulated CPU time spent producing frames */
 
@@ -252,6 +298,40 @@ struct rk3576_vicap_s
   volatile uint32_t isr_frames;
   uint32_t racecount; /* Copies that spanned a frame boundary */
   uint32_t copy_us;   /* Accumulated time spent copying frames out */
+
+  /* Whether a frame may be demosaiced where it lies.
+   *
+   * The hardware ping-pongs two buffers and alternates them itself, so the
+   * one just finished is not written again until the other frame has been
+   * captured: it can be read in place for one frame interval and no longer.
+   * Whether the demosaic fits in that interval is a property of the mode and
+   * the frame rate, so the interval and the cost are both measured and the
+   * answer is derived from them rather than assumed.
+   */
+
+  volatile uint32_t isr_ticks; /* Tick at the last DMA end */
+  uint32_t interval_ticks;     /* Spacing measured between them */
+  uint32_t debayer_us;         /* What the last demosaic cost */
+  uint32_t debayer_us_sum;     /* Accumulated demosaic time */
+
+  /* Whether a frame may be demosaiced where it lies.
+   *
+   * The frame interval does not change while a stream runs, so this is a
+   * property of the stream rather than of the frame: it is worked out once,
+   * from the first interval and the first demosaic that are both known, and
+   * then latched.  Deciding it afresh on every frame makes it flicker -- the
+   * measurement moves by a tick either way, and any threshold near the
+   * demosaic time then alternates between the two paths from one frame to
+   * the next.  The two paths are also measured apart, so that the cost of
+   * each is known rather than only the average of both.
+   */
+
+  bool inplace_decided;
+  bool inplace_ok;
+  uint32_t inplace_frames;
+  uint32_t inplace_us_sum;
+  uint32_t copy_frames;
+  uint32_t copy_demosaic_us_sum;
 
   /* The interface's own frame boundaries, counted separately from the DMA
    * ends.  The two are independent inputs to the frame that arrives: a DMA
@@ -305,6 +385,9 @@ static int rk3576_vicap_start_capture(FAR struct imgdata_s *data,
                                       FAR imgdata_capture_t callback,
                                       FAR void *arg);
 static int rk3576_vicap_stop_capture(FAR struct imgdata_s *data);
+static void rk3576_vicap_wb_update(FAR struct rk3576_vicap_s *priv,
+                                   uint64_t accr, uint64_t accg,
+                                   uint64_t accb, uint64_t accn);
 
 static const struct imgdata_ops_s g_rk3576_vicap_ops = {
   .init = rk3576_vicap_init,
@@ -608,7 +691,7 @@ static inline uint8_t rk3576_vicap_clamp(int v)
 }
 
 /****************************************************************************
- * Name: rk3576_vicap_debayer
+ * Name: rk3576_vicap_debayer_scalar
  *
  * Description:
  *   Bilinear demosaic of one RAW10 frame into an NV12 frame.
@@ -627,21 +710,13 @@ static inline uint8_t rk3576_vicap_clamp(int v)
  *
  ****************************************************************************/
 
-static void rk3576_vicap_debayer(FAR struct rk3576_vicap_s *priv,
-                                 FAR const uint16_t *raw, FAR uint8_t *dst)
+static void rk3576_vicap_debayer_scalar(FAR struct rk3576_vicap_s *priv,
+                                        FAR const uint16_t *raw,
+                                        FAR uint8_t *dst)
 {
-  /* Bayer 2x2 colour at (row parity, column parity); 0 = R, 1 = G, 2 = B. */
-
-  static const uint8_t patterns[4][4] = {
-    { 2, 1, 1, 0 }, /* BGGR */
-    { 1, 2, 0, 1 }, /* GBRG */
-    { 1, 0, 2, 1 }, /* GRBG */
-    { 0, 1, 1, 2 }, /* RGGB */
-  };
-
   FAR uint8_t *yplane = dst;
   FAR uint8_t *uvplane = dst + (size_t)priv->cfg.width * priv->cfg.height;
-  FAR const uint8_t *pat = patterns[priv->cfg.bayer & 3u];
+  FAR const uint8_t *pat = g_vicap_bayer[priv->cfg.bayer & 3u];
   FAR const uint32_t *wb = priv->wb;
   int w = priv->cfg.width;
   int h = priv->cfg.height;
@@ -843,7 +918,14 @@ static void rk3576_vicap_debayer(FAR struct rk3576_vicap_s *priv,
         }
     }
 
-  /* Steer the gains towards a frame whose three channels average alike.
+  rk3576_vicap_wb_update(priv, accr, accg, accb, accn);
+}
+
+/****************************************************************************
+ * Name: rk3576_vicap_wb_update
+ *
+ * Description:
+ *   Steer the gains towards a frame whose three channels average alike.
    *
    * The common value the channels are steered to is the one that
    * reproduces the frame's original luma, not simply any equal value.
@@ -866,8 +948,16 @@ static void rk3576_vicap_debayer(FAR struct rk3576_vicap_s *priv,
    * No counted samples, or a luma that rounds to zero, means the frame
    * carried no usable signal; either way there is nothing to measure and
    * the gains are best left as they are.
+   *
+   * Both demosaicers hand their measurement here rather than each carrying
+   * their own copy: they differ in how the accumulators are built, not in
+   * what is done with them.
    */
 
+static void rk3576_vicap_wb_update(FAR struct rk3576_vicap_s *priv,
+                                   uint64_t accr, uint64_t accg,
+                                   uint64_t accb, uint64_t accn)
+{
   if (accn > 0u && accr > 0u && accg > 0u && accb > 0u)
     {
       uint64_t acc[3];
@@ -940,6 +1030,508 @@ static void rk3576_vicap_debayer(FAR struct rk3576_vicap_s *priv,
     }
 }
 
+#if defined(__ARM_NEON__) || defined(__ARM_NEON)
+
+/****************************************************************************
+ * Name: rk3576_vicap_nbr
+ *
+ * Description:
+ *   Load the eight samples of one row that begin at column `x`, together
+ *   with the same eight shifted one column either way.
+ *
+ *   The shifted copies are the neighbours the demosaicer reads.  At the two
+ *   ends of a row they would step outside it, so there the sample at the
+ *   edge stands in for the one past it -- the same substitution the scalar
+ *   version makes by clamping the coordinate.  Doing it here keeps every
+ *   load inside the row, which is what leaves the body of the frame free of
+ *   both the test and the clamp.
+ *
+ ****************************************************************************/
+
+static inline void rk3576_vicap_nbr(FAR const uint16_t *row, int x, int w,
+                                    FAR uint16x8_t *lm1, FAR uint16x8_t *l0,
+                                    FAR uint16x8_t *lp1)
+{
+  uint16x8_t v = vld1q_u16(row + x);
+
+  *l0 = v;
+
+  if (x > 0)
+    {
+      *lm1 = vld1q_u16(row + x - 1);
+    }
+  else
+    {
+      *lm1 = vsetq_lane_u16(vgetq_lane_u16(v, 0), vextq_u16(v, v, 7), 0);
+    }
+
+  if (x + 8 < w)
+    {
+      *lp1 = vld1q_u16(row + x + 1);
+    }
+  else
+    {
+      *lp1 = vsetq_lane_u16(vgetq_lane_u16(v, 7), vextq_u16(v, v, 1), 7);
+    }
+}
+
+/****************************************************************************
+ * Name: rk3576_vicap_mask
+ *
+ * Description:
+ *   Build the lane mask that selects the sites of one colour in one of the
+ *   two row parities.
+ *
+ *   Site colours repeat every two lanes, so this is the pair a row alternates
+ *   between, repeated four times.  It is built through a temporary array and
+ *   loaded once per stream rather than per group: a mask is the same for
+ *   every group in the frame.
+ *
+ ****************************************************************************/
+
+static inline uint16x8_t rk3576_vicap_mask(FAR const uint8_t *pat, int rp,
+                                           int want)
+{
+  uint16_t t[8];
+  int j;
+
+  for (j = 0; j < 8; j++)
+    {
+      t[j] = (uint16_t)(pat[rp * 2 + (j & 1)] == want ? 0xffffu : 0u);
+    }
+
+  return vld1q_u16(t);
+}
+
+/****************************************************************************
+ * Name: rk3576_vicap_hred
+ *
+ * Description:
+ *   Whether the neighbour in the same row as a green site is red rather than
+ *   blue, which is what settles whether that site takes red from the
+ *   horizontal pair or the vertical one.
+ *
+ *   A row has green sites in one column parity only, and their neighbours in
+ *   the other, so this is one fact about the row rather than one per site.
+ *   Either parity can be the green one depending on the order, so both are
+ *   checked; a row with no green in it at all cannot occur in a Bayer
+ *   pattern.
+ *
+ ****************************************************************************/
+
+static inline int rk3576_vicap_hred(FAR const uint8_t *pat, int rp)
+{
+  int even = pat[rp * 2 + 0];
+  int odd = pat[rp * 2 + 1];
+
+  if (even == 1)
+    {
+      return (odd == 0) ? 1 : 0;
+    }
+
+  if (odd == 1)
+    {
+      return (even == 0) ? 1 : 0;
+    }
+
+  return 0;
+}
+
+/****************************************************************************
+ * Name: rk3576_vicap_pick
+ *
+ * Description:
+ *   Choose the three channel values of eight consecutive samples of one row
+ *   out of the four interpolations every site has available.
+ *
+ *   Which interpolation each colour comes from depends only on the parity
+ *   of the row and column, so it is expressed with masks rather than
+ *   branches.  Out of the four: at a red site the site itself is red, green
+ *   is the average of the orthogonal neighbours and blue the average of the
+ *   diagonal ones; at a blue site red and blue swap; and at a green site the
+ *   site itself is green while the other two come from the horizontal and
+ *   vertical pairs.
+ *
+ *   Which of those two pairs a green site takes red from is the caller's to
+ *   settle, not this function's.  It follows from the colour of the
+ *   neighbour in the same row, and since every green site in a row shares a
+ *   column parity, that neighbour is the same colour at all of them -- one
+ *   fact about the row rather than a per-lane one.  Handing the pairs over
+ *   already in the order red wants them therefore costs nothing and saves a
+ *   mask and two selects on every row.
+ *
+ ****************************************************************************/
+
+static inline void rk3576_vicap_pick(uint16x8_t mred, uint16x8_t mblue,
+                                     uint16x8_t mgreen, uint16x8_t own,
+                                     uint16x8_t hr, uint16x8_t br,
+                                     uint16x8_t orth, uint16x8_t dia,
+                                     FAR uint16x8_t *r, FAR uint16x8_t *g,
+                                     FAR uint16x8_t *b)
+{
+  /* At a red or a blue site the two pairs are overwritten below, so what
+   * they hold there does not matter.
+   */
+
+  *r = vbslq_u16(mblue, dia, hr);
+  *r = vbslq_u16(mred, own, *r);
+
+  *g = vbslq_u16(mgreen, own, orth);
+
+  *b = vbslq_u16(mred, dia, br);
+  *b = vbslq_u16(mblue, own, *b);
+}
+
+/****************************************************************************
+ * Name: rk3576_vicap_gain
+ *
+ * Description:
+ *   Apply one of the white balance gains to eight channel values, dropping
+ *   whatever the gain pushes past full scale.
+ *
+ *   The gains are eight-bit fixed point with one as 256, so the scalar form
+ *   is (v * gain) >> 8.  The doubling multiply high is (2 * a * b) >> 16
+ *   without rounding, so scaling one side by 32 and the other by 4 lands on
+ *   exactly that value: a sample is at most 255 and a gain at most 1024, so
+ *   neither side overflows and the product cannot reach the point where the
+ *   doubling saturates.  The saturating variant is used because it is the
+ *   one that does not round.
+ *
+ ****************************************************************************/
+
+static inline uint16x8_t rk3576_vicap_gain(uint16x8_t c, int16x8_t gain)
+{
+  return vminq_u16(vreinterpretq_u16_s16(
+                       vqdmulhq_s16(vshlq_n_s16(vreinterpretq_s16_u16(c), 5),
+                                    gain)),
+                   vdupq_n_u16(255));
+}
+
+/****************************************************************************
+ * Name: rk3576_vicap_debayer_neon
+ *
+ * Description:
+ *   The same bilinear demosaic, white balance and NV12 conversion as
+ *   rk3576_vicap_debayer_scalar, eight pixels and two rows at a time.
+ *
+ *   The scalar version spends most of its time not on arithmetic but on
+ *   getting hold of the neighbours: the five to eight samples a site needs
+ *   are each fetched through a helper that clamps both coordinates and
+ *   multiplies out the address, so the same sample is found, clamped and
+ *   converted again and again for every site that uses it.  Here the
+ *   neighbours arrive as three shifted loads per row, the clamping is
+ *   confined to the two ends of the row, and the eight-bit samples stay in
+ *   sixteen-bit lanes where a halving add cannot overflow -- so a pair of
+ *   neighbours costs one shift rather than one shift per sample.
+ *
+ *   Two rows are done together because that is the unit the chroma is
+ *   averaged over, and because the row below a pair is the row above the
+ *   next one: the four rows a pair needs are the whole working set.
+ *
+ ****************************************************************************/
+
+static void rk3576_vicap_debayer_neon(FAR struct rk3576_vicap_s *priv,
+                                      FAR const uint16_t *raw,
+                                      FAR uint8_t *dst)
+{
+  FAR uint8_t *yplane = dst;
+  FAR uint8_t *uvplane = dst + (size_t)priv->cfg.width * priv->cfg.height;
+  FAR const uint8_t *pat = g_vicap_bayer[priv->cfg.bayer & 3u];
+  const int w = priv->cfg.width;
+  const int h = priv->cfg.height;
+  const int stride_px = (int)(priv->stride / 2u);
+
+  /* What each lane of a group takes, as all-ones or all-zero masks.
+   *
+   * A site's colour depends only on the parity of its row and column, so
+   * within a group of eight the masks repeat every two lanes and the two
+   * rows of a pair take one set each.  They are therefore the same for
+   * every group in the frame, and are built once.  Three per row are needed:
+   * the site is red, the site is blue, the site is green.  The fourth thing
+   * the pattern decides -- which pair a green site takes red from -- is the
+   * same at every green site in a row, and is carried as a flag rather than
+   * as a mask.
+   */
+
+  uint16x8_t mredu;
+  uint16x8_t mblueu;
+  uint16x8_t mgreenu;
+  uint16x8_t mredl;
+  uint16x8_t mbluel;
+  uint16x8_t mgreenl;
+  int hredu;
+  int hredl;
+  int16x8_t gain[3];
+  uint32x4_t vacc[3];
+  uint32x4_t vcnt;
+  uint64_t accr = 0;
+  uint64_t accg = 0;
+  uint64_t accb = 0;
+  uint64_t accn = 0;
+  int i;
+  int y;
+
+  mredu = rk3576_vicap_mask(pat, 0, 0);
+  mblueu = rk3576_vicap_mask(pat, 0, 2);
+  mgreenu = rk3576_vicap_mask(pat, 0, 1);
+  mredl = rk3576_vicap_mask(pat, 1, 0);
+  mbluel = rk3576_vicap_mask(pat, 1, 2);
+  mgreenl = rk3576_vicap_mask(pat, 1, 1);
+  hredu = rk3576_vicap_hred(pat, 0);
+  hredl = rk3576_vicap_hred(pat, 1);
+
+  for (i = 0; i < 3; i++)
+    {
+      gain[i] = vdupq_n_s16((int16_t)(priv->wb[i] << 2));
+      vacc[i] = vdupq_n_u32(0);
+    }
+
+  vcnt = vdupq_n_u32(0);
+
+  for (y = 0; y < h; y += 2)
+    {
+      /* The rows above and below the pair are what the interpolation
+       * reaches into; at the top and bottom of the frame the edge row
+       * stands in for the one past it.
+       */
+
+      FAR const uint16_t *ra = raw + (size_t)(y > 0 ? y - 1 : 0) * stride_px;
+      FAR const uint16_t *rb = raw + (size_t)y * stride_px;
+      FAR const uint16_t *rc = raw + (size_t)(y + 1) * stride_px;
+      FAR const uint16_t *rd =
+          raw + (size_t)(y + 2 < h ? y + 2 : h - 1) * stride_px;
+      FAR uint8_t *o0 = yplane + (size_t)y * w;
+      FAR uint8_t *o1 = o0 + w;
+      FAR uint8_t *uv = uvplane + (size_t)(y / 2) * w;
+      int x;
+
+      for (x = 0; x < w; x += 8)
+        {
+          uint16x8_t p0m, p0, p0p;
+          uint16x8_t p1m, p1, p1p;
+          uint16x8_t p2m, p2, p2p;
+          uint16x8_t p3m, p3, p3p;
+          uint16x8_t q0, q1, q2, q3;
+          uint16x8_t s0, s1;
+          uint16x8_t ownu, ownl, hu, vu, ou, du, hl, vl, ol, dl;
+          uint16x8_t ru, gu, bu, rl, gl, bl;
+          uint16x8_t mask;
+          uint16x8_t t;
+          uint16x8_t yv;
+
+          rk3576_vicap_nbr(ra, x, w, &p0m, &p0, &p0p);
+          rk3576_vicap_nbr(rb, x, w, &p1m, &p1, &p1p);
+          rk3576_vicap_nbr(rc, x, w, &p2m, &p2, &p2p);
+          rk3576_vicap_nbr(rd, x, w, &p3m, &p3, &p3p);
+
+          /* Only the top eight bits of each sample are ever wanted, so
+           * they are brought down before anything is added.
+           *
+           * Adding the sixteen-bit words first and shifting afterwards
+           * does not work, and not for the obvious reason.  Two
+           * full-scale samples will not fit in sixteen bits, but a halving
+           * add sidesteps that by computing (a + b) / 2 -- and that is
+           * exactly where it goes wrong.  Halving a raw word lifts the bit
+           * that is about to be discarded into the part being kept, so a
+           * pair whose sum lands just below a multiple of 256 comes out one
+           * too high once the remaining seven places are dropped.  The
+           * scalar reads each sample as eight bits and only then adds, and
+           * the two agree only if this does the same.
+           */
+
+          p0m = vshrq_n_u16(p0m, 8);
+          p0 = vshrq_n_u16(p0, 8);
+          p0p = vshrq_n_u16(p0p, 8);
+          p1m = vshrq_n_u16(p1m, 8);
+          p1 = vshrq_n_u16(p1, 8);
+          p1p = vshrq_n_u16(p1p, 8);
+          p2m = vshrq_n_u16(p2m, 8);
+          p2 = vshrq_n_u16(p2, 8);
+          p2p = vshrq_n_u16(p2p, 8);
+          p3m = vshrq_n_u16(p3m, 8);
+          p3 = vshrq_n_u16(p3, 8);
+          p3p = vshrq_n_u16(p3p, 8);
+
+          q0 = vaddq_u16(p0m, p0p);
+          q1 = vaddq_u16(p1m, p1p);
+          q2 = vaddq_u16(p2m, p2p);
+          q3 = vaddq_u16(p3m, p3p);
+          s0 = vaddq_u16(p0, p2);
+          s1 = vaddq_u16(p1, p3);
+
+          ownu = p1;
+          ownl = p2;
+
+          hu = vshrq_n_u16(q1, 1);                /* horizontal pair */
+          vu = vshrq_n_u16(s0, 1);                /* vertical pair   */
+          ou = vshrq_n_u16(vaddq_u16(q1, s0), 2); /* orthogonal four */
+          du = vshrq_n_u16(vaddq_u16(q0, q2), 2); /* diagonal four   */
+
+          hl = vshrq_n_u16(q2, 1);
+          vl = vshrq_n_u16(s1, 1);
+          ol = vshrq_n_u16(vaddq_u16(q2, s1), 2);
+          dl = vshrq_n_u16(vaddq_u16(q1, q3), 2);
+
+          rk3576_vicap_pick(mredu, mblueu, mgreenu, ownu, hredu ? hu : vu,
+                            hredu ? vu : hu, ou, du, &ru, &gu, &bu);
+          rk3576_vicap_pick(mredl, mbluel, mgreenl, ownl, hredl ? hl : vl,
+                            hredl ? vl : hl, ol, dl, &rl, &gl, &bl);
+
+          /* Which 2x2 blocks may steer the gains.  A block is kept out of
+           * the measurement if any of its four samples is at the top of
+           * the range, so the decision is taken on the largest of them.
+           * The four decisions come out in the low half; they are counted
+           * there, before being spread over the eight lanes so that each
+           * sample of the block carries its block's verdict.
+           */
+
+          mask = vcltq_u16(vmaxq_u16(vpmaxq_u16(p1, p1),
+                                     vpmaxq_u16(p2, p2)),
+                           vdupq_n_u16(RK3576_VICAP_WB_SAT_OWN));
+          vcnt = vaddw_u16(vcnt, vshr_n_u16(vget_low_u16(mask), 15));
+          mask = vzipq_u16(mask, mask).val[0];
+
+          /* The channel sums that steer the white balance, taken before
+           * the gains are applied: measuring after would make the loop
+           * read its own output.
+           */
+
+          t = vandq_u16(ru, mask);
+          vacc[0] = vaddw_u16(vacc[0], vget_low_u16(t));
+          vacc[0] = vaddw_u16(vacc[0], vget_high_u16(t));
+          t = vandq_u16(gu, mask);
+          vacc[1] = vaddw_u16(vacc[1], vget_low_u16(t));
+          vacc[1] = vaddw_u16(vacc[1], vget_high_u16(t));
+          t = vandq_u16(bu, mask);
+          vacc[2] = vaddw_u16(vacc[2], vget_low_u16(t));
+          vacc[2] = vaddw_u16(vacc[2], vget_high_u16(t));
+
+          t = vandq_u16(rl, mask);
+          vacc[0] = vaddw_u16(vacc[0], vget_low_u16(t));
+          vacc[0] = vaddw_u16(vacc[0], vget_high_u16(t));
+          t = vandq_u16(gl, mask);
+          vacc[1] = vaddw_u16(vacc[1], vget_low_u16(t));
+          vacc[1] = vaddw_u16(vacc[1], vget_high_u16(t));
+          t = vandq_u16(bl, mask);
+          vacc[2] = vaddw_u16(vacc[2], vget_low_u16(t));
+          vacc[2] = vaddw_u16(vacc[2], vget_high_u16(t));
+
+          ru = rk3576_vicap_gain(ru, gain[0]);
+          gu = rk3576_vicap_gain(gu, gain[1]);
+          bu = rk3576_vicap_gain(bu, gain[2]);
+          rl = rk3576_vicap_gain(rl, gain[0]);
+          gl = rk3576_vicap_gain(gl, gain[1]);
+          bl = rk3576_vicap_gain(bl, gain[2]);
+
+          /* Rec.601 luma in studio range.  Holding the channels to their
+           * range first is also what keeps the sum below the top of the
+           * expression's range, so this needs no clamp of its own.
+           */
+
+          yv = vdupq_n_u16(128);
+          yv = vmlaq_n_u16(yv, ru, 66);
+          yv = vmlaq_n_u16(yv, gu, 129);
+          yv = vmlaq_n_u16(yv, bu, 25);
+          vst1_u8(o0 + x, vmovn_u16(vaddq_u16(vshrq_n_u16(yv, 8),
+                                              vdupq_n_u16(16))));
+
+          yv = vdupq_n_u16(128);
+          yv = vmlaq_n_u16(yv, rl, 66);
+          yv = vmlaq_n_u16(yv, gl, 129);
+          yv = vmlaq_n_u16(yv, bl, 25);
+          vst1_u8(o1 + x, vmovn_u16(vaddq_u16(vshrq_n_u16(yv, 8),
+                                              vdupq_n_u16(16))));
+
+          /* Chroma of each 2x2 block, from the average of its four gained
+           * and clamped samples.  Every intermediate here stays inside a
+           * signed sixteen-bit value, and the narrowing store at the end is
+           * what holds the result to 0..255 -- the same clamp the scalar
+           * version applies by hand.
+           */
+
+          {
+            uint16x4_t rs = vshr_n_u16(
+                vadd_u16(vpadd_u16(vget_low_u16(ru), vget_high_u16(ru)),
+                         vpadd_u16(vget_low_u16(rl), vget_high_u16(rl))), 2);
+            uint16x4_t gs = vshr_n_u16(
+                vadd_u16(vpadd_u16(vget_low_u16(gu), vget_high_u16(gu)),
+                         vpadd_u16(vget_low_u16(gl), vget_high_u16(gl))), 2);
+            uint16x4_t bs = vshr_n_u16(
+                vadd_u16(vpadd_u16(vget_low_u16(bu), vget_high_u16(bu)),
+                         vpadd_u16(vget_low_u16(bl), vget_high_u16(bl))), 2);
+            int16x4_t cb;
+            int16x4_t cr;
+            int16x4x2_t z;
+
+            cb = vmla_n_s16(vdup_n_s16(128), vreinterpret_s16_u16(rs), -38);
+            cb = vmla_n_s16(cb, vreinterpret_s16_u16(gs), -74);
+            cb = vmla_n_s16(cb, vreinterpret_s16_u16(bs), 112);
+            cb = vadd_s16(vshr_n_s16(cb, 8), vdup_n_s16(128));
+
+            cr = vmla_n_s16(vdup_n_s16(128), vreinterpret_s16_u16(rs), 112);
+            cr = vmla_n_s16(cr, vreinterpret_s16_u16(gs), -94);
+            cr = vmla_n_s16(cr, vreinterpret_s16_u16(bs), -18);
+            cr = vadd_s16(vshr_n_s16(cr, 8), vdup_n_s16(128));
+
+            z = vzip_s16(cb, cr);
+            vst1_u8(uv + x, vqmovun_s16(vcombine_s16(z.val[0], z.val[1])));
+          }
+        }
+
+      /* Fold the row pair's measurement into the frame's.  Reducing a row
+       * pair at a time is what keeps a lane from ever reaching the top of
+       * its 32-bit accumulator, however wide the frame is.  The blocks are
+       * counted rather than the samples, so four pixels are added for each
+       * one that was counted.
+       */
+
+      accr += vaddlvq_u32(vacc[0]);
+      accg += vaddlvq_u32(vacc[1]);
+      accb += vaddlvq_u32(vacc[2]);
+      accn += (uint64_t)4 * vaddlvq_u32(vcnt);
+
+      for (i = 0; i < 3; i++)
+        {
+          vacc[i] = vdupq_n_u32(0);
+        }
+
+      vcnt = vdupq_n_u32(0);
+    }
+
+  rk3576_vicap_wb_update(priv, accr, accg, accb, accn);
+}
+
+#endif /* __ARM_NEON__ || __ARM_NEON */
+
+/****************************************************************************
+ * Name: rk3576_vicap_debayer
+ *
+ * Description:
+ *   Demosaic one RAW frame into NV12, by whichever path the build and the
+ *   frame geometry allow.
+ *
+ ****************************************************************************/
+
+static void rk3576_vicap_debayer(FAR struct rk3576_vicap_s *priv,
+                                 FAR const uint16_t *raw, FAR uint8_t *dst)
+{
+#if defined(__ARM_NEON__) || defined(__ARM_NEON)
+  /* The vector path works in whole 2x2 blocks and whole row pairs, so it
+   * needs a width that is a multiple of eight and an even height.  Both
+   * hold for the modes this driver accepts; anything else, or a build
+   * without NEON, falls back to the scalar version.
+   */
+
+  if ((priv->cfg.width & 7u) == 0u && (priv->cfg.height & 1u) == 0u)
+    {
+      rk3576_vicap_debayer_neon(priv, raw, dst);
+      return;
+    }
+#endif
+
+  rk3576_vicap_debayer_scalar(priv, raw, dst);
+}
+
 /****************************************************************************
  * Name: rk3576_vicap_worker
  *
@@ -954,11 +1546,16 @@ static void rk3576_vicap_worker(FAR void *arg)
   FAR struct rk3576_vicap_s *priv = (FAR struct rk3576_vicap_s *)arg;
   struct timeval t0;
   struct timeval t1;
+  struct timeval td0;
+  struct timeval td1;
+  FAR const uint16_t *src;
   FAR uint8_t *dst;
   size_t dstsize;
   imgdata_capture_t callback;
   FAR void *cbarg;
   uint32_t epoch;
+  uint32_t frames_before;
+  bool inplace;
   int idx;
   irqstate_t flags;
 
@@ -998,30 +1595,37 @@ static void rk3576_vicap_worker(FAR void *arg)
     {
       /* Nothing was offered, so there is nowhere to put this frame.  This is
        * ordinary back-pressure, not an error: the framework is simply not
-       * ready for another frame yet.
+       * ready for another frame yet.  Counted apart from an overrun because
+       * the two mean the opposite thing -- this one says the application is
+       * behind, an overrun says this driver is.
        */
 
       priv->dropcount++;
+      priv->drop_nobuf++;
       return;
     }
 
-  /* VICAP writes DDR directly (its MMU is in pass-through), so the CPU's
-   * view of the RAW buffer has to be invalidated before reading it.
+  /* Read the frame where it lies, when the timing allows it.
    *
-   * Then take a private copy before demosaicing.
+   * VICAP writes DDR directly (its MMU is in pass-through), so the CPU's
+   * view of the RAW buffer has to be invalidated before reading it either
+   * way.
    *
-   * The ping-pong only holds a buffer still for one frame interval: the DMA
-   * is already filling the other buffer, and when that frame ends it comes
-   * straight back to this one.  In this mode a frame lasts 16 ms while the
-   * demosaic takes about 34, so working on the buffer in place means the DMA
-   * starts overwriting it partway through -- the top of the frame comes from
-   * one frame and the bottom from another.  That is exactly the mixing this
-   * copy exists to prevent, and it is why the copy has to be made while the
-   * buffer is still in the interval it was announced in.
+   * The ping-pong that gives this driver one frame at a time is also what
+   * makes reading in place possible: with two buffers alternating, the one
+   * just finished is not written again until the other frame has been
+   * captured, so it is stable for exactly one frame interval.  Whether the
+   * demosaic fits in that interval is a property of the mode and the frame
+   * rate rather than of this code, so it is decided from what the last frame
+   * actually cost, and never assumed.  Getting it wrong is not a slow frame
+   * but a wrong one -- the DMA would overwrite the bottom of the buffer
+   * while the top was being read -- which is why the earlier version of this
+   * driver copied unconditionally.
    *
-   * The copy is a small fraction of a frame interval, so it finishes well
-   * before the buffer can be reused; the demosaic then works on memory that
-   * nothing else is writing.
+   * It is worth getting right, because the copy is not cheap here.  It costs
+   * as much traffic again as the demosaic itself, the frame being read,
+   * written and then read back, and this loop spends most of its time
+   * waiting on memory rather than computing.
    */
 
   up_invalidate_dcache((uintptr_t)priv->raw[idx],
@@ -1029,35 +1633,99 @@ static void rk3576_vicap_worker(FAR void *arg)
 
   gettimeofday(&t0, NULL);
 
-  {
-    struct timeval tc0;
-    struct timeval tc1;
-    uint32_t before = priv->isr_frames;
+  /* The decision uses the previous frame's demosaic, so the first frame of a
+   * stream takes the copy and a mode too slow for its frame rate keeps it.
+   * It is taken once and then held; see the note on the fields.
+   */
 
-    /* Timed because the copy is what has to outrun the DMA: it is safe only
-     * while it stays a small fraction of a frame interval, and that is worth
-     * being able to check rather than assume.
-     */
+  if (!priv->inplace_decided && priv->interval_ticks != 0u &&
+      priv->debayer_us != 0u)
+    {
+      priv->inplace_decided = true;
+      priv->inplace_ok = (priv->debayer_us * RK3576_VICAP_INPLACE_MARGIN <
+                          priv->interval_ticks * USEC_PER_TICK);
+    }
 
-    gettimeofday(&tc0, NULL);
-    memcpy(priv->snap, priv->raw[idx], priv->rawlen);
-    gettimeofday(&tc1, NULL);
+  inplace = priv->inplace_ok;
 
-    priv->copy_us += (uint32_t)((tc1.tv_sec - tc0.tv_sec) * 1000000 +
-                                (tc1.tv_usec - tc0.tv_usec));
+  frames_before = priv->isr_frames;
 
-    /* A frame boundary crossed during the copy means it may hold parts of
-     * two frames.  Counting that keeps it a visible measurement rather than
-     * an assumption that it cannot happen.
-     */
+  if (inplace)
+    {
+      src = (FAR const uint16_t *)priv->raw[idx];
+    }
+  else
+    {
+      struct timeval tc0;
+      struct timeval tc1;
 
-    if (priv->isr_frames != before)
-      {
-        priv->racecount++;
-      }
-  }
+      /* Timed because the copy is what has to outrun the DMA: it is safe
+       * only while it stays a small fraction of a frame interval, and that
+       * is worth being able to check rather than assume.
+       */
 
-  rk3576_vicap_debayer(priv, (FAR const uint16_t *)priv->snap, dst);
+      gettimeofday(&tc0, NULL);
+      memcpy(priv->snap, priv->raw[idx], priv->rawlen);
+      gettimeofday(&tc1, NULL);
+
+      priv->copy_us += (uint32_t)((tc1.tv_sec - tc0.tv_sec) * 1000000 +
+                                  (tc1.tv_usec - tc0.tv_usec));
+
+      /* A frame boundary crossed during the copy means it may hold parts of
+       * two frames.  The copy is private from here on, so this is the whole
+       * of the copy's exposure and the check belongs right here.
+       */
+
+      if (priv->isr_frames != frames_before)
+        {
+          priv->racecount++;
+        }
+
+      src = (FAR const uint16_t *)priv->snap;
+    }
+
+  /* Timed separately from the frame as a whole, because this is the number
+   * the choice above is made from and it has to be the demosaic alone --
+   * counting the copy in with it would set the threshold by the thing being
+   * avoided.
+   */
+
+  gettimeofday(&td0, NULL);
+  rk3576_vicap_debayer(priv, src, dst);
+  gettimeofday(&td1, NULL);
+
+  priv->debayer_us = (uint32_t)((td1.tv_sec - td0.tv_sec) * 1000000 +
+                                (td1.tv_usec - td0.tv_usec));
+  priv->debayer_us_sum += priv->debayer_us;
+
+  /* Reading where the frame lies is exposed for as long as the read takes,
+   * which is the whole of the demosaic, so the boundary is checked after it
+   * rather than around it.  The margin above is what is meant to keep this
+   * from ever firing; this is what says whether it did.
+   *
+   * A boundary inside the window means the DMA has begun overwriting the
+   * buffer that was being read, which is the one way this path can fail.  It
+   * is also the only thing that settles the question -- a prediction from
+   * timings can be unlucky, an observed boundary cannot -- so it ends the
+   * experiment for this stream instead of only being counted.
+   */
+
+  if (inplace)
+    {
+      priv->inplace_frames++;
+      priv->inplace_us_sum += priv->debayer_us;
+
+      if (priv->isr_frames != frames_before)
+        {
+          priv->racecount++;
+          priv->inplace_ok = false;
+        }
+    }
+  else
+    {
+      priv->copy_frames++;
+      priv->copy_demosaic_us_sum += priv->debayer_us;
+    }
 
   up_clean_dcache((uintptr_t)dst, (uintptr_t)dst + dstsize);
 
@@ -1081,6 +1749,7 @@ static void rk3576_vicap_worker(FAR void *arg)
     {
       spin_unlock_irqrestore(&priv->irqlock, flags);
       priv->dropcount++;
+      priv->drop_stale++;
       return;
     }
 
@@ -1133,6 +1802,23 @@ static int rk3576_vicap_isr(int irq, FAR void *context, FAR void *arg)
 
       priv->isr_frames++;
 
+      /* The spacing between DMA ends is the interval the demosaic has to
+       * fit into.  Measured here rather than taken from the requested frame
+       * rate, because it is the hardware's actual cadence that decides how
+       * long the finished buffer stays untouched.
+       */
+
+      {
+        uint32_t now = (uint32_t)clock_systime_ticks();
+
+        if (priv->isr_ticks != 0u && now > priv->isr_ticks)
+          {
+            priv->interval_ticks = now - priv->isr_ticks;
+          }
+
+        priv->isr_ticks = now;
+      }
+
       if (priv->raw_pending >= 0)
         {
           /* The previous frame has not been demosaiced yet.  Counting it
@@ -1140,6 +1826,7 @@ static int rk3576_vicap_isr(int irq, FAR void *context, FAR void *arg)
            */
 
           priv->dropcount++;
+          priv->drop_overrun++;
         }
 
       priv->raw_pending = idx;
@@ -1153,6 +1840,7 @@ static int rk3576_vicap_isr(int irq, FAR void *context, FAR void *arg)
             {
               priv->frame_scheduled = false;
               priv->dropcount++;
+              priv->drop_queue++;
             }
         }
     }
@@ -1448,6 +2136,40 @@ static int rk3576_vicap_start_capture(FAR struct imgdata_s *data,
   priv->fe_count = 0;
   priv->stream_epoch++;
 
+  /* The two measurements the in-place decision is made from start empty, so
+   * the first frame of a stream takes the copy: the interval is not known
+   * until two DMA ends have been seen, and the demosaic cost is not known
+   * until one has been run.  Carrying either across streams would apply one
+   * mode's timing to another.
+   */
+
+  priv->isr_ticks = 0;
+  priv->interval_ticks = 0;
+  priv->debayer_us = 0;
+  priv->inplace_decided = false;
+  priv->inplace_ok = false;
+
+  /* The counts start again with the stream so that the report at the end of
+   * it describes that stream rather than a lifetime total: a mode and a
+   * frame rate belong to the stream, and an average over several of them
+   * describes neither.
+   */
+
+  priv->framecount = 0;
+  priv->dropcount = 0;
+  priv->drop_overrun = 0;
+  priv->drop_nobuf = 0;
+  priv->drop_stale = 0;
+  priv->drop_queue = 0;
+  priv->racecount = 0;
+  priv->frame_us = 0;
+  priv->copy_us = 0;
+  priv->debayer_us_sum = 0;
+  priv->inplace_frames = 0;
+  priv->inplace_us_sum = 0;
+  priv->copy_frames = 0;
+  priv->copy_demosaic_us_sum = 0;
+
   /* The white balance starts again from unity on every stream.
    *
    * The gains are measured from the frames themselves, so they are only ever
@@ -1546,12 +2268,43 @@ static void rk3576_vicap_dump_locked(FAR struct rk3576_vicap_s *priv)
   size_num = rk3576_vicap_getreg(base, RK3576_VICAP_MIPI_SIZE_NUM_ID0(input) +
                                            id * 4u);
 
-  _info("VICAP: frames %" PRIu32 ", drops %" PRIu32 ", errstat 0x%08" PRIx32
-        ", %" PRIu32 " us/frame (%" PRIu32 " us copy), races %" PRIu32 "\n",
-        priv->framecount, priv->dropcount, priv->errstat,
+  _info("VICAP: frames %" PRIu32 ", drops %" PRIu32
+        " (overrun %" PRIu32 ", no buffer %" PRIu32 ", stale %" PRIu32
+        ", queue %" PRIu32 "), errstat 0x%08" PRIx32
+        ", %" PRIu32 " us/frame, races %" PRIu32 "%s\n",
+        priv->framecount, priv->dropcount, priv->drop_overrun,
+        priv->drop_nobuf, priv->drop_stale, priv->drop_queue, priv->errstat,
         priv->framecount > 0u ? priv->frame_us / priv->framecount : 0u,
-        priv->framecount > 0u ? priv->copy_us / priv->framecount : 0u,
-        priv->racecount);
+        priv->racecount,
+        priv->inplace_decided
+            ? (priv->inplace_ok ? ", reading in place" : ", copying")
+            : ", no interval yet");
+
+  /* The two paths timed apart, because the choice between them is made from
+   * these numbers and an average over both says nothing about either.  If
+   * reading in place is not cheaper than copying then the copy is not a cost
+   * to be removed but the thing that makes the read fast, and the choice
+   * above is the wrong way round.
+   */
+
+  {
+    uint32_t interval_us = priv->interval_ticks * USEC_PER_TICK;
+    uint32_t demosaic_us =
+        priv->framecount > 0u ? priv->debayer_us_sum / priv->framecount : 0u;
+    uint32_t inplace_us = priv->inplace_frames > 0u
+                              ? priv->inplace_us_sum / priv->inplace_frames
+                              : 0u;
+    uint32_t copy_us = priv->copy_frames > 0u
+                           ? priv->copy_demosaic_us_sum / priv->copy_frames
+                           : 0u;
+
+    _info("VICAP: interval %" PRIu32 " us, demosaic %" PRIu32
+          " us (in place %" PRIu32 " us over %" PRIu32 ", copied %" PRIu32
+          " us over %" PRIu32 "), copy %" PRIu32 " us\n",
+          interval_us, demosaic_us, inplace_us, priv->inplace_frames,
+          copy_us, priv->copy_frames,
+          priv->framecount > 0u ? priv->copy_us / priv->framecount : 0u);
+  }
 
   /* Both frame sources are printed together on purpose.  A DMA-end count
    * on its own only proves that buffers are filling; it is the interface
@@ -1572,19 +2325,27 @@ static void rk3576_vicap_dump_locked(FAR struct rk3576_vicap_s *priv)
       rk3576_vicap_getreg(base, RK3576_VICAP_MIPI_ID0_CTRL0(input) + id * 8u),
       rk3576_vicap_getreg(base, RK3576_VICAP_MIPI_ID0_CTRL1(input) + id * 8u));
 
-  /* size_num is the hardware's own measurement of the last frame: if its
-   * pixel count does not match the configured width, the picture on the
-   * wire is not the picture this driver set up for, whatever the DMA did.
+  /* size_num is the hardware's own measurement of the last frame, and it is
+   * only meaningful while a frame is being captured.
+   *
+   * This dump runs after the stream has stopped, and by then the block is
+   * idle -- which is the same reason id0_ctrl0 reads back as zero however it
+   * was programmed, and why every hardware field below is worth less than it
+   * looks.  The line field has held at the configured height over runs, but
+   * the payload field has read 800 and 648 on two runs of the same geometry,
+   * so it is reported as read rather than converted into a pixel count that
+   * its behaviour does not support.
    */
 
   _info("VICAP: set_size 0x%08" PRIx32 ", vlw %" PRIu32
-        ", size_num 0x%08" PRIx32 " (pix %" PRIu32 ", line %" PRIu32 ")\n",
+        ", size_num 0x%08" PRIx32 " (line %" PRIu32
+        ", payload %" PRIu32 " as read)\n",
         rk3576_vicap_getreg(base,
                             RK3576_VICAP_MIPI_ID0_SET_SIZE(input) + id * 4u),
         priv->stride, size_num,
-        (size_num >> RK3576_VICAP_SIZE_NUM_PIX_SHIFT) &
-            RK3576_VICAP_SIZE_NUM_FIELD_MASK,
         (size_num >> RK3576_VICAP_SIZE_NUM_LINE_SHIFT) &
+            RK3576_VICAP_SIZE_NUM_FIELD_MASK,
+        (size_num >> RK3576_VICAP_SIZE_NUM_PIX_SHIFT) &
             RK3576_VICAP_SIZE_NUM_FIELD_MASK);
 
   _info("VICAP: frame_num_vc0 0x%08" PRIx32 ", addr0 %p, addr1 %p\n",
