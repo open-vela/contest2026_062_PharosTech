@@ -303,4 +303,121 @@
 
 #define DCPHY_TIME_CON4_ESC_CLK_DIV 0x1f4
 
+/* -----------------------------------------------------------------------
+ * DCPHY GRF (0x26034000): C-PHY/D-PHY mode select and lane status.
+ *
+ * The GRF is a separate APB slave from the PHY itself.  Its registers use
+ * the hiword write-enable scheme: bits [31:16] mask which of the low 16
+ * bits are actually written.
+ *
+ * The master (TX) and slave (RX) lane sets exist simultaneously -- they
+ * are separate pins, separate register banks and separate resets.  There
+ * is no "TX or RX" select bit; the only per-side mode bit picks C-PHY
+ * versus D-PHY.
+ * -----------------------------------------------------------------------
+ */
+
+#define RK3576_DCPHY_GRF_CON0_OFF         0x0000
+#define RK3576_DCPHY_GRF_CON1_OFF         0x0004
+#define RK3576_DCPHY_GRF_STATUS0_OFF      0x0080
+#define RK3576_DCPHY_GRF_STATUS1_OFF      0x0084
+#define RK3576_DCPHY_GRF_STATUS2_OFF      0x0088
+
+#define RK3576_DCPHY_GRF_CON0_M_CPHY_MODE (1u << 0)
+#define RK3576_DCPHY_GRF_CON0_S_CPHY_MODE (1u << 3)
+#define RK3576_DCPHY_GRF_CON0_CLAMP_EN    (1u << 15)
+
+/* Hiword write-enable helper: bits [31:16] mirror the low bits to write. */
+
+#define RK3576_DCPHY_GRF_HWM(bits) ((bits) << 16)
+
+/* GRF_STATUS0: [9] PLL lock counter done, [8] master clock lane stop,
+ * [7:4] slave data lane stop (SD0..SD3), [3:0] master data lane stop.
+ *
+ * There is deliberately NO slave-clock-lane stop bit: the RX clock lane's
+ * state is only observable from the CSI HOST side, in
+ * CSI2HOST_PHY_STATE.phy_stopstateclk (see hardware/rk3576_csi_host.h).
+ */
+
+#define RK3576_DCPHY_GRF_STATUS0_PLL_CNT_DONE     (1u << 9)
+#define RK3576_DCPHY_GRF_STATUS0_M_STOPSTATECLK   (1u << 8)
+#define RK3576_DCPHY_GRF_STATUS0_S_STOPSTATE_MASK (0xfu << 4)
+#define RK3576_DCPHY_GRF_STATUS0_M_STOPSTATE_MASK (0xfu)
+
+/* GRF_STATUS2: [15:12] slave data lane error, SD3..SD0. */
+
+#define RK3576_DCPHY_GRF_STATUS2_S_PHYERR_MASK (0xfu << 12)
+
+/* -----------------------------------------------------------------------
+ * RX (slave) side lane banks.
+ *
+ *   DPHY_SC    0x0B00   slave clock lane
+ *   COMBO_SD0  0x0C00   slave data lane 0
+ *   COMBO_SD1  0x0D00   slave data lane 1
+ *   COMBO_SD2  0x0E00   slave data lane 2
+ *   DPHY_SD3   0x0F00   slave data lane 3 (reduced layout: no ANA_CON6/7)
+ *
+ * Intra-lane offsets used by the RX start-up sequence (TRM 21.6.4.3):
+ *   +0x00 GNR_CON0  ENABLE[0] / PHY_READY[1]
+ *   +0x04 GNR_CON1  T_PHY_READY timeout
+ *   +0x0C ANA_CON1  +0x10 ANA_CON2  +0x14 ANA_CON3  +0x24 ANA_CON7
+ *   +0x30 TIME_CON0 settle    +0x34 TIME_CON1 SOT sync
+ *   +0x40 DESKEW_CON0         +0x50 DESKEW_CON4
+ * -----------------------------------------------------------------------
+ */
+
+#define RK3576_DCPHY_SC_BANK      0x0B00
+
+#define RK3576_DCPHY_SC_GNR_CON0  (RK3576_DCPHY_SC_BANK + 0x00)
+#define RK3576_DCPHY_SC_GNR_CON1  (RK3576_DCPHY_SC_BANK + 0x04)
+#define RK3576_DCPHY_SC_ANA_CON1  (RK3576_DCPHY_SC_BANK + 0x0C)
+#define RK3576_DCPHY_SC_ANA_CON2  (RK3576_DCPHY_SC_BANK + 0x10)
+#define RK3576_DCPHY_SC_ANA_CON3  (RK3576_DCPHY_SC_BANK + 0x14)
+#define RK3576_DCPHY_SC_ANA_CON5  (RK3576_DCPHY_SC_BANK + 0x1C)
+#define RK3576_DCPHY_SC_TIME_CON0 (RK3576_DCPHY_SC_BANK + 0x30)
+
+#define RK3576_DCPHY_SD_STRIDE    0x100
+#define RK3576_DCPHY_SD_BANK(n) \
+  ((n) >= 3 ? 0x0F00 : (0x0C00 + (n)*RK3576_DCPHY_SD_STRIDE))
+
+#define RK3576_DCPHY_SD_GNR_CON0(n)    (RK3576_DCPHY_SD_BANK(n) + 0x00)
+#define RK3576_DCPHY_SD_GNR_CON1(n)    (RK3576_DCPHY_SD_BANK(n) + 0x04)
+#define RK3576_DCPHY_SD_ANA_CON1(n)    (RK3576_DCPHY_SD_BANK(n) + 0x0C)
+#define RK3576_DCPHY_SD_ANA_CON2(n)    (RK3576_DCPHY_SD_BANK(n) + 0x10)
+#define RK3576_DCPHY_SD_ANA_CON3(n)    (RK3576_DCPHY_SD_BANK(n) + 0x14)
+#define RK3576_DCPHY_SD_ANA_CON7(n)    (RK3576_DCPHY_SD_BANK(n) + 0x24)
+#define RK3576_DCPHY_SD_TIME_CON0(n)   (RK3576_DCPHY_SD_BANK(n) + 0x30)
+#define RK3576_DCPHY_SD_TIME_CON1(n)   (RK3576_DCPHY_SD_BANK(n) + 0x34)
+#define RK3576_DCPHY_SD_DESKEW_CON0(n) (RK3576_DCPHY_SD_BANK(n) + 0x40)
+#define RK3576_DCPHY_SD_DESKEW_CON4(n) (RK3576_DCPHY_SD_BANK(n) + 0x50)
+
+/* Rate-independent RX start-up values (TRM 21.6.4.3 "Case 3").  The
+ * rate-dependent ones (data-lane settle, ANA_CON2 delay select, deskew)
+ * are computed in the driver.
+ *
+ * GNR_CON1 is the T_PHY_READY handshake timeout.  The TRM's Case 3 gives
+ * 0x12c0 for this SoC; the vendor Linux driver programs 0x1450 for the
+ * whole Samsung-DCPHY family.  The TRM value is used here because it is
+ * the RK3576-specific one; the difference is only the handshake timeout,
+ * and the wait happens inside a 200 us window either way.
+ */
+
+#define RK3576_DCPHY_RX_SC_ANA_CON1_VAL    0x8000u
+#define RK3576_DCPHY_RX_SC_ANA_CON2_VAL    0x0002u
+#define RK3576_DCPHY_RX_SC_ANA_CON3_VAL    0x0600u
+#define RK3576_DCPHY_RX_SD_ANA_CON1_VAL    0x8000u
+#define RK3576_DCPHY_RX_SD_ANA_CON2_TERM   0x0002u
+#define RK3576_DCPHY_RX_SD_ANA_CON3_VAL    0x0600u
+#define RK3576_DCPHY_RX_SD_ANA_CON7_VAL    0x0040u
+#define RK3576_DCPHY_RX_GNR_CON1_VAL       0x12c0u
+#define RK3576_DCPHY_RX_SC_TIME_CON0_VAL   0x0301u
+#define RK3576_DCPHY_RX_SD_TIME_CON1_VAL   0x0003u
+#define RK3576_DCPHY_RX_SD_DESKEW_CON0_VAL 0x0001u
+#define RK3576_DCPHY_RX_SD_DESKEW_CON4_VAL 0x081au
+
+/* Deskew calibration is only programmed at and above this lane rate; below
+ * it the calibration is not needed and the registers stay at reset. */
+
+#define RK3576_DCPHY_RX_DESKEW_MIN_MBPS 1500u
+
 #endif /* __ARCH_ARM64_SRC_RK3576_HARDWARE_RK3576_MIPI_DCPHY_H */

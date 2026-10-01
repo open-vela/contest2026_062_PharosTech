@@ -131,3 +131,11 @@ endif
 ifeq ($(CONFIG_RK3576_VOP),y)
 CHIP_CSRCS += rk3576_vop.c
 endif
+
+ifeq ($(CONFIG_RK3576_MIPI_CSI),y)
+CHIP_CSRCS += rk3576_csi_host.c
+endif
+
+ifeq ($(CONFIG_RK3576_VICAP),y)
+CHIP_CSRCS += rk3576_vicap.c
+endif

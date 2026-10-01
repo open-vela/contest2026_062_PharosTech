@@ -379,6 +379,65 @@ config RK3576_VOP
 		callback for that purpose, and clients such as LVGL's fbdev backend
 		issue it after every refresh.
 
+config RK3576_MIPI_CSI
+	bool "MIPI CSI-2 receive path (DCPHY RX + CSI HOST)"
+	default n
+	depends on RK3576_MIPI_DCPHY
+	---help---
+		Enable the RK3576 MIPI CSI-2 receive path: the DCPHY's slave
+		(RX) lanes plus the CSI HOST protocol parser(s).
+
+		There are five CSI HOSTs but only three RX PHYs, so HOST0 is fed
+		by the DCPHY slave lanes while HOST1+HOST2 share CSIDPHY0 and
+		HOST3+HOST4 share CSIDPHY1.  Only the DCPHY-fed HOST0 path is
+		implemented so far; the CSIDPHY-fed hosts would need a separate
+		RX PHY driver.
+
+		The CSI HOST itself is a protocol-layer block only: it splits
+		packets, checks ECC/CRC, merges the data lanes and re-emits the
+		payload as a parallel pixel stream with sync signals.  It does
+		not demosaic, and it does not filter by virtual channel or data
+		type -- that is VICAP's job (RK3576_VICAP).
+
+		The DCPHY is shared with the DSI host, which drives its master
+		(TX) lanes.  The two sides have separate resets, separate
+		register banks and a PLL that belongs to the TX side, so they can
+		run concurrently; this driver only ever touches the RX side and
+		the PLL-independent part of the shared BIAS block.
+
+config RK3576_VICAP
+	bool "Video Capture (VICAP)"
+	default n
+	depends on RK3576_MIPI_CSI
+	depends on RK3576_DMA_ALLOC
+	select DRIVERS_VIDEO
+	select VIDEO_STREAM
+	select SCHED_WORKQUEUE
+	select SCHED_LPWORK
+	---help---
+		Enable the RK3576 Video Capture controller (VICAP @ 0x27c10000),
+		which takes the parallel pixel stream produced by a CSI HOST (or
+		the DVP port), filters it by virtual channel and data type, crops
+		it, and DMAs it to DDR.
+
+		This driver implements the MIPI input path for image capture and
+		registers the result with the NuttX capture framework as
+		/dev/videoN, implementing the SoC side of the V4L2 capture
+		interface (struct imgdata_s).  An image sensor driver (struct
+		imgsensor_s) is required as well; the framework binds at most one
+		available sensor per capture device.
+
+		Frames are written with the VICAP MMU bypassed, so the capture
+		buffers must be physically contiguous and below 4GB -- hence
+		depending on the RK3576 DMA heap allocator.
+
+		The VICAP input has no RAW pixel format in the capture
+		framework's format table, so the RAW sensor data is demosaiced on
+		the CPU inside this driver and the framework is presented with the
+		finished NV12/YUV420 frame.  That keeps the frame buffer written by
+		DMA and the buffer handed to the framework separate, and it avoids
+		having to extend the shared format tables.
+
 endmenu # Rockchip RK3576 Peripheral Selection
 
 if RK3576_SARADC

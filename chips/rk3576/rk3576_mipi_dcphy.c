@@ -58,6 +58,7 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/param.h>
 
 #include <nuttx/arch.h>
 #include <nuttx/clk/clk.h>
@@ -76,9 +77,15 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* M_RESETN (TX PLL + TX lanes) is PMU1CRU_SOFTRST_CON01[3]. */
+/* M_RESETN (TX PLL + TX lanes) is PMU1CRU_SOFTRST_CON01[3]; S_RESETN (the
+ * slave RX clock and data lane blocks) is the next bit up, [4].  Both are
+ * "When high, reset": writing 1 asserts the reset, writing 0 releases it.
+ * The two sides are independent, so neither the DSI nor the CSI driver has
+ * to know the other exists.
+ */
 
 #define RK3576_DCPHY_M_RESETN_BIT (3)
+#define RK3576_DCPHY_S_RESETN_BIT (4)
 
 /* Poll timeout for PLL lock / PHY ready. */
 
@@ -136,15 +143,20 @@ struct rk3576_dcphy_s
 {
   mutex_t lock;                  /* Serializes PHY state transitions */
   uintptr_t base;                /* DCPHY APB base (0x2B020000) */
+  uintptr_t grf;                 /* DCPHY GRF base (0x26034000) */
   uintptr_t pmu1cru;             /* PMU1CRU base (0x27220000) */
   struct clk_s *pclk_phy;        /* pclk_mipi_dcphy */
   struct clk_s *pclk_grf;        /* pclk_dcphy_grf */
   struct rk3576_dcphy_pll_s pll; /* Resolved TX PLL parameters */
   uint32_t lane_mbps;            /* Lane rate the timing table was built for */
   bool initialized;              /* BIAS/PLL configured once */
-  bool powered;                  /* Lanes enabled */
-  uint8_t lanes;                 /* Enabled data lanes */
+  bool powered;                  /* TX lanes enabled */
+  uint8_t lanes;                 /* Enabled TX data lanes */
   bool dphy;                     /* true: D-PHY, false: C-PHY */
+  bool bias_ready;               /* Shared BIAS block programmed */
+  bool rx_powered;               /* RX (slave) lanes enabled */
+  uint8_t rx_lanes;              /* Enabled RX data lanes */
+  uint32_t rx_lane_mbps;         /* Rate the RX settle value was built for */
 };
 
 /****************************************************************************
@@ -677,6 +689,194 @@ static int rk3576_dcphy_wait_lane_ready(uintptr_t base, uint32_t gnr_con0)
 }
 
 /****************************************************************************
+ * Name: rk3576_dcphy_assert_s_reset / deassert_s_reset
+ *
+ * Description:
+ *   Assert/deassert S_RESETN (PMU1CRU_SOFTRST_CON01[4]), the reset of the
+ *   slave (RX) clock and data lane blocks.  Same polarity as M_RESETN:
+ *   "when high, reset".  The reset is held while the lane banks are being
+ *   programmed and released once every lane reports PHY_READY, which is
+ *   the order the TRM's RX sequence prescribes (unlike the TX sequence,
+ *   which releases at the very end of a different set of steps).
+ ****************************************************************************/
+
+static void rk3576_dcphy_assert_s_reset(struct rk3576_dcphy_s *priv)
+{
+  putreg32((1u << (16 + RK3576_DCPHY_S_RESETN_BIT)) |
+               (1u << RK3576_DCPHY_S_RESETN_BIT),
+           priv->pmu1cru + RK3576_PMU1CRU_SOFTRST_CON(1));
+}
+
+static void rk3576_dcphy_deassert_s_reset(struct rk3576_dcphy_s *priv)
+{
+  putreg32((1u << (16 + RK3576_DCPHY_S_RESETN_BIT)) |
+               (0u << RK3576_DCPHY_S_RESETN_BIT),
+           priv->pmu1cru + RK3576_PMU1CRU_SOFTRST_CON(1));
+}
+
+/****************************************************************************
+ * Name: rk3576_dcphy_ensure_bias
+ *
+ * Description:
+ *   Enable the PHY APB clocks and program the shared BIAS block.  Both
+ *   directions need the BIAS block, and its start-up values are the same
+ *   for TX and RX, so this is written once and remembered.
+ *
+ *   Must be called with priv->lock held.
+ *
+ * Input Parameters:
+ *   priv - PHY state
+ *
+ * Returned Value:
+ *   OK on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+static int rk3576_dcphy_ensure_bias(struct rk3576_dcphy_s *priv)
+{
+  int ret;
+
+  priv->base = RK3576_DCPHY_ADDR;
+  priv->grf = RK3576_DCPHY_GRF_ADDR;
+  priv->pmu1cru = RK3576_PMU1_CRU_ADDR;
+
+  if (priv->pclk_phy == NULL)
+    {
+      priv->pclk_phy = clk_get("pclk_mipi_dcphy");
+      if (priv->pclk_phy == NULL)
+        {
+          gerr("ERROR: DCPHY failed to get pclk_mipi_dcphy\n");
+          return -ENODEV;
+        }
+
+      ret = clk_enable(priv->pclk_phy);
+      if (ret < 0)
+        {
+          gerr("ERROR: DCPHY failed to enable pclk_mipi_dcphy: %d\n", ret);
+          priv->pclk_phy = NULL;
+          return ret;
+        }
+    }
+
+  if (priv->pclk_grf == NULL)
+    {
+      priv->pclk_grf = clk_get("pclk_dcphy_grf");
+      if (priv->pclk_grf == NULL)
+        {
+          gerr("ERROR: DCPHY failed to get pclk_dcphy_grf\n");
+          return -ENODEV;
+        }
+
+      ret = clk_enable(priv->pclk_grf);
+      if (ret < 0)
+        {
+          gerr("ERROR: DCPHY failed to enable pclk_dcphy_grf: %d\n", ret);
+          priv->pclk_grf = NULL;
+          return ret;
+        }
+    }
+
+  if (!priv->bias_ready)
+    {
+      rk3576_dcphy_configure_bias(priv);
+      priv->bias_ready = true;
+    }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_dcphy_rx_settle_value / rk3576_dcphy_rx_dlysel
+ *
+ * Description:
+ *   Resolve the two rate-dependent RX lane parameters.
+ *
+ *   The data-lane T_HS_SETTLE field (SD*_TIME_CON0) is a counter whose
+ *   clock is derived from the received serial clock; bit 8 of the value
+ *   picks the divider (serial clock / 2 below 1.5 Gbps, / 16 at and above
+ *   it) and bits [7:0] are the count.  The table below encodes both.
+ *
+ *   It cross-checks against the TRM rather than being guesswork: the
+ *   documented 2.5 Gbps RX case programs SD*_TIME_CON0 = 0x00d, and 0x00d
+ *   is exactly the entry selected here for 2500 Mbps.  The clock lane's
+ *   settle register is fixed at 0x301 on both sides (the vendor driver
+ *   writes the same constant with the comment "clk settle fix").
+ *
+ *   ANA_CON2 bits [9:8] are a receiver delay select that follows the same
+ *   rate bands; the low bits are a termination code that does not change
+ *   with rate.
+ *
+ ****************************************************************************/
+
+struct rk3576_dcphy_rx_settle_s
+{
+  uint32_t max_mbps;
+  uint16_t value;
+};
+
+static const struct rk3576_dcphy_rx_settle_s g_rk3576_dcphy_rx_settle[] = {
+  { 80, 0x105 },   { 100, 0x106 },  { 120, 0x107 },  { 140, 0x108 },
+  { 160, 0x109 },  { 180, 0x10a },  { 200, 0x10b },  { 220, 0x10c },
+  { 240, 0x10d },  { 270, 0x10e },  { 290, 0x10f },  { 310, 0x110 },
+  { 330, 0x111 },  { 350, 0x112 },  { 370, 0x113 },  { 390, 0x114 },
+  { 410, 0x115 },  { 430, 0x116 },  { 450, 0x117 },  { 470, 0x118 },
+  { 490, 0x119 },  { 510, 0x11a },  { 540, 0x11b },  { 560, 0x11c },
+  { 580, 0x11d },  { 600, 0x11e },  { 620, 0x11f },  { 640, 0x120 },
+  { 660, 0x121 },  { 680, 0x122 },  { 700, 0x123 },  { 720, 0x124 },
+  { 740, 0x125 },  { 760, 0x126 },  { 790, 0x127 },  { 810, 0x128 },
+  { 830, 0x129 },  { 850, 0x12a },  { 870, 0x12b },  { 890, 0x12c },
+  { 910, 0x12d },  { 930, 0x12e },  { 950, 0x12f },  { 970, 0x130 },
+  { 990, 0x131 },  { 1010, 0x132 }, { 1030, 0x133 }, { 1060, 0x134 },
+  { 1080, 0x135 }, { 1100, 0x136 }, { 1120, 0x137 }, { 1140, 0x138 },
+  { 1160, 0x139 }, { 1180, 0x13a }, { 1200, 0x13b }, { 1220, 0x13c },
+  { 1240, 0x13d }, { 1260, 0x13e }, { 1280, 0x13f }, { 1310, 0x140 },
+  { 1330, 0x141 }, { 1350, 0x142 }, { 1370, 0x143 }, { 1390, 0x144 },
+  { 1410, 0x145 }, { 1430, 0x146 }, { 1450, 0x147 }, { 1470, 0x148 },
+  { 1490, 0x149 }, { 1580, 0x007 }, { 1740, 0x008 }, { 1910, 0x009 },
+  { 2070, 0x00a }, { 2240, 0x00b }, { 2410, 0x00c }, { 2570, 0x00d },
+  { 2740, 0x00e }, { 2910, 0x00f }, { 3070, 0x010 }, { 3240, 0x011 },
+  { 3410, 0x012 }, { 3570, 0x013 }, { 3740, 0x014 }, { 3890, 0x015 },
+  { 4070, 0x016 }, { 4240, 0x017 }, { 4400, 0x018 }, { 4500, 0x019 },
+};
+
+static uint16_t rk3576_dcphy_rx_settle_value(uint32_t lane_mbps)
+{
+  size_t i;
+
+  for (i = 0; i < nitems(g_rk3576_dcphy_rx_settle); i++)
+    {
+      if (g_rk3576_dcphy_rx_settle[i].max_mbps >= lane_mbps)
+        {
+          return g_rk3576_dcphy_rx_settle[i].value;
+        }
+    }
+
+  return g_rk3576_dcphy_rx_settle[nitems(g_rk3576_dcphy_rx_settle) - 1].value;
+}
+
+static uint32_t rk3576_dcphy_rx_dlysel(uint32_t lane_mbps)
+{
+  if (lane_mbps < 1500)
+    {
+      return 0;
+    }
+  else if (lane_mbps < 2000)
+    {
+      return 3u << 8;
+    }
+  else if (lane_mbps < 3000)
+    {
+      return 2u << 8;
+    }
+  else if (lane_mbps < 4000)
+    {
+      return 1u << 8;
+    }
+
+  return 0;
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -705,61 +905,26 @@ int rk3576_dcphy_init(void)
       return -EBUSY;
     }
 
-  priv->base = RK3576_DCPHY_ADDR;
-  priv->pmu1cru = RK3576_PMU1_CRU_ADDR;
+  /* Bring up the APB clocks and the shared BIAS block.  Both directions
+   * need this and both write the same values, so it is shared and
+   * idempotent -- the CSI path may well have run it first.
+   */
 
-  /* Enable the PHY APB and GRF clocks. */
-
-  priv->pclk_phy = clk_get("pclk_mipi_dcphy");
-  if (priv->pclk_phy == NULL)
-    {
-      gerr("ERROR: DCPHY failed to get pclk_mipi_dcphy\n");
-      ret = -ENODEV;
-      goto errout_unlock;
-    }
-
-  priv->pclk_grf = clk_get("pclk_dcphy_grf");
-  if (priv->pclk_grf == NULL)
-    {
-      gerr("ERROR: DCPHY failed to get pclk_dcphy_grf\n");
-      ret = -ENODEV;
-      goto errout_unlock;
-    }
-
-  ret = clk_enable(priv->pclk_phy);
+  ret = rk3576_dcphy_ensure_bias(priv);
   if (ret < 0)
     {
-      gerr("ERROR: DCPHY failed to enable pclk_mipi_dcphy: %d\n", ret);
-      goto errout_unlock;
-    }
-
-  ret = clk_enable(priv->pclk_grf);
-  if (ret < 0)
-    {
-      gerr("ERROR: DCPHY failed to enable pclk_dcphy_grf: %d\n", ret);
-      clk_disable(priv->pclk_phy);
-      goto errout_unlock;
+      nxmutex_unlock(&priv->lock);
+      return ret;
     }
 
   /* Assert M_RESETN while programming (TRM 21.6.4.1 step 1). */
 
   rk3576_dcphy_assert_reset(priv);
 
-  /* Configure the shared BIAS block (step 2).  The PLL and lane timing are
-   * programmed at power-on time once the data rate is known (see
-   * rk3576_dcphy_power_on()).
-   */
-
-  rk3576_dcphy_configure_bias(priv);
-
   priv->initialized = true;
 
   nxmutex_unlock(&priv->lock);
   return OK;
-
-errout_unlock:
-  nxmutex_unlock(&priv->lock);
-  return ret;
 }
 
 /****************************************************************************
@@ -949,6 +1114,308 @@ bool rk3576_dcphy_is_ready(void)
 
   nxmutex_unlock(&priv->lock);
   return ready;
+}
+
+/****************************************************************************
+ * Name: rk3576_dcphy_rx_power_on
+ *
+ * Description:
+ *   RX (slave lane) start-up, following the TRM's 21.6.4.3 "Case 3" RX
+ *   sequence.  Steps are numbered as the TRM numbers them.
+ *
+ ****************************************************************************/
+
+int rk3576_dcphy_rx_power_on(uint8_t lanes, uint32_t lane_mbps)
+{
+  struct rk3576_dcphy_s *priv = &g_dcphy;
+  uintptr_t base;
+  uint16_t settle;
+  uint32_t dlysel;
+  unsigned int lane;
+  int ret;
+
+  if (lanes < 1 || lanes > 4)
+    {
+      return -EINVAL;
+    }
+
+  ret = nxmutex_lock(&priv->lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = rk3576_dcphy_ensure_bias(priv);
+  if (ret < 0)
+    {
+      goto errout_unlock;
+    }
+
+  base = priv->base;
+
+  /* D-PHY mode is the reset value, so this only matters if something else
+   * left the slave side in C-PHY mode.  The GRF needs the hiword write
+   * enable.
+   */
+
+  putreg32(RK3576_DCPHY_GRF_HWM(RK3576_DCPHY_GRF_CON0_S_CPHY_MODE),
+           priv->grf + RK3576_DCPHY_GRF_CON0_OFF);
+
+  /* Step 1: hold the slave lanes in reset while programming. */
+
+  rk3576_dcphy_assert_s_reset(priv);
+
+  /* Step 2: shared BIAS block.  Written again here to follow the TRM
+   * sequence literally; the values are the same as the TX side's, so the
+   * repeat is harmless.
+   */
+
+  rk3576_dcphy_configure_bias(priv);
+
+  /* Steps 3-7: analog, readiness and timing parameters.  The clock lane
+   * first, then every enabled data lane.
+   */
+
+  settle = rk3576_dcphy_rx_settle_value(lane_mbps);
+  dlysel = rk3576_dcphy_rx_dlysel(lane_mbps);
+
+  rk3576_dcphy_putreg(base, RK3576_DCPHY_SC_GNR_CON1,
+                      RK3576_DCPHY_RX_GNR_CON1_VAL);
+  rk3576_dcphy_putreg(base, RK3576_DCPHY_SC_ANA_CON1,
+                      RK3576_DCPHY_RX_SC_ANA_CON1_VAL);
+  rk3576_dcphy_putreg(base, RK3576_DCPHY_SC_ANA_CON2,
+                      RK3576_DCPHY_RX_SC_ANA_CON2_VAL);
+  rk3576_dcphy_putreg(base, RK3576_DCPHY_SC_ANA_CON3,
+                      RK3576_DCPHY_RX_SC_ANA_CON3_VAL);
+  rk3576_dcphy_putreg(base, RK3576_DCPHY_SC_TIME_CON0,
+                      RK3576_DCPHY_RX_SC_TIME_CON0_VAL);
+
+  for (lane = 0; lane < lanes; lane++)
+    {
+      rk3576_dcphy_putreg(base, RK3576_DCPHY_SD_GNR_CON1(lane),
+                          RK3576_DCPHY_RX_GNR_CON1_VAL);
+      rk3576_dcphy_putreg(base, RK3576_DCPHY_SD_ANA_CON1(lane),
+                          RK3576_DCPHY_RX_SD_ANA_CON1_VAL);
+      rk3576_dcphy_putreg(base, RK3576_DCPHY_SD_ANA_CON2(lane),
+                          dlysel | RK3576_DCPHY_RX_SD_ANA_CON2_TERM);
+      rk3576_dcphy_putreg(base, RK3576_DCPHY_SD_ANA_CON3(lane),
+                          RK3576_DCPHY_RX_SD_ANA_CON3_VAL);
+      rk3576_dcphy_putreg(base, RK3576_DCPHY_SD_TIME_CON0(lane), settle);
+      rk3576_dcphy_putreg(base, RK3576_DCPHY_SD_TIME_CON1(lane),
+                          RK3576_DCPHY_RX_SD_TIME_CON1_VAL);
+
+      /* ANA_CON7 and the deskew pair exist only on the COMBO data lane
+       * banks (SD0..SD2); SD3 has a reduced layout.  Deskew calibration is
+       * only needed from 1.5 Gbps up, so below that the registers are left
+       * at reset.
+       */
+
+      if (lane < 3)
+        {
+          rk3576_dcphy_putreg(base, RK3576_DCPHY_SD_ANA_CON7(lane),
+                              RK3576_DCPHY_RX_SD_ANA_CON7_VAL);
+
+          if (lane_mbps >= RK3576_DCPHY_RX_DESKEW_MIN_MBPS)
+            {
+              rk3576_dcphy_putreg(base, RK3576_DCPHY_SD_DESKEW_CON0(lane),
+                                  RK3576_DCPHY_RX_SD_DESKEW_CON0_VAL);
+              rk3576_dcphy_putreg(base, RK3576_DCPHY_SD_DESKEW_CON4(lane),
+                                  RK3576_DCPHY_RX_SD_DESKEW_CON4_VAL);
+            }
+        }
+    }
+
+  /* Step 8: enable the clock lane and the data lanes. */
+
+  rk3576_dcphy_putreg(base, RK3576_DCPHY_SC_GNR_CON0, DCPHY_GNR_CON0_ENABLE);
+
+  for (lane = 0; lane < lanes; lane++)
+    {
+      rk3576_dcphy_putreg(base, RK3576_DCPHY_SD_GNR_CON0(lane),
+                          DCPHY_GNR_CON0_ENABLE);
+    }
+
+  /* Step 9: wait for PHY_READY on the clock lane and on every data lane.
+   * This is the step that proves the lanes really powered up; without it a
+   * mis-powered PHY would fail later, inside the CSI HOST, where the cause
+   * is much harder to see.
+   */
+
+  ret = rk3576_dcphy_wait_lane_ready(base, RK3576_DCPHY_SC_GNR_CON0);
+  if (ret < 0)
+    {
+      _err("DCPHY: RX clock lane PHY_READY timeout\n");
+      goto errout_unlock;
+    }
+
+  for (lane = 0; lane < lanes; lane++)
+    {
+      ret = rk3576_dcphy_wait_lane_ready(base, RK3576_DCPHY_SD_GNR_CON0(lane));
+      if (ret < 0)
+        {
+          _err("DCPHY: RX data lane %u PHY_READY timeout\n", lane);
+          goto errout_unlock;
+        }
+    }
+
+  /* Step 10: release S_RESETN.  The pads then settle into LP-11, which is
+   * what the CSI HOST reports as the stop state.
+   */
+
+  rk3576_dcphy_deassert_s_reset(priv);
+
+  priv->rx_lanes = lanes;
+  priv->rx_lane_mbps = lane_mbps;
+  priv->rx_powered = true;
+
+  nxmutex_unlock(&priv->lock);
+  return OK;
+
+errout_unlock:
+  nxmutex_unlock(&priv->lock);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: rk3576_dcphy_rx_power_off
+ ****************************************************************************/
+
+int rk3576_dcphy_rx_power_off(void)
+{
+  struct rk3576_dcphy_s *priv = &g_dcphy;
+  uintptr_t base;
+  unsigned int lane;
+  int ret;
+
+  ret = nxmutex_lock(&priv->lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (!priv->rx_powered)
+    {
+      nxmutex_unlock(&priv->lock);
+      return OK;
+    }
+
+  base = priv->base;
+
+  /* Hold the slave lanes in reset, then disable the data lanes and the
+   * clock lane.  The BIAS block and the APB clocks are deliberately left
+   * alone: the DSI side may still be running on them.
+   */
+
+  rk3576_dcphy_assert_s_reset(priv);
+
+  for (lane = 0; lane < priv->rx_lanes; lane++)
+    {
+      rk3576_dcphy_putreg(base, RK3576_DCPHY_SD_GNR_CON0(lane), 0x0000);
+    }
+
+  rk3576_dcphy_putreg(base, RK3576_DCPHY_SC_GNR_CON0, 0x0000);
+
+  priv->rx_powered = false;
+  priv->rx_lanes = 0;
+
+  nxmutex_unlock(&priv->lock);
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_dcphy_rx_is_ready
+ ****************************************************************************/
+
+bool rk3576_dcphy_rx_is_ready(uint8_t lanes)
+{
+  struct rk3576_dcphy_s *priv = &g_dcphy;
+  unsigned int lane;
+  bool ready = true;
+  int ret;
+
+  if (lanes < 1 || lanes > 4)
+    {
+      return false;
+    }
+
+  ret = nxmutex_lock(&priv->lock);
+  if (ret < 0)
+    {
+      return false;
+    }
+
+  if (!priv->rx_powered || priv->rx_lanes < lanes)
+    {
+      ready = false;
+      goto out;
+    }
+
+  if ((rk3576_dcphy_getreg(priv->base, RK3576_DCPHY_SC_GNR_CON0) &
+       DCPHY_GNR_CON0_PHY_READY) == 0)
+    {
+      ready = false;
+      goto out;
+    }
+
+  for (lane = 0; lane < lanes; lane++)
+    {
+      if ((rk3576_dcphy_getreg(priv->base, RK3576_DCPHY_SD_GNR_CON0(lane)) &
+           DCPHY_GNR_CON0_PHY_READY) == 0)
+        {
+          ready = false;
+          break;
+        }
+    }
+
+out:
+  nxmutex_unlock(&priv->lock);
+  return ready;
+}
+
+/****************************************************************************
+ * Name: rk3576_dcphy_rx_read_grf_status0 / _read_grf_status2
+ ****************************************************************************/
+
+uint32_t rk3576_dcphy_rx_read_grf_status0(void)
+{
+  struct rk3576_dcphy_s *priv = &g_dcphy;
+  uint32_t value = 0;
+  int ret;
+
+  ret = nxmutex_lock(&priv->lock);
+  if (ret < 0)
+    {
+      return 0;
+    }
+
+  if (priv->grf != 0)
+    {
+      value = rk3576_dcphy_getreg(priv->grf, RK3576_DCPHY_GRF_STATUS0_OFF);
+    }
+
+  nxmutex_unlock(&priv->lock);
+  return value;
+}
+
+uint32_t rk3576_dcphy_rx_read_grf_status2(void)
+{
+  struct rk3576_dcphy_s *priv = &g_dcphy;
+  uint32_t value = 0;
+  int ret;
+
+  ret = nxmutex_lock(&priv->lock);
+  if (ret < 0)
+    {
+      return 0;
+    }
+
+  if (priv->grf != 0)
+    {
+      value = rk3576_dcphy_getreg(priv->grf, RK3576_DCPHY_GRF_STATUS2_OFF);
+    }
+
+  nxmutex_unlock(&priv->lock);
+  return value;
 }
 
 #endif /* CONFIG_RK3576_MIPI_DCPHY */

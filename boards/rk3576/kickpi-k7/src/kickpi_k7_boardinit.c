@@ -561,6 +561,24 @@ void board_late_initialize(void)
   }
 #endif
 
+#ifdef CONFIG_KICKPI_K7_CAMERA
+  /* Bring up the MIPI CSI camera on CSI0.  This is a capture path that
+   * writes frames to DDR and shares no video port with the VOP, so it is
+   * independent of whichever display output is selected.  A failure only
+   * logs: a missing or mis-seated camera module must not stop the board
+   * from booting.
+   */
+
+  {
+    int ret = kickpi_k7_camera_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: kickpi_k7_camera_initialize failed: %d\n",
+               ret);
+      }
+  }
+#endif /* CONFIG_KICKPI_K7_CAMERA */
+
 #ifdef CONFIG_RK3576_RPTUN
   /* Bring up the AMP control transport to the Linux compute domain.
    * openvela remains the product owner; Linux provides NPU, ISP and other

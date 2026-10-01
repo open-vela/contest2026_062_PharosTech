@@ -162,5 +162,26 @@ int kickpi_k7_mipi_dsi_initialize(void);
 int kickpi_k7_hdmi_initialize(void);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_CAMERA
+/****************************************************************************
+ * Name: kickpi_k7_camera_initialize
+ *
+ * Description:
+ *   Bring up the on-board OV5647 camera module on the CSI0 connector:
+ *   gate the module on through its one control GPIO, mux and start the
+ *   I2C4 control bus, bind the sensor driver, bring up the CSI HOST and
+ *   VICAP capture path, and register /dev/video0.
+ *
+ *   Requires the clock tree (rk3576_clk_tree_initialize()) to have run,
+ *   which board_late_initialize() does first.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int kickpi_k7_camera_initialize(void);
+#endif
+
 #endif /* __ASSEMBLY__ */
 #endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */
