@@ -117,4 +117,15 @@ if(CONFIG_RK3576_VICAP)
   list(APPEND SRCS rk3576_vicap.c)
 endif()
 
+if(CONFIG_RK3576_VEPU)
+  list(APPEND SRCS vepu/rk3576_vepu.c)
+  list(APPEND SRCS vepu/vepu510_regs.c)
+  list(APPEND SRCS vepu/vepu510_tables.c)
+  list(APPEND SRCS vepu/h264_syntax.c)
+endif()
+
+if(CONFIG_RK3576_VEPU_CODEC)
+  list(APPEND SRCS vepu/rk3576_vepu_codec.c)
+endif()
+
 target_sources(arch PRIVATE ${SRCS})

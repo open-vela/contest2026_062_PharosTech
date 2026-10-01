@@ -121,6 +121,19 @@
 
 #define RK3576_VOP_ADDR 0x27D00000 /* VOP (VO0 domain, 64KB) */
 
+/* Video encoder (VEPU510) -- H.264/H.265 and JPEG, in the VPU power
+ * cluster next to RGA (0x27920000), VDPP (0x27960000) and RKVDEC
+ * (0x27B00000).
+ *
+ * VEPU0 and VEPU1 are two instances of the same IP in separate power
+ * domains (PD_VEPU0 / PD_VEPU1).  This tree drives VEPU0 only.
+ */
+
+#define RK3576_VEPU0_ADDR 0x27A00000 /* VEPU510 instance 0 (64KB) */
+#define RK3576_VEPU1_ADDR 0x27A10000 /* VEPU510 instance 1 (64KB) */
+
+#define RK3576_VEPU_SIZE  0x00010000
+
 /* MIPI DSI host controller + MIPI D-PHY (DCPHY) */
 
 #define RK3576_DSIHOST_ADDR   0x27D80000 /* DSI host controller (DSI2.0) */
