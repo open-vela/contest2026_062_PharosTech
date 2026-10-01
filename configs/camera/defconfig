@@ -198,6 +198,13 @@ CONFIG_NET_IPv4=y
 CONFIG_NET_IPv6=y
 CONFIG_NET_SOCKOPTS=y
 CONFIG_NET_TCP=y
+
+# Connections have to be able to wait for accept(), because camenc calls it
+# between frames rather than blocking on it: see camenc_ws.c, which refuses
+# to build without this.  Without it a connection arriving while the encoder
+# is busy is dropped, which looks like the network rather than the program.
+CONFIG_NET_TCPBACKLOG=y
+
 CONFIG_NET_UDP=y
 CONFIG_TLS_TASK_NELEM=4
 CONFIG_PTHREAD_MUTEX_TYPES=y
@@ -265,6 +272,11 @@ CONFIG_RK3576_VEPU=y
 CONFIG_RK3576_VEPU_SELFTEST=y
 CONFIG_RK3576_VEPU_CODEC=y
 CONFIG_RK3576_VEPU_CODEC_SELFTEST=y
+
+# Camera to H.264 to fragmented MP4, in one command, to a file or to a
+# browser over WebSocket.  Lives in app/camenc and is reached through
+# apps/system/camenc.
+CONFIG_SYSTEM_CAMENC=y
 
 CONFIG_DRIVERS_VIDEO=y
 CONFIG_VIDEO_STREAM=y
