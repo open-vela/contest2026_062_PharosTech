@@ -52,6 +52,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/param.h>
 #include <sys/types.h>
 
 #include <nuttx/arch.h>
@@ -203,23 +204,148 @@ static void rk3576_vepu_assert_resets(void)
 }
 
 /****************************************************************************
- * Name: rk3576_vepu_enable_clocks
+ * Name: rk3576_vepu_select_source
  *
  * Description:
- *   Look up and enable the VEPU0 clocks.  clk_enable() walks the parent
- *   chain, so enabling a leaf also opens the root gates it hangs from; the
- *   bus-interface gates are enabled explicitly because they are not in any
- *   parent chain that the leaves traverse.
+ *   Point a selector at the source that runs its clock closest to the
+ *   target without going over, and program the divider to match.
  *
- *   All of these gates reset to 0, i.e. enabled, so out of reset this is
- *   bookkeeping rather than a fix.  It is still done so the clock tree's
- *   accounting matches the hardware and nothing else can gate VEPU0 off
- *   behind the driver's back.
+ *   Both selectors reset to a source this tree does not model -- the core
+ *   selector to SPLL, and SPLL's rate reads back as zero because nothing
+ *   describes it.  A clock that cannot be resolved cannot be divided to a
+ *   known frequency either, so out of reset the encoder runs at whatever
+ *   the bootloader left SPLL at, which is neither reported nor chosen.
+ *
+ *   Only the two general-purpose PLLs are considered.  SPLL and BPLL are
+ *   left out because they are not modelled and so cannot be measured, and
+ *   LPLL is left out despite being modelled: it is the CPU's PLL, and
+ *   pointing a peripheral at it is the hazard spelled out at length in
+ *   rk3576_clk_register_vop().  The candidates are measured rather than
+ *   assumed, because the PLL rates belong to the bootloader and are read
+ *   back from the PLL registers at run time.
+ *
+ *   A tie goes to the earlier candidate, which is GPLL -- the source the
+ *   CPU and the AXI root already run on, and therefore the one that is
+ *   known to be running.
+ *
+ * Input Parameters:
+ *   mux    - the selector to point at the chosen source
+ *   clk    - the clock whose rate is wanted, a descendant of the mux
+ *   target - the rate wanted
+ *
+ * Returned Value:
+ *   the rate the clock ends up at, or 0 if no source could be used
  *
  ****************************************************************************/
 
-static int rk3576_vepu_enable_clocks(void)
+static uint32_t rk3576_vepu_select_source(FAR struct clk_s *mux,
+                                          FAR struct clk_s *clk,
+                                          uint32_t target)
 {
+  static const char *sources[] = { "clk_gpll", "clk_cpll" };
+
+  FAR struct clk_s *best = NULL;
+  uint32_t best_rate = 0;
+  int i;
+
+  if (mux == NULL || clk == NULL)
+    {
+      return 0;
+    }
+
+  for (i = 0; i < nitems(sources); i++)
+    {
+      FAR struct clk_s *src = clk_get(sources[i]);
+      uint32_t rate;
+
+      if (src == NULL)
+        {
+          continue;
+        }
+
+      if (clk_set_parent(mux, src) < 0)
+        {
+          _err("ERROR: VEPU0 could not select %s\n", sources[i]);
+          continue;
+        }
+
+      /* Check that the selector actually moved.  A rate measured after a
+       * selection that did not happen is the rate of the previous source,
+       * which makes the comparison below look like a tie and turns the
+       * choice into a coin toss on the order of this array.  Comparing the
+       * tree's view catches that here rather than in the resulting numbers.
+       */
+
+      if (clk_get_parent(mux) != src)
+        {
+          _err("ERROR: VEPU0 selected %s but %s is still the parent\n",
+               sources[i],
+               clk_get_parent(mux) == NULL ? "nothing" : "another");
+          continue;
+        }
+
+      /* What the clock would run at from this source.  Asking rather than
+       * working it out keeps the divisor arithmetic in one place.
+       */
+
+      rate = clk_round_rate(clk, target);
+      _info("VEPU0: %s gives %" PRIu32 " Hz for a %" PRIu32 " Hz target\n",
+            sources[i], rate, target);
+
+      if (rate > best_rate)
+        {
+          best_rate = rate;
+          best = src;
+        }
+    }
+
+  if (best == NULL)
+    {
+      return 0;
+    }
+
+  if (clk_set_parent(mux, best) < 0)
+    {
+      return 0;
+    }
+
+  if (clk_set_rate(clk, target) < 0)
+    {
+      return 0;
+    }
+
+  return clk_get_rate(clk);
+}
+
+/****************************************************************************
+ * Name: rk3576_vepu_prepare_clocks
+ *
+ * Description:
+ *   Bring up the VEPU0 clock branches: choose a source for each, program the
+ *   rates the hardware is specified to run at, and open the gates.
+ *
+ *   clk_enable() walks the parent chain, so enabling a leaf also opens the
+ *   root gates it hangs from; the bus-interface gates are enabled explicitly
+ *   because they are not in any parent chain that the leaves traverse.
+ *
+ *   The gates all reset to 0, i.e. enabled, so out of reset that part is
+ *   bookkeeping rather than a fix.  It is still done so the clock tree's
+ *   accounting matches the hardware and nothing else can gate VEPU0 off
+ *   behind the driver's back.  The rates are another matter: they reset to a
+ *   source the tree cannot resolve, so they are programmed here rather than
+ *   left as found.
+ *
+ *   The AXI rate is set on aclk_vepu0_root rather than on aclk_vepu0 below
+ *   it, because the consumer gate carries no CLK_SET_RATE_PARENT and would
+ *   swallow the request instead of passing it up to the divider.
+ *
+ ****************************************************************************/
+
+static int rk3576_vepu_prepare_clocks(void)
+{
+  uint32_t core_rate;
+  uint32_t aclk_rate;
+
   g_vepu_clks.core = clk_get("clk_vepu0_core");
   g_vepu_clks.aclk = clk_get("aclk_vepu0");
   g_vepu_clks.hclk = clk_get("hclk_vepu0");
@@ -232,6 +358,25 @@ static int rk3576_vepu_enable_clocks(void)
     {
       _err("ERROR: VEPU0 failed to look up its clocks\n");
       return -ENODEV;
+    }
+
+  /* Rates first, so that nothing is ever reported as running at a frequency
+   * it has not been set to.
+   */
+
+  core_rate = rk3576_vepu_select_source(clk_get("clk_vepu0_core_sel"),
+                                        g_vepu_clks.core, RK3576_VEPU_CORE_HZ);
+  if (core_rate == 0)
+    {
+      _err("ERROR: VEPU0 could not give its core clock a source\n");
+    }
+
+  aclk_rate = rk3576_vepu_select_source(clk_get("aclk_vepu0_root_sel"),
+                                        clk_get("aclk_vepu0_root"),
+                                        RK3576_VEPU_ACLK_HZ);
+  if (aclk_rate == 0)
+    {
+      _err("ERROR: VEPU0 could not give its AXI clock a source\n");
     }
 
   if (clk_enable(g_vepu_clks.core) < 0 || clk_enable(g_vepu_clks.aclk) < 0 ||
@@ -248,15 +393,48 @@ static int rk3576_vepu_enable_clocks(void)
       return -EIO;
     }
 
-  /* Report what the clock tree can resolve.  clk_vepu0_core's selector
-   * resets to SPLL, which this tree does not model, so its rate reads back
-   * as 0 until the encoder driver pins a source with clk_set_parent().
+  _info("VEPU0: aclk=%" PRIu32 " hclk=%" PRIu32 " core=%" PRIu32
+        " (targets %u and %u)\n",
+        clk_get_rate(g_vepu_clks.aclk), clk_get_rate(g_vepu_clks.hclk),
+        clk_get_rate(g_vepu_clks.core), (unsigned int)RK3576_VEPU_ACLK_HZ,
+        (unsigned int)RK3576_VEPU_CORE_HZ);
+
+  /* What the hardware actually holds, next to what the tree reports above.
+   *
+   * The selectors and dividers are one register, so it settles in one read
+   * which source each branch is really on and what it is divided by -- as
+   * opposed to which source the tree believes it chose.  The PLL
+   * configuration comes along because a PLL's rate is derived from these
+   * three registers at run time and cannot be inferred from anything else
+   * here; FOUT = ((m + k/65536) * 24 MHz) / (p * 2^s).
    */
 
-  _info("VEPU0: aclk=%" PRIu32 " hclk=%" PRIu32 " core=%" PRIu32
-        " (core unresolvable while its mux selects the unmodelled SPLL)\n",
-        clk_get_rate(g_vepu_clks.aclk), clk_get_rate(g_vepu_clks.hclk),
-        clk_get_rate(g_vepu_clks.core));
+  {
+    const uintptr_t cru = RK3576_CRU_ADDR;
+    uint32_t sel =
+        getreg32(cru + RK3576_CRU_CLKSEL_CON(RK3576_VEPU_CRU_CLKSEL_CON));
+
+    _info("VEPU0: sel 0x%08" PRIx32 " core_sel %" PRIu32 " core_div %" PRIu32
+          " aclk_sel %" PRIu32 " aclk_div %" PRIu32 " hclk_sel %" PRIu32 "\n",
+          sel, (sel >> RK3576_VEPU_CORE_SEL_SHIFT) & RK3576_VEPU_CORE_SEL_MASK,
+          (sel >> RK3576_VEPU_CORE_DIV_SHIFT) &
+              ((1u << RK3576_VEPU_CORE_DIV_WIDTH) - 1u),
+          (sel >> RK3576_VEPU_ACLK_ROOT_SEL_SHIFT) &
+              RK3576_VEPU_ACLK_ROOT_SEL_MASK,
+          (sel >> RK3576_VEPU_ACLK_ROOT_DIV_SHIFT) &
+              ((1u << RK3576_VEPU_ACLK_ROOT_DIV_WIDTH) - 1u),
+          (sel >> RK3576_VEPU_HCLK_ROOT_SEL_SHIFT) &
+              RK3576_VEPU_HCLK_ROOT_SEL_MASK);
+
+    _info("VEPU0: gpll %08" PRIx32 " %08" PRIx32 " %08" PRIx32
+          " cpll %08" PRIx32 " %08" PRIx32 " %08" PRIx32 "\n",
+          getreg32(cru + RK3576_CRU_GPLL_CON(0)),
+          getreg32(cru + RK3576_CRU_GPLL_CON(1)),
+          getreg32(cru + RK3576_CRU_GPLL_CON(2)),
+          getreg32(cru + RK3576_CRU_CPLL_CON(0)),
+          getreg32(cru + RK3576_CRU_CPLL_CON(1)),
+          getreg32(cru + RK3576_CRU_CPLL_CON(2)));
+  }
 
   return OK;
 }
@@ -319,7 +497,7 @@ int rk3576_vepu_power_on(void)
 
   rk3576_vepu_release_resets();
 
-  ret = rk3576_vepu_enable_clocks();
+  ret = rk3576_vepu_prepare_clocks();
   if (ret < 0)
     {
       rk3576_vepu_assert_resets();

@@ -471,10 +471,13 @@
  * GIC_SPI 310/311 map to hwirq 342/343, which is exactly what irq.h
  * already defines for VEPU0/VEPU0_MMU.
  *
- * These are the Phase 2 targets.  Bring-up deliberately does not program
- * them: register access only needs aclk/hclk, and choosing the right PLL
- * plus divider for 702 MHz should be done deliberately, against a measured
- * parent rate, rather than guessed here.
+ * These are the targets the driver programs: aclk at 400 MHz and the core
+ * clock at 702 MHz.  Neither is a ceiling the part imposes -- they are the
+ * vendor's chosen operating point -- so the driver takes the closest rate
+ * each source can reach without going over, and reports what it got rather
+ * than insisting on these two figures.  The rates are measured from the
+ * PLLs at run time instead of assumed here, because the bootloader owns the
+ * PLL configuration; see rk3576_vepu_select_source().
  * -----------------------------------------------------------------------
  */
 
