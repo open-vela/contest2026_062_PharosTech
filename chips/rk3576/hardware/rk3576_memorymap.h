@@ -130,6 +130,35 @@
   0x2601A000 /* VO0 GRF (SOC_CON10 = DSI IPI cfg) \
               */
 
+/* Video Capture (VICAP) and the MIPI CSI-2 receive path (TRM Part 2, Ch. 6
+ * and Ch. 19).
+ *
+ * The capture path is a three-stage pipeline:
+ *
+ *   D-PHY RX  ->  CSI HOST (CSI-2 protocol parser)  ->  VICAP (capture,
+ *                                                       crop, DMA to DDR)
+ *
+ * There are five CSI HOSTs but only three RX PHYs, so the hosts are wired
+ * the same way: HOST0 is fed by the DCPHY RX (slave) lanes, HOST1+HOST2
+ * share CSIDPHY0 and HOST3+HOST4 share CSIDPHY1.  VICAP's MIPIn input is
+ * hard-wired to CSIHOSTn with no mux in between.
+ */
+
+#define RK3576_VICAP_ADDR    0x27C10000 /* VICAP core (PD_VI, 128KB) */
+
+#define RK3576_CSIHOST0_ADDR 0x27C80000 /* CSI-2 parser 0 (64KB) */
+#define RK3576_CSIHOST1_ADDR 0x27C90000
+#define RK3576_CSIHOST2_ADDR 0x27CA0000
+#define RK3576_CSIHOST3_ADDR 0x27CB0000
+#define RK3576_CSIHOST4_ADDR 0x27CC0000
+
+/* RX-only MIPI CSI D-PHYs -- a separate block from the DSI-side DCPHY.
+ * CSIDPHY0 sits in the PMU1 PHY cluster, CSIDPHY1 in the main CRU domain.
+ */
+
+#define RK3576_CSIDPHY0_ADDR 0x2B030000 /* MIPI CSI D-PHY 0 (64KB) */
+#define RK3576_CSIDPHY1_ADDR 0x2B070000 /* MIPI CSI D-PHY 1 (64KB) */
+
 /* HDMI TX controller and HDMI/eDP combo PHY.
  *
  * The HDMITX controller and the combo PHY are two separate APB slaves:

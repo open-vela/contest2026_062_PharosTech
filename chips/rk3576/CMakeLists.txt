@@ -109,4 +109,12 @@ if(CONFIG_RK3576_VOP)
   list(APPEND SRCS rk3576_vop.c)
 endif()
 
+if(CONFIG_RK3576_MIPI_CSI)
+  list(APPEND SRCS rk3576_csi_host.c)
+endif()
+
+if(CONFIG_RK3576_VICAP)
+  list(APPEND SRCS rk3576_vicap.c)
+endif()
+
 target_sources(arch PRIVATE ${SRCS})

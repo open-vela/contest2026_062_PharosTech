@@ -49,6 +49,10 @@ if(CONFIG_KICKPI_K7_USBHOST)
   list(APPEND SRCS kickpi_k7_usbhost.c)
 endif()
 
+if(CONFIG_KICKPI_K7_CAMERA)
+  list(APPEND SRCS kickpi_k7_camera.c)
+endif()
+
 target_sources(board PRIVATE ${SRCS})
 
 if(CONFIG_ETC_ROMFS)

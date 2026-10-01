@@ -131,5 +131,97 @@ int rk3576_dcphy_power_off(void);
 
 bool rk3576_dcphy_is_ready(void);
 
+/****************************************************************************
+ * Name: rk3576_dcphy_rx_power_on
+ *
+ * Description:
+ *   Bring up the DCPHY's slave (RX) lanes for MIPI CSI-2 reception,
+ *   following the RX start-up sequence of TRM 21.6.4.3 "Case 3".
+ *
+ *   This is independent of the TX (DSI) side: the slave lanes have their
+ *   own reset (S_RESETN), their own register banks (SC / COMBO_SD*), and
+ *   they do not use the TX PLL at all.  The one shared resource is the
+ *   BIAS block, whose start-up values are identical on both sides, so
+ *   programming it here as well is idempotent.
+ *
+ *   The per-lane T_HS_SETTLE value is rate dependent; the caller supplies
+ *   the lane rate and the driver looks the value up.  Data-lane deskew
+ *   calibration is only programmed at 1.5 Gbps and above.
+ *
+ *   The APB clocks and the BIAS block are brought up on demand, so this may
+ *   be called without rk3576_dcphy_init() having run (the CSI path does not
+ *   need the TX PLL), and it is safe to call after it (the DSI path).
+ *
+ * Input Parameters:
+ *   lanes     - Number of active RX data lanes (1..4).
+ *   lane_mbps - Lane high-speed data rate in Mbps (used for the settle
+ *               value and the deskew threshold).
+ *
+ * Returned Value:
+ *   OK on success; a negated errno value on failure (-ETIMEDOUT if a lane
+ *   fails to reach PHY_READY).
+ *
+ ****************************************************************************/
+
+int rk3576_dcphy_rx_power_on(uint8_t lanes, uint32_t lane_mbps);
+
+/****************************************************************************
+ * Name: rk3576_dcphy_rx_power_off
+ *
+ * Description:
+ *   Disable the RX clock and data lanes.  The BIAS block and the APB clocks
+ *   are left alone because the TX side may still be using them.
+ *
+ * Input Parameters:
+ *   None
+ *
+ * Returned Value:
+ *   OK on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int rk3576_dcphy_rx_power_off(void);
+
+/****************************************************************************
+ * Name: rk3576_dcphy_rx_is_ready
+ *
+ * Description:
+ *   Report whether the given number of RX data lanes are enabled and have
+ *   all reached PHY_READY.
+ *
+ * Input Parameters:
+ *   lanes - Number of data lanes to check (1..4).
+ *
+ * Returned Value:
+ *   true if every checked lane reports PHY_READY.
+ *
+ ****************************************************************************/
+
+bool rk3576_dcphy_rx_is_ready(uint8_t lanes);
+
+/****************************************************************************
+ * Name: rk3576_dcphy_rx_read_grf_status0 / _read_grf_status2
+ *
+ * Description:
+ *   Read the DCPHY GRF lane status registers, for bring-up diagnosis.
+ *
+ *   STATUS0 carries the slave data lane stop-state in bits [7:4] and the
+ *   master clock/data lane stop-states in bits [8] and [3:0].  Note that
+ *   there is no slave *clock* lane stop bit -- read the CSI HOST's
+ *   PHY_STATE.phy_stopstateclk for that.
+ *
+ *   STATUS2 carries the slave data lane error flags in bits [15:12].
+ *
+ * Input Parameters:
+ *   None
+ *
+ * Returned Value:
+ *   The raw register value (0 if the PHY has not been initialised).
+ *
+ ****************************************************************************/
+
+uint32_t rk3576_dcphy_rx_read_grf_status0(void);
+uint32_t rk3576_dcphy_rx_read_grf_status2(void);
+
 #endif /* CONFIG_RK3576_MIPI_DCPHY */
 #endif /* __VENDOR_ROCKCHIP_RK3576_RK3576_MIPI_DCPHY_H */

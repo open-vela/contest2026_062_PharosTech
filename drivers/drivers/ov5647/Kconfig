@@ -1,0 +1,99 @@
+############################################################################
+# drivers/drivers/ov5647/Kconfig
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.  The
+# ASF licenses this file to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance with the
+# License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+# License for the specific language governing permissions and limitations
+# under the License.
+#
+############################################################################
+#
+# OmniVision OV5647 MIPI CSI-2 camera sensor driver.
+#
+############################################################################
+
+config VIDEO_OV5647
+	bool "OV5647 camera sensor"
+	default n
+	depends on DRIVERS_VIDEO
+	select I2C
+	---help---
+		Enable the OmniVision OV5647 MIPI CSI-2 camera sensor driver.
+
+		The driver implements the NuttX capture framework's sensor side
+		(struct imgsensor_s), so the board registers it together with a
+		SoC-side imgdata driver:
+
+		  ov5647_initialize(i2c, OV5647_I2C_ADDR);
+		  capture_register("/dev/video0", imgdata, sensors, 1);
+
+		The sensor outputs RAW10 Bayer data over two MIPI CSI-2 data
+		lanes.  Its control interface is SCCB, which is an I2C subset the
+		standard NuttX I2C driver drives directly.
+
+		Only the 640x480 mode is implemented so far: 2x2 binned and
+		subsampled, full field of view, 10 bits per pixel.
+
+if VIDEO_OV5647
+
+config OV5647_EXPOSURE_LINES
+	int "Manual exposure in lines (0 = the mode's maximum)"
+	default 0
+	range 0 4095
+	---help---
+		The sensor's own exposure loop is switched off in favour of manual
+		control, so the exposure has to be stated explicitly.  Zero keeps the
+		mode's maximum, which is the right default for a bring-up where the
+		lighting is unknown; a smaller value is what a bright scene or an
+		auto-exposure experiment wants.
+
+		Exposure is quoted in lines of the mode's line time, and the mode
+		timebase is set by the HTS and VTS registers in the driver.
+
+config OV5647_ANALOG_GAIN
+	int "Manual analog gain (16 = 1.0x, 32 = 2.0x, 1023 = 64x)"
+	default 32
+	range 16 1023
+	---help---
+		The gain applied before the ADC.  With the exposure loop disabled
+		this is the only other thing that decides how bright the picture
+		comes out, so it doubles as the test for whether the light reaching
+		the sensor is the limiting factor: raising it far above the default
+		should brighten the picture proportionally, and if it does not, the
+		gain setting is not reaching the sensor.
+
+		The scale is sixteen to one, so the default of 32 is 2.0x.  High
+		values amplify noise along with the signal, which is expected.
+
+endif # VIDEO_OV5647
+
+config OV5647_I2C_ADDR
+	hex "OV5647 I2C (SCCB) slave address"
+	default 0x36
+	range 0x08 0x77
+	depends on VIDEO_OV5647
+	---help---
+		Seven-bit SCCB address.  The OV5647's factory default is 0x36,
+		which is what a Raspberry Pi compatible module uses.
+
+config OV5647_I2C_FREQUENCY
+	int "OV5647 I2C (SCCB) bus frequency"
+	default 100000
+	depends on VIDEO_OV5647
+	---help---
+		SCCB is specified for 100 kHz.  The sensor tolerates more on most
+		modules, but the specification has no acknowledgement bit, so a
+		faster clock leaves less margin for the receiver to sample it
+		reliably.

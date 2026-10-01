@@ -189,6 +189,28 @@ config KICKPI_K7_USBHOST
 		Enable GPIO3_D6 VBUS and initialize USB1 xHCI for the on-board
 		GL3510 SuperSpeed hub and the three external USB-A ports.
 
+config KICKPI_K7_CAMERA
+	bool "On-board MIPI CSI camera (OV5647 on CSI0)"
+	default n
+	depends on RK3576_MIPI_CSI && RK3576_VICAP && RK3576_I2C && RK3576_GPIO
+	depends on VIDEO_OV5647
+	---help---
+		Bring up the OV5647 camera module on the CSI0 connector and expose
+		the capture path as /dev/video0.
+
+		CSI0 is the one connector fed by the DCPHY's RX (slave) lanes --
+		CSI1 and CSI3 go through the separate CSIDPHY0/1, which this
+		build does not support yet.  The module is wired straight through
+		to the SoC on the 22-pin FFC: there is no power-enable or reset
+		line on the connector, and the module carries its own 25 MHz
+		oscillator, so the SoC supplies neither a master clock nor a
+		reset.  One SoC GPIO (GPIO0_D2) does gate the module.
+
+		The sensor's control bus is I2C4 in its M3 pin multiplexing
+		(SCL GPIO3_C0, SDA GPIO3_B7, both at alternate function 11).
+
+		Only the 640x480 RAW10 mode is wired up so far.
+
 choice
 	prompt "kickpi-k7 primary display output"
 	default KICKPI_K7_MIPI_DSI
