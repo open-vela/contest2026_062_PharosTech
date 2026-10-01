@@ -337,12 +337,20 @@ static int gt911_isr(int irq, FAR void *context, FAR void *arg);
  *   which is what the controller expects; the register pointer auto-increments
  *   across the burst.
  *
- *   Note the success convention: a completed transfer returns a NON-NEGATIVE
- *   value, not OK.  The RK3576 I2C lower half returns the controller's
- *   positive STOP-phase status word when a transfer completes and a negated
- *   errno only on failure, so callers must test `ret < 0` and never
- *   `ret == OK` -- the latter silently turns every successful transfer into a
- *   failure.
+ *   Success convention: test `ret < 0`, never `ret == OK`.
+ *
+ *   NuttX documents I2C_TRANSFER() as "OK, or a negated errno", but that is a
+ *   statement of intent rather than something a caller can rely on: some
+ *   master drivers report the number of messages transferred instead.  This
+ *   controller used to report its own positive STOP-phase status word, so a
+ *   completed transfer came back non-zero and every `ret == OK` test turned a
+ *   success into a failure -- a capture driver that forwarded the raw value
+ *   up to the framework spent a while discovering exactly that.
+ *
+ *   The lower half was since normalised to return OK, but `ret < 0` is the
+ *   test that holds under either behaviour, so it is what this driver keeps
+ *   using and what any driver talking to a possibly non-conforming master
+ *   should use.
  *
  ****************************************************************************/
 
