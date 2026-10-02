@@ -1582,7 +1582,7 @@ int rk3576_vepu_codec_selftest(FAR const char *devpath)
       goto errout;
     }
 
-  _info("VEPU0 codec: %s / %s, capabilities 0x%08" PRIx32 "\n", cap.driver,
+  vinfo("VEPU0 codec: %s / %s, capabilities 0x%08" PRIx32 "\n", cap.driver,
         cap.card, cap.capabilities);
 
   if ((cap.capabilities & V4L2_CAP_VIDEO_M2M) == 0 ||
@@ -1610,7 +1610,7 @@ int rk3576_vepu_codec_selftest(FAR const char *devpath)
       goto errout;
     }
 
-  _info("VEPU0 codec: output NV12 %" PRIu32 "x%" PRIu32 ", stride %" PRIu32
+  vinfo("VEPU0 codec: output NV12 %" PRIu32 "x%" PRIu32 ", stride %" PRIu32
         ", size %" PRIu32 "\n",
         fmt.fmt.pix.width, fmt.fmt.pix.height, fmt.fmt.pix.bytesperline,
         fmt.fmt.pix.sizeimage);
@@ -1628,7 +1628,7 @@ int rk3576_vepu_codec_selftest(FAR const char *devpath)
       goto errout;
     }
 
-  _info("VEPU0 codec: capture H264, buffer size %" PRIu32 "\n",
+  vinfo("VEPU0 codec: capture H264, buffer size %" PRIu32 "\n",
         fmt.fmt.pix.sizeimage);
 
   /* Buffers on both sides.  MMAP is the only memory mode the device takes,
@@ -1819,7 +1819,7 @@ int rk3576_vepu_codec_selftest(FAR const char *devpath)
           goto errout;
         }
 
-      _info("VEPU0 codec: frame %" PRIu32 " -> %" PRIu32
+      vinfo("VEPU0 codec: frame %" PRIu32 " -> %" PRIu32
             " bytes, NAL type %u\n",
             i, buf.bytesused, (unsigned)(cbuf[buf.index][4] & 0x1fu));
 
@@ -1881,10 +1881,29 @@ int rk3576_vepu_codec_selftest(FAR const char *devpath)
         goto errout;
       }
 
-    _info("VEPU0 codec: stream ended with %" PRIu32 " bytes, %" PRIu32
-          " frames, %" PRIu32 " bytes total\n",
-          buf.bytesused, i,
-          g_vepu_st_len[0] + g_vepu_st_len[1] + g_vepu_st_len[2]);
+    /* One line, because this is the result and not a trace of it: the claim
+     * the test makes is that an application can drive the encoder through
+     * its own device node, and the number of frames and bytes that came back
+     * is what says so.  The negotiation and per-frame detail above is behind
+     * vinfo.
+     *
+     * The length is summed over the array rather than indexed, so that the
+     * count in the message is the count the loop used.
+     */
+
+    {
+      uint32_t total = 0;
+      uint32_t k;
+
+      for (k = 0; k < RK3576_VEPU_ST_FRAMES; k++)
+        {
+          total += g_vepu_st_len[k];
+        }
+
+      _info("VEPU0 codec self-test: %" PRIu32 " frames through the device"
+            " node, %" PRIu32 " bytes of bitstream\n",
+            i, total);
+    }
   }
 
   ret = OK;
