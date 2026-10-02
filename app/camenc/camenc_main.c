@@ -126,6 +126,13 @@
 
 #define CAMENC_DEFAULT_PORT   8080
 
+/* How often the loop says anything at all, in frames.  A hundred is about
+ * a second and a half at the rate this camera runs, which is often enough
+ * to see that it is alive and rare enough to see anything else.
+ */
+
+#define CAMENC_REPORT_FRAMES 100
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -478,9 +485,6 @@ static int camenc_emit(void *arg, enum camenc_seg_e seg, const uint8_t *data,
   sink->bytes += len;
   sink->segments++;
 
-  printf("  %-8s %6zu bytes%s\n", seg == CAMENC_SEG_INIT ? "init" : "fragment",
-         len, key ? "" : " (not a key frame)");
-
   return 0;
 }
 
@@ -526,8 +530,9 @@ int main(int argc, FAR char *argv[])
   uint64_t t1;
   uint64_t now;
   uint64_t media_t0 = 0;
-  uint64_t prev_pts = 0;
   bool have_prev = false;
+  int last_report = 0;
+  uint64_t reported_at = 0;
 
   while ((opt = getopt(argc, argv, "d:e:o:n:w:h:q:x:g:p:")) != -1)
     {
@@ -1058,19 +1063,32 @@ int main(int argc, FAR char *argv[])
           break;
         }
 
-      if (have_prev)
-        {
-          printf("frame %4d: %6" PRIu32 " bytes, %6" PRIu64 " us since the"
-                 " last\n",
-                 i, ebuf.bytesused, pts - prev_pts);
-        }
-      else
-        {
-          printf("frame %4d: %6" PRIu32 " bytes\n", i, ebuf.bytesused);
-        }
-
-      prev_pts = pts;
       have_prev = true;
+
+      /* Say something every so often rather than every frame.
+       *
+       * At this frame rate a line per frame is sixty lines a second, which
+       * buries anything that matters -- a client connecting, a segment too
+       * large to send, an error -- in a scroll that nobody can read.  What
+       * is worth knowing continuously is that the loop is running and how
+       * fast, and a line every few seconds says that just as well.
+       */
+
+      if (i - last_report >= CAMENC_REPORT_FRAMES)
+        {
+          uint64_t span = pts - reported_at;
+
+          printf("frame %6d: %6" PRIu32 " bytes, %5.1f fps, %" PRIu64
+                 " bytes out\n",
+                 i, ebuf.bytesused,
+                 span != 0
+                     ? 1000000.0 * (double)(i - last_report) / (double)span
+                     : 0.0,
+                 sink.bytes);
+
+          last_report = i;
+          reported_at = pts;
+        }
 
       /* Service the server between frames: take new connections, notice the
        * ones that have gone, and write out what is queued for the rest.  It
