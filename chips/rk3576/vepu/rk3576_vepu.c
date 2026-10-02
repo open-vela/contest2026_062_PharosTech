@@ -71,6 +71,31 @@
 #include "rk3576_vepu.h"
 
 /****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* The driver prints two lines at boot, and everything else it has to say goes
+ * through vinfo().
+ *
+ * Those two are the ones a reader needs: which IP answered the probe, and
+ * whether the encode path works.  The rest -- which clock source each branch
+ * settled on, what the dividers hold, the size of the reconstruction sets, a
+ * frame-by-frame account of the self-test -- is a diagnosis of something
+ * already known to work, and printing it every boot buries the two lines that
+ * are not.
+ *
+ * vinfo() is NuttX's own video informational channel, enabled with
+ * CONFIG_DEBUG_VIDEO_INFO.  That is the right switch rather than one of this
+ * driver's own: a video driver's diagnostics belong to the video subsystem's
+ * debug control, so turning video debugging on shows this driver's detail
+ * along with every other video driver's.
+ *
+ * Errors are unaffected.  They are reported whatever the debug options say,
+ * and rk3576_vepu_dump() prints the registers when an encode fails, which is
+ * where the clock and status detail is actually wanted.
+ */
+
+/****************************************************************************
  * Private Types
  ****************************************************************************/
 
@@ -289,7 +314,7 @@ static uint32_t rk3576_vepu_select_source(FAR struct clk_s *mux,
        */
 
       rate = clk_round_rate(clk, target);
-      _info("VEPU0: %s gives %" PRIu32 " Hz for a %" PRIu32 " Hz target\n",
+      vinfo("VEPU0: %s gives %" PRIu32 " Hz for a %" PRIu32 " Hz target\n",
             sources[i], rate, target);
 
       if (rate > best_rate)
@@ -414,7 +439,7 @@ static int rk3576_vepu_prepare_clocks(void)
     uint32_t sel =
         getreg32(cru + RK3576_CRU_CLKSEL_CON(RK3576_VEPU_CRU_CLKSEL_CON));
 
-    _info("VEPU0: sel 0x%08" PRIx32 " core_sel %" PRIu32 " core_div %" PRIu32
+    vinfo("VEPU0: sel 0x%08" PRIx32 " core_sel %" PRIu32 " core_div %" PRIu32
           " aclk_sel %" PRIu32 " aclk_div %" PRIu32 " hclk_sel %" PRIu32 "\n",
           sel, (sel >> RK3576_VEPU_CORE_SEL_SHIFT) & RK3576_VEPU_CORE_SEL_MASK,
           (sel >> RK3576_VEPU_CORE_DIV_SHIFT) &
@@ -426,7 +451,7 @@ static int rk3576_vepu_prepare_clocks(void)
           (sel >> RK3576_VEPU_HCLK_ROOT_SEL_SHIFT) &
               RK3576_VEPU_HCLK_ROOT_SEL_MASK);
 
-    _info("VEPU0: gpll %08" PRIx32 " %08" PRIx32 " %08" PRIx32
+    vinfo("VEPU0: gpll %08" PRIx32 " %08" PRIx32 " %08" PRIx32
           " cpll %08" PRIx32 " %08" PRIx32 " %08" PRIx32 "\n",
           getreg32(cru + RK3576_CRU_GPLL_CON(0)),
           getreg32(cru + RK3576_CRU_GPLL_CON(1)),
@@ -889,7 +914,7 @@ static int rk3576_vepu_recn_alloc(FAR struct rk3576_vepu510_frame_s *frm,
   g_vepu_recn_width = frm->width;
   g_vepu_recn_height = frm->height;
 
-  _info("VEPU0: reconstruction sets for %ux%u: pixel %" PRIu32
+  vinfo("VEPU0: reconstruction sets for %ux%u: pixel %" PRIu32
         " (header %" PRIu32 "), thumb %" PRIu32 ", smear %" PRIu32 ", x%d\n",
         (unsigned int)frm->width, (unsigned int)frm->height, size.pixel,
         size.header, size.thumb, size.smear, RK3576_VEPU_RECN_SLOTS);
@@ -1767,7 +1792,7 @@ static void rk3576_vepu_selftest_peek(FAR const char *what,
 
   text[2u * i] = '\0';
 
-  _info("VEPU0 sequence test: %s, first %" PRIu32 " bytes: %s\n", what, len,
+  vinfo("VEPU0 sequence test: %s, first %" PRIu32 " bytes: %s\n", what, len,
         text);
 }
 
@@ -2039,7 +2064,7 @@ static int rk3576_vepu_selftest_sequence(void)
       intra[i] = rk3576_vepu_selftest_intra_blocks();
       total += result.bs_length;
 
-      _info("VEPU0 sequence test: frame %" PRIu32 " %s offset %6" PRIu32
+      vinfo("VEPU0 sequence test: frame %" PRIu32 " %s offset %6" PRIu32
             " length %6" PRIu32 " sse %10" PRIu32 " intra %" PRIu32 "/%" PRIu32
             "\n",
             i, slice.idr ? "IDR" : "P  ", offset[i], length[i], result.sse,
@@ -2139,11 +2164,47 @@ static int rk3576_vepu_selftest_sequence(void)
         }
     }
 
-  _info("VEPU0 sequence test: %" PRIu32 " frames, %" PRIu32 " bytes:"
-        " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32
-        " %" PRIu32 " %" PRIu32 "\n",
-        RK3576_VEPU_SEQ_FRAMES, total, length[0], length[1], length[2],
-        length[3], length[4], length[5], length[6], length[7]);
+  /* One line, because this is the result of the test and not a trace of it.
+   * The claim is that a P picture costs a fraction of the IDR it predicts
+   * from, so that pair is what is worth reporting; the frame-by-frame sizes
+   * are above, behind vinfo.
+   *
+   * The means are accumulated rather than indexed.  A summary that named
+   * length[0] through length[7] would be wrong -- and wrong silently, in the
+   * only output the test produces -- the first time the frame count or the
+   * group length changed, and neither is fixed by anything this function
+   * controls.
+   */
+
+  {
+    uint32_t idr_n = 0;
+    uint32_t idr_bytes = 0;
+    uint32_t p_n = 0;
+    uint32_t p_bytes = 0;
+
+    for (i = 0; i < RK3576_VEPU_SEQ_FRAMES; i++)
+      {
+        if ((i % RK3576_VEPU_SEQ_GOP) == 0)
+          {
+            idr_n++;
+            idr_bytes += length[i];
+          }
+        else
+          {
+            p_n++;
+            p_bytes += length[i];
+          }
+      }
+
+    _info("VEPU0 sequence test: %" PRIu32 " frames, %" PRIu32
+          " bytes: IDR %" PRIu32 " B mean, P %" PRIu32 " B mean"
+          " (%" PRIu32 "%% of an IDR)\n",
+          RK3576_VEPU_SEQ_FRAMES, total, idr_n != 0 ? idr_bytes / idr_n : 0,
+          p_n != 0 ? p_bytes / p_n : 0,
+          idr_n != 0 && p_n != 0
+              ? (100u * (p_bytes / p_n)) / (idr_bytes / idr_n)
+              : 0);
+  }
 
   /* What the encoder produced, so that a size can be turned into a reason.
    * The first group is enough: an IDR and the P picture that predicts from
@@ -2329,7 +2390,7 @@ static int rk3576_vepu_selftest_picture(void)
           goto errout;
         }
 
-      _info("VEPU0 self-test: frame %" PRIu32 " %s offset %6" PRIu32
+      vinfo("VEPU0 self-test: frame %" PRIu32 " %s offset %6" PRIu32
             " length %6" PRIu32 " sse %10" PRIu32 "\n",
             i, g_vepu_pattern_name[pattern], offset[i], length[i], sse[i]);
 
@@ -2440,7 +2501,7 @@ static int rk3576_vepu_selftest_picture(void)
     if (rk3576_h264_sps_write(sps, sizeof(sps), &cfg, &sps_len) == 0 &&
         rk3576_h264_pps_write(pps, sizeof(pps), &cfg, &pps_len) == 0)
       {
-        _info("VEPU0 self-test: SPS %" PRIu32 " bytes, PPS %" PRIu32
+        vinfo("VEPU0 self-test: SPS %" PRIu32 " bytes, PPS %" PRIu32
               " bytes, so the six frames are %" PRIu32 " bytes total\n",
               sps_len, pps_len, sps_len + pps_len + total);
       }

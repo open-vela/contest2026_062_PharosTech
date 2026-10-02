@@ -108,3 +108,39 @@ reference to predict from.
 `CONFIG_RK3576_VEPU_SEQ_DUMP` adds a hex dump of the coded stream, which is
 not on by default because it is for reading with a decoder rather than from a
 terminal.
+
+## What it prints at boot
+
+Five lines, and nothing else:
+
+```
+VEPU0: aclk=... hclk=... core=... (targets ... and ...)
+VEPU0: VEPU510 rev ..., ip_id 0x..., h264=... hevc=... bframe=... fbc=..., res=..., osd=..., filter=...
+VEPU0 sequence test: N frames, N bytes: IDR N B mean, P N B mean (N% of an IDR)
+VEPU0 self-test: N frames, N bytes of bitstream, solid L/s, gradient L/s, noise L/s
+VEPU0 codec self-test: N frames through the device node, N bytes of bitstream
+```
+
+They report the two facts worth having at every boot -- which IP answered,
+and whether the encode path works -- once for each layer that can break
+independently: the hardware, the encode path, and the device node an
+application actually talks to.  The clock rates are there because a core
+clock left on its reset source makes the encoder work at a fraction of its
+speed and say nothing about it.
+
+The sequence test's line is the one to read if a stream is larger than it
+should be: it reports the mean P picture against the mean IDR, and a P that
+is not a small fraction of an IDR means prediction has stopped being used,
+which is a failure that decodes correctly and only shows as size.
+
+Everything else the driver knows -- which clock source each branch settled
+on, what the dividers hold, the size of the reconstruction sets, a
+frame-by-frame account of both self-tests -- goes through `vinfo()`, which
+NuttX enables with `CONFIG_DEBUG_VIDEO_INFO` (its video subsystem debug
+switch, off by default).  The detail is kept rather than deleted, so that it
+can be asked for; it just is not printed twenty-odd lines at a time in front
+of whatever does deserve attention.
+
+Errors are not affected: `_err` is reported whatever the debug options say,
+and `rk3576_vepu_dump()` prints the registers when an encode fails.
+
