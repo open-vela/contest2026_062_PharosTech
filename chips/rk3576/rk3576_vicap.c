@@ -43,6 +43,15 @@
  * interrupt handler: the framework's completion callback is taken under a
  * spinlock and must not sleep, so the ISR only records which buffer filled
  * up and defers the real work.
+ *
+ * The demosaic pass is also where the 3A measurement is taken, and this
+ * driver is where the 3A control plane lives -- see drivers/include/cam3a.h
+ * for why the two ends are split the way they are.  Briefly: the channel sums
+ * come out of the loop that is already reading every RAW sample, so measuring
+ * costs nothing, and they have to be taken before the white balance gains are
+ * applied and cannot be recovered from the NV12 that comes out.  Exposure and
+ * gain are not here at all; they are the sensor's, and reachable through the
+ * ordinary V4L2 controls on the capture device.
  ****************************************************************************/
 
 /****************************************************************************
@@ -74,6 +83,7 @@
 #include <nuttx/clk/clk.h>
 #include <nuttx/clock.h>
 #include <nuttx/compiler.h>
+#include <nuttx/fs/fs.h>
 #include <nuttx/irq.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/mutex.h>
@@ -82,6 +92,7 @@
 #include <nuttx/wqueue.h>
 
 #include "arm64_arch.h"
+#include "cam3a.h"
 #include "hardware/rk3576_cru.h"
 #include "hardware/rk3576_memorymap.h"
 #include "hardware/rk3576_vicap.h"
@@ -188,6 +199,20 @@
 #define RK3576_VICAP_WB_MIN        64u   /* 0.25x */
 #define RK3576_VICAP_WB_MAX        1024u /* 4x    */
 #define RK3576_VICAP_WB_STEP_SHIFT 1u    /* Move 1/2 of the way per frame */
+
+/* The largest gain the demosaic can apply at all, as opposed to the largest
+ * the driver's own loop will choose.
+ *
+ * The two bounds are different questions and only the first is the driver's
+ * to answer.  The vector path scales the gain by four and narrows it to
+ * sixteen bits, so a gain above 0x1fff arrives in the picture as a different
+ * number than the one asked for -- which is a correctness limit this file
+ * has to enforce.  Where within that range the gains should sit is a
+ * question about the scene, and that one belongs to whoever is choosing
+ * them.
+ */
+
+#define RK3576_VICAP_WB_HARD_MAX 0x1fffu
 
 /* A sample at or above this is at the top of the sensor's range, where the
  * code it reports stops depending on how much light arrived.  Samples from
@@ -347,9 +372,32 @@ struct rk3576_vicap_s
   /* White balance gains in eight-bit fixed point, one being 256.  Applied
    * while demosaicing and adjusted afterwards from what the frame turned
    * out to contain.
+   *
+   * Read *before* the gains are applied to steer them, and written in two
+   * places: the driver's own loop in rk3576_vicap_wb_update(), and the
+   * application through the cam3a interface.  Whether the driver is
+   * steering is what awb_active says.
    */
 
   uint32_t wb[3];
+  bool awb_active;
+
+  /* What the last demosaiced frame measured, published for the cam3a
+   * interface.  Written at the end of the demosaic pass and read from task
+   * context, both under irqlock: the two are concurrent, and a caller that
+   * mixed one frame's sums with the next frame's count would compute a mean
+   * belonging to neither.
+   *
+   * stat_seq is bumped as part of the same critical section rather than by a
+   * counter of its own, so that a caller comparing it can rely on the rest
+   * of the snapshot having moved with it.
+   */
+
+  uint32_t stat_seq;
+  uint32_t stat_sum[3];
+  uint32_t stat_count;
+  uint32_t stat_w;
+  uint32_t stat_h;
 
   bool initialized;
   bool capturing;
@@ -363,6 +411,7 @@ static struct rk3576_vicap_s g_vicap = {
   .lock = NXMUTEX_INITIALIZER,
   .raw_pending = -1,
   .wb = { RK3576_VICAP_WB_ONE, RK3576_VICAP_WB_ONE, RK3576_VICAP_WB_ONE },
+  .awb_active = true,
 };
 
 /****************************************************************************
@@ -717,7 +766,8 @@ static void rk3576_vicap_debayer_scalar(FAR struct rk3576_vicap_s *priv,
   FAR uint8_t *yplane = dst;
   FAR uint8_t *uvplane = dst + (size_t)priv->cfg.width * priv->cfg.height;
   FAR const uint8_t *pat = g_vicap_bayer[priv->cfg.bayer & 3u];
-  FAR const uint32_t *wb = priv->wb;
+  uint32_t wbsnap[3];
+  FAR const uint32_t *wb = wbsnap;
   int w = priv->cfg.width;
   int h = priv->cfg.height;
   int stride_px = (int)(priv->stride / 2u);
@@ -727,6 +777,24 @@ static void rk3576_vicap_debayer_scalar(FAR struct rk3576_vicap_s *priv,
   uint64_t accn = 0;
   int x;
   int y;
+
+  /* The gains are taken once, before the frame is walked, rather than read
+   * per pixel.
+   *
+   * The application can change them at any time through the cam3a
+   * interface, and a pass that read them as it went would then apply two
+   * different sets to one frame -- in the middle of a row, since the change
+   * lands wherever the work queue happens to be.  One frame with the old
+   * gains whole is a colour that is a frame late; one frame with a mixture
+   * is a seam across the picture.
+   *
+   * The vector path already worked this way, because it has to load the
+   * gains into vectors before the loop in any case.
+   */
+
+  wbsnap[0] = priv->wb[0];
+  wbsnap[1] = priv->wb[1];
+  wbsnap[2] = priv->wb[2];
 
   for (y = 0; y < h; y += 2)
     {
@@ -958,76 +1026,139 @@ static void rk3576_vicap_wb_update(FAR struct rk3576_vicap_s *priv,
                                    uint64_t accr, uint64_t accg, uint64_t accb,
                                    uint64_t accn)
 {
-  if (accn > 0u && accr > 0u && accg > 0u && accb > 0u)
+  uint32_t wbnew[3];
+  irqstate_t flags;
+  bool usable;
+
+  /* Publish the measurement first, and whether or not the driver is the one
+   * acting on it: an application's loop needs it precisely when the driver's
+   * is not running.
+   *
+   * Under irqlock, because this runs on the work queue while the cam3a
+   * interface reads the same fields from task context.  A caller that mixed
+   * one frame's sums with the next frame's count would compute a channel
+   * mean belonging to neither, and stat_seq moving inside the same critical
+   * section is what lets a caller tell that it has a whole frame's worth.
+   */
+
+  flags = spin_lock_irqsave(&priv->irqlock);
+
+  priv->stat_sum[0] = (uint32_t)accr;
+  priv->stat_sum[1] = (uint32_t)accg;
+  priv->stat_sum[2] = (uint32_t)accb;
+  priv->stat_count = (uint32_t)accn;
+  priv->stat_w = priv->cfg.width;
+  priv->stat_h = priv->cfg.height;
+  priv->stat_seq++;
+
+  wbnew[0] = priv->wb[0];
+  wbnew[1] = priv->wb[1];
+  wbnew[2] = priv->wb[2];
+
+  spin_unlock_irqrestore(&priv->irqlock, flags);
+
+  /* A frame with no counted samples carries no colour to measure: either
+   * every block held a saturated sample, or the frame was black.  Either way
+   * there is nothing to steer by, so the gains are left where they are.
+   */
+
+  usable = accn > 0u && accr > 0u && accg > 0u && accb > 0u;
+
+  if (!priv->awb_active || !usable)
     {
-      uint64_t acc[3];
-      uint64_t luma;
-      uint32_t level;
-      unsigned int i;
-
-      acc[0] = accr;
-      acc[1] = accg;
-      acc[2] = accb;
-
-      luma = 66u * accr + 129u * accg + 25u * accb;
-      level = (uint32_t)(luma / (220u * accn));
-
-      if (level > 0u)
-        {
-          for (i = 0; i < 3u; i++)
-            {
-              uint64_t want =
-                  (uint64_t)RK3576_VICAP_WB_ONE * level * accn / acc[i];
-              int32_t current = (int32_t)priv->wb[i];
-              int32_t target;
-              int32_t diff;
-              int32_t step;
-
-              /* The bound has to be applied while the value is still wide
-               * enough to hold it.  A channel that is nearly black asks
-               * for a very large gain -- larger than 32 bits -- and
-               * narrowing it first would wrap it to something small that
-               * then passes the bound.
-               */
-
-              if (want > (uint64_t)RK3576_VICAP_WB_MAX)
-                {
-                  want = RK3576_VICAP_WB_MAX;
-                }
-
-              target = (int32_t)want;
-
-              if (target < (int32_t)RK3576_VICAP_WB_MIN)
-                {
-                  target = (int32_t)RK3576_VICAP_WB_MIN;
-                }
-
-              /* The step is a fraction of the distance, so the gains ease
-               * towards the measurement instead of jumping straight to it.
-               *
-               * The arithmetic has to be signed: once the gains have
-               * corrected the cast the measurements come back towards
-               * unity, which is a target *below* the current gain.  Taking
-               * that difference in unsigned arithmetic would wrap to a
-               * huge positive number and drive the gain up instead of
-               * down.
-               */
-
-              diff = target - current;
-
-              if (diff >= 0)
-                {
-                  step = diff >> RK3576_VICAP_WB_STEP_SHIFT;
-                }
-              else
-                {
-                  step = -((-diff) >> RK3576_VICAP_WB_STEP_SHIFT);
-                }
-
-              priv->wb[i] = (uint32_t)(current + step);
-            }
-        }
+      return;
     }
+
+  {
+    uint64_t acc[3];
+    uint64_t luma;
+    uint32_t level;
+    unsigned int i;
+
+    acc[0] = accr;
+    acc[1] = accg;
+    acc[2] = accb;
+
+    luma = 66u * accr + 129u * accg + 25u * accb;
+    level = (uint32_t)(luma / (220u * accn));
+
+    if (level == 0u)
+      {
+        return;
+      }
+
+    for (i = 0; i < 3u; i++)
+      {
+        uint64_t want = (uint64_t)RK3576_VICAP_WB_ONE * level * accn / acc[i];
+        int32_t current = (int32_t)wbnew[i];
+        int32_t target;
+        int32_t diff;
+        int32_t step;
+
+        /* The bound has to be applied while the value is still wide
+         * enough to hold it.  A channel that is nearly black asks
+         * for a very large gain -- larger than 32 bits -- and
+         * narrowing it first would wrap it to something small that
+         * then passes the bound.
+         */
+
+        if (want > (uint64_t)RK3576_VICAP_WB_MAX)
+          {
+            want = RK3576_VICAP_WB_MAX;
+          }
+
+        target = (int32_t)want;
+
+        if (target < (int32_t)RK3576_VICAP_WB_MIN)
+          {
+            target = (int32_t)RK3576_VICAP_WB_MIN;
+          }
+
+        /* The step is a fraction of the distance, so the gains ease
+         * towards the measurement instead of jumping straight to it.
+         *
+         * The arithmetic has to be signed: once the gains have
+         * corrected the cast the measurements come back towards
+         * unity, which is a target *below* the current gain.  Taking
+         * that difference in unsigned arithmetic would wrap to a
+         * huge positive number and drive the gain up instead of
+         * down.
+         */
+
+        diff = target - current;
+
+        if (diff >= 0)
+          {
+            step = diff >> RK3576_VICAP_WB_STEP_SHIFT;
+          }
+        else
+          {
+            step = -((-diff) >> RK3576_VICAP_WB_STEP_SHIFT);
+          }
+
+        wbnew[i] = (uint32_t)(current + step);
+      }
+  }
+
+  /* Store, but only if the driver still owns the white balance.
+   *
+   * The application can take it over at any moment, and a gain it has just
+   * set is newer than this measurement: writing ours over it would undo a
+   * correction the caller has already made, one frame after it made it.
+   * The window is read-then-write around the loop above, which is the only
+   * place these gains are not read and written together.
+   */
+
+  flags = spin_lock_irqsave(&priv->irqlock);
+
+  if (priv->awb_active)
+    {
+      priv->wb[0] = wbnew[0];
+      priv->wb[1] = wbnew[1];
+      priv->wb[2] = wbnew[2];
+    }
+
+  spin_unlock_irqrestore(&priv->irqlock, flags);
 }
 
 #if defined(__ARM_NEON__) || defined(__ARM_NEON)
@@ -2543,6 +2674,171 @@ static int rk3576_vicap_stop_capture(FAR struct imgdata_s *data)
  ****************************************************************************/
 
 /****************************************************************************
+ * Name: rk3576_vicap_cam3a_ioctl
+ *
+ * Description:
+ *   The 3A control plane: the measurement the demosaicer took out, and the
+ *   white balance in.  See drivers/include/cam3a.h for why measurement and
+ *   application are split the way they are; exposure and gain are not here
+ *   at all, because they are the sensor's and reachable through the ordinary
+ *   V4L2 controls on the capture device.
+ *
+ ****************************************************************************/
+
+static int rk3576_vicap_cam3a_ioctl(FAR struct file *filep, int cmd,
+                                    unsigned long arg)
+{
+  FAR struct rk3576_vicap_s *priv = &g_vicap;
+  irqstate_t flags;
+  int ret = OK;
+
+  switch (cmd)
+    {
+      case CAM3A_GET_STATS:
+        {
+          FAR struct cam3a_stats_s *stats =
+              (FAR struct cam3a_stats_s *)(uintptr_t)arg;
+
+          if (stats == NULL)
+            {
+              return -EINVAL;
+            }
+
+          /* Copied out under the lock the demosaicer publishes under, so the
+           * caller gets one frame's measurement rather than a mixture.
+           */
+
+          flags = spin_lock_irqsave(&priv->irqlock);
+
+          stats->sequence = priv->stat_seq;
+          stats->width = priv->stat_w;
+          stats->height = priv->stat_h;
+          stats->count = priv->stat_count;
+          stats->sum[0] = priv->stat_sum[0];
+          stats->sum[1] = priv->stat_sum[1];
+          stats->sum[2] = priv->stat_sum[2];
+          stats->wb[0] = priv->wb[0];
+          stats->wb[1] = priv->wb[1];
+          stats->wb[2] = priv->wb[2];
+          stats->flags = priv->awb_active ? CAM3A_FLAG_AWB_ACTIVE : 0u;
+
+          spin_unlock_irqrestore(&priv->irqlock, flags);
+        }
+        break;
+
+      case CAM3A_SET_WB:
+        {
+          FAR const struct cam3a_wb_s *wb =
+              (FAR const struct cam3a_wb_s *)(uintptr_t)arg;
+          unsigned int i;
+
+          if (wb == NULL)
+            {
+              return -EINVAL;
+            }
+
+          for (i = 0; i < 3u; i++)
+            {
+              /* A gain of zero is refused rather than applied.  It would
+               * black the channel out, and no later correction can bring it
+               * back, because multiplying by zero has already destroyed
+               * what was there.  It is never what a caller meant.
+               */
+
+              if (wb->gain[i] == 0u)
+                {
+                  _err("ERROR: VICAP: white balance gain %u is zero\n", i);
+                  return -EINVAL;
+                }
+
+              /* The upper bound is not a policy limit but the largest gain
+               * the demosaic can apply.  The vector path narrows the gain to
+               * sixteen bits after scaling it by four, so anything above
+               * RK3576_VICAP_WB_HARD_MAX would arrive in the picture as a
+               * different number -- a gain the caller did not ask for,
+               * applied silently.  Refusing is the only answer that does not
+               * lie about what was applied.
+               */
+
+              if (wb->gain[i] > RK3576_VICAP_WB_HARD_MAX)
+                {
+                  _err("ERROR: VICAP: white balance gain %u is %u, over the "
+                       "%u the demosaic can apply\n",
+                       i, wb->gain[i], RK3576_VICAP_WB_HARD_MAX);
+                  return -EINVAL;
+                }
+            }
+
+          flags = spin_lock_irqsave(&priv->irqlock);
+
+          priv->wb[0] = wb->gain[0];
+          priv->wb[1] = wb->gain[1];
+          priv->wb[2] = wb->gain[2];
+
+          /* Setting the gains is taking them over.  A caller computing them
+           * itself must not have the driver's own loop overwrite them one
+           * frame later, and doing this as part of the same critical section
+           * is what leaves no window in which both are steering.
+           */
+
+          priv->awb_active = false;
+
+          spin_unlock_irqrestore(&priv->irqlock, flags);
+        }
+        break;
+
+      case CAM3A_SET_AWB:
+        {
+          FAR const int *enable = (FAR const int *)(uintptr_t)arg;
+
+          if (enable == NULL)
+            {
+              return -EINVAL;
+            }
+
+          flags = spin_lock_irqsave(&priv->irqlock);
+          priv->awb_active = (*enable != 0);
+          spin_unlock_irqrestore(&priv->irqlock, flags);
+        }
+        break;
+
+      default:
+        ret = -ENOTTY;
+        break;
+    }
+
+  return ret;
+}
+
+static const struct file_operations g_rk3576_vicap_cam3a_fops = {
+  .ioctl = rk3576_vicap_cam3a_ioctl,
+};
+
+/****************************************************************************
+ * Name: rk3576_vicap_cam3a_register
+ *
+ * Description:
+ *   Publish the 3A control plane.  Called from the capture driver's own
+ *   initialisation so that the interface appears with the block it belongs
+ *   to, rather than being a board's separate decision: a board that brings
+ *   VICAP up gets the control plane, and one that does not gets neither.
+ *
+ ****************************************************************************/
+
+static int rk3576_vicap_cam3a_register(void)
+{
+  int ret;
+
+  ret = register_driver(CAM3A_DEVPATH, &g_rk3576_vicap_cam3a_fops, 0666, NULL);
+  if (ret < 0)
+    {
+      _err("ERROR: VICAP: failed to register %s: %d\n", CAM3A_DEVPATH, ret);
+    }
+
+  return ret;
+}
+
+/****************************************************************************
  * Name: rk3576_vicap_initialize
  ****************************************************************************/
 
@@ -2718,6 +3014,19 @@ int rk3576_vicap_initialize(FAR const struct rk3576_vicap_config *config,
         priv->rawlen);
 
   nxmutex_unlock(&priv->lock);
+
+  /* The control plane is published last, so that it only appears once the
+   * capture path behind it is complete -- an application that finds the
+   * device and reads it must not find a half-initialised block.
+   *
+   * A failure here is logged and does not fail the initialisation.  The
+   * camera captures without it; an application that wants 3A should not be
+   * denied the picture because a device node could not be created, and the
+   * log is where the difference between "no 3A" and "no camera" is visible.
+   */
+
+  rk3576_vicap_cam3a_register();
+
   return OK;
 
 errout_free:
@@ -2834,6 +3143,16 @@ int rk3576_vicap_uninitialize(void)
   priv->capturing = false;
 
   nxmutex_unlock(&priv->lock);
+
+  /* Withdraw the control plane with the block it describes, so that a
+   * leftover open cannot reach a driver that is no longer there.  After the
+   * unlock rather than before it: the ioctl path takes irqlock and not this
+   * mutex, so holding it while unregistering would serialise two things that
+   * do not need to be.
+   */
+
+  unregister_driver(CAM3A_DEVPATH);
+
   return OK;
 }
 
