@@ -205,14 +205,20 @@
  *
  * The two bounds are different questions and only the first is the driver's
  * to answer.  The vector path scales the gain by four and narrows it to
- * sixteen bits, so a gain above 0x1fff arrives in the picture as a different
+ * sixteen bits, so a gain above this arrives in the picture as a different
  * number than the one asked for -- which is a correctness limit this file
  * has to enforce.  Where within that range the gains should sit is a
  * question about the scene, and that one belongs to whoever is choosing
  * them.
+ *
+ * The number comes from the interface rather than being written here.  It is
+ * a property of the control plane, and the application needs the same bound
+ * to size a slider with; two copies of it would be one copy too many, and
+ * the copy that drifts is always the one nobody is looking at.  See
+ * CAM3A_WB_MAX in cam3a.h.
  */
 
-#define RK3576_VICAP_WB_HARD_MAX 0x1fffu
+#define RK3576_VICAP_WB_HARD_MAX CAM3A_WB_MAX
 
 /* A sample at or above this is at the top of the sensor's range, where the
  * code it reports stops depending on how much light arrived.  Samples from
@@ -2739,15 +2745,21 @@ static int rk3576_vicap_cam3a_ioctl(FAR struct file *filep, int cmd,
 
           for (i = 0; i < 3u; i++)
             {
-              /* A gain of zero is refused rather than applied.  It would
-               * black the channel out, and no later correction can bring it
-               * back, because multiplying by zero has already destroyed
-               * what was there.  It is never what a caller meant.
+              /* Below the floor is refused rather than applied.  A gain of
+               * zero would black the channel out, and no later correction
+               * can bring it back, because multiplying by zero has already
+               * destroyed what was there.  It is never what a caller meant.
+               *
+               * The floor is CAM3A_WB_MIN from the interface, which is one,
+               * so this is the same test the interface documents rather than
+               * a policy of this file's.
                */
 
-              if (wb->gain[i] == 0u)
+              if (wb->gain[i] < CAM3A_WB_MIN)
                 {
-                  _err("ERROR: VICAP: white balance gain %u is zero\n", i);
+                  _err("ERROR: VICAP: white balance gain %u is %u, under the "
+                       "%u the interface allows\n",
+                       i, wb->gain[i], CAM3A_WB_MIN);
                   return -EINVAL;
                 }
 

@@ -104,6 +104,25 @@
 
 #define CAM3A_WB_ONE 256u
 
+/* The largest gain the capture driver will accept, and the smallest.
+ *
+ * These are what the hardware can apply rather than a judgement about what
+ * it should: the vector demosaicer narrows the gain to sixteen bits after
+ * scaling it by four, so anything above CAM3A_WB_MAX would arrive in the
+ * picture as a different number -- a gain the caller did not ask for,
+ * applied silently.  Zero is refused because multiplying a channel by zero
+ * has already destroyed what was there and no later correction can bring it
+ * back.
+ *
+ * A caller's own policy is a narrower thing than this and belongs to the
+ * caller.  The automatic loop in camenc keeps to 64..1024, which is about
+ * the range over which a correction is still a correction; an application
+ * that wants the whole of the hardware's range has it here.
+ */
+
+#define CAM3A_WB_MIN 1u
+#define CAM3A_WB_MAX 0x1fffu
+
 /****************************************************************************
  * Public Types
  ****************************************************************************/
