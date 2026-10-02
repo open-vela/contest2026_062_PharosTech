@@ -90,28 +90,72 @@
 
 #define CAMENC_WS_RX_SIZE 2048
 
-/* How far back a late client can be caught up.
+/* The longest control message that will be read from a client.
  *
- * A client that connects mid-stream cannot be given the stream from the
- * beginning, and must not be given it from the middle either: it has to start
- * where its decoder can.  So the segments needed to start a stream are kept
- * -- the initialisation segment, and then every segment since the last one a
- * stream may start on -- and a client that arrives is given those before it
- * is given anything live.
- *
- * Today every frame is a key frame, so this holds one segment plus the
- * initialisation segment and the bound below is never approached.  It is
- * sized for the day that stops being true: a second of pictures at a
- * reasonable bit rate.
+ * A message is a line of named values -- see camenc_ws_cmd_t -- and the
+ * longest one this application is sent is under forty bytes.  The bound is
+ * here rather than in the application because the buffer it is unmasked into
+ * is the server's, and a message longer than it is dropped rather than
+ * truncated: half a command is a different command.
  */
 
-#define CAMENC_WS_PRIMER_SIZE (256 * 1024)
+#define CAMENC_WS_CMD_MAX 96
+
+/* The largest initialisation segment the server will hold for a client that
+ * arrives after it.
+ *
+ * The initialisation segment is the one thing a late client cannot do
+ * without: it carries the parameter sets and the description of the track,
+ * and a decoder that has just started has no other way to learn what the
+ * stream is.  Four kilobytes is room to be wrong about its size without
+ * being room for anything that is not one.
+ */
+
+#define CAMENC_WS_INIT_MAX 4096
 
 struct camenc_ws_client_s
 {
   int fd;
   bool upgraded; /* the handshake has been answered           */
   bool closing;  /* close once the buffer has gone out        */
+
+  /* Whether this client has been brought up to the stream yet.
+   *
+   * A client that has just connected has no decoder state, so there are
+   * exactly two things it can be given: the initialisation segment, and a
+   * segment a stream may start on.  Anything between them is a picture that
+   * refers to pictures it never received.
+   *
+   * So it is given the first and waits for the second, and the segments
+   * published while it waits are dropped for it rather than queued for it.
+   * Queueing them is what used to break this.  The catch-up data and the
+   * live data shared one transmit buffer, and the live frames alone filled
+   * it in about three frames -- five hundredths of a second -- so a client
+   * was dropped while it was still completing its handshake.  What a
+   * browser reports for that is that it cannot connect at all, which is
+   * what it looked like from the outside.
+   *
+   * Waiting costs the client one group of pictures before the picture
+   * appears, which is two frames here.  It is the price of not replaying,
+   * and replaying cannot be made to work: the client's window is bounded by
+   * how fast its socket drains, and a replay is by definition larger than
+   * the frames arriving during it.
+   */
+
+  bool have_init;
+  bool waiting;
+
+  /* What this connection has managed, for the periodic report.
+   *
+   * `sent` is what the socket took, and `skipped` is what did not fit and
+   * was thrown away.  They are the two numbers that say whether a client is
+   * keeping up, which is otherwise invisible: a client that receives nothing
+   * and a client that receives everything look the same from the capture
+   * loop, because in both cases the loop's own work is identical.
+   */
+
+  uint64_t sent;
+  uint32_t skipped;
 
   uint8_t rx[CAMENC_WS_RX_SIZE];
   size_t rx_len;
@@ -122,11 +166,26 @@ struct camenc_ws_client_s
   uint8_t *tx;
 };
 
-/* The whole of the server's state, and it is 8464 bytes: the receive buffer
- * of every client it may have lives in it.  That is larger than the stack
- * the application task is given, so it belongs in .bss or on the heap and
- * never in a frame -- a frame of that size does not fit, and overflowing it
- * corrupts whatever the heap put next.  camenc_main.c keeps it in .bss,
+/* Where a control message from a client is handed.
+ *
+ * The server carries bytes and knows nothing about what they mean, so the
+ * text of a message is passed straight to the application -- the only part
+ * that knows what a valid one is.  The callback returns nothing on purpose:
+ * a message the application does not understand is not the server's to
+ * complain about, and is certainly not a reason to drop a client that is
+ * watching the stream perfectly well.
+ *
+ * The text is NUL-terminated and is not kept afterwards, so a callback that
+ * wants to hold on to it has to copy it.
+ */
+
+typedef void (*camenc_ws_cmd_t)(FAR const char *text, FAR void *arg);
+
+/* The whole of the server's state, and most of it is the receive buffer of
+ * every client it may have: about eight kilobytes, which is more than the
+ * stack the application task is given.  So it belongs in .bss or on the heap
+ * and never in a frame -- a frame of that size does not fit, and overflowing
+ * it corrupts whatever the heap put next.  camenc_main.c keeps it in .bss,
  * which is where that was learned.
  */
 
@@ -137,32 +196,24 @@ struct camenc_ws_s
 
   struct camenc_ws_client_s clients[CAMENC_WS_MAX_CLIENTS];
 
-  /* The segment a new client has to be given first, and how long it is. */
+  /* The initialisation segment, held for clients that arrive after it. */
 
-  uint8_t *primer;
-  size_t primer_len;
-  size_t primer_init_len; /* where the initialisation segment ends   */
-  size_t primer_size;
+  uint8_t *init_seg;
+  size_t init_len;
 
   size_t tx_size; /* per-client transmit buffer size         */
-
-  /* Whether the segments since the last key segment fit in the primer.
-   * If one alone did not, there is no point admitting a client until the
-   * next key segment resets this, so it is refused until then.
-   *
-   * A segment too large to be sent is treated the same way: admitting a
-   * client on one would only drop it again on the send, so the primer has
-   * to refuse what the transmit buffer cannot carry, or the two limits
-   * disagree and a client is told to start somewhere it cannot be sent.
-   */
-
-  bool primable;
 
   /* Said once, however many segments are too large, because if the encoder
    * produces them at the configured size it produces them every time.
    */
 
   bool warned_oversize;
+
+  /* Said once for the same reason: a client whose buffer is full has it
+   * full again on the next frame.
+   */
+
+  bool warned_full;
 
   /* What to tell a player the stream is, for the page to put in its
    * MediaSource.  It has to be the stream's own profile, compatibility and
@@ -173,6 +224,13 @@ struct camenc_ws_s
 
   uint32_t clients_served;
   uint32_t clients_dropped;
+
+  /* Where a text frame from a client goes.  Null until one is set, in which
+   * case text frames are read and discarded.
+   */
+
+  camenc_ws_cmd_t on_command;
+  FAR void *command_arg;
 };
 
 /****************************************************************************
@@ -195,6 +253,11 @@ int camenc_ws_start(FAR struct camenc_ws_s *ws, uint16_t port, size_t tx_size);
 
 void camenc_ws_set_codec(FAR struct camenc_ws_s *ws, FAR const char *codec);
 
+/* Say where a control message from a client should be handed. */
+
+void camenc_ws_set_command(FAR struct camenc_ws_s *ws, camenc_ws_cmd_t fn,
+                           FAR void *arg);
+
 void camenc_ws_stop(FAR struct camenc_ws_s *ws);
 
 /* Service the server: accept new connections, read what clients have sent
@@ -207,12 +270,35 @@ void camenc_ws_poll(FAR struct camenc_ws_s *ws);
 
 /* Hand one segment to every client.
  *
- * `key` says a stream may be started on this segment, which is what makes the
- * primer start here rather than earlier.  Shaped like camenc_stream's own
+ * `key` says a stream may be started on this segment, which is what a client
+ * that has just connected is waiting for.  Shaped like camenc_stream's own
  * callback so that the two connect with one line.
  */
 
 int camenc_ws_publish(FAR struct camenc_ws_s *ws, enum camenc_seg_e seg,
                       const uint8_t *data, size_t len, bool key);
+
+/* Send one text frame to every client, as far as it fits.
+ *
+ * This is not a segment and is not allowed to cost a client: one whose
+ * transmit buffer is full when the exposure changes misses that readout and
+ * keeps its picture.  `text` need not be NUL-terminated; `len` is the whole
+ * of it.
+ */
+
+void camenc_ws_status(FAR struct camenc_ws_s *ws, FAR const char *text,
+                      size_t len);
+
+/* Print one line about how the clients are doing: how many are connected,
+ * how many bytes are waiting for a socket that will not take them, how many
+ * have gone out, and how many frames have been thrown away for not fitting.
+ *
+ * Worth a line in the report rather than a debug-only facility, because a
+ * stream that is not reaching a browser looks exactly like a stream that is:
+ * the capture loop's own timings are the same either way, and the only place
+ * the difference shows is here.
+ */
+
+void camenc_ws_report(FAR struct camenc_ws_s *ws);
 
 #endif /* __APP_CAMENC_CAMENC_WS_H */
