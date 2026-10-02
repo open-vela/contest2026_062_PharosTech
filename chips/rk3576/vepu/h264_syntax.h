@@ -105,8 +105,14 @@
 #define RK3576_H264_NAL_TYPE_SPS          7
 #define RK3576_H264_NAL_TYPE_PPS          8
 
-/* nal_ref_idc for parameter sets and for reference slices */
+/* nal_ref_idc for parameter sets and for reference slices.
+ *
+ * An IDR carries the highest and every other reference picture the one
+ * below it, which is how a decoder tells a stream's restarting points from
+ * the pictures that merely continue it.
+ */
 
+#define RK3576_H264_NALU_PRIORITY_HIGH    2
 #define RK3576_H264_NALU_PRIORITY_HIGHEST 3
 
 /* profile_idc */
@@ -144,6 +150,33 @@
 #define RK3576_H264_STR_DEFAULT        1
 #define RK3576_H264_STR_MAX            3
 
+/* Slice types, with MPP's numbering.  Only two are produced by this driver,
+ * but the anti-smear block compares the previous picture's type against the I
+ * value, so the numbers have to be the ones MPP feeds it rather than a local
+ * enum that happens to be ordered differently.
+ */
+
+#define RK3576_H264_SLICE_P 0
+#define RK3576_H264_SLICE_I 2
+
+/* The deblur tuning, MPP's defaults from h264e_api_v2.c: 0 and 3.
+ *
+ * Neither does what its name suggests here.  deblur_en is what MPP calls
+ * qpmap_en by the time the register layer sees it -- the two names are the
+ * same flag -- and deblur_str is a strength, 0..7, where 6 and 7 mean
+ * something else entirely rather than "stronger".  Both feed the anti-smear
+ * block: the strength selects which threshold set is used and appears in the
+ * quantiser delta, and the flag selects between two of those sets.
+ *
+ * They are configuration rather than constants because the register layer's
+ * contract is to reproduce MPP for the configuration it is given, and a
+ * caller that changed either would otherwise get the defaults silently.
+ */
+
+#define RK3576_H264_DEBLUR_EN_DEFAULT  0
+#define RK3576_H264_DEBLUR_STR_DEFAULT 3
+#define RK3576_H264_DEBLUR_STR_MAX     7
+
 struct rk3576_h264_tune_s
 {
   uint32_t scene_mode; /* RK3576_H264_SCENE_MODE_*                */
@@ -157,6 +190,13 @@ struct rk3576_h264_tune_s
    */
 
   uint32_t lambda_idx_i;
+
+  /* The deblur tuning the anti-smear thresholds are derived from.  See
+   * RK3576_H264_DEBLUR_EN_DEFAULT above for why they are here at all.
+   */
+
+  uint32_t deblur_en;  /* RK3576_H264_DEBLUR_EN_DEFAULT  */
+  uint32_t deblur_str; /* 0..RK3576_H264_DEBLUR_STR_MAX  */
 };
 
 /* QP bias.  A small additive bias on the quantiser, split by frame type.
@@ -217,18 +257,23 @@ struct rk3576_h264_cfg_s
 
   /* log2_max_frame_num_minus4 and log2_max_pic_order_cnt_lsb_minus4.
    *
-   * An all-intra stream never puts two frames in the same coded video
-   * sequence state that needs a small frame_num, so MPP pins both to 12 when
-   * gop == 1.  Picture order count type 0 is the only type supported by the
-   * hardware.
+   * Both are written as 12, the widest the syntax allows and wider than any
+   * group this driver will be asked for needs: 16-bit frame_num and
+   * pic_order_cnt_lsb, against a group length capped at RK3576_VEPU_GOP_MAX.
+   * The encoder does not read them back, so what they have to satisfy is a
+   * decoder, and a decoder is satisfied by a width that cannot wrap rather
+   * than by one that exactly fits.  Picture order count type 0 is the only
+   * type the hardware supports.
    */
 
   uint32_t log2_max_frame_num_minus4;
   uint32_t poc_type;
   uint32_t log2_max_poc_lsb_minus4;
 
-  /* max_num_ref_frames.  For all-intra this is 1: the IDR is the only
-   * reference picture and it is refreshed every frame.
+  /* max_num_ref_frames.  One, because the group is short enough that the
+   * picture being predicted from is always the one immediately before: there
+   * is never more than a single reference, so there is nothing for a larger
+   * number to describe.
    */
 
   uint32_t num_ref_frames;

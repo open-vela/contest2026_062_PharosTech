@@ -99,9 +99,48 @@
  * assembling these.
  */
 
-#define RK3576_VEPU510_ST_BS_LGTH_OFFSET  0x4000
-#define RK3576_VEPU510_ST_SSE_LOW_OFFSET  0x4004 /* sse_l16 in bits 31:16 */
+#define RK3576_VEPU510_ST_BS_LGTH_OFFSET 0x4000
+#define RK3576_VEPU510_ST_SSE_LOW_OFFSET 0x4004 /* sse_l16 in bits 31:16 */
+
+/* The smear counts the encoder reports for the picture it just encoded, as
+ * four eight-bit fields in one word.  This is the half of the status block
+ * that feeds back into the *next* picture's registers -- see
+ * rk3576_vepu510_status_smear() -- and it is read like the rest of the status
+ * block, from task context after the job has finished.
+ */
+
+#define RK3576_VEPU510_ST_SMEAR_CNT_OFFSET 0x40a4
+
+/* What one step of a smear count is worth.  The encoder counts in units of
+ * four macroblocks, so the status field is a quarter of the count the
+ * anti-smear thresholds are expressed in and MPP multiplies it back.
+ */
+
+#define RK3576_VEPU510_ST_SMEAR_CNT_SCALE 4
 #define RK3576_VEPU510_ST_SSE_HIGH_OFFSET 0x4008
+
+/* How the picture was actually coded: the block counts the encoder reports
+ * for the picture it just encoded, split by prediction mode and block size.
+ *
+ * This is the only place the choice between intra and inter coding of a
+ * finished picture is visible.  A length says what the picture cost and a
+ * distortion figure says how good it is, and neither distinguishes a picture
+ * that predicted well from one that gave up and coded itself from the source
+ * -- but the two have opposite causes, and a picture that costs an I
+ * picture's worth of bits while claiming to be predicted is exactly the case
+ * where that distinction is the whole question.  MPP reads the same fields
+ * for its rate control (iblk4_prop is these counts over the macroblock
+ * count).
+ */
+
+#define RK3576_VEPU510_ST_QP_SUM_OFFSET   0x400c
+#define RK3576_VEPU510_ST_PNUM_P16_OFFSET 0x4088
+#define RK3576_VEPU510_ST_PNUM_P8_OFFSET  0x408c
+#define RK3576_VEPU510_ST_PNUM_I32_OFFSET 0x4090
+#define RK3576_VEPU510_ST_PNUM_I16_OFFSET 0x4094
+#define RK3576_VEPU510_ST_PNUM_I8_OFFSET  0x4098
+#define RK3576_VEPU510_ST_PNUM_I4_OFFSET  0x409c
+#define RK3576_VEPU510_ST_PNUM_MASK       0x1fffffu
 
 #define RK3576_VEPU510_ST_SSE_LOW_SHIFT   16
 #define RK3576_VEPU510_ST_SSE_LOW_MASK    0xffffu
@@ -156,11 +195,11 @@ enum rk3576_vepu510_src_fmt_e
  * travels alongside the base rather than being recomputed by whoever sets
  * the registers.
  *
- * Only the write side is described.  An all-intra stream never reads a
- * reference, so the read-side registers keep MPP's "no reference" state of
- * zero, and the two reads below cover the whole set.
+ * One struct describes one such set, and a frame names two of them: the set
+ * it writes and, when it predicts from a decoded picture, the set it reads.
+ * The two are separate registers, so a picture never reads the set it is
+ * writing -- the reference has to be a set a previous picture left behind.
  */
-
 struct rk3576_vepu510_recn_s
 {
   uint32_t pixel_phys;  /* reconstruction pixel buffer, FBC header   */
@@ -182,6 +221,27 @@ struct rk3576_vepu510_recn_size_s
   uint32_t pixel;  /* header plus body                             */
   uint32_t thumb;  /* thumbnail buffer                             */
   uint32_t smear;  /* anti-smear buffer                            */
+};
+
+/* What one encoded picture reported about itself, which the *next* picture's
+ * anti-smear thresholds are derived from.
+ *
+ * The numbers are the encoder's own account of how much of the picture it had
+ * to refresh, so they are only available once the picture has been encoded:
+ * this is the one part of the register image that comes from a status read
+ * rather than from configuration.
+ *
+ * frame_type uses H.264's slice-type numbering (0 for P, 2 for I) because
+ * that is the value MPP compares, and the comparison is against the constant
+ * RK3576_H264_SLICE_I.  A local enum with a different order would compare
+ * equal to P pictures whenever it happened to line up numerically.
+ */
+
+struct rk3576_vepu510_feedback_s
+{
+  uint32_t frame_type;   /* RK3576_H264_SLICE_*                   */
+  uint32_t mb_num;       /* macroblocks in that picture         */
+  uint32_t smear_cnt[5]; /* four counts, and their sum in [4]   */
 };
 
 struct rk3576_vepu510_frame_s
@@ -222,37 +282,105 @@ struct rk3576_vepu510_frame_s
    */
 
   struct rk3576_vepu510_recn_s recn;
+
+  /* Reconstruction working set of the picture this one predicts from, as a
+   * set of the same shape.  Consulted only when ref_valid is set.
+   *
+   * The caller owns the ordering rule: the set written here must be one
+   * that a previous call left behind, that nothing is currently writing to,
+   * and that the encoder is not still reading.  The register layer cannot
+   * check any of that -- it sees one frame at a time -- so a mismatch shows
+   * up as a corrupted picture rather than as an error.
+   */
+
+  struct rk3576_vepu510_recn_s ref;
+
+  bool ref_valid; /* 1 when ref describes a decoded picture to
+                   * predict from.  Zero for the first picture of
+                   * a stream and for every IDR: an IDR is decoded
+                   * without reference to anything, and the
+                   * hardware must not be pointed at a stale set
+                   * for it.
+                   */
+
+  /* What the picture before this one reported about itself.
+   *
+   * Nothing is derived from it unless the anti-smear thresholds are
+   * programmed, and those are programmed for every picture -- so this has to
+   * be supplied even for an IDR, and even for the first picture of a stream,
+   * where it is a zeroed struct.  That is not an invented "no previous
+   * picture" state: it is what MPP's own context holds on its first task,
+   * because it copies its feedback into the previous slot before every job
+   * and never special-cases the first.
+   */
+
+  struct rk3576_vepu510_feedback_s prev;
 };
 
-/* Slice-level values for one IDR I-slice.
+/* One coded picture, as the hardware needs it described.
  *
- * This driver encodes all-intra, so every frame is an IDR and these are the
- * only slice parameters that matter.  Two fields that a P-slice would need
- * are definitionally fixed for an IDR and so are not parameters:
+ * This was an IDR descriptor while every picture was one.  It is a slice
+ * descriptor now, because the two differ in three fields and only the caller
+ * knows which it is making: the NAL unit type and reference indicator, the
+ * slice type, and whether the per-picture syntax starts over.
  *
- *   frame_num          an IDR resets it, so it is always 0
- *                      (H.264 7.4.3, and MPP h264e_dpb.c agrees)
- *   pic_order_cnt_lsb  an IDR resets the picture order count, so it is
- *                      always 0 (H.264 7.4.3.2)
- *
- * A P-slice would additionally need the reference-list-reordering and
- * memory-management-control machinery from MPP h264e_slice.c, which is not
- * ported yet.
+ * The values the caller supplies are the ones the hardware writes into the
+ * slice header it synthesises.  They are not checked against each other
+ * here: an IDR with a non-zero frame_num is a contradiction, and it is the
+ * caller's business not to make one, because only the caller knows the
+ * picture's place in its group.
  */
 
-struct rk3576_vepu510_idr_s
+struct rk3576_vepu510_slice_s
 {
-  uint32_t idr_pic_id;           /* toggled per IDR, 0..15      */
-  uint32_t deblock_disable;      /* disable_deblocking_filter_idc */
-  uint32_t deblock_offset_alpha; /* slice_alpha_c0_offset_div2  */
-  uint32_t cabac_init_idc;       /* used only when entropy coding
-                                  * is CABAC */
-  uint32_t long_term_reference_flag;
+  bool idr; /* 1 for an IDR, 0 for a P picture */
+
+  /* The picture's own syntax.  An IDR resets both, so they are zero for it
+   * and only the caller can supply the sequence.
+   */
+
+  uint32_t frame_num; /* frame_num, 0..max_frame_num-1  */
+  uint32_t poc_lsb;   /* pic_order_cnt_lsb              */
+
+  uint32_t idr_pic_id; /* only written for an IDR, and
+                        * only meaningful there          */
+
+  uint32_t deblock_disable;          /* disable_deblocking_filter_idc */
+  uint32_t deblock_offset_alpha;     /* slice_alpha_c0_offset_div2  */
+  uint32_t cabac_init_idc;           /* used only when entropy coding
+                                      * is CABAC */
+  uint32_t long_term_reference_flag; /* an IDR is the only picture
+                                      * that can say this        */
 };
 
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: rk3576_vepu510_frame_num_mask, rk3576_vepu510_poc_lsb_mask
+ *
+ * Description:
+ *   The masks that reduce frame_num and pic_order_cnt_lsb to the ranges the
+ *   configured syntax declares.
+ *
+ *   These are derived here, from the same cfg the slice header is built from,
+ *   because the SPS tells the decoder what the ranges are: a driver that
+ *   wrapped somewhere else would be signalling one range and using another.
+ *   The disagreement would first appear as a decoding failure after a wrap,
+ *   which at sixteen bits is hours into a stream and so is never in a test --
+ *   which is why the arithmetic lives where it can be checked against the
+ *   reference rather than next to its only caller.
+ *
+ *   Both ranges are a power of two wider than the four bits the SPS field
+ *   is short by, and both fit the sixteen-bit register fields they are
+ *   written into.
+ *
+ ****************************************************************************/
+
+uint32_t
+rk3576_vepu510_frame_num_mask(FAR const struct rk3576_h264_cfg_s *cfg);
+uint32_t rk3576_vepu510_poc_lsb_mask(FAR const struct rk3576_h264_cfg_s *cfg);
 
 /****************************************************************************
  * Name: rk3576_vepu510_regs_ctl
@@ -385,7 +513,7 @@ int rk3576_vepu510_regs_recn(FAR HalVepu510RegSet *regs,
  *   regs - register set to fill
  *   cfg  - encoder syntax configuration, the same struct the SPS and PPS
  *          writers take
- *   idr  - slice-level values for this picture
+ *   slice - slice-level values for this picture
  *
  * Returned Value:
  *   OK on success, -EINVAL if cfg is not usable.
@@ -394,7 +522,7 @@ int rk3576_vepu510_regs_recn(FAR HalVepu510RegSet *regs,
 
 int rk3576_vepu510_regs_codec(FAR HalVepu510RegSet *regs,
                               FAR const struct rk3576_h264_cfg_s *cfg,
-                              FAR const struct rk3576_vepu510_idr_s *idr);
+                              FAR const struct rk3576_vepu510_slice_s *slice);
 
 /****************************************************************************
  * Name: rk3576_vepu510_regs_rc_fixqp
@@ -524,7 +652,14 @@ int rk3576_vepu510_regs_anti_ringing(FAR HalVepu510RegSet *regs,
  *   is not what MPP produces; matching MPP keeps the register image
  *   comparable.
  *
- *   Mirrors MPP setup_vepu510_anti_flicker().
+ *   This is the anti-flicker part of the SQI block.  The anti-smear part --
+ *   smear_opt_cfg, smear_madp_thd*, smear_cnt_thd*, smear_resi_thd* and
+ *   smear_st_thd -- is a separate block with a separate entry point, because
+ *   it is derived from what the previous picture reported rather than from
+ *   configuration; see rk3576_vepu510_regs_anti_smear().  The two share the
+ *   block and write disjoint fields.
+ *
+ *   Mirrors MPP setup_vepu510_anti_flicker(), and only that.
  *
  * Returned Value:
  *   OK on success, -EINVAL if cfg is not usable (an out-of-range strength
@@ -534,6 +669,45 @@ int rk3576_vepu510_regs_anti_ringing(FAR HalVepu510RegSet *regs,
 
 int rk3576_vepu510_regs_anti_flicker(FAR HalVepu510RegSet *regs,
                                      FAR const struct rk3576_h264_cfg_s *cfg);
+
+/****************************************************************************
+ * Name: rk3576_vepu510_regs_anti_smear
+ *
+ * Description:
+ *   Fill the SQI block's anti-smear thresholds, weights and quantiser delta:
+ *   the part of the register image that is derived from what the *previous*
+ *   picture reported about itself.
+ *
+ *   Mirrors MPP setup_vepu510_anti_smear() exactly, including the branch
+ *   structure, because every branch is reachable from the configuration this
+ *   driver exposes -- the deblur tuning selects between two threshold sets
+ *   and one of them is also selected by whether anything was detected as
+ *   smeared.
+ *
+ *   Leaving this block at zero is not the same as switching it off.  The
+ *   eight-bit threshold fields and the two-bit stated_mode take values MPP
+ *   never writes, and the mode is the one that carries across pictures:
+ *   MPP sets it to 1 when this picture or the previous one is an I slice and
+ *   to 2 otherwise.  A driver that always wrote 0 would produce the same
+ *   registers for the first picture after an IDR as for every picture after
+ *   that, which is exactly the distinction this block exists to make.
+ *
+ * Input Parameters:
+ *   regs        - register set to fill
+ *   cfg         - encoder syntax configuration, for the deblur tuning
+ *   slice_is_i  - true when the picture being programmed is an I slice
+ *   prev        - what the previous picture reported; zeroed on the first
+ *                 picture of a stream, as MPP's own context is
+ *
+ * Returned Value:
+ *   OK on success, -EINVAL if cfg is not usable or deblur_str is out of
+ *   range.
+ *
+ ****************************************************************************/
+
+int rk3576_vepu510_regs_anti_smear(
+    FAR HalVepu510RegSet *regs, FAR const struct rk3576_h264_cfg_s *cfg,
+    bool slice_is_i, FAR const struct rk3576_vepu510_feedback_s *prev);
 
 /****************************************************************************
  * Name: rk3576_vepu510_regs_l2
@@ -633,7 +807,7 @@ int rk3576_vepu510_regs_me(FAR HalVepu510RegSet *regs,
 int rk3576_vepu510_regs_build(FAR HalVepu510RegSet *regs,
                               FAR const struct rk3576_vepu510_frame_s *frm,
                               FAR const struct rk3576_h264_cfg_s *cfg,
-                              FAR const struct rk3576_vepu510_idr_s *idr);
+                              FAR const struct rk3576_vepu510_slice_s *slice);
 
 /****************************************************************************
  * Name: rk3576_vepu510_status_decode
@@ -668,5 +842,32 @@ int rk3576_vepu510_regs_build(FAR HalVepu510RegSet *regs,
 void rk3576_vepu510_status_decode(uint32_t bs_lgth_l32, uint32_t sse_bsl,
                                   uint32_t sse_h32, FAR uint32_t *bs_length,
                                   FAR uint32_t *sse);
+
+/****************************************************************************
+ * Name: rk3576_vepu510_status_smear
+ *
+ * Description:
+ *   Turn the status block's smear-count register into the five counts the
+ *   anti-smear block is programmed from, which is what the driver has to
+ *   carry from one job to the next.
+ *
+ *   The register holds four eight-bit counts and the fifth entry is their
+ *   sum, which is how MPP's own feedback arranges them.  The scaling by four
+ *   is MPP's too, and it is here rather than at the call site because it is
+ *   part of what the hardware's number means: the encoder counts in units of
+ *   four macroblocks.
+ *
+ *   This is separate from rk3576_vepu510_status_decode() because it is read
+ *   at a different time for a different purpose: the length and distortion
+ *   are read once, to report the frame that just finished, while the counts
+ *   are read so that the *next* frame can be programmed.
+ *
+ * Input Parameters:
+ *   smear_cnt_reg - status word at RK3576_VEPU510_ST_SMEAR_CNT_OFFSET
+ *   out           - receives five counts; must not be NULL
+ *
+ ****************************************************************************/
+
+void rk3576_vepu510_status_smear(uint32_t smear_cnt_reg, FAR uint32_t *out);
 
 #endif /* __CHIPS_RK3576_VEPU_VEPU510_REGS_H */

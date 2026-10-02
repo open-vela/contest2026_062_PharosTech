@@ -576,20 +576,73 @@ static bool g_vepu_irq_attached;
 
 static HalVepu510RegSet g_vepu_regs;
 
-/* The reconstruction working set.
+/* The reconstruction working sets.
  *
- * One slot, not MPP's four: the encoder reconstructs exactly one picture per
- * job, this driver runs one job at a time, and an all-intra stream never
- * reads a reconstruction back as a reference.  The size is remembered so a
- * change of picture geometry can be noticed and the old buffers released.
+ * Two of them, and the reason is structural rather than a matter of
+ * throughput: an encoder that predicts from a previous picture reconstructs
+ * its own picture while reading the one it predicts from, and the read and
+ * write sides are different registers.  They therefore cannot be the same
+ * buffer.  Two is exactly enough for a stream that keeps one reference and
+ * does not reorder -- picture N reads what N-1 wrote and writes the other
+ * slot, so the pair alternates.
+ *
+ * The size is remembered so a change of picture geometry can be noticed and
+ * the old buffers released.
  */
 
-static FAR void *g_vepu_recn_pixel;
-static FAR void *g_vepu_recn_thumb;
-static FAR void *g_vepu_recn_smear;
+struct rk3576_vepu_recn_slot_s
+{
+  FAR void *pixel;
+  FAR void *thumb;
+  FAR void *smear;
+};
+
+/* How many reconstruction working sets the encoder is given.
+ *
+ * Two is enough for a stream that keeps one reference and does not reorder:
+ * picture N reads what N-1 wrote and writes the other buffer, so the pair
+ * alternates.  The count is not a tuning knob -- it was taken to four to match
+ * the vendor driver's own bookkeeping (MPP rotates through
+ * H264E_MAX_REFS_CNT slots with `if (ctx->curr_idx > 3) ctx->curr_idx = 0`),
+ * and every byte of every stream this driver produces came out identical:
+ * same lengths, same distortion, same bitstream.  The pattern of costs that
+ * prompted the change has a period of four either way.
+ *
+ * So it is back to two, because the second pair costs a picture's worth of
+ * DMA memory per slot and buys nothing.
+ */
+
+#define RK3576_VEPU_RECN_SLOTS 2
+
+static struct rk3576_vepu_recn_slot_s g_vepu_recn[RK3576_VEPU_RECN_SLOTS];
 static struct rk3576_vepu510_recn_size_s g_vepu_recn_size;
 static uint32_t g_vepu_recn_width;
 static uint32_t g_vepu_recn_height;
+
+/* Which slot the next job reconstructs into, and whether the other one still
+ * holds a picture that can be predicted from.  Held across jobs deliberately:
+ * this is the encoder's version of a decoded picture buffer, and its whole
+ * content is "which picture is the reference".
+ */
+
+static uint32_t g_vepu_recn_next;
+static bool g_vepu_recn_ref_valid;
+
+/* What the last completed job reported about itself, which the next job's
+ * anti-smear thresholds are programmed from.
+ *
+ * This is the one piece of the register image that comes from the hardware
+ * rather than from configuration, so it cannot be derived on demand: it has
+ * to be captured when the job finishes and kept until the next one starts.
+ * The picture's own kind is part of it because the mode the encoder writes
+ * depends on whether this picture or the one before it stood on its own.
+ *
+ * It is zeroed along with the reconstruction slots, which is the state MPP's
+ * own context is in for its first task: nothing here is a special "no
+ * previous picture" case, because MPP does not have one either.
+ */
+
+static struct rk3576_vepu510_feedback_s g_vepu_last_fb;
 
 /* How long to wait for a job before deciding the hardware is not going to
  * answer.  1080p is a few milliseconds on this IP, so a second is not a
@@ -739,34 +792,49 @@ static void rk3576_vepu_mmu_passthrough(void)
 
 static void rk3576_vepu_recn_free(void)
 {
-  if (g_vepu_recn_pixel != NULL)
-    {
-      rk3576_dma_free(g_vepu_recn_pixel, g_vepu_recn_size.pixel);
-      g_vepu_recn_pixel = NULL;
-    }
+  int i;
 
-  if (g_vepu_recn_thumb != NULL)
+  for (i = 0; i < RK3576_VEPU_RECN_SLOTS; i++)
     {
-      rk3576_dma_free(g_vepu_recn_thumb, g_vepu_recn_size.thumb);
-      g_vepu_recn_thumb = NULL;
-    }
+      if (g_vepu_recn[i].pixel != NULL)
+        {
+          rk3576_dma_free(g_vepu_recn[i].pixel, g_vepu_recn_size.pixel);
+          g_vepu_recn[i].pixel = NULL;
+        }
 
-  if (g_vepu_recn_smear != NULL)
-    {
-      rk3576_dma_free(g_vepu_recn_smear, g_vepu_recn_size.smear);
-      g_vepu_recn_smear = NULL;
+      if (g_vepu_recn[i].thumb != NULL)
+        {
+          rk3576_dma_free(g_vepu_recn[i].thumb, g_vepu_recn_size.thumb);
+          g_vepu_recn[i].thumb = NULL;
+        }
+
+      if (g_vepu_recn[i].smear != NULL)
+        {
+          rk3576_dma_free(g_vepu_recn[i].smear, g_vepu_recn_size.smear);
+          g_vepu_recn[i].smear = NULL;
+        }
     }
 
   g_vepu_recn_width = 0;
   g_vepu_recn_height = 0;
+  g_vepu_recn_next = 0;
+  g_vepu_recn_ref_valid = false;
+  memset(&g_vepu_last_fb, 0, sizeof(g_vepu_last_fb));
 }
 
 /****************************************************************************
  * Name: rk3576_vepu_recn_alloc
  *
  * Description:
- *   Make sure the reconstruction working set matches this picture, and
- *   describe it in frm.  The caller must hold the driver mutex.
+ *   Make sure the reconstruction working sets match this picture, and
+ *   describe both sides of the pair in frm.  The caller must hold the driver
+ *   mutex.
+ *
+ *   idr says whether this picture is decoded without reference to anything.
+ *   It matters here because such a picture is not allowed to read a
+ *   reconstruction -- and because its arrival is what makes every earlier
+ *   picture unavailable as a reference, so the slot that held one stops
+ *   being one.
  *
  *   The buffers come from the DMA heap because the encoder writes them
  *   directly: they have to be physically contiguous and below 4 GB, which
@@ -774,19 +842,22 @@ static void rk3576_vepu_recn_free(void)
  *
  ****************************************************************************/
 
-static int rk3576_vepu_recn_alloc(FAR struct rk3576_vepu510_frame_s *frm)
+static int rk3576_vepu_recn_alloc(FAR struct rk3576_vepu510_frame_s *frm,
+                                  bool idr)
 {
   struct rk3576_vepu510_recn_size_s size;
+  uint32_t curr;
+  int i;
 
-  if (g_vepu_recn_pixel != NULL && g_vepu_recn_width == frm->width &&
+  if (g_vepu_recn[0].pixel != NULL && g_vepu_recn_width == frm->width &&
       g_vepu_recn_height == frm->height)
     {
       goto describe;
     }
 
-  /* A different geometry: the old set is the wrong size, so it is released
-   * before the new one is taken.  Holding both would peak at twice the
-   * footprint for no reason.
+  /* A different geometry: the old sets are the wrong size, so they are
+   * released before new ones are taken.  Holding both would peak at twice
+   * the footprint for no reason.
    */
 
   rk3576_vepu_recn_free();
@@ -794,31 +865,34 @@ static int rk3576_vepu_recn_alloc(FAR struct rk3576_vepu510_frame_s *frm)
   rk3576_vepu510_recn_size(frm->width, frm->height, &size);
   g_vepu_recn_size = size;
 
-  g_vepu_recn_pixel = rk3576_dma_alloc(size.pixel);
-  if (g_vepu_recn_pixel == NULL)
+  for (i = 0; i < RK3576_VEPU_RECN_SLOTS; i++)
     {
-      goto errout_nomem;
-    }
+      g_vepu_recn[i].pixel = rk3576_dma_alloc(size.pixel);
+      if (g_vepu_recn[i].pixel == NULL)
+        {
+          goto errout_nomem;
+        }
 
-  g_vepu_recn_thumb = rk3576_dma_alloc(size.thumb);
-  if (g_vepu_recn_thumb == NULL)
-    {
-      goto errout_nomem;
-    }
+      g_vepu_recn[i].thumb = rk3576_dma_alloc(size.thumb);
+      if (g_vepu_recn[i].thumb == NULL)
+        {
+          goto errout_nomem;
+        }
 
-  g_vepu_recn_smear = rk3576_dma_alloc(size.smear);
-  if (g_vepu_recn_smear == NULL)
-    {
-      goto errout_nomem;
+      g_vepu_recn[i].smear = rk3576_dma_alloc(size.smear);
+      if (g_vepu_recn[i].smear == NULL)
+        {
+          goto errout_nomem;
+        }
     }
 
   g_vepu_recn_width = frm->width;
   g_vepu_recn_height = frm->height;
 
-  _info("VEPU0: reconstruction set for %ux%u: pixel %" PRIu32
-        " (header %" PRIu32 "), thumb %" PRIu32 ", smear %" PRIu32 "\n",
+  _info("VEPU0: reconstruction sets for %ux%u: pixel %" PRIu32
+        " (header %" PRIu32 "), thumb %" PRIu32 ", smear %" PRIu32 ", x%d\n",
         (unsigned int)frm->width, (unsigned int)frm->height, size.pixel,
-        size.header, size.thumb, size.smear);
+        size.header, size.thumb, size.smear, RK3576_VEPU_RECN_SLOTS);
 
 describe:
   /* The published pointer is the virtual address, which for this heap is
@@ -826,17 +900,48 @@ describe:
    * casts through the register layer.
    */
 
-  frm->recn.pixel_phys = (uint32_t)(uintptr_t)g_vepu_recn_pixel;
+  curr = g_vepu_recn_next;
+
+  frm->recn.pixel_phys = (uint32_t)(uintptr_t)g_vepu_recn[curr].pixel;
   frm->recn.body_offset = g_vepu_recn_size.header;
-  frm->recn.thumb_phys = (uint32_t)(uintptr_t)g_vepu_recn_thumb;
-  frm->recn.smear_phys = (uint32_t)(uintptr_t)g_vepu_recn_smear;
+  frm->recn.thumb_phys = (uint32_t)(uintptr_t)g_vepu_recn[curr].thumb;
+  frm->recn.smear_phys = (uint32_t)(uintptr_t)g_vepu_recn[curr].smear;
+
+  /* The other slot is the reference, if it still holds one.  A picture that
+   * is not a reference and never reads one gets no reference described: the
+   * register layer then leaves the read side alone rather than being handed
+   * addresses it must not use.
+   *
+   * With two slots "the other one" and "the one the last job wrote" are the
+   * same slot, because a job only ever writes the slot it is not reading.  So
+   * the shift below is not a small ring buffer's arithmetic dressed up; it is
+   * the statement that this job's output will overwrite the oldest picture,
+   * which is what keeps the reference alive until the job has read it.
+   */
+
+  frm->ref_valid = g_vepu_recn_ref_valid && !idr;
+
+  if (frm->ref_valid)
+    {
+      uint32_t prev =
+          (curr + RK3576_VEPU_RECN_SLOTS - 1u) % RK3576_VEPU_RECN_SLOTS;
+
+      frm->ref.pixel_phys = (uint32_t)(uintptr_t)g_vepu_recn[prev].pixel;
+      frm->ref.body_offset = g_vepu_recn_size.header;
+      frm->ref.thumb_phys = (uint32_t)(uintptr_t)g_vepu_recn[prev].thumb;
+      frm->ref.smear_phys = (uint32_t)(uintptr_t)g_vepu_recn[prev].smear;
+    }
+  else
+    {
+      memset(&frm->ref, 0, sizeof(frm->ref));
+    }
 
   return OK;
 
 errout_nomem:
-  _err("ERROR: VEPU0 out of DMA heap for the reconstruction set "
-       "(pixel %" PRIu32 ", thumb %" PRIu32 ", smear %" PRIu32 ")\n",
-       size.pixel, size.thumb, size.smear);
+  _err("ERROR: VEPU0 out of DMA heap for the reconstruction sets "
+       "(pixel %" PRIu32 ", thumb %" PRIu32 ", smear %" PRIu32 ", x%d)\n",
+       size.pixel, size.thumb, size.smear, RK3576_VEPU_RECN_SLOTS);
   rk3576_vepu_recn_free();
   return -ENOMEM;
 }
@@ -1029,7 +1134,7 @@ int rk3576_vepu_uninitialize(void)
 
 int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
                        FAR const struct rk3576_h264_cfg_s *cfg,
-                       FAR const struct rk3576_vepu510_idr_s *idr,
+                       FAR const struct rk3576_vepu510_slice_s *slice,
                        FAR struct rk3576_vepu_result_s *result)
 {
   uintptr_t base = RK3576_VEPU0_ADDR;
@@ -1041,7 +1146,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
   bool complete;
   int ret;
 
-  if (frm == NULL || cfg == NULL || idr == NULL)
+  if (frm == NULL || cfg == NULL || slice == NULL)
     {
       return -EINVAL;
     }
@@ -1080,9 +1185,34 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
 
   job = *frm;
 
-  ret = rk3576_vepu_recn_alloc(&job);
+  /* The anti-smear thresholds are derived from what the previous picture
+   * reported.  This is copied in rather than read from the globals by the
+   * register layer, because the register layer takes one picture at a time
+   * and has no notion of a sequence.
+   */
+
+  job.prev = g_vepu_last_fb;
+
+  ret = rk3576_vepu_recn_alloc(&job, slice->idr);
   if (ret < 0)
     {
+      goto errout_unlock;
+    }
+
+  /* A picture that predicts from another needs one to predict from, and the
+   * driver is the only place that knows whether there is one.  Left
+   * unchecked the hardware would happily encode a P picture whose reference
+   * fetch reads whatever the read-side registers happened to name -- and it
+   * would report success, so the first sign of trouble would be a decoder
+   * showing noise.  Refusing is what turns that into an error at the place
+   * the GOP state is wrong.
+   */
+
+  if (!slice->idr && !job.ref_valid)
+    {
+      _err("ERROR: VEPU0 asked for a P picture with no reference picture "
+           "-- the stream has to restart with an IDR\n");
+      ret = -EINVAL;
       goto errout_unlock;
     }
 
@@ -1092,7 +1222,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
    * needs to know what a block is called.
    */
 
-  ret = rk3576_vepu510_regs_build(&g_vepu_regs, &job, cfg, idr);
+  ret = rk3576_vepu510_regs_build(&g_vepu_regs, &job, cfg, slice);
   if (ret < 0)
     {
       goto errout_unlock;
@@ -1361,29 +1491,53 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
 
   ret = OK;
 
+  /* The reconstruction slot this job wrote now holds a picture, so it is the
+   * one the next job reads and the other becomes the next write target.
+   * Every picture this driver encodes is a reference picture, so the pair
+   * simply alternates -- there is no picture here that a later one must not
+   * use.
+   */
+
+  g_vepu_recn_next = (g_vepu_recn_next + 1u) % RK3576_VEPU_RECN_SLOTS;
+  g_vepu_recn_ref_valid = true;
+
+  /* Capture what this picture reported, for the next one's anti-smear
+   * thresholds.  The macroblock count is not a status field -- it is the
+   * picture's geometry, which the driver knows -- but MPP scales the
+   * hardware's counts against it, so the two travel together.
+   *
+   * This happens only on success: a job that failed did not report anything a
+   * later picture should be tuned from, and leaving the previous feedback in
+   * place is exactly what MPP does with a re-encoded frame.
+   */
+
+  g_vepu_last_fb.frame_type =
+      slice->idr ? RK3576_H264_SLICE_I : RK3576_H264_SLICE_P;
+  g_vepu_last_fb.mb_num =
+      ((frm->width + 15u) / 16u) * ((frm->height + 15u) / 16u);
+  rk3576_vepu510_status_smear(
+      rk3576_vepu_getreg(RK3576_VEPU510_ST_SMEAR_CNT_OFFSET),
+      g_vepu_last_fb.smear_cnt);
+
 errout_unlock:
+  /* A failed job may have written anything into the slot it was using, and a
+   * reference that is silently wrong is worse than one that is known to be
+   * missing: it produces a stream that decodes to noise rather than an
+   * error.  So the reference is dropped and the next P picture refuses to
+   * run until an IDR has re-established one.  Note the slot is not advanced
+   * either, so the damaged one is what that IDR overwrites.
+   */
+
+  if (ret < 0)
+    {
+      g_vepu_recn_ref_valid = false;
+    }
+
   nxmutex_unlock(&g_vepu_lock);
   return ret;
 }
 
 #ifdef CONFIG_RK3576_VEPU_SELFTEST
-
-/* The three pictures, chosen so that what the encoder does with them is
- * predictable from first principles.  They are listed in increasing order of
- * how much there is to encode, and that order is the expectation the test
- * checks, so it is stated once here rather than restated at the checks.
- *
- *   solid     nothing to predict badly and nothing to spend bits on: the
- *             floor, and a picture the encoder should describe in a few
- *             hundred bytes whatever else it does
- *   gradient  smooth in both directions, so entirely predictable from its
- *             neighbours: cheap, but not free
- *   noise     no spatial correlation at all: incompressible, so the ceiling
- *
- * A test that only ever encoded one picture could not tell an encoder from a
- * very short wire, since a fixed-size or empty output looks the same as a
- * correct one.  These three make the size itself a measurement.
- */
 
 enum rk3576_vepu_pattern_e
 {
@@ -1396,6 +1550,88 @@ enum rk3576_vepu_pattern_e
 static const char *const g_vepu_pattern_name[RK3576_VEPU_PATTERN_COUNT] = {
   "solid   ", "gradient", "noise   "
 };
+
+/* Geometry and layout of the test.  Small on purpose: this asks whether the
+ * encoder is doing the right thing, not how fast it does it.
+ *
+ * The destination carries a guard region past the end.  It is not a buffer
+ * the driver is told about -- frm.dst_size covers the real part only -- so
+ * anything the encoder writes there is an overrun.  Without it, an encoder
+ * that ignored its own size limit would corrupt whatever the DMA heap handed
+ * out next, and nothing would say so until much later.
+ */
+
+#define RK3576_VEPU_ST_W          320u
+#define RK3576_VEPU_ST_H          240u
+#define RK3576_VEPU_ST_FRAMES     6u
+#define RK3576_VEPU_ST_DST        (1024u * 1024u)
+#define RK3576_VEPU_ST_GUARD      (64u * 1024u)
+
+#define RK3576_VEPU_ST_GUARD_BYTE 0xa5u
+
+/* Geometry of the sequence test, which is the same picture size asking a
+ * different question: not "does it encode" but "does it predict".
+ */
+
+#define RK3576_VEPU_SEQ_W      320u
+#define RK3576_VEPU_SEQ_H      240u
+#define RK3576_VEPU_SEQ_FRAMES 8u
+#define RK3576_VEPU_SEQ_GOP    2u
+#define RK3576_VEPU_SEQ_SHIFT  4u
+#define RK3576_VEPU_SEQ_DST    (1024u * 1024u)
+
+/* How much of each frame the sequence test prints, in bytes.
+ *
+ * Enough for the slice header and the first macroblock, which is all it takes
+ * to tell a picture that used its reference from one that did not: a P slice
+ * begins with mb_skip_run, so a predicted picture starts with a long run of
+ * skips and one that coded its macroblocks starts with a zero followed by an
+ * intra type.  Bounded rather than complete because it has to be readable in
+ * a log, and the answer is in the first few bytes of either kind.
+ */
+
+#define RK3576_VEPU_SEQ_PEEK 64u
+
+/* Geometry and layout of the test.  Small on purpose: this asks whether the
+ * encoder is doing the right thing, not how fast it does it.
+ *
+ * The destination carries a guard region past the end.  It is not a buffer
+ * the driver is told about -- frm.dst_size covers the real part only -- so
+ * anything the encoder writes there is an overrun.  Without it, an encoder
+ * that ignored its own size limit would corrupt whatever the DMA heap handed
+ * out next, and nothing would say so until much later.
+ */
+
+#define RK3576_VEPU_ST_W          320u
+#define RK3576_VEPU_ST_H          240u
+#define RK3576_VEPU_ST_FRAMES     6u
+#define RK3576_VEPU_ST_DST        (1024u * 1024u)
+#define RK3576_VEPU_ST_GUARD      (64u * 1024u)
+
+#define RK3576_VEPU_ST_GUARD_BYTE 0xa5u
+
+/* Geometry of the sequence test, which is the same picture size asking a
+ * different question: not "does it encode" but "does it predict".
+ */
+
+#define RK3576_VEPU_SEQ_W      320u
+#define RK3576_VEPU_SEQ_H      240u
+#define RK3576_VEPU_SEQ_FRAMES 8u
+#define RK3576_VEPU_SEQ_GOP    2u
+#define RK3576_VEPU_SEQ_SHIFT  4u
+#define RK3576_VEPU_SEQ_DST    (1024u * 1024u)
+
+/* How much of each frame the sequence test prints, in bytes.
+ *
+ * Enough for the slice header and the first macroblock, which is all it takes
+ * to tell a picture that used its reference from one that did not: a P slice
+ * begins with mb_skip_run, so a predicted picture starts with a long run of
+ * skips and one that coded its macroblocks starts with a zero followed by an
+ * intra type.  Bounded rather than complete because it has to be readable in
+ * a log, and the answer is in the first few bytes of either kind.
+ */
+
+#define RK3576_VEPU_SEQ_PEEK 64u
 
 /****************************************************************************
  * Name: rk3576_vepu_fill_pattern
@@ -1450,29 +1686,502 @@ static void rk3576_vepu_fill_pattern(FAR uint8_t *y, uint32_t width,
     }
 }
 
-/* Geometry and layout of the test.  Small on purpose: this asks whether the
- * encoder is doing the right thing, not how fast it does it.
+/****************************************************************************
+ * Name: rk3576_vepu_fill_gradient_shifted
  *
- * The destination carries a guard region past the end.  It is not a buffer
- * the driver is told about -- frm.dst_size covers the real part only -- so
- * anything the encoder writes there is an overrun.  Without it, an encoder
- * that ignored its own size limit would corrupt whatever the DMA heap handed
- * out next, and nothing would say so until much later.
+ * Description:
+ *   The gradient, moved sideways by a whole number of pixels.
+ *
+ *   This exists because of what a still source cannot test.  Every check in
+ *   the sequence test below is about prediction, and on a source that never
+ *   changes a correct prediction and a costly one are the same thing: a frame
+ *   that copied its reference exactly and a frame whose reference merely
+ *   happened to be the right picture cost the same handful of bytes, and a
+ *   reference that is wrong looks no different from one that is right.
+ *
+ *   Moving each frame a little makes the two cases separate behaviour rather
+ *   than the same behaviour with different explanations: a frame that fails
+ *   to predict spends an intra picture's worth of bits, and one whose
+ *   reference is wrong decodes to a picture that is not the source.
+ *
+ *   The wrap is on the column index, not on the result, because that is the
+ *   arithmetic the host-side source regenerator repeats when it checks a
+ *   stream taken off the board.
+ *
+ ****************************************************************************/
+
+static void rk3576_vepu_fill_gradient_shifted(FAR uint8_t *y, uint32_t width,
+                                              uint32_t height, uint32_t frame)
+{
+  uint32_t row;
+  uint32_t col;
+
+  for (row = 0; row < height; row++)
+    {
+      for (col = 0; col < width; col++)
+        {
+          y[row * width + col] =
+              (uint8_t)((row * 255u) / height +
+                        (((col + frame * RK3576_VEPU_SEQ_SHIFT) % width) *
+                         255u) /
+                            width);
+        }
+    }
+}
+
+/****************************************************************************
+ * Name: rk3576_vepu_selftest_peek
+ *
+ * Description:
+ *   Print the first bytes of a frame as hex, so that what the encoder
+ *   produced can be read back rather than inferred from its size.
+ *
+ *   Size alone cannot say why a picture is expensive.  A P picture that
+ *   coded every macroblock intra and one that coded inter with useless
+ *   motion vectors both come out at about an I picture's size, and the two
+ *   have opposite causes: the first means the reference the encoder read was
+ *   not the picture it was given, the second that the search or the syntax
+ *   around it is wrong.  The slice header and the first macroblock type are
+ *   what separate them, and this is what puts them in the log.
+ *
+ ****************************************************************************/
+
+static void rk3576_vepu_selftest_peek(FAR const char *what,
+                                      FAR const uint8_t *data, uint32_t len)
+{
+  char text[2u * RK3576_VEPU_SEQ_PEEK + 1u];
+  uint32_t i;
+
+  if (len > RK3576_VEPU_SEQ_PEEK)
+    {
+      len = RK3576_VEPU_SEQ_PEEK;
+    }
+
+  /* Each snprintf writes its own terminator over the previous one's, and the
+   * final terminator is put back after the loop. */
+
+  for (i = 0; i < len; i++)
+    {
+      snprintf(text + 2u * i, 3, "%02x", data[i]);
+    }
+
+  text[2u * i] = '\0';
+
+  _info("VEPU0 sequence test: %s, first %" PRIu32 " bytes: %s\n", what, len,
+        text);
+}
+
+/****************************************************************************
+ * Name: rk3576_vepu_selftest_intra_blocks
+ *
+ * Description:
+ *   How many macroblocks the encoder says it coded intra, out of the four
+ *   counts the status block reports for the picture just finished.
+ *
+ *   This is the only place the choice between intra and inter coding of a
+ *   finished picture is visible, and it is what separates two faults that a
+ *   length cannot.  A picture that costs an I picture's worth of bits while
+ *   claiming to be predicted is either a picture whose reference was useless
+ *   to it -- in which case it codes itself intra -- or a picture that
+ *   predicted badly, in which case it does not.  MPP reads the same fields
+ *   for its rate control, and the count is bounded by the macroblock count,
+ *   so a number outside that range is itself a fault worth seeing.
+ *
+ ****************************************************************************/
+
+static uint32_t rk3576_vepu_selftest_intra_blocks(void)
+{
+  return (rk3576_vepu_getreg(RK3576_VEPU510_ST_PNUM_I32_OFFSET) +
+          rk3576_vepu_getreg(RK3576_VEPU510_ST_PNUM_I16_OFFSET) +
+          rk3576_vepu_getreg(RK3576_VEPU510_ST_PNUM_I8_OFFSET) +
+          rk3576_vepu_getreg(RK3576_VEPU510_ST_PNUM_I4_OFFSET)) &
+         RK3576_VEPU510_ST_PNUM_MASK;
+}
+
+/****************************************************************************
+ * Name: rk3576_vepu_selftest_dump
+ *
+ * Description:
+ *   Print a range of bytes as hex, one line per RK3576_VEPU_SEQ_DUMP_COLS,
+ *   with the byte offset in front of each.
+ *
+ *   This exists so that a bitstream can be taken off the board and decoded
+ *   somewhere else.  Everything else this test measures is the encoder's own
+ *   account of what it produced -- a length, a distortion figure, a macroblock
+ *   type read back out of the bytes -- and none of it can show whether a
+ *   decoder reconstructs the pictures the encoder believes it reconstructed.
+ *   That question needs an actual decoder, and an actual decoder needs the
+ *   bytes.
+ *
+ *   The offsets are printed so that a capture which lost lines can be seen to
+ *   have lost them rather than being silently short: the stream only decodes
+ *   if every byte is present.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_RK3576_VEPU_SEQ_DUMP
+
+/* How many bytes of hex go on one line of the dump.  Chosen so a line stays
+ * one log line in every terminal this will be read in; a wrapped line is a
+ * line that cannot be counted, and counting them is what says whether the
+ * capture arrived whole.
  */
 
-#define RK3576_VEPU_ST_W          320u
-#define RK3576_VEPU_ST_H          240u
-#define RK3576_VEPU_ST_FRAMES     6u
-#define RK3576_VEPU_ST_DST        (1024u * 1024u)
-#define RK3576_VEPU_ST_GUARD      (64u * 1024u)
+#define RK3576_VEPU_SEQ_DUMP_COLS 64u
 
-#define RK3576_VEPU_ST_GUARD_BYTE 0xa5u
+static void rk3576_vepu_selftest_dump(FAR const char *what,
+                                      FAR const uint8_t *data, uint32_t len)
+{
+  char text[2u * RK3576_VEPU_SEQ_DUMP_COLS + 1u];
+  uint32_t row;
+  uint32_t i;
 
-int rk3576_vepu_selftest(void)
+  _info("VEPU0 dump %s length %" PRIu32 " bytes, %" PRIu32 " lines\n", what,
+        len,
+        (len + RK3576_VEPU_SEQ_DUMP_COLS - 1u) / RK3576_VEPU_SEQ_DUMP_COLS);
+
+  for (row = 0; row < len; row += RK3576_VEPU_SEQ_DUMP_COLS)
+    {
+      uint32_t n = len - row;
+
+      if (n > RK3576_VEPU_SEQ_DUMP_COLS)
+        {
+          n = RK3576_VEPU_SEQ_DUMP_COLS;
+        }
+
+      for (i = 0; i < n; i++)
+        {
+          snprintf(text + 2u * i, 3, "%02x", data[row + i]);
+        }
+
+      text[2u * n] = '\0';
+
+      _info("VEPU0 dump %s %06" PRIx32 " %s\n", what, row, text);
+    }
+
+  _info("VEPU0 dump %s end\n", what);
+}
+
+#endif /* CONFIG_RK3576_VEPU_SEQ_DUMP */
+
+/****************************************************************************
+ * Name: rk3576_vepu_selftest_sequence
+ *
+ * Description:
+ *   Encode a sequence: an IDR, then P pictures, then another IDR, and so on,
+ *   with each picture moved sideways from the one before it.
+ *
+ *   This is a separate test from the picture test rather than more frames
+ *   inside it, because nearly every expectation there is an expectation
+ *   about an I picture -- its NAL type, the start code ahead of it, how its
+ *   size compares with the other pictures'.  A P picture has none of those
+ *   properties, so folding it in would mean giving up the checks that were
+ *   worth having.
+ *
+ *   The group length is two, which is the driver's default.  That makes
+ *   every P picture here predict from an IDR's reconstruction rather than
+ *   from another P picture, which is the case the default is chosen for --
+ *   see RK3576_VEPU_DEFAULT_GOP, and chips/rk3576/vepu/README.md for what a
+ *   longer group does.
+ *
+ *   The source moves, which is what makes the prediction check mean
+ *   something.  On a still source the encoder is free to spend almost
+ *   nothing on a P picture and be right by accident, so a cheap frame there
+ *   is not evidence of anything; here a correct prediction costs a fraction
+ *   of an IDR and a failed one costs about a whole IDR.
+ *
+ *   Must run before any other encode: it opens by asking for a P picture
+ *   with no reference in the slots, which is a state the driver passes
+ *   through only once.
+ *
+ * Returned Value:
+ *   The number of failed checks, so the caller can add it to its own.
+ *
+ ****************************************************************************/
+
+static int rk3576_vepu_selftest_sequence(void)
 {
   struct rk3576_vepu510_frame_s frm;
   struct rk3576_h264_cfg_s cfg;
-  struct rk3576_vepu510_idr_s idr;
+  struct rk3576_vepu510_slice_s slice;
+  struct rk3576_vepu_result_s result;
+  FAR uint8_t *src;
+  FAR uint8_t *dst;
+  uint32_t offset[RK3576_VEPU_SEQ_FRAMES];
+  uint32_t length[RK3576_VEPU_SEQ_FRAMES];
+  uint32_t intra[RK3576_VEPU_SEQ_FRAMES];
+  uint32_t y_size = RK3576_VEPU_SEQ_W * RK3576_VEPU_SEQ_H;
+  uint32_t src_size = y_size * 3u / 2u;
+  uint32_t total = 0;
+  uint32_t i;
+  int bad = 0;
+  int ret;
+
+  src = rk3576_dma_alloc(src_size);
+  dst = rk3576_dma_alloc(RK3576_VEPU_SEQ_DST);
+
+  if (src == NULL || dst == NULL)
+    {
+      _err("ERROR: VEPU0 sequence test out of DMA heap (%" PRIu32 " + %" PRIu32
+           " bytes)\n",
+           src_size, RK3576_VEPU_SEQ_DST);
+      bad++;
+      goto errout;
+    }
+
+  memset(dst, 0, RK3576_VEPU_SEQ_DST);
+
+  memset(&cfg, 0, sizeof(cfg));
+  cfg.width = RK3576_VEPU_SEQ_W;
+  cfg.height = RK3576_VEPU_SEQ_H;
+  cfg.profile_idc = RK3576_H264_PROFILE_BASELINE;
+  cfg.level_idc = RK3576_H264_LEVEL_AUTO;
+  cfg.log2_max_frame_num_minus4 = 12;
+  cfg.poc_type = 0;
+  cfg.log2_max_poc_lsb_minus4 = 12;
+  cfg.num_ref_frames = 1;
+  cfg.gaps_allowed = 0;
+  cfg.direct8x8_inference = 1;
+  cfg.entropy_coding_mode = 0;
+  cfg.transform8x8_mode = 0;
+  cfg.constrained_intra_pred = 0;
+  cfg.deblocking_filter_control = 1;
+  cfg.pic_init_qp = 26;
+  cfg.frame_qp = 26;
+  cfg.vui_en = 1;
+  cfg.fps_num = 30;
+  cfg.fps_den = 1;
+
+  cfg.tune.scene_mode = 0;
+  cfg.tune.atl_str = 1;
+  cfg.tune.atr_str_i = 1;
+  cfg.tune.atf_str = 1;
+  cfg.tune.lambda_idx_i = 6;
+
+  memset(&frm, 0, sizeof(frm));
+  frm.src_fmt = RK3576_VEPU510_FMT_YUV420SP;
+  frm.rbuv_swap = 0;
+  frm.width = RK3576_VEPU_SEQ_W;
+  frm.height = RK3576_VEPU_SEQ_H;
+  frm.y_stride = RK3576_VEPU_SEQ_W;
+  frm.v_stride = RK3576_VEPU_SEQ_H;
+  frm.src_phys = (uint32_t)(uintptr_t)src;
+  frm.src_size = src_size;
+  frm.dst_phys = (uint32_t)(uintptr_t)dst;
+  frm.dst_size = RK3576_VEPU_SEQ_DST;
+
+  /* The guard: a P picture with nothing to predict from.
+   *
+   * Asked for before anything has been encoded, so the reference slots are
+   * empty.  This is the one moment the state exists, and the driver has to
+   * turn it into an error -- left to the hardware it would be a reference
+   * fetch from wherever the read-side registers happened to point, reported
+   * as a successful encode, and visible only as noise on a decoder.
+   */
+
+  memset(&slice, 0, sizeof(slice));
+  slice.idr = 0;
+  slice.frame_num = 1;
+  slice.poc_lsb = 2;
+
+  if (rk3576_vepu_encode(&frm, &cfg, &slice, &result) >= 0)
+    {
+      _err("ERROR: VEPU0 sequence test: a P picture with no reference was"
+           " accepted\n");
+      bad++;
+    }
+
+  for (i = 0; i < RK3576_VEPU_SEQ_FRAMES; i++)
+    {
+      uint32_t within = i % RK3576_VEPU_SEQ_GOP;
+      uint32_t nal_type;
+      uint32_t nal_ref_idc;
+      uint32_t macroblocks = ((RK3576_VEPU_SEQ_W + 15u) / 16u) *
+                             ((RK3576_VEPU_SEQ_H + 15u) / 16u);
+
+      /* An IDR resets frame_num and the picture order count, and every other
+       * picture of the group continues them.  That is the pair of rules the
+       * driver's caller has to get right, and reproducing them here is what
+       * makes this a sequence rather than a pile of pictures.
+       */
+
+      rk3576_vepu_fill_gradient_shifted(src, RK3576_VEPU_SEQ_W,
+                                        RK3576_VEPU_SEQ_H, i);
+      memset(src + y_size, 128, src_size - y_size);
+      up_clean_dcache((uintptr_t)src, (uintptr_t)src + src_size);
+
+      memset(&slice, 0, sizeof(slice));
+      slice.idr = (within == 0);
+      slice.frame_num = within;
+      slice.poc_lsb = within * 2u;
+
+      /* Consecutive IDRs are required to carry different idr_pic_id values
+       * (H.264 7.4.3).  This test encodes several of them, so it is the place
+       * that requirement is either met or missed.
+       */
+
+      slice.idr_pic_id = (i / RK3576_VEPU_SEQ_GOP) & 1u;
+
+      offset[i] = total;
+      frm.dst_offset = total;
+
+      ret = rk3576_vepu_encode(&frm, &cfg, &slice, &result);
+      if (ret < 0)
+        {
+          _err("ERROR: VEPU0 sequence test frame %" PRIu32 " (%s) failed:"
+               " %d\n",
+               i, slice.idr ? "IDR" : "P  ", ret);
+          bad++;
+          goto errout;
+        }
+
+      length[i] = result.bs_length;
+      intra[i] = rk3576_vepu_selftest_intra_blocks();
+      total += result.bs_length;
+
+      _info("VEPU0 sequence test: frame %" PRIu32 " %s offset %6" PRIu32
+            " length %6" PRIu32 " sse %10" PRIu32 " intra %" PRIu32 "/%" PRIu32
+            "\n",
+            i, slice.idr ? "IDR" : "P  ", offset[i], length[i], result.sse,
+            intra[i], macroblocks);
+
+      /* The start code is looked for where the frame was asked to begin,
+       * not searched for: a search would find one wherever it happened to
+       * be, which would make the offset an unchecked value.
+       */
+
+      if (!(dst[offset[i]] == 0 && dst[offset[i] + 1] == 0 &&
+            dst[offset[i] + 2] == 0 && dst[offset[i] + 3] == 1))
+        {
+          _err("ERROR: VEPU0 sequence test frame %" PRIu32
+               " has no start code at its offset\n",
+               i);
+          bad++;
+          continue;
+        }
+
+      /* The two fields of the NAL header are the whole of what tells a
+       * decoder whether this picture restarts the stream and whether it is
+       * allowed to be predicted from.  Neither can be inferred from the
+       * bitstream that follows, so both are read back here.
+       */
+
+      nal_ref_idc = (dst[offset[i] + 4] >> 5) & 0x3u;
+      nal_type = dst[offset[i] + 4] & 0x1fu;
+
+      if (nal_type != (slice.idr ? 5u : 1u))
+        {
+          _err("ERROR: VEPU0 sequence test frame %" PRIu32
+               " has NAL type %" PRIu32 ", expected %u\n",
+               i, nal_type, slice.idr ? 5u : 1u);
+          bad++;
+        }
+
+      if (nal_ref_idc != (slice.idr ? 3u : 2u))
+        {
+          _err("ERROR: VEPU0 sequence test frame %" PRIu32
+               " has nal_ref_idc %" PRIu32 ", expected %u\n",
+               i, nal_ref_idc, slice.idr ? 3u : 2u);
+          bad++;
+        }
+
+      if (length[i] == 0)
+        {
+          _err("ERROR: VEPU0 sequence test frame %" PRIu32
+               " produced no bitstream\n",
+               i);
+          bad++;
+        }
+    }
+
+  /* Did prediction do anything?
+   *
+   * A P picture whose reference is the picture before it, moved four pixels,
+   * should cost a small fraction of an IDR.  One that costs about as much as
+   * an IDR is a picture that did not use its reference -- and the intra count
+   * says which of the two ways that happened: a picture that coded nearly
+   * every macroblock intra decided its reference was no use to it, whereas
+   * one that coded inter and still spent a full picture on it predicted badly.
+   * The two have different causes, so the message names the one the counts
+   * point at rather than guessing.
+   *
+   * The bound is deliberately loose.  The claim being tested is that the
+   * reference was used at all, and that shows as an order of magnitude, not
+   * as a few percent.
+   */
+
+  for (i = 0; i < RK3576_VEPU_SEQ_FRAMES; i++)
+    {
+      uint32_t macroblocks = ((RK3576_VEPU_SEQ_W + 15u) / 16u) *
+                             ((RK3576_VEPU_SEQ_H + 15u) / 16u);
+
+      if ((i % RK3576_VEPU_SEQ_GOP) == 0)
+        {
+          continue;
+        }
+
+      if (length[i] * 2u >= length[i - 1u])
+        {
+          _err("ERROR: VEPU0 sequence test frame %" PRIu32 " is %" PRIu32
+               " bytes against its reference's %" PRIu32
+               " -- predicting cost as much as not predicting"
+               " (%" PRIu32 " of %" PRIu32 " macroblocks coded intra)\n",
+               i, length[i], length[i - 1u], intra[i], macroblocks);
+          bad++;
+        }
+
+      if (intra[i] > macroblocks)
+        {
+          _err("ERROR: VEPU0 sequence test frame %" PRIu32 " reports %" PRIu32
+               " intra macroblocks of %" PRIu32 "\n",
+               i, intra[i], macroblocks);
+          bad++;
+        }
+    }
+
+  _info("VEPU0 sequence test: %" PRIu32 " frames, %" PRIu32 " bytes:"
+        " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32
+        " %" PRIu32 " %" PRIu32 "\n",
+        RK3576_VEPU_SEQ_FRAMES, total, length[0], length[1], length[2],
+        length[3], length[4], length[5], length[6], length[7]);
+
+  /* What the encoder produced, so that a size can be turned into a reason.
+   * The first group is enough: an IDR and the P picture that predicts from
+   * it, which is the pair every later group repeats.
+   */
+
+  rk3576_vepu_selftest_peek("IDR frame 0", dst + offset[0], length[0]);
+  rk3576_vepu_selftest_peek("P frame 1", dst + offset[1], length[1]);
+
+#ifdef CONFIG_RK3576_VEPU_SEQ_DUMP
+  rk3576_vepu_selftest_dump("seq", dst, total);
+#endif
+
+errout:
+  if (src != NULL)
+    {
+      rk3576_dma_free(src, src_size);
+    }
+
+  if (dst != NULL)
+    {
+      rk3576_dma_free(dst, RK3576_VEPU_SEQ_DST);
+    }
+
+  return bad;
+}
+
+/* The picture test: static, gradient and noise sources, encoded independently
+ * of one another, checked for the things a single picture can be wrong about.
+ *
+ * It says nothing about prediction, and cannot be run before the sequence
+ * test has left the driver's reference state behind, so it goes second.
+ */
+static int rk3576_vepu_selftest_picture(void)
+{
+  struct rk3576_vepu510_frame_s frm;
+  struct rk3576_h264_cfg_s cfg;
+  struct rk3576_vepu510_slice_s slice;
   struct rk3576_vepu_result_s result;
   FAR uint8_t *src;
   FAR uint8_t *dst;
@@ -1593,10 +2302,13 @@ int rk3576_vepu_selftest(void)
        * driver where more than one IDR is encoded in a row -- so it is the
        * only place the requirement can be met or missed. */
 
-      memset(&idr, 0, sizeof(idr));
-      idr.idr_pic_id = i & 1u;
+      memset(&slice, 0, sizeof(slice));
+      slice.idr = 1;
+      slice.frame_num = 0;
+      slice.poc_lsb = 0;
+      slice.idr_pic_id = i & 1u;
 
-      ret = rk3576_vepu_encode(&frm, &cfg, &idr, &result);
+      ret = rk3576_vepu_encode(&frm, &cfg, &slice, &result);
       if (ret < 0)
         {
           _err("ERROR: VEPU0 self-test frame %" PRIu32 " (%s) failed: %d\n", i,
@@ -1748,6 +2460,53 @@ errout:
     }
 
   return ret;
+}
+
+/****************************************************************************
+ * Name: rk3576_vepu_selftest
+ *
+ * Description:
+ *   Run both halves of the encoder's bring-up acceptance test.
+ *
+ * Input Parameters:
+ *   None.
+ *
+ * Returned Value:
+ *   OK if every check passed, -EIO otherwise.
+ *
+ ****************************************************************************/
+
+int rk3576_vepu_selftest(void)
+{
+  int bad = 0;
+
+  /* The sequence test has to run before the picture test, and not merely
+   * first for tidiness: what it observes is that a P picture predicts from
+   * the reconstruction of the picture before it, and its first frame is
+   * therefore an IDR that establishes that reference.  The picture test
+   * leaves a reference behind too, of course, but it leaves the driver's
+   * reference state pointing at whichever picture it happened to end on,
+   * which is a state the sequence test would then be inheriting rather than
+   * creating.
+   */
+
+  if (rk3576_vepu_selftest_sequence() < 0)
+    {
+      bad++;
+    }
+
+  if (rk3576_vepu_selftest_picture() < 0)
+    {
+      bad++;
+    }
+
+  if (bad > 0)
+    {
+      _err("ERROR: VEPU0 self-test: %d of 2 tests failed\n", bad);
+      return -EIO;
+    }
+
+  return OK;
 }
 
 #endif /* CONFIG_RK3576_VEPU_SELFTEST */

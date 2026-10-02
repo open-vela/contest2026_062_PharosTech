@@ -460,22 +460,43 @@ config RK3576_VEPU
 if RK3576_VEPU
 
 config RK3576_VEPU_SELFTEST
-        bool "Encode one synthetic picture at boot"
+        bool "Encode synthetic pictures at boot"
         default y
         ---help---
-                At boot, hand the encoder a small picture built in memory and log
-                what comes back: the bitstream length, the distortion figure, the
-                interrupt status and the first bytes of the output.
+                At boot, hand the encoder pictures built in memory and log what
+                comes back: the bitstream length, the distortion figure, the
+                interrupt status, and how many macroblocks were coded intra.
 
                 This is the acceptance test for the encode path itself, the way the
-                version probe is for the clocks and resets. The picture is
+                version probe is for the clocks and resets. The pictures are
                 synthesised rather than captured, so a failure cannot be the
                 camera's fault, and the configuration is the plainest one the
                 register layer supports, so it cannot be a syntax bug either.
 
+                There are two halves. One encodes a still picture three ways and
+                checks the sizes come back in the order their complexity implies.
+                The other encodes a moving sequence as one IDR followed by P
+                pictures and checks that predicting costs less than not predicting
+                -- a failure that is otherwise silent, because a stream whose
+                prediction has stopped working still decodes, just at the wrong
+                rate. See chips/rk3576/vepu/README.md.
+
                 It costs about a megabyte of the DMA heap for the duration of the
                 test, which is released as soon as the result is logged. Turn it off
                 once the path is known good.
+
+config RK3576_VEPU_SEQ_DUMP
+        bool "Log the sequence test's bitstream in hex at boot"
+        default n
+        depends on RK3576_VEPU_SELFTEST
+        ---help---
+                Log the whole of the sequence test's output as hex, one line per 64
+                bytes, so it can be read back on a host with a decoder rather than
+                from a terminal. rk3576-mpp-ref/verify_decode.py consumes it.
+
+                Off by default: it is a few hundred lines of log for one picture,
+                and what it is for is comparing the encoder's own picture against a
+                host decoder's, which is a bring-up activity rather than a boot one.
 
 endif # RK3576_VEPU
 
@@ -493,9 +514,11 @@ config RK3576_VEPU_CODEC
                 sequence and picture parameter sets in front of it, so what comes
                 out of the device can be written to a file and played directly.
 
-                This is a fixed-QP encoder: every frame is an IDR at the QP the
-                application sets. There is no rate control, and the frame rate
-                only reaches the bitstream as VUI timing.
+                This is a fixed-QP encoder. There is no rate control, and the frame
+                rate only reaches the bitstream as VUI timing. Pictures are grouped,
+                and all but the first of a group predict from the picture before
+                them; see RK3576_VEPU_DEFAULT_GOP for the group length and why it is
+                what it is.
 
 if RK3576_VEPU_CODEC
 

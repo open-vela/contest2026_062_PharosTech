@@ -478,25 +478,86 @@ int rk3576_vepu510_regs_recn(FAR HalVepu510RegSet *regs,
   reg_frm->common.dspw_addr = frm->recn.thumb_phys;
   reg_frm->common.adr_smear_wr = frm->recn.smear_phys;
 
-  /* The read side (rfpr_h_addr, rfpr_b_addr, dspr_addr, adr_smear_rd) is
-   * deliberately left at zero.  An all-intra stream never reads a reference
-   * picture, and MPP writes nothing here either when its reference slot is
-   * empty -- so zero is the state this configuration is supposed to be in,
-   * not an omission.
+  /* The read side.  These are the addresses the encoder fetches the
+   * reference picture's reconstructed pixels and downscale from.
+   *
+   * A picture that predicts from nothing -- the first of a stream, and every
+   * IDR -- leaves them at the zero the caller set.  That is what this driver
+   * has always programmed, it is what an all-intra stream runs with today,
+   * and it is safe because such a picture reads nothing there.  It is worth
+   * saying that it is not what MPP leaves: with no reference buffer MPP
+   * points the read side at the very buffer it is writing (its
+   * h264e_dpb.c falls back to the current frame when the reference slot is
+   * empty), which is equally harmless and equally unread.  The difference
+   * does not reach the hardware's behaviour, so it is not worth a write.
    */
+
+  if (!frm->ref_valid)
+    {
+      return OK;
+    }
+
+  /* A reference is named, so it has to be usable.  The same reasoning as
+   * for the write set applies: zero is not "off" here, it is physical
+   * address zero, which is where the reference fetch would then read from.
+   */
+
+  if (frm->ref.pixel_phys == 0 || frm->ref.thumb_phys == 0 ||
+      frm->ref.smear_phys == 0)
+    {
+      return -EINVAL;
+    }
+
+  reg_frm->common.rfpr_h_addr = frm->ref.pixel_phys;
+  reg_frm->common.rfpr_b_addr = frm->ref.pixel_phys + frm->ref.body_offset;
+  reg_frm->common.dspr_addr = frm->ref.thumb_phys;
+  reg_frm->common.adr_smear_rd = frm->ref.smear_phys;
 
   return OK;
 }
 
+/****************************************************************************
+ * Name: rk3576_vepu510_frame_num_mask, rk3576_vepu510_poc_lsb_mask
+ *
+ * Description:
+ *   See the header.  Both ranges are a power of two, so the driver reduces
+ *   the counters with a mask where MPP compares and resets -- which agree
+ *   because frame_num advances by one and the picture order count by two
+ *   from an even start, so neither can step over its range.
+ *
+ ****************************************************************************/
+
+uint32_t rk3576_vepu510_frame_num_mask(FAR const struct rk3576_h264_cfg_s *cfg)
+{
+  return (1u << (cfg->log2_max_frame_num_minus4 + 4u)) - 1u;
+}
+
+uint32_t rk3576_vepu510_poc_lsb_mask(FAR const struct rk3576_h264_cfg_s *cfg)
+{
+  return (1u << (cfg->log2_max_poc_lsb_minus4 + 4u)) - 1u;
+}
+
+/****************************************************************************
+ * Name: rk3576_vepu510_regs_codec
+ *
+ * Description:
+ *   Fill the codec (CODEC) block for one picture: which kind of picture it
+ *   is, the syntax values its slice header carries, and the reference
+ *   marking and reordering commands that go with it.
+ *
+ *   Mirrors MPP setup_vepu510_codec().
+ *
+ ****************************************************************************/
+
 int rk3576_vepu510_regs_codec(FAR HalVepu510RegSet *regs,
                               FAR const struct rk3576_h264_cfg_s *cfg,
-                              FAR const struct rk3576_vepu510_idr_s *idr)
+                              FAR const struct rk3576_vepu510_slice_s *slice)
 {
   H264eVepu510Frame *reg_frm = &regs->reg_frm;
   struct rk3576_h264_pps_resolved_s pps;
   int32_t cabac_init_idc;
 
-  if (cfg == NULL || idr == NULL)
+  if (cfg == NULL || slice == NULL)
     {
       return -EINVAL;
     }
@@ -509,18 +570,29 @@ int rk3576_vepu510_regs_codec(FAR HalVepu510RegSet *regs,
   rk3576_h264_pps_resolve(cfg, &pps);
 
   /* reg192 ENC_PIC: enc_stnd 0 selects H.264 (2 would select JPEG, which
-   * shares this register block).  An IDR is always a reference picture, and
-   * bs_scp asks for a start code prefix ahead of the slice.
+   * shares this register block).  Every picture this driver encodes is a
+   * reference picture -- nothing is produced that later pictures do not
+   * predict from -- and bs_scp asks for a start code prefix ahead of the
+   * slice.
    */
 
   reg_frm->common.enc_pic.enc_stnd = 0;
   reg_frm->common.enc_pic.cur_frm_ref = 1;
   reg_frm->common.enc_pic.bs_scp = 1;
 
-  /* reg236 SYNT_NAL: the NAL header of the synthesized slice. */
+  /* reg236 SYNT_NAL: the NAL header of the synthesized slice.  An IDR and
+   * an ordinary slice differ in both fields, and an IDR carries the highest
+   * reference indicator while every other reference picture carries the one
+   * below it -- which is MPP's h264e_slice_update() reading of the two, and
+   * what a decoder expects of a stream whose IDRs reset it.
+   */
 
-  reg_frm->synt_nal.nal_ref_idc = RK3576_H264_NALU_PRIORITY_HIGHEST;
-  reg_frm->synt_nal.nal_unit_type = RK3576_H264_NAL_TYPE_IDR_SLICE;
+  reg_frm->synt_nal.nal_ref_idc = slice->idr
+                                      ? RK3576_H264_NALU_PRIORITY_HIGHEST
+                                      : RK3576_H264_NALU_PRIORITY_HIGH;
+  reg_frm->synt_nal.nal_unit_type = slice->idr
+                                        ? RK3576_H264_NAL_TYPE_IDR_SLICE
+                                        : RK3576_H264_NAL_TYPE_NONIDR_SLICE;
 
   /* reg237 SYNT_SPS: echoed from the sequence parameter set. */
 
@@ -545,15 +617,20 @@ int rk3576_vepu510_regs_codec(FAR HalVepu510RegSet *regs,
   reg_frm->synt_pps.dbf_cp_flg = cfg->deblocking_filter_control ? 1 : 0;
 
   /* reg239 SYNT_SLI0: the first part of the slice header.  sli_type 2 is an
-   * I slice; the hardware only distinguishes 2 (I) from 0 (P).  frame_num
-   * is zero because an IDR resets it.
+   * I slice and 0 is a P slice; the hardware only distinguishes those two,
+   * there being no B pictures on this part.  frame_num is the picture's
+   * place in its sequence, which an IDR restarts and which the caller
+   * therefore supplies.
+   *
+   * num_ref_ovrd is zero: MPP sets it from slice->num_ref_idx_override, and
+   * h264e_slice_update() assigns that zero unconditionally.
    */
 
-  reg_frm->synt_sli0.sli_type = 2;
+  reg_frm->synt_sli0.sli_type = slice->idr ? 2u : 0u;
   reg_frm->synt_sli0.pps_id = 0;
   reg_frm->synt_sli0.drct_smvp = 0;
   reg_frm->synt_sli0.num_ref_ovrd = 0;
-  reg_frm->synt_sli0.frm_num = 0;
+  reg_frm->synt_sli0.frm_num = slice->frame_num;
 
   /* MPP computes this as -1 whenever entropy coding is CAVLC, and the field
    * is two bits wide, so -1 lands as 3.  It is a don't-care for an I slice
@@ -569,20 +646,30 @@ int rk3576_vepu510_regs_codec(FAR HalVepu510RegSet *regs,
    */
 
   cabac_init_idc =
-      (cfg->entropy_coding_mode != 0) ? (int32_t)idr->cabac_init_idc : -1;
+      (cfg->entropy_coding_mode != 0) ? (int32_t)slice->cabac_init_idc : -1;
 
   reg_frm->synt_sli0.cbc_init_idc = (uint32_t)cabac_init_idc;
 
   /* reg240 SYNT_SLI1: the IDR picture id and the picture order count LSB.
-   * The POC is zero because an IDR resets it.
+   *
+   * The picture id is present in an IDR's slice header and absent from
+   * every other one, and MPP writes all ones for the pictures that do not
+   * have it -- (RK_U32)(-1) into a sixteen-bit field.  The hardware
+   * presumably ignores the field when the NAL type says there is no id in
+   * it; it is written the way MPP writes it either way, because matching
+   * MPP is what this module is verified against.
    */
 
-  reg_frm->synt_sli1.idr_pid = idr->idr_pic_id;
-  reg_frm->synt_sli1.poc_lsb = 0;
+  reg_frm->synt_sli1.idr_pid = slice->idr ? slice->idr_pic_id : 0xffffu;
+  reg_frm->synt_sli1.poc_lsb = slice->poc_lsb;
 
   /* reg241 SYNT_SLI2: deblocking controls and reference list reordering.
-   * An I slice has no reference list to reorder and MPP's reorder queue is
-   * empty for one, so the reorder fields are zero.
+   *
+   * A reorder command is what a stream emits when its reference list0 is not
+   * in the default order -- the most recent reference picture first.  This
+   * driver produces one reference picture per picture and never reorders,
+   * so the queue is empty and the fields are zero.  For an I slice the
+   * question does not arise at all.
    *
    * sli_beta_ofst is deliberately left alone: MPP never programs it
    * anywhere (the field occurs only in its own definition in the register
@@ -591,24 +678,29 @@ int rk3576_vepu510_regs_codec(FAR HalVepu510RegSet *regs,
    * reason -- matching MPP is the contract this module is verified against.
    */
 
-  reg_frm->synt_sli2.dis_dblk_idc = idr->deblock_disable;
-  reg_frm->synt_sli2.sli_alph_ofst = idr->deblock_offset_alpha;
+  reg_frm->synt_sli2.dis_dblk_idc = slice->deblock_disable;
+  reg_frm->synt_sli2.sli_alph_ofst = slice->deblock_offset_alpha;
   reg_frm->synt_sli2.ref_list0_rodr = 0;
   reg_frm->synt_sli2.rodr_pic_idx = 0;
   reg_frm->synt_sli2.rodr_pic_num = 0;
 
-  /* reg242..reg244 SYNT_REFM0/1/2: reference marking.  MPP clears the whole
-   * MMCO area and then, for an I slice, sets only these two flags; the
-   * adaptive marking machinery past that clear is reached only for non-I
-   * slices, which this driver does not encode.  The clear itself is
-   * redundant here because the caller zeroes the register set.
+  /* reg242..reg244 SYNT_REFM0/1/2: reference marking.  The whole MMCO area
+   * is cleared, and then an I slice sets only these two flags while a P
+   * slice sets nothing at all.
    *
-   * nopp_flg is always 0: MPP h264e_slice_update() assigns
-   * slice->no_output_of_prior_pics = 0 unconditionally.
+   * That asymmetry is MPP's: the adaptive marking machinery past this point
+   * is reached only when the marking queue is not empty, and a stream with
+   * one reference picture and no reordering has nothing to mark -- the
+   * sliding window drops the previous reference by itself when the new one
+   * arrives.  nopp_flg is always 0 because MPP assigns
+   * slice->no_output_of_prior_pics = 0 unconditionally, and ltrf_flg is
+   * zero for a P slice because h264e_slice_update() clears it for anything
+   * that is not an IDR.
    */
 
   reg_frm->synt_refm0.nopp_flg = 0;
-  reg_frm->synt_refm0.ltrf_flg = idr->long_term_reference_flag ? 1 : 0;
+  reg_frm->synt_refm0.ltrf_flg =
+      (slice->idr && slice->long_term_reference_flag) ? 1 : 0;
 
   return OK;
 }
@@ -882,6 +974,235 @@ int rk3576_vepu510_regs_anti_ringing(FAR HalVepu510RegSet *regs,
       s->atr_wgt4.atr_lv4_wgt1 = 22;
       s->atr_wgt4.atr_lv4_wgt2 = 20;
     }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_vepu510_regs_anti_smear
+ *
+ * Description:
+ *   See the header.  Ported from MPP setup_vepu510_anti_smear() with its
+ *   branch structure intact.
+ *
+ *   Two things about the arithmetic are worth knowing before reading it,
+ *   because both look like mistakes and neither is.
+ *
+ *   The first is that a negative quantiser delta is stored in a four-bit
+ *   unsigned field.  MPP assigns the signed value to that field and lets the
+ *   conversion wrap, so -8 is programmed as 8.  Reproducing the expression
+ *   rather than the wrapped value is what keeps the two in step: the field
+ *   widths are the same on both sides, so the same assignment truncates the
+ *   same way.
+ *
+ *   The second is that the counts are compared against fractions of the
+ *   picture in units of four macroblocks, so they are only meaningful next to
+ *   the macroblock count of the picture they came from -- which is why that
+ *   count travels with them rather than being recomputed here.
+ *
+ ****************************************************************************/
+
+int rk3576_vepu510_regs_anti_smear(
+    FAR HalVepu510RegSet *regs, FAR const struct rk3576_h264_cfg_s *cfg,
+    bool slice_is_i, FAR const struct rk3576_vepu510_feedback_s *prev)
+{
+  H264eVepu510Sqi *reg = &regs->reg_sqi;
+  FAR const uint32_t *smear_cnt;
+  uint32_t mb_cnt;
+  uint32_t deblur_str;
+  bool ipc;
+  bool qpmap;
+  int32_t delta_qp = 0;
+  int32_t flg0;
+  int32_t flg1 = 1;
+  int32_t flg2 = 0;
+  int32_t flg3 = 0;
+  int32_t smear_multi[4] = { 9, 12, 16, 16 };
+  uint32_t max012;
+
+  if (cfg == NULL || prev == NULL)
+    {
+      return -EINVAL;
+    }
+
+  if (cfg->tune.deblur_str > RK3576_H264_DEBLUR_STR_MAX)
+    {
+      return -EINVAL;
+    }
+
+  mb_cnt = prev->mb_num;
+  smear_cnt = prev->smear_cnt;
+  deblur_str = cfg->tune.deblur_str;
+  ipc = (cfg->tune.scene_mode == RK3576_H264_SCENE_MODE_IPC);
+  qpmap = (cfg->tune.deblur_en != 0);
+
+  flg0 = smear_cnt[4] < (mb_cnt >> 6);
+
+  /* The three-way maximum is written out rather than taken from a macro, so
+   * that the comparison the flags rest on is visible where it is made.
+   */
+
+  max012 = smear_cnt[0] > smear_cnt[1] ? smear_cnt[0] : smear_cnt[1];
+  if (smear_cnt[2] > max012)
+    {
+      max012 = smear_cnt[2];
+    }
+
+  if (smear_cnt[3] < ((5u * mb_cnt) >> 10) ||
+      smear_cnt[3] < ((1126u * max012) >> 10) || deblur_str == 6 ||
+      deblur_str == 7)
+    {
+      flg1 = 0;
+    }
+
+  flg3 = flg1                                       ? 3
+         : (smear_cnt[4] > ((102u * mb_cnt) >> 10)) ? 2
+         : (smear_cnt[4] > ((66u * mb_cnt) >> 10))  ? 1
+                                                    : 0;
+
+  if (ipc)
+    {
+      reg->smear_opt_cfg.rdo_smear_en = qpmap ? 1u : 0u;
+
+      if (qpmap && deblur_str > 3)
+        {
+          reg->smear_opt_cfg.rdo_smear_lvl16_multi =
+              (uint32_t)smear_multi[flg3];
+        }
+      else
+        {
+          reg->smear_opt_cfg.rdo_smear_lvl16_multi = (flg0 != 0) ? 9u : 12u;
+        }
+    }
+  else
+    {
+      reg->smear_opt_cfg.rdo_smear_en = 0;
+      reg->smear_opt_cfg.rdo_smear_lvl16_multi = 16;
+    }
+
+  if (qpmap && deblur_str > 3)
+    {
+      flg2 = 1;
+
+      if (smear_cnt[2] + smear_cnt[3] > (3u * smear_cnt[4] / 4u))
+        {
+          delta_qp = 1;
+        }
+
+      if (smear_cnt[4] < (mb_cnt >> 4))
+        {
+          delta_qp -= 8;
+        }
+      else if (smear_cnt[4] < ((3u * mb_cnt) >> 5))
+        {
+          delta_qp -= 7;
+        }
+      else
+        {
+          delta_qp -= 6;
+        }
+
+      if (flg3 == 2)
+        {
+          delta_qp = 0;
+        }
+      else if (flg3 == 1)
+        {
+          delta_qp = -2;
+        }
+    }
+  else
+    {
+      if (smear_cnt[2] + smear_cnt[3] > smear_cnt[4] / 2u)
+        {
+          delta_qp = 1;
+        }
+
+      if (smear_cnt[4] < (mb_cnt >> 8))
+        {
+          delta_qp -= (deblur_str < 2) ? 6 : 8;
+        }
+      else if (smear_cnt[4] < (mb_cnt >> 7))
+        {
+          delta_qp -= (deblur_str < 2) ? 5 : 6;
+        }
+      else if (smear_cnt[4] < (mb_cnt >> 6))
+        {
+          delta_qp -= (deblur_str < 2) ? 3 : 4;
+        }
+      else
+        {
+          delta_qp -= 1;
+        }
+    }
+
+  reg->smear_opt_cfg.rdo_smear_dlt_qp = (uint32_t)delta_qp;
+
+  /* The one field here that is not a threshold but a mode, and the reason
+   * this block cannot be left zeroed: 1 is the state that means "this picture
+   * or the one before it stands on its own", and MPP uses it for the first
+   * picture of a group as well as for the IDR itself.  A driver that wrote 0
+   * would be telling the encoder something MPP never says.
+   */
+
+  if (slice_is_i || prev->frame_type == RK3576_H264_SLICE_I)
+    {
+      reg->smear_opt_cfg.stated_mode = 1;
+    }
+  else
+    {
+      reg->smear_opt_cfg.stated_mode = 2;
+    }
+
+  reg->smear_madp_thd0.madp_cur_thd0 = 0;
+  reg->smear_madp_thd0.madp_cur_thd1 = (flg2 != 0) ? 48u : 24u;
+  reg->smear_madp_thd1.madp_cur_thd2 = (flg2 != 0) ? 64u : 48u;
+  reg->smear_madp_thd1.madp_cur_thd3 = (flg2 != 0) ? 72u : 64u;
+  reg->smear_madp_thd2.madp_around_thd0 = (flg2 != 0) ? 4095u : 16u;
+  reg->smear_madp_thd2.madp_around_thd1 = 32;
+  reg->smear_madp_thd3.madp_around_thd2 = 48;
+  reg->smear_madp_thd3.madp_around_thd3 = (flg2 != 0) ? 0u : 96u;
+  reg->smear_madp_thd4.madp_around_thd4 = 48;
+  reg->smear_madp_thd4.madp_around_thd5 = 24;
+  reg->smear_madp_thd5.madp_ref_thd0 = (flg2 != 0) ? 64u : 96u;
+  reg->smear_madp_thd5.madp_ref_thd1 = 48;
+
+  reg->smear_cnt_thd0.cnt_cur_thd0 = (flg2 != 0) ? 2u : 1u;
+  reg->smear_cnt_thd0.cnt_cur_thd1 = (flg2 != 0) ? 5u : 3u;
+  reg->smear_cnt_thd0.cnt_cur_thd2 = 1;
+  reg->smear_cnt_thd0.cnt_cur_thd3 = 3;
+  reg->smear_cnt_thd1.cnt_around_thd0 = 1;
+  reg->smear_cnt_thd1.cnt_around_thd1 = 4;
+  reg->smear_cnt_thd1.cnt_around_thd2 = 1;
+  reg->smear_cnt_thd1.cnt_around_thd3 = 4;
+  reg->smear_cnt_thd2.cnt_around_thd4 = 0;
+  reg->smear_cnt_thd2.cnt_around_thd5 = 3;
+  reg->smear_cnt_thd2.cnt_around_thd6 = 0;
+  reg->smear_cnt_thd2.cnt_around_thd7 = 3;
+  reg->smear_cnt_thd3.cnt_ref_thd0 = 1;
+  reg->smear_cnt_thd3.cnt_ref_thd1 = 3;
+
+  reg->smear_resi_thd0.resi_small_cur_th0 = 6;
+  reg->smear_resi_thd0.resi_big_cur_th0 = 9;
+  reg->smear_resi_thd0.resi_small_cur_th1 = 6;
+  reg->smear_resi_thd0.resi_big_cur_th1 = 9;
+  reg->smear_resi_thd1.resi_small_around_th0 = 6;
+  reg->smear_resi_thd1.resi_big_around_th0 = 11;
+  reg->smear_resi_thd1.resi_small_around_th1 = 6;
+  reg->smear_resi_thd1.resi_big_around_th1 = 8;
+  reg->smear_resi_thd2.resi_small_around_th2 = 9;
+  reg->smear_resi_thd2.resi_big_around_th2 = 20;
+  reg->smear_resi_thd2.resi_small_around_th3 = 6;
+  reg->smear_resi_thd2.resi_big_around_th3 = 20;
+  reg->smear_resi_thd3.resi_small_ref_th0 = 7;
+  reg->smear_resi_thd3.resi_big_ref_th0 = 16;
+  reg->smear_resi_thd4.resi_th0 = (flg2 != 0) ? 0u : 10u;
+  reg->smear_resi_thd4.resi_th1 = (flg2 != 0) ? 0u : 6u;
+
+  reg->smear_st_thd.madp_cnt_th0 = (flg2 != 0) ? 0u : 1u;
+  reg->smear_st_thd.madp_cnt_th1 = (flg2 != 0) ? 0u : 5u;
+  reg->smear_st_thd.madp_cnt_th2 = (flg2 != 0) ? 0u : 1u;
+  reg->smear_st_thd.madp_cnt_th3 = (flg2 != 0) ? 0u : 3u;
 
   return OK;
 }
@@ -1230,7 +1551,7 @@ int rk3576_vepu510_regs_me(FAR HalVepu510RegSet *regs,
 int rk3576_vepu510_regs_build(FAR HalVepu510RegSet *regs,
                               FAR const struct rk3576_vepu510_frame_s *frm,
                               FAR const struct rk3576_h264_cfg_s *cfg,
-                              FAR const struct rk3576_vepu510_idr_s *idr)
+                              FAR const struct rk3576_vepu510_slice_s *slice)
 {
   int ret;
 
@@ -1260,7 +1581,7 @@ int rk3576_vepu510_regs_build(FAR HalVepu510RegSet *regs,
       return ret;
     }
 
-  ret = rk3576_vepu510_regs_codec(regs, cfg, idr);
+  ret = rk3576_vepu510_regs_codec(regs, cfg, slice);
   if (ret < 0)
     {
       return ret;
@@ -1276,9 +1597,17 @@ int rk3576_vepu510_regs_build(FAR HalVepu510RegSet *regs,
       return ret;
     }
 
-  /* Coding-tool selection.  All-intra, so every slice is an I slice. */
+  /* Coding-tool selection.  Three of the blocks below are chosen by slice
+   * type in MPP rather than being fixed: the RDO and anti-ringing parameters
+   * and the adaptive-quantisation tables all have an I and a P set.  Leaving
+   * any of them at its I-slice values would encode every P picture with the
+   * settings chosen for a picture that is nothing but intra prediction --
+   * which the encoder would accept without complaint, and which no test that
+   * only looked at whether the picture decoded could tell from the right
+   * ones.
+   */
 
-  ret = rk3576_vepu510_regs_rdo_pred(regs, cfg, true);
+  ret = rk3576_vepu510_regs_rdo_pred(regs, cfg, slice->idr);
   if (ret < 0)
     {
       return ret;
@@ -1290,13 +1619,26 @@ int rk3576_vepu510_regs_build(FAR HalVepu510RegSet *regs,
       return ret;
     }
 
-  ret = rk3576_vepu510_regs_anti_ringing(regs, cfg, true);
+  ret = rk3576_vepu510_regs_anti_ringing(regs, cfg, slice->idr);
   if (ret < 0)
     {
       return ret;
     }
 
   ret = rk3576_vepu510_regs_anti_flicker(regs, cfg);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  /* Anti-smear, which is the only block here programmed from state the
+   * hardware reported rather than from configuration: its thresholds are
+   * derived from what the previous picture said about how much of itself it
+   * had to refresh.  It is built for every picture, including the first,
+   * whose "previous" is the zeroed feedback the caller supplies.
+   */
+
+  ret = rk3576_vepu510_regs_anti_smear(regs, cfg, slice->idr, &frm->prev);
   if (ret < 0)
     {
       return ret;
@@ -1312,13 +1654,14 @@ int rk3576_vepu510_regs_build(FAR HalVepu510RegSet *regs,
       return ret;
     }
 
-  /* Adaptive quantisation and motion estimation.  Neither does anything for
-   * an all-intra stream, and MPP programs both unconditionally; they are here
-   * so the register image matches MPP's rather than being a hand-picked
-   * subset of it.
+  /* Adaptive quantisation and motion estimation.  Neither does anything
+   * worth having for a still picture, and MPP programs both unconditionally;
+   * they are here so the register image matches MPP's rather than being a
+   * hand-picked subset of it.  Adaptive quantisation is the third of the
+   * slice-type-dependent blocks.
    */
 
-  ret = rk3576_vepu510_regs_aq(regs, true);
+  ret = rk3576_vepu510_regs_aq(regs, slice->idr);
   if (ret < 0)
     {
       return ret;
@@ -1358,6 +1701,36 @@ void rk3576_vepu510_status_decode(uint32_t bs_lgth_l32, uint32_t sse_bsl,
              ((sse_bsl >> RK3576_VEPU510_ST_SSE_LOW_SHIFT) &
               RK3576_VEPU510_ST_SSE_LOW_MASK);
     }
+}
+
+/****************************************************************************
+ * Name: rk3576_vepu510_status_smear
+ *
+ * Description:
+ *   See the header.  The four counts are eight-bit fields of the status
+ *   word's four bytes, and the fifth entry is their sum -- MPP's own
+ *   arrangement, kept because the anti-smear block compares that sum against
+ *   fractions of the picture.
+ *
+ ****************************************************************************/
+
+void rk3576_vepu510_status_smear(uint32_t smear_cnt_reg, FAR uint32_t *out)
+{
+  uint32_t i;
+
+  for (i = 0; i < 4; i++)
+    {
+      /* Scaled by four as MPP scales it: the encoder counts in units of four
+       * macroblocks, so the raw field is a quarter of the count that the
+       * thresholds are expressed in.  Writing the shift as a multiply keeps
+       * the correspondence with the reference visible.
+       */
+
+      out[i] = ((smear_cnt_reg >> (8u * i)) & 0xffu) *
+               RK3576_VEPU510_ST_SMEAR_CNT_SCALE;
+    }
+
+  out[4] = out[0] + out[1] + out[2] + out[3];
 }
 
 #endif /* CONFIG_RK3576_VEPU */

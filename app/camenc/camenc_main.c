@@ -94,6 +94,21 @@
 #define CAMENC_DEFAULT_FRAMES 300
 #define CAMENC_DEFAULT_QP     26
 
+/* The encoder's default group length, and this program keeps it.
+ *
+ * Two pictures per group is where the saving is: 1454 kbit/s to 747 on the
+ * capture it was measured from, and a longer group adds 5.6% on top of that,
+ * because one P in every group of four costs as much as the IDR that opened
+ * the group.  chips/rk3576/vepu/README.md has the numbers.
+ *
+ * A longer group also trades away a decoder's ability to join the stream late
+ * and to recover from a lost fragment, and which of those matters more is a
+ * property of how the stream is being watched rather than of the encoder --
+ * so it is the caller's question, not this program's default.
+ */
+
+#define CAMENC_DEFAULT_GOP 2
+
 /* Three, as the capture tool uses: enough that a frame being worked on does
  * not stall the one arriving, few enough that the latency stays short.
  */
@@ -108,7 +123,8 @@
  * Only the QP is used here; the rest have usable defaults.
  */
 
-#define CAMENC_CID_QP 0x1000
+#define CAMENC_CID_QP  0x1000
+#define CAMENC_CID_GOP 0x1004
 
 /* The largest segment the streaming server will carry.
  *
@@ -211,6 +227,12 @@ static void camenc_usage(void)
   printf("  -h  height (default %d, must be a multiple of 16)\n",
          CAMENC_DEFAULT_HEIGHT);
   printf("  -q  quantiser, 0..51 (default %d)\n", CAMENC_DEFAULT_QP);
+  printf("  -G  pictures per group, 1..1000 (default %d; 1 makes every"
+         " frame an\n      IDR, a larger value makes the first frame of"
+         " each group one and\n      the rest predict from the frame"
+         " before them.  2 is worth about\n      half the bit rate of 1"
+         " and longer groups flatten out after that)\n",
+         CAMENC_DEFAULT_GOP);
   printf("  -x  sensor exposure in lines, overrides the driver default\n");
   printf("  -g  sensor analog gain, 16 = 1.0x and 1023 = 64x\n\n");
   printf(
@@ -516,6 +538,7 @@ int main(int argc, FAR char *argv[])
   size_t max_au;
   int frames = CAMENC_DEFAULT_FRAMES;
   int qp = CAMENC_DEFAULT_QP;
+  int gop = CAMENC_DEFAULT_GOP;
   int port = 0;
   int exposure = -1;
   int gain = -1;
@@ -534,7 +557,7 @@ int main(int argc, FAR char *argv[])
   int last_report = 0;
   uint64_t reported_at = 0;
 
-  while ((opt = getopt(argc, argv, "d:e:o:n:w:h:q:x:g:p:")) != -1)
+  while ((opt = getopt(argc, argv, "d:e:o:n:w:h:q:x:g:p:G:")) != -1)
     {
       switch (opt)
         {
@@ -570,6 +593,10 @@ int main(int argc, FAR char *argv[])
             qp = atoi(optarg);
             break;
 
+          case 'G':
+            gop = atoi(optarg);
+            break;
+
           case 'x':
             exposure = atoi(optarg);
             break;
@@ -599,6 +626,12 @@ int main(int argc, FAR char *argv[])
   if (qp < 0 || qp > 51)
     {
       printf("camenc: quantiser must be 0..51, not %d\n", qp);
+      return EXIT_FAILURE;
+    }
+
+  if (gop < 1 || gop > 1000)
+    {
+      printf("camenc: group length must be 1..1000, not %d\n", gop);
       return EXIT_FAILURE;
     }
 
@@ -713,6 +746,17 @@ int main(int argc, FAR char *argv[])
    */
 
   if (camenc_set_ctrl(encfd, CAMENC_CID_QP, qp, "qp") < 0)
+    {
+      goto errout;
+    }
+
+  /* Set unconditionally rather than only when asked for: the driver's own
+   * default is the same value, so this changes nothing unless it was asked
+   * to -- and having one place that states the group length in use means the
+   * log says what the stream is, not what it would have been.
+   */
+
+  if (camenc_set_ctrl(encfd, CAMENC_CID_GOP, gop, "gop") < 0)
     {
       goto errout;
     }
@@ -1012,14 +1056,20 @@ int main(int argc, FAR char *argv[])
         }
       else
         {
-          /* Every picture this encoder produces is an IDR, so every fragment
-           * is one a stream may be started on.  That will stop being true
-           * when it learns to emit P pictures; the muxer already carries the
-           * distinction, and this is where it will come from.
+          /* Whether the encoder may be started at this frame, which is the
+           * encoder's answer to give rather than something read out of the
+           * bytes: a picture does not say whether anything after it predicts
+           * from it.  It arrives as a buffer flag for exactly this reason.
+           *
+           * The distinction decides where a fragment may begin, so getting it
+           * wrong is not cosmetic.  A fragment a player cannot start on is a
+           * fragment it decodes to noise, and the muxer cannot tell after the
+           * fact -- hence taking it from the source.
            */
 
-          ret =
-              camenc_stream_write(&st, cap->start, ebuf.bytesused, pts, true);
+          bool key = (ebuf.flags & V4L2_BUF_FLAG_KEYFRAME) != 0;
+
+          ret = camenc_stream_write(&st, cap->start, ebuf.bytesused, pts, key);
           if (ret < 0)
             {
               printf("camenc: muxing frame %d failed: %d\n", i, ret);
