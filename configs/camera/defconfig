@@ -215,16 +215,28 @@ CONFIG_NET_TCPBACKLOG=y
 # refuses to build without it.
 CONFIG_NET_TCP_WRITE_BUFFERS=y
 
-# The pool the write buffers are drawn from, and the reason the number is not
+# The pool the write buffers are drawn from, and the reason neither number is
 # the default.
 #
-# A buffer holds 196 bytes, so one of camenc's frames -- about 3.5 KB for an
-# IDR -- needs eighteen of them.  The default pool of 24 then holds barely one
-# frame, which is the wrong side of the line: send() returns EAGAIN rather
-# than blocking, so the frame would be finished over the following polls, but
-# with no room to finish it in there is nothing to absorb the difference
-# between how fast the encoder produces frames and how fast WiFi acknowledges
-# them.  Sixty-four holds three frames and costs 12 KB.
+# What the pool has to hold is set by the size of one frame, and that is the
+# thing that moved.  This was sized when every frame was an IDR of about
+# 3.5 KB, and ThreeFrames x 3.5 KB / 196 B is where sixty-four came from.
+# With two pictures per group an IDR is a whole intra picture again -- about
+# 16.5 KB in the same scene -- and the arithmetic that produced 64 now
+# produces a pool smaller than a single frame.  A send() that cannot even
+# accept one frame never finishes it, a client is fed at the rate the
+# acknowledgements free buffers rather than the rate WiFi allows, and a
+# viewer sees nothing at all while the capture loop reports its usual 62.5
+# fps.
+#
+# So the payload is a packet's worth rather than a fifth of one, and the
+# product is what matters: 1516 bytes is one full Ethernet payload, so the
+# same 64 buffers now hold 97 KB -- six of today's frames, or more than a
+# worst-case 64 KB segment -- for 85 KB more RAM than before.  Raising the
+# count instead would work too, but it would take 85 buffers for a single
+# frame and leave the pool unable to hold one; this way a buffer is always
+# something that can be sent.
+CONFIG_IOB_BUFSIZE=1516
 CONFIG_IOB_NBUFFERS=64
 
 CONFIG_NET_UDP=y
