@@ -87,14 +87,30 @@
 
 /* Register addresses. */
 
-#define OV5647_SW_STANDBY       0x0100
-#define OV5647_SW_RESET         0x0103
-#define OV5647_CHIP_ID_HIGH     0x300a
-#define OV5647_CHIP_ID_LOW      0x300b
-#define OV5647_PAD_OUT          0x300d
-#define OV5647_EXPOSURE         0x3500
-#define OV5647_AEC_AGC          0x3503
-#define OV5647_ANALOG_GAIN      0x350a
+#define OV5647_SW_STANDBY   0x0100
+#define OV5647_SW_RESET     0x0103
+#define OV5647_CHIP_ID_HIGH 0x300a
+#define OV5647_CHIP_ID_LOW  0x300b
+#define OV5647_PAD_OUT      0x300d
+#define OV5647_EXPOSURE     0x3500
+#define OV5647_AEC_AGC      0x3503
+#define OV5647_ANALOG_GAIN  0x350a
+
+/* 0x350c/0x350d hold a frame-length difference the sensor adds of its own
+ * accord while its own AEC is running.  The datasheet asks for zero when the
+ * host owns the frame length, which this driver always does.
+ */
+
+#define OV5647_VTS_DIFF 0x350c
+
+/* The three bits of 0x3503, each of which selects manual control of one
+ * thing.  A bit that is set means the host writes it and the sensor's own
+ * loop leaves it alone.
+ */
+
+#define OV5647_VTS_MANUAL       (1u << 2)
+#define OV5647_AGC_MANUAL       (1u << 1)
+#define OV5647_AEC_MANUAL       (1u << 0)
 #define OV5647_HTS              0x380c
 #define OV5647_VTS              0x380e
 #define OV5647_FRAME_OFF_NUMBER 0x4202
@@ -137,13 +153,27 @@
 #define OV5647_MODE_HTS 1852u
 #define OV5647_MODE_VTS 504u
 
-/* AEC and AGC are switched off by the common register table (0x3503 is
- * written as 0x03), so the exposure time and the gain have to be set
- * explicitly: there is no auto loop to fall back on, and a sensor given
- * neither integrates for whatever the reset value happens to be.  A reset
- * exposure of zero streams a stable, nearly black frame -- which looks like
- * a frozen picture rather than an unprogrammed sensor.  These are the
- * upstream control defaults.
+/* AEC and AGC are switched off by the common register table, so the exposure
+ * time and the gain have to be set explicitly: there is no auto loop to fall
+ * back on, and a sensor given neither integrates for whatever the reset value
+ * happens to be.  A reset exposure of zero streams a stable, nearly black
+ * frame -- which looks like a frozen picture rather than an unprogrammed
+ * sensor.  These are the upstream control defaults.
+ *
+ * The two loops can be handed back to the sensor at run time through
+ * V4L2_CID_EXPOSURE_AUTO and V4L2_CID_ISO_SENSITIVITY_AUTO; see
+ * ov5647_set_value().  Off is the default because a stream that is suddenly
+ * exposed by a loop the application cannot see is a different stream, and an
+ * application that wants one should ask.
+ *
+ * The frame length stays manual either way.  The sensor's AEC is entitled to
+ * lengthen a frame to integrate for longer -- the datasheet describes night
+ * mode as "slowing down the original frame rate" -- and this driver's frame
+ * rate is a promise made in the stream's VUI and relied on by whoever is
+ * pacing frames.  Letting the loop move VTS would break that promise from
+ * inside the sensor, where nothing can observe it.  So VTS is held manual
+ * and the frame length is written by the driver in every configuration; the
+ * exposure the AEC may choose is bounded by the frame it sits in.
  */
 
 /* The exposure and gain are the only controls over how bright the picture
@@ -209,6 +239,17 @@ struct ov5647_s
 
   uint32_t exposure_lines;
   uint32_t analog_gain;
+
+  /* Whether the sensor's own loops are running, and so whether the two
+   * values above are what the picture is being exposed with.  False is the
+   * default: the settings in them are the ones this driver wrote.
+   *
+   * The frame length is not here because it is manual in every
+   * configuration -- see the note above the register table.
+   */
+
+  bool aec_auto;
+  bool agc_auto;
 };
 
 /****************************************************************************
@@ -223,19 +264,69 @@ struct ov5647_s
  */
 
 static const struct ov5647_reg_s g_ov5647_common_regs[] = {
-  { 0x0100, 0x00 }, { 0x0103, 0x01 }, { 0x3034, 0x1a }, { 0x3035, 0x21 },
-  { 0x303c, 0x11 }, { 0x3106, 0xf5 }, { 0x3827, 0xec }, { 0x370c, 0x03 },
-  { 0x5000, 0x06 }, { 0x5003, 0x08 }, { 0x5a00, 0x08 }, { 0x3000, 0x00 },
-  { 0x3001, 0x00 }, { 0x3002, 0x00 }, { 0x3016, 0x08 }, { 0x3017, 0xe0 },
-  { 0x3018, 0x44 }, { 0x301c, 0xf8 }, { 0x301d, 0xf0 }, { 0x3a18, 0x00 },
-  { 0x3a19, 0xf8 }, { 0x3c01, 0x80 }, { 0x3b07, 0x0c }, { 0x3630, 0x2e },
-  { 0x3632, 0xe2 }, { 0x3633, 0x23 }, { 0x3634, 0x44 }, { 0x3636, 0x06 },
-  { 0x3620, 0x64 }, { 0x3621, 0xe0 }, { 0x3600, 0x37 }, { 0x3704, 0xa0 },
-  { 0x3703, 0x5a }, { 0x3715, 0x78 }, { 0x3717, 0x01 }, { 0x3731, 0x02 },
-  { 0x370b, 0x60 }, { 0x3705, 0x1a }, { 0x3f05, 0x02 }, { 0x3f06, 0x10 },
-  { 0x3f01, 0x0a }, { 0x3a08, 0x01 }, { 0x3a0f, 0x58 }, { 0x3a10, 0x50 },
-  { 0x3a1b, 0x58 }, { 0x3a1e, 0x50 }, { 0x3a11, 0x60 }, { 0x3a1f, 0x28 },
-  { 0x4001, 0x02 }, { 0x4000, 0x09 }, { 0x3503, 0x03 },
+  { 0x0100, 0x00 },
+  { 0x0103, 0x01 },
+  { 0x3034, 0x1a },
+  { 0x3035, 0x21 },
+  { 0x303c, 0x11 },
+  { 0x3106, 0xf5 },
+  { 0x3827, 0xec },
+  { 0x370c, 0x03 },
+  { 0x5000, 0x06 },
+  { 0x5003, 0x08 },
+  { 0x5a00, 0x08 },
+  { 0x3000, 0x00 },
+  { 0x3001, 0x00 },
+  { 0x3002, 0x00 },
+  { 0x3016, 0x08 },
+  { 0x3017, 0xe0 },
+  { 0x3018, 0x44 },
+  { 0x301c, 0xf8 },
+  { 0x301d, 0xf0 },
+  { 0x3a18, 0x00 },
+  { 0x3a19, 0xf8 },
+  { 0x3c01, 0x80 },
+  { 0x3b07, 0x0c },
+  { 0x3630, 0x2e },
+  { 0x3632, 0xe2 },
+  { 0x3633, 0x23 },
+  { 0x3634, 0x44 },
+  { 0x3636, 0x06 },
+  { 0x3620, 0x64 },
+  { 0x3621, 0xe0 },
+  { 0x3600, 0x37 },
+  { 0x3704, 0xa0 },
+  { 0x3703, 0x5a },
+  { 0x3715, 0x78 },
+  { 0x3717, 0x01 },
+  { 0x3731, 0x02 },
+  { 0x370b, 0x60 },
+  { 0x3705, 0x1a },
+  { 0x3f05, 0x02 },
+  { 0x3f06, 0x10 },
+  { 0x3f01, 0x0a },
+  { 0x3a08, 0x01 },
+  { 0x3a0f, 0x58 },
+  { 0x3a10, 0x50 },
+  { 0x3a1b, 0x58 },
+  { 0x3a1e, 0x50 },
+  { 0x3a11, 0x60 },
+  { 0x3a1f, 0x28 },
+  { 0x4001, 0x02 },
+  { 0x4000, 0x09 },
+
+  /* Pinned before the manual-control register that selects it, so that the
+   * sensor never has a frame length of its own to add to the one this driver
+   * writes.  The reset value of 0x350c/0x350d is not zero.
+   */
+
+  { OV5647_VTS_DIFF, 0x00 },
+  { OV5647_VTS_DIFF + 1, 0x00 },
+
+  /* AEC and AGC manual, VTS manual.  See the note above the table. */
+
+  { OV5647_AEC_AGC,
+    OV5647_VTS_MANUAL | OV5647_AGC_MANUAL | OV5647_AEC_MANUAL },
 };
 
 /* 640x480 10-bit mode: 2x2 binned and subsampled, full field of view.
@@ -747,6 +838,38 @@ static int ov5647_write_gain(FAR struct ov5647_s *priv)
 }
 
 /****************************************************************************
+ * Name: ov5647_write_manual_ctrl
+ *
+ * Description:
+ *   Push the choice of which of the sensor's own loops may run.  The caller
+ *   must hold the driver lock.
+ *
+ *   The frame length is manual in every configuration, and that is a
+ *   decision rather than an omission -- see the note above the register
+ *   table.  It is written here rather than in the table alone so that the
+ *   bit is reasserted whenever the other two change, which is the only way
+ *   it can be relied on: 0x3503 is written as a whole byte.
+ *
+ ****************************************************************************/
+
+static int ov5647_write_manual_ctrl(FAR struct ov5647_s *priv)
+{
+  uint8_t value = (uint8_t)OV5647_VTS_MANUAL;
+
+  if (!priv->agc_auto)
+    {
+      value |= (uint8_t)OV5647_AGC_MANUAL;
+    }
+
+  if (!priv->aec_auto)
+    {
+      value |= (uint8_t)OV5647_AEC_MANUAL;
+    }
+
+  return ov5647_putreg(priv, OV5647_AEC_AGC, value);
+}
+
+/****************************************************************************
  * Name: ov5647_start_capture
  ****************************************************************************/
 
@@ -929,12 +1052,23 @@ static int ov5647_get_frame_interval(FAR struct imgsensor_s *sensor,
  * Description:
  *   The sensor-side control interface.
  *
- *   Two controls are meaningful, and they are the two that replace the
- *   sensor's own loops: the exposure time and the analog gain.  They reach
- *   here from VIDIOC_S_CTRL, which makes them adjustable on a running
- *   system -- the point of having them at all, since choosing a gain for a
- *   scene means trying a few, and rebuilding for each is not a practical
- *   way to do that.
+ *   Four controls are meaningful: the exposure time and the analog gain,
+ *   which the driver writes; and the two auto controls, which select whether
+ *   the sensor's own loops write them instead.  They reach here from
+ *   VIDIOC_S_CTRL, which makes them adjustable on a running system -- the
+ *   point of having them at all, since choosing an exposure or a gain for a
+ *   scene means trying a few, and rebuilding for each is not a practical way
+ *   to do that.
+ *
+ *   Notice what is not here: a target brightness, an exposure meter, a
+ *   convergence rate.  Those are the decisions of an exposure loop, and the
+ *   loop belongs to the application, which is the only party that knows what
+ *   the picture is for.  What the driver contributes is the mechanism --
+ *   write these registers, and here is what the capture side measured the
+ *   frame to be (see drivers/include/cam3a.h).  The one exception is the
+ *   sensor's own AEC, which is offered because it exists and can be selected,
+ *   but is off by default: the application's loop is the one that can be
+ *   reasoned about, and two loops steering the same registers cannot.
  *
  *   Anything else is reported as unsupported rather than silently ignored,
  *   so a caller is never left believing a request took effect.
@@ -973,6 +1107,25 @@ static int ov5647_get_value(FAR struct imgsensor_s *sensor, uint32_t id,
         value->value32 = (int32_t)priv->analog_gain;
         break;
 
+        /* While a loop the driver does not run is in charge, the two values
+         * above are the last ones this driver wrote and not what the picture
+         * is being exposed with.  Reading the sensor's own choice back is not
+         * attempted: the datasheet describes 0x350a/0x350b as a real-gain
+         * output but does not say the exposure registers are updated by the
+         * loop, so a readback would be a guess presented as a measurement.
+         * The two controls below are how a caller tells which case it is in.
+         */
+
+      case IMGSENSOR_ID_EXPOSURE_AUTO:
+        value->value32 =
+            priv->aec_auto ? V4L2_EXPOSURE_AUTO : V4L2_EXPOSURE_MANUAL;
+        break;
+
+      case IMGSENSOR_ID_ISO_SENSITIVITY_AUTO:
+        value->value32 = priv->agc_auto ? V4L2_ISO_SENSITIVITY_AUTO
+                                        : V4L2_ISO_SENSITIVITY_MANUAL;
+        break;
+
       default:
         return -ENOTSUP;
     }
@@ -985,6 +1138,7 @@ static int ov5647_set_value(FAR struct imgsensor_s *sensor, uint32_t id,
 {
   FAR struct ov5647_s *priv = (FAR struct ov5647_s *)sensor;
   uint32_t wanted;
+  bool auto_wanted;
   int ret;
 
   ret = nxmutex_lock(&priv->lock);
@@ -1035,6 +1189,85 @@ static int ov5647_set_value(FAR struct imgsensor_s *sensor, uint32_t id,
 
         priv->analog_gain = wanted;
         ret = ov5647_write_gain(priv);
+        break;
+
+      case IMGSENSOR_ID_EXPOSURE_AUTO:
+        /* Only the two modes the hardware has.
+         *
+         * Shutter priority and aperture priority are not things this part
+         * can be asked for.  There is no iris, and the sensor's loop drives
+         * exposure and gain together -- so a fixed exposure with a floating
+         * gain is a policy a caller builds on top of manual mode, not a
+         * mode that can be selected.  Accepting them would be claiming a
+         * control that does not exist.
+         */
+
+        if ((uint32_t)value.value32 == V4L2_EXPOSURE_MANUAL)
+          {
+            auto_wanted = false;
+          }
+        else if ((uint32_t)value.value32 == V4L2_EXPOSURE_AUTO)
+          {
+            auto_wanted = true;
+          }
+        else
+          {
+            nxmutex_unlock(&priv->lock);
+            return -ENOTSUP;
+          }
+
+        if (priv->aec_auto != auto_wanted)
+          {
+            priv->aec_auto = auto_wanted;
+            ret = ov5647_write_manual_ctrl(priv);
+
+            /* Handing the exposure back to this driver: the sensor is
+             * holding whatever its loop last chose, so what the driver
+             * believes in is written again rather than being left as
+             * whatever that happened to be.
+             */
+
+            if (ret >= 0 && !auto_wanted)
+              {
+                ret = ov5647_write_exposure(priv);
+              }
+          }
+        break;
+
+      case IMGSENSOR_ID_ISO_SENSITIVITY_AUTO:
+        /* Independent of the exposure control at the register level, and
+         * paired with it in practice: the sensor runs the gain up only once
+         * the exposure has run out, so an auto gain with a manual exposure
+         * is a combination the hardware will honour but that leads
+         * somewhere the caller may not expect.  It is allowed anyway, since
+         * refusing it would be this driver inventing a rule the part does
+         * not have.
+         */
+
+        if ((uint32_t)value.value32 == V4L2_ISO_SENSITIVITY_MANUAL)
+          {
+            auto_wanted = false;
+          }
+        else if ((uint32_t)value.value32 == V4L2_ISO_SENSITIVITY_AUTO)
+          {
+            auto_wanted = true;
+          }
+        else
+          {
+            nxmutex_unlock(&priv->lock);
+            return -ENOTSUP;
+          }
+
+        if (priv->agc_auto != auto_wanted)
+          {
+            priv->agc_auto = auto_wanted;
+            ret = ov5647_write_manual_ctrl(priv);
+
+            if (ret >= 0 && !auto_wanted)
+              {
+                ret = ov5647_write_gain(priv);
+              }
+          }
         break;
 
       default:
