@@ -35,6 +35,7 @@ if(CONFIG_SYSTEM_CAMENC)
     camenc_main.c
     camenc_stream.c
     camenc_ws.c
+    camenc_3a.c
     STACKSIZE
     ${CONFIG_SYSTEM_CAMENC_STACKSIZE}
     PRIORITY
