@@ -93,6 +93,38 @@
 #error "camenc_ws polls for connections; enable CONFIG_NET_TCPBACKLOG"
 #endif
 
+/* The same assumption about the send side, and the one that is harder to
+ * notice when it is wrong.
+ *
+ * This server queues a frame and expects send() to take what it can and give
+ * back EAGAIN for the rest; ws_flush() is written around that and resends
+ * from where it stopped.  NuttX only behaves that way when TCP write
+ * buffering is on.  With it off, sends go inline and wait for the
+ * acknowledgement -- and, unlike the receive path, the send path does not
+ * consult the non-blocking flag at all.  tcp_send_unbuffered.c contains no
+ * reference to O_NONBLOCK or to _SF_NONBLOCK anywhere, so every send() in
+ * ws_flush() blocks until the data is acknowledged however the socket is
+ * set.  The wait has no bound either: the default send timeout is zero,
+ * which _SO_TIMEOUT() turns into UINT_MAX.
+ *
+ * The cost of getting this wrong is not a hang, which would be obvious.  It
+ * is a frame rate that sags when the picture moves: bigger frames mean more
+ * round trips, and the round trips are inside the loop that takes frames from
+ * the camera.  With write buffering off, this server took the camera from
+ * 62.5 fps to under 40 on a scene with motion in it, while the encoder itself
+ * never used more than 1.5 ms of the 16 ms frame period.
+ *
+ * So it is a build error rather than a measurement: the failure mode is a
+ * plausible-looking performance problem that no amount of reading the
+ * application's own code explains.
+ */
+
+#if defined(__NuttX__) && defined(CONFIG_NET_TCP) && \
+    !defined(CONFIG_NET_TCP_WRITE_BUFFERS)
+#error \
+    "camenc_ws needs non-blocking sends; enable CONFIG_NET_TCP_WRITE_BUFFERS"
+#endif
+
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
@@ -1016,7 +1048,16 @@ int camenc_ws_start(FAR struct camenc_ws_s *ws, uint16_t port, size_t tx_size)
       return err;
     }
 
-  fcntl(ws->listen_fd, F_SETFL, fcntl(ws->listen_fd, F_GETFL, 0) | O_NONBLOCK);
+  if (fcntl(ws->listen_fd, F_SETFL,
+            fcntl(ws->listen_fd, F_GETFL, 0) | O_NONBLOCK) < 0)
+    {
+      int err = -errno;
+
+      _err("CAMENC WS: the listening socket will not go non-blocking: %d\n",
+           errno);
+      camenc_ws_stop(ws);
+      return err;
+    }
 
   ws->port = port;
   return 0;
@@ -1107,7 +1148,13 @@ void camenc_ws_poll(FAR struct camenc_ws_s *ws)
           continue;
         }
 
-      fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+      if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) < 0)
+        {
+          _err("CAMENC WS: the connection will not go non-blocking: %d\n",
+               errno);
+          close(fd);
+          continue;
+        }
 
       /* Reset the connection's state, field by field.
        *

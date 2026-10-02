@@ -205,6 +205,28 @@ CONFIG_NET_TCP=y
 # is busy is dropped, which looks like the network rather than the program.
 CONFIG_NET_TCPBACKLOG=y
 
+# And sends have to be able to come back still holding data.  Without write
+# buffering NuttX sends inline and waits for the acknowledgement, and it does
+# that whether or not the socket is non-blocking -- the non-blocking flag is
+# simply not consulted on that path.  camenc's server queues a frame and
+# expects send() to give back EAGAIN when the socket is full, so without this
+# every frame waits for a WiFi round trip inside the capture loop, and the
+# camera's rate drops from 62.5 fps to under 40.  See camenc_ws.c, which
+# refuses to build without it.
+CONFIG_NET_TCP_WRITE_BUFFERS=y
+
+# The pool the write buffers are drawn from, and the reason the number is not
+# the default.
+#
+# A buffer holds 196 bytes, so one of camenc's frames -- about 3.5 KB for an
+# IDR -- needs eighteen of them.  The default pool of 24 then holds barely one
+# frame, which is the wrong side of the line: send() returns EAGAIN rather
+# than blocking, so the frame would be finished over the following polls, but
+# with no room to finish it in there is nothing to absorb the difference
+# between how fast the encoder produces frames and how fast WiFi acknowledges
+# them.  Sixty-four holds three frames and costs 12 KB.
+CONFIG_IOB_NBUFFERS=64
+
 CONFIG_NET_UDP=y
 CONFIG_TLS_TASK_NELEM=4
 CONFIG_PTHREAD_MUTEX_TYPES=y

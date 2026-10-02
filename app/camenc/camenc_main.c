@@ -210,6 +210,72 @@ static uint64_t camenc_now_us(void)
   return (uint64_t)tv.tv_sec * 1000000u + (uint64_t)tv.tv_usec;
 }
 
+/* Where a frame's time goes.
+ *
+ * The loop is serial -- one frame is taken from the camera, copied, encoded,
+ * muxed and served before the next one starts -- so its frame rate is the
+ * reciprocal of the sum of these, and when that rate is short of the
+ * camera's, these are what say which of them is over budget.
+ *
+ * The encoder is the one that cannot be reasoned about from the source code:
+ * its cost depends on what is being filmed, so a scene with motion in it can
+ * take twice what a still one does.  Which makes it the one that has to be
+ * measured rather than assumed.
+ *
+ * The camera wait is kept as a stage rather than left out because it is the
+ * only evidence that the camera itself is running at the rate it was asked
+ * for: if it is not, every other figure here is against the wrong clock.
+ */
+
+enum camenc_stage_e
+{
+  CAMENC_STAGE_CAMERA,
+  CAMENC_STAGE_COPY,
+  CAMENC_STAGE_ENCODE,
+  CAMENC_STAGE_DRAIN,
+
+  /* Muxing is the whole of handing a frame to the muxer, and it includes the
+   * two stages after it: a muxer with nowhere to put its output would report
+   * an empty mux stage, which is true of the muxer and useless as a diagnosis
+   * of why the frame rate is short.
+   */
+
+  CAMENC_STAGE_MUX,
+  CAMENC_STAGE_FILE,
+  CAMENC_STAGE_CLIENTS,
+  CAMENC_STAGE_SERVE,
+  CAMENC_STAGE_MAX
+};
+
+static const char *const g_stage_name[CAMENC_STAGE_MAX] = {
+  "camera", "copy", "encode", "drain", "mux", "file", "clients", "serve"
+};
+
+static uint64_t g_stage_us[CAMENC_STAGE_MAX];
+static uint64_t g_stage_max[CAMENC_STAGE_MAX];
+
+static void camenc_stage_account(enum camenc_stage_e stage, uint64_t start)
+{
+  uint64_t us = camenc_now_us() - start;
+
+  g_stage_us[stage] += us;
+  if (us > g_stage_max[stage])
+    {
+      g_stage_max[stage] = us;
+    }
+}
+
+static void camenc_stage_reset(void)
+{
+  int s;
+
+  for (s = 0; s < CAMENC_STAGE_MAX; s++)
+    {
+      g_stage_us[s] = 0;
+      g_stage_max[s] = 0;
+    }
+}
+
 static void camenc_usage(void)
 {
   printf("Usage: camenc [-d camdev] [-e encdev] [-o outfile] [-n frames]\n");
@@ -494,14 +560,33 @@ static int camenc_emit(void *arg, enum camenc_seg_e seg, const uint8_t *data,
 {
   FAR struct camenc_sink_s *sink = arg;
 
-  if (sink->file != NULL && fwrite(data, 1, len, sink->file) != len)
+  if (sink->file != NULL)
     {
-      return -EIO;
+      uint64_t mark = camenc_now_us();
+
+      if (fwrite(data, 1, len, sink->file) != len)
+        {
+          return -EIO;
+        }
+
+      /* Timed around the call rather than around the flush, because the
+       * flush is the whole question: stdio buffers, so what this call costs
+       * is the write() that a full buffer forces, not the copy into it.
+       */
+
+      camenc_stage_account(CAMENC_STAGE_FILE, mark);
     }
 
-  if (sink->ws != NULL && camenc_ws_publish(sink->ws, seg, data, len, key) < 0)
+  if (sink->ws != NULL)
     {
-      return -EIO;
+      uint64_t mark = camenc_now_us();
+
+      if (camenc_ws_publish(sink->ws, seg, data, len, key) < 0)
+        {
+          return -EIO;
+        }
+
+      camenc_stage_account(CAMENC_STAGE_CLIENTS, mark);
     }
 
   sink->bytes += len;
@@ -556,6 +641,10 @@ int main(int argc, FAR char *argv[])
   bool have_prev = false;
   int last_report = 0;
   uint64_t reported_at = 0;
+  uint32_t win_idr = 0;
+  uint32_t win_p = 0;
+  uint64_t win_idr_bytes = 0;
+  uint64_t win_p_bytes = 0;
 
   while ((opt = getopt(argc, argv, "d:e:o:n:w:h:q:x:g:p:G:")) != -1)
     {
@@ -922,9 +1011,12 @@ int main(int argc, FAR char *argv[])
       struct camenc_buf_s *out;
       struct camenc_buf_s *cap;
       uint64_t pts;
+      uint64_t mark;
       uint32_t camidx;
 
       /* A frame from the camera. */
+
+      mark = camenc_now_us();
 
       ret =
           camenc_dequeue(camfd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &cbuf, "camera");
@@ -932,6 +1024,8 @@ int main(int argc, FAR char *argv[])
         {
           break;
         }
+
+      camenc_stage_account(CAMENC_STAGE_CAMERA, mark);
 
       camidx = cbuf.index;
 
@@ -975,16 +1069,27 @@ int main(int argc, FAR char *argv[])
 
       out = &g_out[i % (int)nbuf_out];
 
+      mark = camenc_now_us();
+
       memcpy(out->start, g_cam[camidx].start, copy_size);
       out->desc.bytesused = (uint32_t)copy_size;
 
-      /* Queueing this encodes it. */
+      camenc_stage_account(CAMENC_STAGE_COPY, mark);
+
+      /* Queueing this encodes it, and the encode is waited for inside the
+       * queue operation -- which is why this is the stage that decides the
+       * frame rate rather than the one after it.
+       */
+
+      mark = camenc_now_us();
 
       if (camenc_queue(encfd, out, "encoder input", i % (int)nbuf_out) < 0)
         {
           ret = -EIO;
           break;
         }
+
+      camenc_stage_account(CAMENC_STAGE_ENCODE, mark);
 
       /* Take the input buffer back.
        *
@@ -1000,6 +1105,8 @@ int main(int argc, FAR char *argv[])
        * The encode happens inside the queue operation above, so the buffer
        * is already done by the time this runs and comes straight back.
        */
+
+      mark = camenc_now_us();
 
       ret = camenc_dequeue(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT, &obuf,
                            "encoder input");
@@ -1030,6 +1137,8 @@ int main(int argc, FAR char *argv[])
           ret = -EINVAL;
           break;
         }
+
+      camenc_stage_account(CAMENC_STAGE_DRAIN, mark);
 
       cap = &g_cap[ebuf.index];
 
@@ -1069,11 +1178,35 @@ int main(int argc, FAR char *argv[])
 
           bool key = (ebuf.flags & V4L2_BUF_FLAG_KEYFRAME) != 0;
 
+          mark = camenc_now_us();
+
           ret = camenc_stream_write(&st, cap->start, ebuf.bytesused, pts, key);
           if (ret < 0)
             {
               printf("camenc: muxing frame %d failed: %d\n", i, ret);
               break;
+            }
+
+          camenc_stage_account(CAMENC_STAGE_MUX, mark);
+
+          /* What the group length is buying on this content.
+           *
+           * Counted here rather than assumed from the configuration: the
+           * claim a P picture makes is that it costs a fraction of an IDR,
+           * and the only place that can be checked is a stream that was
+           * encoded from something that moved.  A P as large as its IDR
+           * means prediction is not being used, whatever the registers say.
+           */
+
+          if (key)
+            {
+              win_idr++;
+              win_idr_bytes += ebuf.bytesused;
+            }
+          else
+            {
+              win_p++;
+              win_p_bytes += ebuf.bytesused;
             }
 
           /* The page has to name the stream's codec before a browser will
@@ -1127,6 +1260,9 @@ int main(int argc, FAR char *argv[])
       if (i - last_report >= CAMENC_REPORT_FRAMES)
         {
           uint64_t span = pts - reported_at;
+          uint32_t window = (uint32_t)(i - last_report);
+          uint64_t total = 0;
+          int s;
 
           printf("frame %6d: %6" PRIu32 " bytes, %5.1f fps, %" PRIu64
                  " bytes out\n",
@@ -1136,8 +1272,50 @@ int main(int argc, FAR char *argv[])
                      : 0.0,
                  sink.bytes);
 
+          /* The breakdown, per frame, as mean and worst case.  Both, because
+           * they answer different questions: the mean says which stage is
+           * over the frame period, and the worst case says whether the loop
+           * is one slow frame away from missing it.
+           *
+           * The sum of the stages is printed against the period for the same
+           * reason the total is worth having at all: a stage nobody thought
+           * to time is only visible as the difference between the two.
+           */
+
+          printf("  us/frame:");
+
+          for (s = 0; s < CAMENC_STAGE_MAX; s++)
+            {
+              uint64_t mean = g_stage_us[s] / window;
+
+              printf(" %s %" PRIu64 "/%" PRIu64, g_stage_name[s], mean,
+                     g_stage_max[s]);
+
+              if (s != CAMENC_STAGE_FILE && s != CAMENC_STAGE_CLIENTS)
+                {
+                  total += mean;
+                }
+            }
+
+          printf(" sum %" PRIu64 " vs period %" PRIu64 "\n", total,
+                 (uint64_t)(window != 0 ? span / window : 0));
+
+          printf("  frames: %" PRIu32 " IDR, %" PRIu64 " B mean; %" PRIu32
+                 " P, %" PRIu64 " B mean"
+                 " (%" PRIu64 "%% of an IDR)\n",
+                 win_idr, win_idr != 0 ? win_idr_bytes / win_idr : 0, win_p,
+                 win_p != 0 ? win_p_bytes / win_p : 0,
+                 win_idr != 0 && win_p != 0 ? (100u * (win_p_bytes / win_p)) /
+                                                  (win_idr_bytes / win_idr)
+                                            : 0);
+
           last_report = i;
           reported_at = pts;
+          win_idr = 0;
+          win_p = 0;
+          win_idr_bytes = 0;
+          win_p_bytes = 0;
+          camenc_stage_reset();
         }
 
       /* Service the server between frames: take new connections, notice the
@@ -1147,7 +1325,11 @@ int main(int argc, FAR char *argv[])
 
       if (serving)
         {
+          mark = camenc_now_us();
+
           camenc_ws_poll(&g_ws);
+
+          camenc_stage_account(CAMENC_STAGE_SERVE, mark);
         }
     }
 
