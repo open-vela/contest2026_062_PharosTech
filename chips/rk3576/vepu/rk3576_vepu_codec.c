@@ -171,6 +171,31 @@ struct rk3576_vepu_codec_priv_s
     size_t size;
   } heap[RK3576_VEPU_HEAP_MAX];
 
+  /* The group of pictures.
+   *
+   * This is the whole of the driver's encoder-side GOP state, and it is
+   * exactly what MPP's h264e_dpb.c derives: an IDR resets frame_num and the
+   * picture order count, and every other picture in the group continues
+   * them.  frame_num advances by one per picture and the POC by two,
+   * because the picture order count this driver uses counts in frames on the
+   * same scale as frame_num and there are no B pictures to interleave.
+   *
+   * gop_index is the picture's place in its group.  gop of 1 makes every
+   * picture an IDR, which is the all-intra stream this driver produced
+   * before it could predict; gop of 2 gives one IDR and one P that predicts
+   * from it, which is the default and the shortest predictive group there
+   * is.  Everything else follows from gop_index: whether this picture is an
+   * IDR is gop_index == 0, and nothing in the driver needs to know the group
+   * length for any other purpose.
+   */
+
+  uint32_t gop;
+  uint32_t gop_index;
+  uint32_t frame_num;
+  uint32_t poc_lsb;
+  uint32_t idr_pic_id;
+  bool force_idr; /* the reference chain is broken */
+
   uint32_t frame_index; /* counts frames for idr_pic_id          */
   bool header_sent;     /* has SPS+PPS gone out this stream      */
   bool output_pending;  /* a frame is queued and not yet encoded */
@@ -279,21 +304,6 @@ static uint32_t vepu_align(uint32_t value, uint32_t alignment)
 {
   return (value + alignment - 1u) & ~(alignment - 1u);
 }
-
-/****************************************************************************
- * Name: vepu_apply_geometry
- *
- * Description:
- *   Work out the coded geometry for a requested picture size and put every
- *   derived value where it belongs: the strides and buffer sizes in priv,
- *   and the syntax parameters in priv->cfg.
- *
- *   The coded size is rounded up to the macroblock grid.  An application
- *   that asks for 1279x719 gets 1280x720 coded and 1279x719 visible, with
- *   the difference signalled as cropping -- which is why the requested
- *   width and height go into cfg rather than the coded ones.
- *
- ****************************************************************************/
 
 static void vepu_apply_geometry(FAR struct rk3576_vepu_codec_priv_s *priv,
                                 uint32_t width, uint32_t height)
@@ -511,9 +521,10 @@ static int vepu_service(FAR struct rk3576_vepu_codec_priv_s *priv)
   FAR struct v4l2_buffer *obuf;
   FAR struct v4l2_buffer *cbuf;
   struct rk3576_vepu510_frame_s frm;
-  struct rk3576_vepu510_idr_s idr;
+  struct rk3576_vepu510_slice_s slice;
   struct rk3576_vepu_result_s result;
   uint32_t total = 0;
+  bool idr;
   bool encoded = false;
   int ret;
 
@@ -571,17 +582,50 @@ static int vepu_service(FAR struct rk3576_vepu_codec_priv_s *priv)
       frm.dst_size = priv->dst_size;
       frm.dst_offset = 0;
 
-      /* Consecutive IDR pictures must carry different idr_pic_id values
-       * (H.264 7.4.3).  Every frame here is an IDR, so this alternates on
-       * every frame rather than on every repetition period.
+      /* Where this picture sits in its group of pictures.
+       *
+       * An IDR is asked for at the start of every group, after a failure
+       * that broke the reference chain (force_idr), and whenever the group
+       * is a single picture.  The three conditions are the same decision, so
+       * they are made once here rather than re-derived at each use below.
        */
 
-      memset(&idr, 0, sizeof(idr));
-      idr.idr_pic_id = priv->frame_index & 1u;
+      idr = priv->force_idr || priv->gop_index == 0;
+      priv->force_idr = false;
 
-      ret = rk3576_vepu_encode(&frm, &priv->cfg, &idr, &result);
+      memset(&slice, 0, sizeof(slice));
+      slice.idr = idr;
+
+      if (idr)
+        {
+          /* frame_num and the picture order count both restart, and the
+           * picture id has to differ from the previous IDR's -- consecutively
+           * so, which is why it is the last one's that is remembered rather
+           * than a counter that could be reset by anything else. */
+
+          priv->frame_num = 0;
+          priv->poc_lsb = 0;
+          priv->idr_pic_id = (priv->idr_pic_id + 1u) & 1u;
+        }
+
+      slice.frame_num = priv->frame_num;
+      slice.poc_lsb = priv->poc_lsb;
+      slice.idr_pic_id = priv->idr_pic_id;
+
+      ret = rk3576_vepu_encode(&frm, &priv->cfg, &slice, &result);
       if (ret < 0)
         {
+          /* The reference chain is only as good as the last picture in it,
+           * and this picture did not become one -- possibly after writing
+           * part of itself into a reconstruction buffer.  Whatever is in
+           * there now cannot be predicted from, so the stream has to restart
+           * with an IDR rather than build P pictures on it.  Nothing is
+           * published: the frame stays queued and the application's next
+           * queue operation retries it.
+           */
+
+          priv->force_idr = true;
+          priv->gop_index = 0;
           return ret;
         }
 
@@ -626,7 +670,33 @@ static int vepu_service(FAR struct rk3576_vepu_codec_priv_s *priv)
 
       cbuf->bytesused = total;
       cbuf->sequence = priv->frame_index;
-      cbuf->flags = 0;
+
+      /* Whether a consumer may start here.  It is the one thing about this
+       * frame that cannot be discovered by reading it -- a picture's own
+       * bytes do not say whether anything after it predicts from it -- and
+       * it is what an application needs in order to put fragment boundaries
+       * or container key-frame markers in the right places.  Reported from
+       * the same flag that chose the slice type, so the two cannot disagree.
+       */
+
+      cbuf->flags = idr ? V4L2_BUF_FLAG_KEYFRAME : V4L2_BUF_FLAG_PFRAME;
+
+      /* This picture is now the reference the next one predicts from, so the
+       * group advances.  The order matters: the counters are moved on only
+       * after the encode succeeded, because a picture that was never
+       * reconstructed is not a place in the sequence.
+       */
+
+      priv->gop_index++;
+      if (priv->gop_index >= priv->gop)
+        {
+          priv->gop_index = 0;
+        }
+
+      priv->frame_num =
+          (priv->frame_num + 1u) & rk3576_vepu510_frame_num_mask(&priv->cfg);
+      priv->poc_lsb =
+          (priv->poc_lsb + 2u) & rk3576_vepu510_poc_lsb_mask(&priv->cfg);
 
       priv->frame_index++;
       priv->output_pending = false;
@@ -720,6 +790,21 @@ static int vepu_open(FAR void *cookie, FAR void **priv)
   state->cfg.tune.atr_str_i = 1;
   state->cfg.tune.atf_str = 1;
   state->cfg.tune.lambda_idx_i = 6;
+
+  /* The deblur tuning, which the anti-smear thresholds are derived from.
+   * MPP's defaults, and left at them: MPP's own name for deblur_en by the time
+   * the register layer sees it is qpmap_en, and it is what selects between two
+   * of those threshold sets.  Nothing here exposes it to an application,
+   * because the feature it belongs to is a per-block refinement that this
+   * driver has no way to configure the rest of.
+   */
+
+  state->cfg.tune.deblur_en = RK3576_H264_DEBLUR_EN_DEFAULT;
+  state->cfg.tune.deblur_str = RK3576_H264_DEBLUR_STR_DEFAULT;
+
+  /* All-intra until asked otherwise: see RK3576_VEPU_DEFAULT_GOP. */
+
+  state->gop = RK3576_VEPU_DEFAULT_GOP;
 
   vepu_apply_geometry(state, 640, 480);
 
@@ -1041,6 +1126,18 @@ static int vepu_output_streamon(FAR void *priv)
       return -EINVAL; /* no format set, so nothing to encode into */
     }
 
+  /* A stream begins with a picture that stands on its own.  A decoder
+   * pointed at the first buffer of this stream has nothing before it to
+   * predict from, and whatever group the output was in the middle of is
+   * gone -- so the counters restart with it rather than continuing from a
+   * stream that no longer exists.
+   */
+
+  state->gop_index = 0;
+  state->frame_num = 0;
+  state->poc_lsb = 0;
+  state->force_idr = true;
+
   state->output_streaming = true;
   return vepu_service(state);
 }
@@ -1172,6 +1269,10 @@ static int vepu_g_ext_ctrls(FAR void *priv,
             ctrl->value = (int32_t)state->cfg.deblocking_filter_control;
             break;
 
+          case RK3576_VEPU_CID_GOP:
+            ctrl->value = (int32_t)state->gop;
+            break;
+
           default:
             ctrls->error_idx = i;
             return -EINVAL;
@@ -1232,6 +1333,14 @@ static int vepu_s_ext_ctrls(FAR void *priv,
               }
             break;
 
+          case RK3576_VEPU_CID_GOP:
+            if (ctrl->value < 1 || ctrl->value > RK3576_VEPU_GOP_MAX)
+              {
+                ctrls->error_idx = i;
+                return -EINVAL;
+              }
+            break;
+
           default:
             ctrls->error_idx = i;
             return -EINVAL;
@@ -1262,6 +1371,19 @@ static int vepu_s_ext_ctrls(FAR void *priv,
           case RK3576_VEPU_CID_DEBLOCK:
             state->cfg.deblocking_filter_control = (uint32_t)ctrl->value;
             syntax_changed = true;
+            break;
+
+          case RK3576_VEPU_CID_GOP:
+            state->gop = (uint32_t)ctrl->value;
+
+            /* Changing the group length does not change what any parameter
+             * set says, so the sets do not need rebuilding.  It does mean
+             * the picture being encoded when the control arrives might be in
+             * the wrong place for the new length, which is why the group
+             * restarts instead of being resized underneath itself.
+             */
+
+            state->gop_index = 0;
             break;
         }
     }

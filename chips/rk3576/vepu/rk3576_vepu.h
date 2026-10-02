@@ -56,7 +56,7 @@
 #include <stdint.h>
 
 /* The encoder's job description is built from these three: the picture and
- * its buffers, the H.264 syntax parameters, and the slice values an IDR
+ * its buffers, the H.264 syntax parameters, and the slice values the picture
  * needs.  They are the same structs the pure register layer consumes, so
  * there is one description of a job rather than one per layer.
  */
@@ -193,9 +193,9 @@ int rk3576_vepu_uninitialize(void);
  *   to know what a V4L2 buffer is.
  *
  *   frm describes the source picture and both buffers, cfg the H.264 syntax,
- *   idr the slice values.  The destination buffer is written from its start;
- *   dst_offset is the offset the encoder's write pointer begins at, which is
- *   zero for a fresh buffer.
+ *   slice the slice values.  The destination buffer is written from its
+ *   start; dst_offset is the offset the encoder's write pointer begins at,
+ *   which is zero for a fresh buffer.
  *
  *   One job at a time.  The hardware has a single encoder, so concurrent
  *   callers are serialised on a mutex rather than left to interleave their
@@ -204,7 +204,7 @@ int rk3576_vepu_uninitialize(void);
  * Input Parameters:
  *   frm    - source picture, source buffer and destination buffer
  *   cfg    - H.264 syntax parameters
- *   idr    - slice values for the IDR this job encodes
+ *   slice  - slice-level values for this picture
  *   result - receives what the encoder reported; may be NULL
  *
  * Returned Value:
@@ -216,7 +216,7 @@ int rk3576_vepu_uninitialize(void);
 
 int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
                        FAR const struct rk3576_h264_cfg_s *cfg,
-                       FAR const struct rk3576_vepu510_idr_s *idr,
+                       FAR const struct rk3576_vepu510_slice_s *slice,
                        FAR struct rk3576_vepu_result_s *result);
 
 /****************************************************************************

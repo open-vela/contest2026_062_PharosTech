@@ -86,6 +86,15 @@
 #define RK3576_VEPU_CID_DEBLOCK          \
   0x1003 /* 1 to carry deblocking filter \
           * control in the PPS. */
+#define RK3576_VEPU_CID_GOP                              \
+  0x1004 /* Pictures per group of pictures, 1..1000.     \
+          * 1 makes every picture an IDR, which is what  \
+          * the driver did before it could predict.  A   \
+          * larger value makes the first picture of each \
+          * group an IDR and the rest P pictures, which  \
+          * is what makes the stream's bit rate depend   \
+          * on the scene instead of only on the size of  \
+          * the pictures. */
 
 /* Frame rates are not controls: V4L2 already has a place for them, and
  * VIDIOC_S_PARM is where an application expects to set one.  The value
@@ -97,6 +106,28 @@
 #define RK3576_VEPU_DEFAULT_QP      26
 #define RK3576_VEPU_DEFAULT_PROFILE 66 /* baseline */
 #define RK3576_VEPU_DEFAULT_LEVEL   0
+
+/* Two pictures per group: one IDR and one P that predicts from it.
+ *
+ * This is the shortest group that predicts at all, and it is where the saving
+ * measured on a 640x480 capture of a static scene is: one picture per group
+ * costs 1454 kbit/s, two cost 747 -- 48.7% off -- and four costs 705, another
+ * 5.6% that is not worth what it costs elsewhere.  See
+ * chips/rk3576/vepu/README.md for the table and for why four gives so little.
+ *
+ * A caller that wants the 5.6% anyway passes a longer group to
+ * RK3576_VEPU_CID_GOP.
+ */
+
+#define RK3576_VEPU_DEFAULT_GOP 2
+
+/* The longest group a caller may ask for.  Not a hardware limit -- the limits
+ * that matter are the widths of frame_num and pic_order_cnt_lsb in the slice
+ * header, and those are far larger.  It is a limit on how long a stream can
+ * go before a decoder that joined late has nothing to start from.
+ */
+
+#define RK3576_VEPU_GOP_MAX 1000
 
 /****************************************************************************
  * Public Function Prototypes
