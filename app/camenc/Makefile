@@ -28,6 +28,6 @@ STACKSIZE = $(CONFIG_SYSTEM_CAMENC_STACKSIZE)
 MODULE    = $(CONFIG_SYSTEM_CAMENC)
 
 MAINSRC = camenc_main.c
-CSRCS   = camenc_stream.c camenc_ws.c
+CSRCS   = camenc_stream.c camenc_ws.c camenc_3a.c
 
 include $(APPDIR)/Application.mk

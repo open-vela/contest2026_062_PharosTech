@@ -79,6 +79,8 @@
 
 #include <sys/videoio.h>
 
+#include "cam3a.h"
+#include "camenc_3a.h"
 #include "camenc_stream.h"
 #include "camenc_ws.h"
 
@@ -86,13 +88,74 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define CAMENC_CAM_DEVPATH    "/dev/video0"
-#define CAMENC_ENC_DEVPATH    "/dev/video1"
+#define CAMENC_CAM_DEVPATH "/dev/video0"
+#define CAMENC_ENC_DEVPATH "/dev/video1"
 
-#define CAMENC_DEFAULT_WIDTH  640
-#define CAMENC_DEFAULT_HEIGHT 480
-#define CAMENC_DEFAULT_FRAMES 300
-#define CAMENC_DEFAULT_QP     26
+/* The sensor's limits, which the exposure loop needs in order to know where
+ * one of the two ways of getting more light runs out and the other has to
+ * take over.  These are the OV5647's: exposure in lines, bounded by the
+ * mode's frame length; gain a ten-bit fixed-point multiplier whose unity is
+ * sixteen.
+ *
+ * Named here rather than asked for, because the sensor reports neither.  The
+ * exposure ceiling is the mode's VTS less a few lines; the driver clamps to
+ * the same figure, so a loop that asks for more is corrected rather than
+ * believed.
+ */
+
+#define CAMENC_3A_EXPOSURE_MIN 4u
+#define CAMENC_3A_EXPOSURE_MAX 500u /* VTS - 4 in the 640x480 mode */
+#define CAMENC_3A_GAIN_MIN     16u
+#define CAMENC_3A_GAIN_MAX     1023u
+#define CAMENC_3A_GAIN_ONE     16u
+
+/* The brightness the loop steers to, on the 0..255 scale the capture driver
+ * measures in.  About half of the range leaves room to be wrong in both
+ * directions; a target near the top spends its time clipped.
+ */
+
+#define CAMENC_3A_TARGET_DEFAULT 110u
+
+/* Whether the loop runs when the caller does not say.
+ *
+ * On, because a camera whose exposure and gain have to be chosen by hand is
+ * not much use on a scene that changes -- which is the whole reason the loop
+ * exists.  A caller that wants fixed settings still has them: -A 0 leaves the
+ * exposure and gain exactly where they were put.  On a board whose capture
+ * driver has no 3A control plane the flag has nothing to act on, and the
+ * absence is reported once rather than every frame.
+ */
+
+#define CAMENC_3A_DEFAULT 1
+
+/* How much of the remaining error the two loops take per frame, as a shift,
+ * and how close to the target counts as arrived.
+ *
+ * A quarter of the error each frame is a compromise: it settles a step change
+ * in about ten frames, which at this frame rate is under a fifth of a second,
+ * and it does not visibly hunt on the noise between two frames of the same
+ * scene.  See camenc_3a.h.
+ */
+
+#define CAMENC_3A_AE_SHIFT  2u
+#define CAMENC_3A_AWB_SHIFT 2u
+#define CAMENC_3A_SETTLE    4u
+
+/* The least signal a channel can carry and still be worth steering the white
+ * balance by, as a channel mean on the 0..255 scale.
+ *
+ * Twelve counts is about 5% of full scale.  Below that a channel's mean is
+ * dominated by sensor noise and by any black-level mismatch between the
+ * channels, so the ratios between the channels stop describing the colour of
+ * the light and start describing the noise.  See camenc_3a.h.
+ */
+
+#define CAMENC_3A_AWB_MIN_MEAN 12u
+
+#define CAMENC_DEFAULT_WIDTH   640
+#define CAMENC_DEFAULT_HEIGHT  480
+#define CAMENC_DEFAULT_FRAMES  300
+#define CAMENC_DEFAULT_QP      26
 
 /* The encoder's default group length, and this program keeps it.
  *
@@ -149,6 +212,25 @@
 
 #define CAMENC_REPORT_FRAMES 100
 
+/* Room for a status line and its terminator.  The line is a little over a
+ * hundred bytes today; the room is here so that adding a field to it is not
+ * a change to two buffers.
+ */
+
+#define CAMENC_STATUS_MAX 224
+
+/* How far apart status lines may be when nothing has changed.
+ *
+ * The line goes out whenever it differs from the one before, which on a
+ * moving scene is often and on a settled one is never.  A client that
+ * connects while the loop is settled has never been told anything, so one is
+ * sent anyway at this interval -- a second or so at this frame rate, which is
+ * nothing on the wire and is what makes the page's sliders sit where the
+ * hardware is.
+ */
+
+#define CAMENC_STATUS_FRAMES 64
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -198,6 +280,42 @@ static struct camenc_buf_s g_cap[CAMENC_BUFFERS];
 
 static struct camenc_ws_s g_ws;
 
+/* The settings the page is driving.
+ *
+ * Nothing here is applied where it arrives.  The command callback runs
+ * inside the server's poll, and the poll runs inside the capture loop
+ * between frames, so an ioctl from there would put an I2C transaction in the
+ * path between two frames -- the same reason the loop's own writes are held
+ * back until the frame has been encoded.  A command therefore records what
+ * was asked for and the loop applies it, a frame later at the most.
+ *
+ * The exposure and gain here are kept equal to what is in force, not to what
+ * was last asked for.  A slider moved while the loop is running has to be a
+ * change from the current picture, and a page that only ever heard its own
+ * commands echoed back would ask for the gain it wanted with the gain that
+ * was right several seconds ago.
+ */
+
+struct camenc_ui_s
+{
+  bool ae_auto;
+  bool awb_auto;
+  bool have_ae;
+  bool have_awb;
+  uint32_t exposure;
+  uint32_t gain;
+  uint32_t wb[3];
+};
+
+static struct camenc_ui_s g_ui;
+
+/* The last status line sent, so that the same line is not sent every frame.
+ * The server does not keep one client's state, so the comparison lives here.
+ */
+
+static char g_status_last[CAMENC_STATUS_MAX];
+static uint32_t g_status_at;
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -208,6 +326,139 @@ static uint64_t camenc_now_us(void)
 
   gettimeofday(&tv, NULL);
   return (uint64_t)tv.tv_sec * 1000000u + (uint64_t)tv.tv_usec;
+}
+
+/* Read the number that follows `name` in a control message.
+ *
+ * A message is one name and one number, separated by a space, and a name
+ * that does not match is not an error -- see camenc_ui_command.  What is an
+ * error is a name with nothing readable after it, so the two are told apart
+ * by whether the conversion consumed anything.
+ */
+
+static bool camenc_ui_arg(FAR const char *text, FAR const char *name,
+                          FAR int32_t *value)
+{
+  size_t n = strlen(name);
+  FAR char *end;
+  long v;
+
+  if (strncmp(text, name, n) != 0 || text[n] != ' ')
+    {
+      return false;
+    }
+
+  v = strtol(text + n + 1u, &end, 10);
+
+  if (end == text + n + 1u)
+    {
+      return false;
+    }
+
+  *value = (int32_t)v;
+  return true;
+}
+
+/* A control message from the page.
+ *
+ * The vocabulary is one name and one number:
+ *
+ *   ae <0|1>      the exposure and gain loop off, or on again
+ *   e <lines>     the exposure by hand, which turns that loop off
+ *   g <gain>      the gain by hand, which does the same
+ *   aw <0|1>      the white balance loop off, or on again
+ *   kr <gain>     the red white balance gain by hand, which turns that loop
+ *   kg <gain>     off -- as are the other two.  256 is unity, and the names
+ *   kb <gain>     are the ones the status line reports them under
+ *
+ * Setting a value by hand stops the loop for it rather than moving a slider
+ * that the loop will pull back on the next frame.  That is what a user means
+ * by dragging it, and it is the difference between a control and a display.
+ *
+ * Anything else is ignored in silence.  The page and this program are the
+ * only two ends of this, and the alternative -- refusing, or disconnecting --
+ * would drop a viewer that is watching the stream perfectly well because it
+ * sent a message with a name in a newer version.
+ */
+
+static void camenc_ui_command(FAR const char *text, FAR void *arg)
+{
+  FAR struct camenc_ui_s *ui = (FAR struct camenc_ui_s *)arg;
+  int32_t value;
+
+  if (camenc_ui_arg(text, "ae", &value))
+    {
+      ui->ae_auto = (value != 0);
+    }
+  else if (camenc_ui_arg(text, "aw", &value))
+    {
+      ui->awb_auto = (value != 0);
+    }
+  else if (camenc_ui_arg(text, "e", &value))
+    {
+      ui->exposure = (uint32_t)value;
+      ui->have_ae = true;
+      ui->ae_auto = false;
+    }
+  else if (camenc_ui_arg(text, "g", &value))
+    {
+      ui->gain = (uint32_t)value;
+      ui->have_ae = true;
+      ui->ae_auto = false;
+    }
+  else if (camenc_ui_arg(text, "kr", &value))
+    {
+      ui->wb[0] = (uint32_t)value;
+      ui->have_awb = true;
+      ui->awb_auto = false;
+    }
+  else if (camenc_ui_arg(text, "kg", &value))
+    {
+      ui->wb[1] = (uint32_t)value;
+      ui->have_awb = true;
+      ui->awb_auto = false;
+    }
+  else if (camenc_ui_arg(text, "kb", &value))
+    {
+      ui->wb[2] = (uint32_t)value;
+      ui->have_awb = true;
+      ui->awb_auto = false;
+    }
+}
+
+/* Send the page what the loops are holding, if it is not what they were told
+ * last time.
+ *
+ * Sent whenever the line changes, which is what makes a slider follow an
+ * automatic loop in real time, and every CAMENC_STATUS_FRAMES when it does not
+ * change, which is what a client that arrives on a settled scene needs -- it
+ * has been told nothing at all, and without the second case its sliders would
+ * sit wherever the page put them when the document loaded.
+ */
+
+static void camenc_status_publish(FAR struct camenc_ws_s *ws,
+                                  FAR const struct camenc_3a_s *a,
+                                  uint32_t frame)
+{
+  char line[CAMENC_STATUS_MAX];
+  size_t n;
+
+  n = camenc_3a_status(a, line, sizeof(line));
+  if (n == 0u)
+    {
+      return;
+    }
+
+  if (n == strlen(g_status_last) && memcmp(line, g_status_last, n) == 0 &&
+      frame - g_status_at < CAMENC_STATUS_FRAMES)
+    {
+      return;
+    }
+
+  camenc_ws_status(ws, line, n);
+
+  memcpy(g_status_last, line, n + 1u);
+  g_status_at = frame;
 }
 
 /* Where a frame's time goes.
@@ -300,7 +551,21 @@ static void camenc_usage(void)
          " and longer groups flatten out after that)\n",
          CAMENC_DEFAULT_GOP);
   printf("  -x  sensor exposure in lines, overrides the driver default\n");
-  printf("  -g  sensor analog gain, 16 = 1.0x and 1023 = 64x\n\n");
+  printf("  -g  sensor analog gain, 16 = 1.0x and 1023 = 64x\n");
+  printf("  -A  automatic exposure, gain and white balance, 0 or 1"
+         " (default %d)\n",
+         CAMENC_3A_DEFAULT);
+  printf("  -t  brightness the automatic loop steers to, 0..255"
+         " (default %u)\n",
+         CAMENC_3A_TARGET_DEFAULT);
+  printf("\n");
+  printf("With -A the exposure and gain above are only where the loop "
+         "starts;\n");
+  printf("with -A 0 they are what the camera runs at, which is how a "
+         "fixed\n");
+  printf("exposure with an automatic gain is asked for: set -x and "
+         "leave -g to\n");
+  printf("the default.\n\n");
   printf(
       "The output is fragmented MP4 -- an initialisation segment followed\n");
   printf(
@@ -308,6 +573,37 @@ static void camenc_usage(void)
   printf(
       "Media Source Extensions, and what the WebSocket carries.  With -p,\n");
   printf("point a browser at http://<board address>:<port>/ and it plays.\n");
+
+  printf("\nThat page carries the 3A controls beside the picture: exposure "
+         "and\n");
+  printf("gain, and the white balance as its three channel gains, each "
+         "with a\n");
+  printf("switch back to automatic.  A slider follows whatever the "
+         "loop\n");
+  printf(
+      "decides -- it is a readout of the loop while the loop is running --\n");
+  printf("and moving one takes that control over, which is the same as what "
+         "-x\n");
+  printf("and -g do at startup.  Handing it back resumes from where it was\n");
+  printf("left, so the switch is not a jump.\n");
+
+  printf("\nThe white balance is set as its three channel gains, not as a "
+         "colour\n");
+  printf("temperature, and the output says why in camenc_3a.h: a kelvin "
+         "needs\n");
+  printf("this sensor calibrated against a lamp of known colour, and "
+         "without\n");
+  printf("that it is a number that cannot be derived from the gains -- so "
+         "it\n");
+  printf("could only ever report what was last typed into it.  A product "
+         "would\n");
+  printf("do the calibration; that is the note, rather than a "
+         "plausible-looking\n");
+  printf("number in its place.\n");
+
+  printf("\nA board whose capture driver has no 3A control plane says so on "
+         "the\n");
+  printf("page and leaves the controls out of it.\n");
 }
 
 /* Set one control.
@@ -323,8 +619,15 @@ static void camenc_usage(void)
  * application had no reason to think was unsupported.
  */
 
-static int camenc_set_ctrl(int fd, uint32_t id, int value,
-                           FAR const char *name)
+/* The same, without saying so.
+ *
+ * The exposure loop writes these as it converges, which can be most frames
+ * for the first second and nothing at all afterwards; a line per write would
+ * be a line per frame during exactly the part of the run that a reader is
+ * trying to watch.
+ */
+
+static int camenc_set_ctrl_quiet(int fd, uint32_t id, int value)
 {
   struct v4l2_ext_control ctrl;
   struct v4l2_ext_controls ctrls;
@@ -339,11 +642,55 @@ static int camenc_set_ctrl(int fd, uint32_t id, int value,
 
   if (ioctl(fd, VIDIOC_S_EXT_CTRLS, (unsigned long)&ctrls) < 0)
     {
-      printf("camenc: setting %s = %d failed: %d\n", name, value, errno);
       return -errno;
     }
 
   return 0;
+}
+
+static int camenc_set_ctrl(int fd, uint32_t id, int value,
+                           FAR const char *name)
+{
+  int ret = camenc_set_ctrl_quiet(fd, id, value);
+
+  if (ret < 0)
+    {
+      printf("camenc: setting %s = %d failed: %d\n", name, value, errno);
+    }
+
+  return ret;
+}
+
+/* Read one control back, or leave the value alone and say so.
+ *
+ * The capture framework implements this -- capture_g_ext_ctrls() passes the
+ * id to the sensor's get_value() -- which is what makes it possible for the
+ * exposure loop to be seeded from what the sensor is actually holding rather
+ * than from a guess at it.  See the seeding below for why that matters.
+ *
+ * Returns OK when the value was read, and a negated errno when it was not,
+ * in which case *value is untouched.
+ */
+
+static int camenc_get_ctrl(int fd, uint32_t id, FAR int *value)
+{
+  struct v4l2_ext_control ctrl;
+  struct v4l2_ext_controls ctrls;
+
+  memset(&ctrl, 0, sizeof(ctrl));
+  ctrl.id = (uint16_t)id;
+
+  memset(&ctrls, 0, sizeof(ctrls));
+  ctrls.count = 1;
+  ctrls.controls = &ctrl;
+
+  if (ioctl(fd, VIDIOC_G_EXT_CTRLS, (unsigned long)&ctrls) < 0)
+    {
+      return -errno;
+    }
+
+  *value = ctrl.value;
+  return OK;
 }
 
 /* Negotiate one side of the encoder and report what it settled on.
@@ -627,6 +974,11 @@ int main(int argc, FAR char *argv[])
   int port = 0;
   int exposure = -1;
   int gain = -1;
+  int threea = CAMENC_3A_DEFAULT;
+  uint32_t target = CAMENC_3A_TARGET_DEFAULT;
+  int fd3a = -1;
+  bool threea_started = false;
+  struct camenc_3a_s threea_state;
   int camfd = -1;
   int encfd = -1;
   int opt;
@@ -646,7 +998,7 @@ int main(int argc, FAR char *argv[])
   uint64_t win_idr_bytes = 0;
   uint64_t win_p_bytes = 0;
 
-  while ((opt = getopt(argc, argv, "d:e:o:n:w:h:q:x:g:p:G:")) != -1)
+  while ((opt = getopt(argc, argv, "d:e:o:n:w:h:q:x:g:p:G:A:t:")) != -1)
     {
       switch (opt)
         {
@@ -692,6 +1044,20 @@ int main(int argc, FAR char *argv[])
 
           case 'g':
             gain = atoi(optarg);
+            break;
+
+          case 'A':
+            threea = atoi(optarg) != 0;
+            break;
+
+          case 't':
+            target = (uint32_t)atoi(optarg);
+            if (target == 0u || target > 255u)
+              {
+                printf("camenc: brightness must be 1..255, not %" PRIu32 "\n",
+                       target);
+                return EXIT_FAILURE;
+              }
             break;
 
           default:
@@ -763,6 +1129,158 @@ int main(int argc, FAR char *argv[])
       camenc_set_ctrl(camfd, V4L2_CID_ISO_SENSITIVITY, gain, "gain") < 0)
     {
       goto errout;
+    }
+
+  /* The 3A control plane, and the loop that uses it.
+   *
+   * Opened before the stream starts so that the loop can be seeded from what
+   * the sensor is actually holding.  A loop that assumed its own defaults
+   * would compute its first correction against a setting that is not in
+   * force, which shows as the picture stepping when it should not.
+   *
+   * Without a control plane the loop is simply not started, and the camera
+   * runs on whatever the exposure and gain were set to -- which is what this
+   * program did before the loop existed.
+   */
+
+  if (threea)
+    {
+      struct cam3a_stats_s probe;
+      struct camenc_3a_cfg_s cfg3a;
+
+      /* The loop is seeded from what the sensor is *actually* holding, read
+       * back rather than assumed.
+       *
+       * This is not tidiness.  The board's sensor default gain comes from
+       * CONFIG_OV5647_ANALOG_GAIN, which is 256 here while the loop's own
+       * minimum is 16 -- so a loop that guessed would start believing the
+       * picture was sixteen times darker than it is, ask for sixteen times
+       * too much light in its first correction, and visibly darken the
+       * picture before climbing back.  Starting from a wrong belief about
+       * the hardware is the one thing a loop cannot compute its way out of.
+       *
+       * Where the readback is not available the seed values are written to
+       * the sensor instead, so that the belief is made true rather than
+       * hoped to be.  Either way the two agree before the first frame is
+       * measured.
+       */
+
+      int read_exp = 0;
+      int read_gain = 0;
+      uint32_t seed_exp;
+      uint32_t seed_gain;
+      bool seeded_from_hw;
+
+      seeded_from_hw =
+          camenc_get_ctrl(camfd, V4L2_CID_EXPOSURE_ABSOLUTE, &read_exp) ==
+              OK &&
+          camenc_get_ctrl(camfd, V4L2_CID_ISO_SENSITIVITY, &read_gain) == OK &&
+          read_exp > 0 && read_gain > 0;
+
+      seed_exp = seeded_from_hw  ? (uint32_t)read_exp
+                 : exposure >= 0 ? (uint32_t)exposure
+                                 : CAMENC_3A_EXPOSURE_MAX;
+      seed_gain = seeded_from_hw ? (uint32_t)read_gain
+                  : gain >= 0    ? (uint32_t)gain
+                                 : CAMENC_3A_GAIN_MIN;
+
+      fd3a = open(CAM3A_DEVPATH, O_RDWR);
+      if (fd3a < 0)
+        {
+          printf("camenc: no 3A control plane at %s (%d); running with "
+                 "fixed exposure and gain\n",
+                 CAM3A_DEVPATH, errno);
+          threea = 0;
+        }
+      else
+        {
+          if (!seeded_from_hw)
+            {
+              /* Put the sensor where the loop thinks it is.  This is worth
+               * saying out loud: a loop seeded from a value the hardware
+               * does not hold is the case all of this exists to avoid.
+               */
+
+              printf("camenc: the sensor's exposure and gain could not be "
+                     "read back; setting them to %" PRIu32 " and %" PRIu32
+                     "\n",
+                     seed_exp, seed_gain);
+
+              (void)camenc_set_ctrl_quiet(camfd, V4L2_CID_EXPOSURE_ABSOLUTE,
+                                          (int)seed_exp);
+              (void)camenc_set_ctrl_quiet(camfd, V4L2_CID_ISO_SENSITIVITY,
+                                          (int)seed_gain);
+            }
+
+          memset(&probe, 0, sizeof(probe));
+          if (ioctl(fd3a, CAM3A_GET_STATS, (unsigned long)&probe) < 0)
+            {
+              /* Not fatal: a driver that cannot report yet still measures
+               * from the next frame on, and the loop starts from unity
+               * gains.  Said once, because it is a fact about the board and
+               * not about any frame.
+               */
+
+              printf("camenc: reading the 3A statistics failed (%d); "
+                     "starting from unity white balance\n",
+                     errno);
+            }
+
+          memset(&cfg3a, 0, sizeof(cfg3a));
+          cfg3a.target = target;
+          cfg3a.exposure_min = CAMENC_3A_EXPOSURE_MIN;
+          cfg3a.exposure_max = CAMENC_3A_EXPOSURE_MAX;
+          cfg3a.gain_min = CAMENC_3A_GAIN_MIN;
+          cfg3a.gain_max = CAMENC_3A_GAIN_MAX;
+          cfg3a.gain_one = CAMENC_3A_GAIN_ONE;
+          cfg3a.ae_shift = CAMENC_3A_AE_SHIFT;
+          cfg3a.awb_shift = CAMENC_3A_AWB_SHIFT;
+          cfg3a.settle = CAMENC_3A_SETTLE;
+          cfg3a.awb_min_mean = CAMENC_3A_AWB_MIN_MEAN;
+
+          camenc_3a_init(&threea_state, &cfg3a, seed_exp, seed_gain, probe.wb,
+                         probe.sequence);
+
+          /* The page starts from the settings the loop starts from, so that
+           * the first slider moved is a change from what is in force rather
+           * than from a zero that would clamp.
+           */
+
+          g_ui.ae_auto = true;
+          g_ui.awb_auto = true;
+          g_ui.exposure = threea_state.exposure;
+          g_ui.gain = threea_state.gain;
+          g_ui.wb[0] = threea_state.wb[0];
+          g_ui.wb[1] = threea_state.wb[1];
+          g_ui.wb[2] = threea_state.wb[2];
+
+          threea_started = true;
+
+          /* The gains are handed over explicitly, which is also what stops
+           * the driver's own loop from steering them.  Leaving both running
+           * would be two controllers on one register.
+           */
+
+          {
+            struct cam3a_wb_s wb3a;
+
+            wb3a.gain[0] = threea_state.wb[0];
+            wb3a.gain[1] = threea_state.wb[1];
+            wb3a.gain[2] = threea_state.wb[2];
+
+            if (ioctl(fd3a, CAM3A_SET_WB, (unsigned long)&wb3a) < 0)
+              {
+                printf("camenc: taking over the white balance failed: %d\n",
+                       errno);
+              }
+          }
+
+          printf("camenc: 3A loop on, target %" PRIu32
+                 ", starting at exposure %" PRIu32 " gain %" PRIu32 " (%s)\n",
+                 target, seed_exp, seed_gain,
+                 seeded_from_hw ? "read from the sensor"
+                                : "set by this program");
+        }
     }
 
   ret = camenc_setup_buffers(camfd, V4L2_BUF_TYPE_VIDEO_CAPTURE, g_cam,
@@ -924,8 +1442,19 @@ int main(int argc, FAR char *argv[])
 
   if (port > 0)
     {
+      /* Room for the largest segment, and for the initialisation segment
+       * that goes to a client which has just connected.
+       *
+       * Both are in a client's buffer at the same time whenever its socket
+       * is slow to drain, so it is their sum rather than either one: a
+       * buffer sized for one segment alone is a buffer that drops a client
+       * on the frame that follows its handshake, which is what this used to
+       * do.
+       */
+
       ret = camenc_ws_start(&g_ws, (uint16_t)port,
-                            CAMENC_WS_MAX_SEGMENT + CAMENC_WS_TX_HEADER);
+                            CAMENC_WS_INIT_MAX + CAMENC_WS_MAX_SEGMENT +
+                                CAMENC_WS_TX_HEADER);
       if (ret < 0)
         {
           printf("camenc: cannot serve on port %d: %d\n", port, ret);
@@ -934,6 +1463,12 @@ int main(int argc, FAR char *argv[])
 
       serving = true;
       sink.ws = &g_ws;
+
+      /* Control messages from the page land here.  Nothing is applied in
+       * the callback -- see camenc_ui_s.
+       */
+
+      camenc_ws_set_command(&g_ws, camenc_ui_command, &g_ui);
 
       printf("serving:  http://<board address>:%d/  (%u clients at most,\n"
              "          %u-byte segments)\n",
@@ -1248,6 +1783,119 @@ int main(int argc, FAR char *argv[])
 
       have_prev = true;
 
+      /* The 3A loop, one frame behind by construction.
+       *
+       * Run here, after the frame has been encoded, rather than as soon as
+       * it was captured: the settings go out over I2C, and the cost of that
+       * inside the capture-to-encode path is time the encoder sits idle.
+       * Nothing is lost by waiting, because the frame about to be encoded
+       * has already been exposed.
+       *
+       * A failure stops the loop rather than being retried every frame.  A
+       * sensor that will not take a control will not take it on the next
+       * frame either, and the alternative is a log line per frame for the
+       * rest of the run.
+       */
+
+      if (threea)
+        {
+          struct cam3a_stats_s stats;
+          uint32_t ch = 0;
+
+          /* The modes, then anything the page has asked for since the last
+           * frame, and only then the measurement.
+           *
+           * In that order because the three interact: a slider moved
+           * between two frames takes effect on this one rather than the
+           * next, and a mode change that arrives together with a value
+           * cannot fight it -- setting a value by hand turns its loop off,
+           * so applying the values first and the modes after would undo it.
+           */
+
+          camenc_3a_set_ae(&threea_state, g_ui.ae_auto);
+          camenc_3a_set_awb(&threea_state, g_ui.awb_auto);
+
+          if (g_ui.have_ae)
+            {
+              ch |=
+                  camenc_3a_manual_ae(&threea_state, g_ui.exposure, g_ui.gain);
+              g_ui.have_ae = false;
+            }
+
+          if (g_ui.have_awb)
+            {
+              ch |= camenc_3a_manual_wb(&threea_state, g_ui.wb);
+              g_ui.have_awb = false;
+            }
+
+          memset(&stats, 0, sizeof(stats));
+
+          if (ioctl(fd3a, CAM3A_GET_STATS, (unsigned long)&stats) < 0)
+            {
+              printf("camenc: reading the 3A statistics failed (%d); "
+                     "leaving the exposure where it is\n",
+                     errno);
+              threea = 0;
+            }
+          else
+            {
+              ch |= camenc_3a_update(&threea_state, &stats);
+
+              if ((ch & CAMENC_3A_EXPOSURE) != 0 &&
+                  camenc_set_ctrl_quiet(camfd, V4L2_CID_EXPOSURE_ABSOLUTE,
+                                        (int)threea_state.exposure) < 0)
+                {
+                  printf("camenc: the sensor will not take an exposure of "
+                         "%" PRIu32 " (%d); stopping the loop\n",
+                         threea_state.exposure, errno);
+                  threea = 0;
+                }
+
+              if (threea != 0 && (ch & CAMENC_3A_GAIN) != 0 &&
+                  camenc_set_ctrl_quiet(camfd, V4L2_CID_ISO_SENSITIVITY,
+                                        (int)threea_state.gain) < 0)
+                {
+                  printf("camenc: the sensor will not take a gain of "
+                         "%" PRIu32 " (%d); stopping the loop\n",
+                         threea_state.gain, errno);
+                  threea = 0;
+                }
+
+              if (threea != 0 && (ch & CAMENC_3A_WB) != 0)
+                {
+                  struct cam3a_wb_s wb3a;
+
+                  wb3a.gain[0] = threea_state.wb[0];
+                  wb3a.gain[1] = threea_state.wb[1];
+                  wb3a.gain[2] = threea_state.wb[2];
+
+                  if (ioctl(fd3a, CAM3A_SET_WB, (unsigned long)&wb3a) < 0)
+                    {
+                      printf("camenc: the capture driver will not take a "
+                             "white balance of %" PRIu32 "/%" PRIu32
+                             "/%" PRIu32 " (%d); stopping the loop\n",
+                             wb3a.gain[0], wb3a.gain[1], wb3a.gain[2], errno);
+                      threea = 0;
+                    }
+                }
+            }
+
+          /* The page's copy of the settings follows what is in force, not
+           * what it last asked for.  A slider moved later is then a change
+           * from the picture on the screen, and a page that only ever heard
+           * its own commands echoed back would pair the value it wants with
+           * one that was right several seconds ago.
+           */
+
+          g_ui.exposure = threea_state.exposure;
+          g_ui.gain = threea_state.gain;
+
+          if (serving)
+            {
+              camenc_status_publish(&g_ws, &threea_state, (uint32_t)i);
+            }
+        }
+
       /* Say something every so often rather than every frame.
        *
        * At this frame rate a line per frame is sixty lines a second, which
@@ -1308,6 +1956,45 @@ int main(int argc, FAR char *argv[])
                  win_idr != 0 && win_p != 0 ? (100u * (win_p_bytes / win_p)) /
                                                   (win_idr_bytes / win_idr)
                                             : 0);
+
+          /* What the loop is holding, and whether it is still moving.
+           *
+           * The brightness is reported next to the target rather than only a
+           * verdict, because "settled" means the loop stopped changing and
+           * not that it arrived: a scene out of range settles at its
+           * ceilings while sitting below the target, and the two are worth
+           * telling apart without having to work it out from the numbers.
+           */
+
+          if (threea_started)
+            {
+              printf("  3a: exposure %" PRIu32 " gain %" PRIu32 " wb %" PRIu32
+                     "/%" PRIu32 "/%" PRIu32 " level %" PRIu32 "/%" PRIu32
+                     " %s%s\n",
+                     threea_state.exposure, threea_state.gain,
+                     threea_state.wb[0], threea_state.wb[1],
+                     threea_state.wb[2], threea_state.last_level, target,
+                     threea == 0            ? "loop stopped"
+                     : threea_state.settled ? "settled"
+                                            : "moving",
+                     threea != 0 && threea_state.settled &&
+                             !camenc_3a_at_target(&threea_state)
+                         ? " (out of range)"
+                         : "");
+            }
+
+          /* Whether the stream is actually reaching anyone.
+           *
+           * Worth a line beside the timings rather than only on failure,
+           * because a browser that receives everything and one that receives
+           * nothing cost this loop exactly the same: the sends are
+           * non-blocking, so a client that is behind shows up nowhere else.
+           */
+
+          if (serving)
+            {
+              camenc_ws_report(&g_ws);
+            }
 
           last_report = i;
           reported_at = pts;
@@ -1444,6 +2131,27 @@ errout:
   if (encfd >= 0)
     {
       close(encfd);
+    }
+
+  /* The white balance goes back to the driver's own loop on the way out.
+   *
+   * The gains this program leaves behind are the ones it converged to, and
+   * they were chosen for the scene that was in front of the camera at the
+   * time.  Handing the loop back means the next program to open the camera
+   * starts from a driver that is looking after itself again, rather than
+   * from a fixed correction for a scene that has gone.
+   */
+
+  if (threea_started)
+    {
+      int enable = 1;
+
+      ioctl(fd3a, CAM3A_SET_AWB, (unsigned long)&enable);
+    }
+
+  if (fd3a >= 0)
+    {
+      close(fd3a);
     }
 
   if (camfd >= 0)

@@ -62,6 +62,8 @@
 
 #include <sys/videoio.h>
 
+#include "cam3a.h"
+
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
@@ -107,10 +109,21 @@ static void camctl_usage(void)
          CAMCTL_DEFAULT_COUNT);
   printf("  -o  write the last captured frame to a file as NV12\n");
   printf("  -e  exposure in lines, overrides the driver default\n");
-  printf("  -g  analog gain, 16 = 1.0x and 1023 = 64x\n\n");
-  printf(
-      "The exposure and gain are applied to the sensor before the stream\n");
-  printf("starts, so they can be swept without rebuilding the firmware.\n");
+  printf("  -g  analog gain, 16 = 1.0x and 1023 = 64x\n");
+  printf("  -w  white balance gains as r,g,b, 256 = 1.0x"
+         " (default %s)\n",
+         CAM3A_DEVPATH);
+  printf("  -a  auto white balance, 0 or 1\n");
+  printf("  -s  report the 3A statistics for every captured frame\n\n");
+  printf("The exposure and gain are applied to the sensor before the "
+         "stream\n");
+  printf("starts, so they can be swept without rebuilding the "
+         "firmware.\n");
+  printf("The white balance gains are applied by the capture driver, "
+         "through\n");
+  printf("its own control plane; setting them takes it off the driver's "
+         "own\n");
+  printf("loop, which -a puts back.\n");
 }
 
 /****************************************************************************
@@ -218,6 +231,140 @@ static int camctl_set_ctrl(int fd, uint32_t id, int value,
 }
 
 /****************************************************************************
+ * Name: camctl_3a_open / camctl_3a_show / camctl_3a_set_wb / ...
+ *
+ * Description:
+ *   The capture path's 3A control plane, which is a device of its own
+ *   because the measurement is the capture driver's while the exposure and
+ *   gain are the sensor's.  See drivers/include/cam3a.h.
+ *
+ *   These exist so that the interface can be exercised from the shell
+ *   rather than only from an application that has to be built to try it.
+ *   What is worth looking at is the pair of readings: these say what the
+ *   demosaicer saw on the way in, before the white balance gains were
+ *   applied, and the luma statistics below say what came out.  A scene's own
+ *   colour is only visible in the first, and a loop that is converging from
+ *   one that is standing still is only visible in the two together.
+ *
+ *   Opening is optional: a board whose capture driver has no control plane
+ *   still captures, and camctl's job is to prove that it does.
+ *
+ ****************************************************************************/
+
+static int camctl_3a_open(void)
+{
+  int fd = open(CAM3A_DEVPATH, O_RDWR);
+
+  if (fd < 0)
+    {
+      printf("camctl: no 3A control plane at %s (%d); continuing without\n",
+             CAM3A_DEVPATH, errno);
+    }
+
+  return fd;
+}
+
+static void camctl_3a_show(int fd)
+{
+  struct cam3a_stats_s stats;
+
+  memset(&stats, 0, sizeof(stats));
+
+  if (ioctl(fd, CAM3A_GET_STATS, (unsigned long)&stats) < 0)
+    {
+      printf("camctl: reading the 3A statistics failed: %d\n", errno);
+      return;
+    }
+
+  printf("3a:           frame #%" PRIu32 ", %" PRIu32 "x%" PRIu32 ", %" PRIu32
+         " of %" PRIu32 " samples usable\n",
+         stats.sequence, stats.width, stats.height, stats.count,
+         stats.width * stats.height);
+
+  if (stats.count > 0u)
+    {
+      /* The same weights the driver's own loop uses, over the same sums,
+       * which is the whole reason the sums travel rather than a mean: a
+       * caller that wants a different luma is free to compute one.
+       *
+       * The weights are widened *before* they are multiplied.  A 640x480
+       * frame sums to tens of millions, so 129 times a channel sum runs past
+       * 32 bits -- and the expression is evaluated at the width of its
+       * widest operand, which without the suffix is an unsigned int.
+       * Assigning the result to a uint64_t does not help: by then it has
+       * already wrapped, and wrapped to a small number, which reads as a
+       * very dark frame.  This printed a luma of 7 for a frame whose luma
+       * was 78 until the suffix was added.
+       */
+
+      uint64_t luma =
+          66ull * stats.sum[0] + 129ull * stats.sum[1] + 25ull * stats.sum[2];
+      uint64_t denom = 220ull * stats.count;
+
+      printf("3a:           mean r %" PRIu32 " g %" PRIu32 " b %" PRIu32
+             ", luma %" PRIu32 " of 255\n",
+             stats.sum[0] / stats.count, stats.sum[1] / stats.count,
+             stats.sum[2] / stats.count, (uint32_t)(luma / denom));
+    }
+  else
+    {
+      printf("3a:           nothing usable: black, or every block "
+             "clipped\n");
+    }
+
+  printf("3a:           white balance %" PRIu32 "/%" PRIu32 "/%" PRIu32
+         ", %s\n",
+         stats.wb[0], stats.wb[1], stats.wb[2],
+         (stats.flags & CAM3A_FLAG_AWB_ACTIVE) != 0
+             ? "the driver is steering it"
+             : "the application is steering it");
+}
+
+static int camctl_3a_set_wb(int fd, FAR const char *spec)
+{
+  struct cam3a_wb_s wb;
+  unsigned int r;
+  unsigned int g;
+  unsigned int b;
+
+  if (sscanf(spec, "%u,%u,%u", &r, &g, &b) != 3)
+    {
+      printf("camctl: white balance wants r,g,b and got %s\n", spec);
+      return -EINVAL;
+    }
+
+  wb.gain[0] = r;
+  wb.gain[1] = g;
+  wb.gain[2] = b;
+
+  if (ioctl(fd, CAM3A_SET_WB, (unsigned long)&wb) < 0)
+    {
+      printf("camctl: setting white balance %u/%u/%u failed: %d\n", r, g, b,
+             errno);
+      return -errno;
+    }
+
+  printf("3a:           white balance %u/%u/%u, application steering\n", r, g,
+         b);
+  return 0;
+}
+
+static int camctl_3a_set_awb(int fd, int enable)
+{
+  if (ioctl(fd, CAM3A_SET_AWB, (unsigned long)&enable) < 0)
+    {
+      printf("camctl: setting auto white balance to %d failed: %d\n", enable,
+             errno);
+      return -errno;
+    }
+
+  printf("3a:           auto white balance %s\n",
+         enable != 0 ? "on, the driver is steering"
+                     : "off, the gains hold where they are");
+  return 0;
+}
+
+/****************************************************************************
  * Name: camctl_set_format
  ****************************************************************************/
 
@@ -298,6 +445,10 @@ int main(int argc, FAR char *argv[])
   int buftype = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   int exposure = -1;
   int gain = -1;
+  FAR const char *wb = NULL;
+  int awb = -1;
+  bool show3a = false;
+  int fd3a = -1;
   int fd;
   int opt;
   int ret;
@@ -310,7 +461,7 @@ int main(int argc, FAR char *argv[])
   uint64_t t1;
   size_t ysize;
 
-  while ((opt = getopt(argc, argv, "d:c:o:e:g:")) != -1)
+  while ((opt = getopt(argc, argv, "d:c:o:e:g:w:a:s")) != -1)
     {
       switch (opt)
         {
@@ -332,6 +483,18 @@ int main(int argc, FAR char *argv[])
 
           case 'g':
             gain = atoi(optarg);
+            break;
+
+          case 'w':
+            wb = optarg;
+            break;
+
+          case 'a':
+            awb = atoi(optarg);
+            break;
+
+          case 's':
+            show3a = true;
             break;
 
           default:
@@ -400,6 +563,40 @@ int main(int argc, FAR char *argv[])
       if (ret < 0)
         {
           goto errout_close;
+        }
+    }
+
+  /* The 3A control plane, if this board has one.
+   *
+   * Opened whether or not anything is asked of it, so that -s can read a
+   * measurement the driver's own loop is steering by -- reporting is worth
+   * having on an untouched board, and that is the case it is for.
+   */
+
+  if (wb != NULL || awb >= 0 || show3a)
+    {
+      fd3a = camctl_3a_open();
+      if (fd3a < 0)
+        {
+          goto errout_close;
+        }
+
+      if (wb != NULL)
+        {
+          ret = camctl_3a_set_wb(fd3a, wb);
+          if (ret < 0)
+            {
+              goto errout_close3a;
+            }
+        }
+
+      if (awb >= 0)
+        {
+          ret = camctl_3a_set_awb(fd3a, awb);
+          if (ret < 0)
+            {
+              goto errout_close3a;
+            }
         }
     }
 
@@ -534,6 +731,18 @@ int main(int argc, FAR char *argv[])
 
       camctl_luma_stats(g_buffers[idx].start, ysize, prev, &mean, &diff);
 
+      /* What the demosaicer measured on this frame, before the white balance
+       * gains were applied.  Read after the frame is dequeued rather than
+       * before, so that the measurement reported belongs to a frame that has
+       * been delivered -- one taken earlier would describe whichever frame
+       * happened to be in the demosaicer at that instant.
+       */
+
+      if (fd3a >= 0 && show3a)
+        {
+          camctl_3a_show(fd3a);
+        }
+
       /* Save the last frame rather than the first.
        *
        * The settings written just before the stream started reach the sensor
@@ -613,6 +822,12 @@ int main(int argc, FAR char *argv[])
 
 errout_streamoff:
   ioctl(fd, VIDIOC_STREAMOFF, (unsigned long)&buftype);
+
+errout_close3a:
+  if (fd3a >= 0)
+    {
+      close(fd3a);
+    }
 
 errout_close:
   for (i = 0; i < CAMCTL_BUFFERS; i++)
