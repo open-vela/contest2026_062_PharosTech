@@ -53,17 +53,27 @@
 
 #define CAMENC_FIRST_DURATION 33333u
 
-/* Sample flags, per ISO/IEC 14496-12 8.8.3.1.
+/* Sample flags, per ISO/IEC 14496-12 8.8.3.1.  The fields are packed from
+ * the top of the word, so the two that matter here are:
  *
- *   sample_depends_on           bits 6..7    2 = does not depend, 1 = does
- *   sample_is_non_sync_sample   bit 15      0 = a stream may start here
+ *   sample_depends_on           bits 25..24  2 = does not depend, 1 = does
+ *   sample_is_non_sync_sample   bit 16      1 = a stream may not start here
+ *
+ * which are ffmpeg's MOV_FRAG_SAMPLE_FLAG_DEPENDS_NO / _DEPENDS_YES and
+ * _IS_NON_SYNC in libavformat/isom.h.
  *
  * A picture that depends on nothing is one a decoder can be started on, so
  * the two flags always move together and are written as a pair.
+ *
+ * These were both too low at first -- 0x80 is bit 7, which is inside
+ * sample_degradation_priority, and 0x8000 is one bit short of non-sync.
+ * An all-intra stream cannot tell the difference, because a key frame is
+ * one either way, so the mistake would have gone on declaring every P frame
+ * a place a stream could start.
  */
 
-#define CAMENC_SAMPLE_KEY   0x00000080u
-#define CAMENC_SAMPLE_DELTA 0x00008040u
+#define CAMENC_SAMPLE_KEY   0x02000000u
+#define CAMENC_SAMPLE_DELTA 0x01010000u
 
 #define CAMENC_NAL_SPS      7u
 #define CAMENC_NAL_PPS      8u

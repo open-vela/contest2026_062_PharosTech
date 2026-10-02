@@ -126,40 +126,119 @@
  * because a MediaSource refuses data whose codec string does not match it.
  */
 
-/* The page is 929 bytes before the codec string in it is expanded, so this
- * is that with room to spare.  snprintf refuses to overrun it, so a page
- * that outgrew this would cost its reply and nothing else.  It is worth
- * keeping close to the page: this function is the deepest frame the task
- * has, on a stack of CONFIG_SYSTEM_CAMENC_STACKSIZE.
+/* The page is a fixed text with one hole in it, for the codec string.  The
+ * buffer it is composed into is therefore sized from the page itself plus
+ * the longest that hole can be -- rather than from a number that has to be
+ * kept in step with the page by hand.  It was such a number once, and the
+ * page outgrew it: snprintf then refused to write anything, and the reply
+ * was no page at all, which looks like a server that does not work rather
+ * than one that is one addition too small.
  */
 
-#define CAMENC_PAGE_MAX 1536
+#define CAMENC_PAGE_SLACK 64
 
 static const char g_page[] =
     "<!DOCTYPE html>\n"
     "<html><head><meta charset=\"utf-8\"><title>camenc</title></head>\n"
-    "<body style=\"margin:0;background:#111\">\n"
-    "<video id=v autoplay muted playsinline style=\"width:100%%\"></video>\n"
+    "<body style=\"margin:0;background:#111;color:#ddd;"
+    "font:12px monospace\">\n"
+    "<div id=s style=\"position:fixed;top:0;left:0;right:0;z-index:9;"
+    "background:#000d;padding:4px 6px;white-space:pre-wrap\">"
+    "connecting...</div>\n"
+    "<video id=v autoplay muted playsinline style=\"display:block;"
+    "margin:70px auto 0;max-width:100vw;"
+    "max-height:calc(100vh - 76px)\"></video>\n"
     "<script>\n"
-    "const v=document.getElementById('v');\n"
-    "const ms=new MediaSource();v.src=URL.createObjectURL(ms);\n"
-    "let sb=null,q=[],seen=0;\n"
-    "ms.addEventListener('sourceopen',()=>{\n"
-    "  sb=ms.addSourceBuffer('video/mp4; codecs=\"%s\"');\n"
-    "  sb.mode='segments';\n"
-    "  sb.addEventListener('updateend',pump);\n"
-    "  const ws=new WebSocket('ws://'+location.host+'/stream');\n"
-    "  ws.binaryType='arraybuffer';\n"
-    "  ws.onmessage=e=>{q.push(new "
-    "Uint8Array(e.data));seen+=e.data.byteLength;pump();};\n"
-    "  ws.onclose=()=>{document.title='disconnected after '+seen+' bytes';};\n"
-    "});\n"
+    "const v=document.getElementById('v'),s=document.getElementById('s');\n"
+    "let sb=null,q=[],rx=0,msgs=0,err='',note='';\n"
+    "const ms=new MediaSource();\n"
+    "v.src=URL.createObjectURL(ms);\n"
+    "/* How far behind the newest data the picture is allowed to fall before\n"
+    "   the playhead is brought forward. Half a second keeps the picture\n"
+    "   close to live while leaving enough in hand not to stutter. */\n"
+    "const MAXLAG=0.6;\n"
+    "function say(){\n"
+    "  const b=sb?sb.buffered:null;\n"
+    "  let br='-',lag='-';\n"
+    "  if(b&&b.length){\n"
+    "    const e=b.end(b.length-1);\n"
+    "    br=b.start(0).toFixed(2)+'..'+e.toFixed(2)+' ('+b.length+')';\n"
+    "    lag=(e-v.currentTime).toFixed(2)+'s'+\n"
+    "      (e-v.currentTime>MAXLAG?' LATE':'');\n"
+    "  }\n"
+    "  s.textContent='msgs='+msgs+' rx='+rx+'B q='+q.length+\n"
+    "    ' lag='+lag+'\\n'+\n"
+    "    'sb='+(sb?sb.readyState:'none')+' upd='+(sb?sb.updating:'-')+\n"
+    "    ' ms='+ms.readyState+' buffered='+br+'\\n'+\n"
+    "    't='+v.currentTime.toFixed(2)+' vw='+v.videoWidth+'x'+\n"
+    "    v.videoHeight+' rs='+v.readyState+' paused='+v.paused+'\\n'+\n"
+    "    'verr='+(v.error?v.error.code+':'+v.error.message:'-')+\n"
+    "    ' err='+(err||'-')+(note?' note='+note:'');\n"
+    "}\n"
     "function pump(){\n"
     "  if(!sb||sb.updating||!q.length)return;\n"
-    "  const b=sb.buffered;\n"
-    "  if(b.length&&v.currentTime-b.start(0)>4)sb.remove(0,v.currentTime-1);\n"
-    "  sb.appendBuffer(q.shift());\n"
+    "  try{\n"
+    "    const b=sb.buffered;\n"
+    "    if(b.length){\n"
+    "      const end=b.end(b.length-1);\n"
+    "      /* A live stream does not start at zero for a client that joined\n"
+    "         late: the first fragment it was given carries the timestamp of\n"
+    "         the frame it was, which is however long the stream had been\n"
+    "         running. The player, meanwhile, sits at zero -- where there is\n"
+    "         no data and so nothing to show, which is a black picture that\n"
+    "         looks like a broken stream and is not one. Put it where the\n"
+    "         data is, which is what any live player has to do. */\n"
+    "      if(v.currentTime<b.start(0)){\n"
+    "        v.currentTime=b.start(0);\n"
+    "        note='seek to '+b.start(0).toFixed(2);\n"
+    "      }\n"
+    "      /* And it does not wait. A browser plays at exactly real time, so\n"
+    "         anything that makes it stall -- a slow append, a busy machine,\n"
+    "         a burst of frames -- is never made up: the picture simply runs\n"
+    "         later and later, and stays there. Bringing the playhead "
+    "forward\n"
+    "         when the backlog grows is the difference between a stream that\n"
+    "         ends up a second late for ever and one that is about as late "
+    "as\n"
+    "         it was when it started. */\n"
+    "      else if(end-v.currentTime>MAXLAG){\n"
+    "        const behind=end-v.currentTime;\n"
+    "        v.currentTime=end-MAXLAG/2;\n"
+    "        note='caught up from '+behind.toFixed(2)+'s';\n"
+    "      }\n"
+    "      v.play().catch(e=>{note='play:'+e.name;});\n"
+    "      if(v.currentTime-b.start(0)>4){\n"
+    "        note='removing';\n"
+    "        sb.remove(0,v.currentTime-1);\n"
+    "        return;\n"
+    "      }\n"
+    "    }\n"
+    "    const f=q.shift();\n"
+    "    sb.appendBuffer(f);\n"
+    "    note='appended '+f.length+'B';\n"
+    "  }catch(e){err=e.name+': '+e.message;}\n"
+    "  say();\n"
     "}\n"
+    "ms.addEventListener('sourceopen',()=>{\n"
+    "  try{\n"
+    "    sb=ms.addSourceBuffer('video/mp4; codecs=\"%s\"');\n"
+    "  }catch(e){err='addSourceBuffer: '+e.name+': "
+    "'+e.message;say();return;}\n"
+    "  sb.mode='segments';\n"
+    "  sb.addEventListener('updateend',()=>{note='updateend';pump();});\n"
+    "  sb.addEventListener('error',()=>{err='sourcebuffer error';say();});\n"
+    "  sb.addEventListener('abort',()=>{err='sourcebuffer abort';say();});\n"
+    "  const ws=new WebSocket('ws://'+location.host+'/stream');\n"
+    "  ws.binaryType='arraybuffer';\n"
+    "  ws.onopen=()=>{note='ws open';say();};\n"
+    "  ws.onmessage=e=>{q.push(new Uint8Array(e.data));\n"
+    "    rx+=e.data.byteLength;msgs++;say();pump();};\n"
+    "  ws.onerror=()=>{err='ws error';say();};\n"
+    "  ws.onclose=e=>{err='ws closed code='+e.code;say();};\n"
+    "});\n"
+    "ms.addEventListener('sourceclose',()=>{err='media source "
+    "closed';say();});\n"
+    "setInterval(say,500);\n"
     "</script></body></html>\n";
 
 /****************************************************************************
@@ -223,11 +302,48 @@ static size_t ws_base64(FAR const uint8_t *in, size_t len, FAR char *out)
 }
 
 /****************************************************************************
+ * Name: ws_head_len
+ *
+ * Description:
+ *   Where a request's headers end: the offset just past the blank line that
+ *   terminates them, or zero if it is not all there yet.
+ *
+ *   The two uses of this differ.  Before dispatching, zero means "wait for
+ *   more".  After a request has been answered, the same offset says how much
+ *   of the buffer was that request, so that what follows it -- frames, on a
+ *   connection that has just been upgraded -- is not read as though the
+ *   request were still in front of them.
+ *
+ ****************************************************************************/
+
+static size_t ws_head_len(FAR const uint8_t *buf, size_t len)
+{
+  static const char end[] = "\r\n\r\n";
+  size_t i;
+
+  for (i = 0; i + sizeof(end) - 1 <= len; i++)
+    {
+      if (memcmp(buf + i, end, sizeof(end) - 1) == 0)
+        {
+          return i + sizeof(end) - 1;
+        }
+    }
+
+  return 0;
+}
+
+/****************************************************************************
  * Name: ws_header
  *
  * Description:
  *   Find a header in a request, case-insensitively, and return its value
  *   with leading spaces removed.
+ *
+ *   The request is NUL-terminated by the caller, at the end of what has
+ *   arrived, which is what makes walking it line by line safe.  Without
+ *   that the walk runs on past the request into whatever the buffer held
+ *   before, and a header that is not in this request can be found in the
+ *   last one.
  *
  ****************************************************************************/
 
@@ -256,39 +372,17 @@ static FAR const char *ws_header(FAR const char *req, FAR const char *name)
 }
 
 /****************************************************************************
- * Name: ws_find
+ * Name: ws_close_client
  *
  * Description:
- *   Find a short byte string in a buffer.
- *
- *   Written out rather than using memmem(), which is a GNU extension: this
- *   module is meant to be copied into another application, and needing a
- *   feature-test macro to build is a detail a copier should not have to
- *   discover.
+ *   Release a client slot: close its socket and forget the connection, but
+ *   keep the transmit buffer, which belongs to the slot rather than to any
+ *   one connection.
  *
  ****************************************************************************/
 
-static bool ws_find(FAR const uint8_t *hay, size_t haylen,
-                    FAR const char *needle)
-{
-  size_t nlen = strlen(needle);
-  size_t i;
-
-  if (nlen == 0 || haylen < nlen)
-    {
-      return false;
-    }
-
-  for (i = 0; i + nlen <= haylen; i++)
-    {
-      if (memcmp(hay + i, needle, nlen) == 0)
-        {
-          return true;
-        }
-    }
-
-  return false;
-}
+static void ws_close_client(FAR struct camenc_ws_s *ws,
+                            FAR struct camenc_ws_client_s *c);
 
 /****************************************************************************
  * Name: ws_queue
@@ -306,16 +400,14 @@ static bool ws_find(FAR const uint8_t *hay, size_t haylen,
  *
  ****************************************************************************/
 
-static void ws_close_client(FAR struct camenc_ws_s *ws,
-                            FAR struct camenc_ws_client_s *c);
-
 static bool ws_queue(FAR struct camenc_ws_s *ws,
                      FAR struct camenc_ws_client_s *c, const uint8_t *data,
                      size_t len)
 {
   if (c->tx_len + len > c->tx_size)
     {
-      _warn("CAMENC WS: %zu bytes do not fit a %zu-byte buffer, dropping\n",
+      _warn("CAMENC WS: %zu bytes do not fit a %zu-byte buffer, "
+            "dropping\n",
             c->tx_len + len, c->tx_size);
       ws_close_client(ws, c);
       ws->clients_dropped++;
@@ -342,11 +434,12 @@ static bool ws_queue(FAR struct camenc_ws_s *ws,
  * Name: ws_frame
  *
  * Description:
- *   Queue one WebSocket frame: a two-byte header, an extended length if the
- *   payload needs one, and the payload.
+ *   Queue one WebSocket frame: a two-byte header, an extended length if
+ *the payload needs one, and the payload.
  *
- *   The mask bit is clear, as it must be for anything a server sends.  The
- *   opcode is the final one, because a frame that fits is never fragmented.
+ *   The mask bit is clear, as it must be for anything a server sends.
+ *The opcode is the final one, because a frame that fits is never
+ *fragmented.
  *
  ****************************************************************************/
 
@@ -399,8 +492,8 @@ static bool ws_frame(FAR struct camenc_ws_s *ws,
  * Description:
  *   Write out as much of a client's buffer as the socket will take.
  *
- *   The socket is non-blocking, so a partial write is normal and the rest
- *   waits for the next poll.
+ *   The socket is non-blocking, so a partial write is normal and the
+ *rest waits for the next poll.
  *
  ****************************************************************************/
 
@@ -431,9 +524,10 @@ static void ws_flush(FAR struct camenc_ws_s *ws,
   c->tx_sent = 0;
   c->tx_len = 0;
 
-  /* A reply that is the whole of a connection is closed once it has actually
-   * gone out, not when it was queued -- closing on the queue would cut the
-   * reply off partway for anyone whose socket was full at that moment.
+  /* A reply that is the whole of a connection is closed once it has
+   * actually gone out, not when it was queued -- closing on the queue
+   * would cut the reply off partway for anyone whose socket was full at
+   * that moment.
    */
 
   if (c->closing)
@@ -446,15 +540,20 @@ static void ws_flush(FAR struct camenc_ws_s *ws,
  * Name: ws_serve_*
  *
  * Description:
- *   The two things a plain HTTP request can be: a request for the page, or a
- *   request to upgrade.  Anything else gets a short answer saying so.
+ *   The two things a plain HTTP request can be: a request for the page,
+ *   or a request to upgrade.  Anything else gets a short answer saying so.
  *
  ****************************************************************************/
 
 static void ws_serve_page(FAR struct camenc_ws_s *ws,
                           FAR struct camenc_ws_client_s *c)
 {
-  char body[CAMENC_PAGE_MAX];
+  /* SIZE_MAX is a compile-time constant here, so the frame is too: the
+   * page at its largest, plus the codec string in place of the two
+   * characters that stand for it.
+   */
+
+  char body[sizeof(g_page) + CAMENC_PAGE_SLACK];
   char head[256];
   int blen;
   int hlen;
@@ -486,9 +585,9 @@ static void ws_serve_page(FAR struct camenc_ws_s *ws,
   if (ws_queue(ws, c, (FAR const uint8_t *)head, (size_t)hlen) &&
       ws_queue(ws, c, (FAR const uint8_t *)body, (size_t)blen))
     {
-      /* The page is all this connection was for.  It is written out by the
-       * next flush and then closed, because a fresh connection is what the
-       * page's WebSocket will make anyway.
+      /* The page is all this connection was for.  It is written out by
+       * the next flush and then closed, because a fresh connection is
+       * what the page's WebSocket will make anyway.
        */
 
       c->closing = true;
@@ -510,14 +609,36 @@ static void ws_serve_upgrade(FAR struct camenc_ws_s *ws,
 
   if (key == NULL)
     {
-      _warn("CAMENC WS: upgrade without a key\n");
+      /* A browser's upgrade always carries the key, so its absence means
+       * the request was not what the server took it for.  What arrived
+       * is then the whole of the question, so it is printed -- the
+       * request line alone would not say whether the key was missing
+       * from the request or lost between here and there.  Line breaks
+       * are shown rather than obeyed, so that it stays one line in the
+       * log.
+       */
+
+      char seen[320];
+      size_t used;
+      size_t total = strlen(req);
+
+      for (used = 0; used < sizeof(seen) - 1 && used < total; used++)
+        {
+          char ch = req[used];
+
+          seen[used] = (ch == '\r' || ch == '\n') ? '|' : ch;
+        }
+
+      seen[used] = '\0';
+
+      _warn("CAMENC WS: upgrade without a key, %zu bytes: %s\n", total, seen);
       ws_close_client(ws, c);
       return;
     }
 
-  /* The digest covers the client's key and the fixed string, concatenated.
-   * The key is printed up to the line's end, so it has to be copied out
-   * rather than pointed at.
+  /* The digest covers the client's key and the fixed string,
+   * concatenated. The key is printed up to the line's end, so it has to
+   * be copied out rather than pointed at.
    */
 
   {
@@ -563,12 +684,12 @@ static void ws_serve_upgrade(FAR struct camenc_ws_s *ws,
 
   /* Catch this client up before it is given anything live.
    *
-   * A client that has just connected has no decoder state, so it cannot be
-   * given the middle of a stream: it is given the segments that start one,
-   * which are the initialisation segment and everything since the last
-   * segment a stream may start on.  Then the live segments follow.  Without
-   * this the first thing a late viewer sees is a picture that refers to
-   * pictures it never received.
+   * A client that has just connected has no decoder state, so it cannot
+   * be given the middle of a stream: it is given the segments that start
+   * one, which are the initialisation segment and everything since the
+   * last segment a stream may start on.  Then the live segments follow.
+   * Without this the first thing a late viewer sees is a picture that
+   * refers to pictures it never received.
    */
 
   if (ws->primable && ws->primer_len > 0)
@@ -595,7 +716,21 @@ static void ws_handle_request(FAR struct camenc_ws_s *ws,
 
   if (upgrade != NULL && strncasecmp(upgrade, "websocket", 9) == 0)
     {
+      size_t used = ws_head_len(c->rx, c->rx_len);
+
       ws_serve_upgrade(ws, c, (FAR const char *)c->rx);
+
+      /* The request has been answered, so it is consumed.  Anything
+       * behind it on this connection is a frame, and reading from the
+       * front of the buffer again would read the request as one.
+       */
+
+      if (used <= c->rx_len)
+        {
+          memmove(c->rx, c->rx + used, c->rx_len - used);
+          c->rx_len -= used;
+        }
+
       return;
     }
 
@@ -652,10 +787,10 @@ static void ws_close_client(FAR struct camenc_ws_s *ws,
  *   Consume whatever a client has sent.
  *
  *   Before the handshake that means collecting a request; afterwards it
- *   means answering a close and ignoring a ping, and noticing when the peer
- *   has gone.  Reading at all is what makes that last part work: a socket
- *   that is never read reports a disconnection only when something is
- *   finally written to it, which for a stream that has stopped for any
+ *   means answering a close and ignoring a ping, and noticing when the
+ *peer has gone.  Reading at all is what makes that last part work: a
+ *socket that is never read reports a disconnection only when something
+ *is finally written to it, which for a stream that has stopped for any
  *   reason is never.
  *
  ****************************************************************************/
@@ -667,7 +802,11 @@ static void ws_read_client(FAR struct camenc_ws_s *ws,
     {
       ssize_t n;
 
-      if (c->rx_len == sizeof(c->rx))
+      /* The receive buffer keeps a byte back for the terminator, so that
+       * what has arrived is always a string: see ws_header.
+       */
+
+      if (c->rx_len >= sizeof(c->rx) - 1)
         {
           /* A request this long is not a request.  A frame cannot reach
            * here because frames are consumed as they are read.
@@ -679,15 +818,16 @@ static void ws_read_client(FAR struct camenc_ws_s *ws,
           return;
         }
 
-      n = recv(c->fd, c->rx + c->rx_len, sizeof(c->rx) - c->rx_len, 0);
+      n = recv(c->fd, c->rx + c->rx_len, sizeof(c->rx) - 1 - c->rx_len, 0);
 
       if (n > 0)
         {
           c->rx_len += (size_t)n;
+          c->rx[c->rx_len] = '\0';
 
           if (!c->upgraded)
             {
-              if (ws_find(c->rx, c->rx_len, "\r\n\r\n"))
+              if (ws_head_len(c->rx, c->rx_len) != 0)
                 {
                   ws_handle_request(ws, c);
                   return;
@@ -696,8 +836,8 @@ static void ws_read_client(FAR struct camenc_ws_s *ws,
               continue;
             }
 
-          /* Upgraded: everything received is a frame, and the only one worth
-           * acting on is close.
+          /* Upgraded: everything received is a frame, and the only one
+           * worth acting on is close.
            */
 
           {
@@ -972,9 +1112,9 @@ void camenc_ws_poll(FAR struct camenc_ws_s *ws)
       /* Reset the connection's state, field by field.
        *
        * Not with memset: the slot owns its transmit buffer, which was
-       * allocated when the server started and is meant to outlive any one
-       * connection.  Clearing the whole struct would throw that pointer away
-       * and leave the next write going to address zero.
+       * allocated when the server started and is meant to outlive any
+       * one connection.  Clearing the whole struct would throw that
+       * pointer away and leave the next write going to address zero.
        */
 
       {
@@ -986,6 +1126,14 @@ void camenc_ws_poll(FAR struct camenc_ws_s *ws)
         c->rx_len = 0;
         c->tx_len = 0;
         c->tx_sent = 0;
+
+        /* The receive buffer too, not just its length.  A request is
+         * parsed as a string, so a byte left from the last connection is
+         * a byte this one did not send -- and a header it does not have
+         * can be found in it.
+         */
+
+        memset(c->rx, 0, sizeof(c->rx));
       }
 
       _info("CAMENC WS: client %d connected\n", slot);
@@ -1023,12 +1171,13 @@ int camenc_ws_publish(FAR struct camenc_ws_s *ws, enum camenc_seg_e seg,
 
   /* Keep what a later client will need, before sending anything.
    *
-   * The initialisation segment opens the primer.  After that a segment that
-   * a stream may start on *replaces* it: the new sequence is that segment
-   * and what follows it, not that one appended to the previous group.  A
-   * primer that accumulated every key segment would replay the stream from
-   * the beginning to each new client -- or rather from wherever it first
-   * filled up, which is worse, because it would look deliberate.
+   * The initialisation segment opens the primer.  After that a segment
+   * that a stream may start on *replaces* it: the new sequence is that
+   * segment and what follows it, not that one appended to the previous
+   * group.  A primer that accumulated every key segment would replay the
+   * stream from the beginning to each new client -- or rather from
+   * wherever it first filled up, which is worse, because it would look
+   * deliberate.
    */
 
   if (len + CAMENC_WS_TX_HEADER > ws->tx_size)
@@ -1036,14 +1185,15 @@ int camenc_ws_publish(FAR struct camenc_ws_s *ws, enum camenc_seg_e seg,
       /* A segment no client can be sent must not start a primer either:
        * admitting a client on one would take it only to drop it straight
        * away again, and it would be sent back here for the next one, and
-       * the next.  So the primer is given up until a segment fits, and the
-       * send below drops whoever is connected rather than passing them an
-       * incomplete stream.
+       * the next.  So the primer is given up until a segment fits, and
+       * the send below drops whoever is connected rather than passing
+       * them an incomplete stream.
        */
 
       if (!ws->warned_oversize)
         {
-          _warn("CAMENC WS: %zu-byte segments do not fit a %zu-byte buffer;"
+          _warn("CAMENC WS: %zu-byte segments do not fit a %zu-byte "
+                "buffer;"
                 " no client can be served at this size\n",
                 len, ws->tx_size);
           ws->warned_oversize = true;
@@ -1077,10 +1227,10 @@ int camenc_ws_publish(FAR struct camenc_ws_s *ws, enum camenc_seg_e seg,
       else
         {
           /* A single group of pictures that does not fit means no client
-           * can be brought up to date from here, so none is admitted until
-           * the next segment a stream may start on begins a fresh primer.
-           * Refusing is the honest outcome: the alternative is admitting a
-           * client and feeding it a stream it cannot decode.
+           * can be brought up to date from here, so none is admitted
+           * until the next segment a stream may start on begins a fresh
+           * primer. Refusing is the honest outcome: the alternative is
+           * admitting a client and feeding it a stream it cannot decode.
            */
 
           _warn("CAMENC WS: primer full (%zu bytes), refusing clients\n",
