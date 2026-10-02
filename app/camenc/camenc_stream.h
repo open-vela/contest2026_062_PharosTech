@@ -87,14 +87,18 @@ enum camenc_seg_e
 /* Called once per segment.
  *
  * `key` is true for a fragment that a stream may be started on -- one whose
- * pictures do not refer to anything before it.  Every fragment satisfies
- * that today, because every picture is an IDR, so nothing has cause to look
- * at it yet.  It is here because that will stop being true: once the encoder
- * emits P pictures, a client that arrives mid-stream has to be given the
- * initialisation segment and then the fragments from the most recent such
- * fragment, or its decoder starts with references it never received.  A
- * caller that keeps the fragments since the last `key` therefore needs no
- * change to work correctly when that day comes.
+ * pictures do not refer to anything before it.  A client that arrives
+ * mid-stream needs exactly two things, and this is the second of them: the
+ * initialisation segment, which carries the parameter sets, and a fragment
+ * whose pictures refer to nothing before them.  Without the second its
+ * decoder starts with references it never received.
+ *
+ * Which key fragment a caller uses is the caller's business.  Keeping the
+ * one most recently seen, and the fragments since, gives a client a stream
+ * it can start on immediately; waiting for the next one costs that client up
+ * to a group of pictures of blank picture, and is what this tree does --
+ * camenc_ws.c has the reason, which is that the immediate version needs more
+ * room in a client's transmit buffer than the live frames leave.
  *
  * `data` is only valid for the duration of the call.
  *
