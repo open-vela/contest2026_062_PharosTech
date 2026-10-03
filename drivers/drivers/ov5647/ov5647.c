@@ -64,6 +64,7 @@
 
 #include <nuttx/config.h>
 
+#include <assert.h>
 #include <debug.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -108,17 +109,48 @@
  * loop leaves it alone.
  */
 
-#define OV5647_VTS_MANUAL       (1u << 2)
-#define OV5647_AGC_MANUAL       (1u << 1)
-#define OV5647_AEC_MANUAL       (1u << 0)
-#define OV5647_HTS              0x380c
-#define OV5647_VTS              0x380e
-#define OV5647_FRAME_OFF_NUMBER 0x4202
-#define OV5647_MIPI_CTRL00      0x4800
-#define OV5647_MIPI_CTRL14      0x4814
-#define OV5647_ISP_AWB          0x5001
+#define OV5647_VTS_MANUAL           (1u << 2)
+#define OV5647_AGC_MANUAL           (1u << 1)
+#define OV5647_AEC_MANUAL           (1u << 0)
+#define OV5647_HTS                  0x380c
+#define OV5647_VTS                  0x380e
+#define OV5647_TIMING_X_OUTPUT_SIZE 0x3808
+#define OV5647_TIMING_Y_OUTPUT_SIZE 0x380a
+#define OV5647_PLL_MULTIPLIER       0x3036
+#define OV5647_FRAME_OFF_NUMBER     0x4202
+#define OV5647_MIPI_CTRL00          0x4800
+#define OV5647_MIPI_CTRL14          0x4814
+#define OV5647_ISP_AWB              0x5001
 
-#define OV5647_CHIP_ID          0x5647
+/* The registers that decide the Bayer phase of the delivered frame.
+ *
+ * Which of the four positions in a 2x2 tile holds which colour follows from
+ * where the readout window begins and from whether the readout mirrors or
+ * flips it.  Both of those are parity questions: a window that starts on an
+ * odd column -- or on an odd row -- moves green from one diagonal of the tile
+ * to the other, and a reconstruction that expects it where it was no longer
+ * finds it.  The picture loses its colour and nothing fails, which is what
+ * makes these worth reading rather than reasoning about.
+ *
+ * None of them is written from the driver's state, so what comes back is what
+ * the mode's own table left.  The two increments and the two subsampling
+ * values are here for the same reason: a mode whose table omits a register
+ * another mode writes is a mode running with the other mode's value, and that
+ * is a mistake this pair of tables has already made once.
+ */
+
+#define OV5647_WINDOW_X_START 0x3800
+#define OV5647_WINDOW_Y_START 0x3802
+#define OV5647_ISP_X_OFFSET   0x3811
+#define OV5647_ISP_Y_OFFSET   0x3813
+#define OV5647_TIMING_X_INC   0x3814
+#define OV5647_TIMING_Y_INC   0x3815
+#define OV5647_SUBSAMPLE_0    0x3708
+#define OV5647_SUBSAMPLE_1    0x3709
+#define OV5647_FLIP           0x3820
+#define OV5647_MIRROR         0x3821
+
+#define OV5647_CHIP_ID        0x5647
 
 /* MIPI_CTRL00 bits.  With the clock lane left ungated the receiver sees a
  * continuous high-speed clock, which is the least surprising thing to hand
@@ -137,54 +169,18 @@
 
 #define OV5647_RESET_DELAY_US 5000
 
-/* The modes this driver implements.  Exactly one is selected by
- * CONFIG_OV5647_MODE_* at build time; the sensor has no scaler, so the mode
- * is what the SoC-side demosaicer and encoder must be configured to match.
+/* The mode the driver leaves the sensor in when it is bound.
  *
- * Mode timing.  One frame lasts HTS * VTS pixel clocks, which is where the
- * frame rate comes from.  Both registers have to be written for that to
- * hold at all -- the reset values are the sensor's full-resolution timing --
- * and VTS is also what bounds the longest usable exposure time.
- *
- * The figures are the same ones the upstream Linux driver programs (see its
- * ov5647_modes[] table), and the link frequency the board must run its D-PHY
- * at follows each mode:
- *   - 640x480:  pixel clock 58.333 MHz, link 145.833 MHz, 2 lanes
- *   - 1296x972: pixel clock 87.5 MHz,   link 218.75 MHz,  2 lanes
+ * The application chooses a mode for the stream it wants, so this only
+ * decides what a caller that never asks for anything gets, and what the
+ * sensor is left in between streams.  The check below turns a Kconfig index
+ * that names no mode into a build error, rather than into a null pointer
+ * dereference in the middle of the driver.
  */
 
-#if defined(CONFIG_OV5647_MODE_1296x960)
-
-/* 1296x960: 2x2 binned full field of view, ~30 fps.  The binned array is
- * 1296x972, and the output height is trimmed to 960 so that the whole
- * pipeline -- VICAP stride, the encoder's 16-pixel macroblock grid, and
- * camenc's copy -- lands on a multiple of sixteen with no crop in hardware
- * and no row-wise copy in software.  Twelve rows (1.2%) fall off the bottom,
- * which is imperceptible.
- *
- * The pixel clock is 87.5 MHz and HTS*VTS = 1896 * 1435, so the frame rate
- * is 87.5e6 / (1896 * 1435) = 32.2 fps, advertised as 30.
- */
-
-#define OV5647_MODE_WIDTH  1296
-#define OV5647_MODE_HEIGHT 960
-#define OV5647_MODE_FPS    30
-#define OV5647_MODE_HTS    1896u
-#define OV5647_MODE_VTS    1435u
-
-#else /* CONFIG_OV5647_MODE_640x480 */
-
-/* 640x480: 2x2 binned and subsampled, full field of view, 60 fps.  The
- * pixel clock is 58.333 MHz and HTS*VTS = 1852 * 504, which is 62.5 fps,
- * advertised as 60.
- */
-
-#define OV5647_MODE_WIDTH  640
-#define OV5647_MODE_HEIGHT 480
-#define OV5647_MODE_FPS    60
-#define OV5647_MODE_HTS    1852u
-#define OV5647_MODE_VTS    504u
-
+#if CONFIG_OV5647_DEFAULT_MODE >= OV5647_NUM_MODES
+#error \
+    "CONFIG_OV5647_DEFAULT_MODE names no mode; see OV5647_MODE_* in ov5647.h"
 #endif
 
 /* AEC and AGC are switched off by the common register table, so the exposure
@@ -226,12 +222,15 @@
  * time.
  */
 
-#define OV5647_EXPOSURE_MIN 4u
-
 #if defined(CONFIG_OV5647_EXPOSURE_LINES) && CONFIG_OV5647_EXPOSURE_LINES > 0
 #define OV5647_EXPOSURE_INIT ((uint32_t)CONFIG_OV5647_EXPOSURE_LINES)
 #else
-#define OV5647_EXPOSURE_INIT (OV5647_MODE_VTS - 4u)
+/* Zero is not an exposure the sensor can be given -- see
+ * OV5647_EXPOSURE_MIN -- so it serves as "the mode's own maximum", which is
+ * what ov5647_initialize() resolves it to once a mode is in force.
+ */
+
+#define OV5647_EXPOSURE_INIT 0u
 #endif
 
 #ifdef CONFIG_OV5647_ANALOG_GAIN
@@ -265,6 +264,21 @@ struct ov5647_s
   uint8_t addr;
   bool bound; /* ov5647_initialize() has run */
   bool streaming;
+
+  /* The mode the sensor is programmed for.  Resolved from what the framework
+   * asks for when the stream starts, because that is the first moment the
+   * request is known: the application sets the format and the frame rate
+   * after opening the device and before starting the stream, and the sensor
+   * is not listened to until the stream starts.  Until then this is the mode
+   * the driver was bound with.
+   *
+   * A mode is geometry, frame rate and link rate together, so this pointer
+   * is what the exposure ceiling, the frame interval reported to the
+   * framework and the register set written at stream start are all read
+   * from.  It refers to read-only storage and is only ever reassigned.
+   */
+
+  FAR const struct ov5647_mode_s *mode;
 
   /* Current manual settings.  Held here rather than only in the registers so
    * that a change made through the control interface survives a stop and
@@ -368,9 +382,13 @@ static const struct ov5647_reg_s g_ov5647_common_regs[] = {
  * driver, would also set MIPI_CTRL00 -- this driver writes MIPI_CTRL00
  * itself when streaming starts, because the clock-lane behaviour is a
  * receiver-side decision rather than a property of the mode.
+ *
+ * Both modes' register sets are compiled in.  Which one is written is
+ * decided when the stream starts, from what the framework was asked for, so
+ * that the sensor follows the application rather than the build; see
+ * ov5647_start_capture().
  */
 
-#if !defined(CONFIG_OV5647_MODE_1296x960)
 static const struct ov5647_reg_s g_ov5647_640x480_regs[] = {
   { 0x3036, 0x46 }, { 0x3821, 0x03 }, { 0x3820, 0x41 }, { 0x3612, 0x59 },
   { 0x3618, 0x00 }, { 0x3814, 0x35 }, { 0x3815, 0x35 }, { 0x3708, 0x64 },
@@ -381,13 +399,18 @@ static const struct ov5647_reg_s g_ov5647_640x480_regs[] = {
   { 0x3a0d, 0x02 }, { 0x3a0e, 0x01 }, { 0x4004, 0x02 }, { 0x4800, 0x34 },
   { 0x0100, 0x01 },
 };
-#endif
 
 /* 1296x960 (2x2 binned) 10-bit mode: full field of view, no subsampling.
  * Copied from the upstream Linux driver's ov5647_2x2binned_10bpp table, with
  * one deliberate change: the output height (0x380a/0x380b) is trimmed from
- * 0x03cc (972) to 0x03c0 (960) so it falls on the encoder's 16-pixel
- * macroblock grid, for the reason given in the mode comment above.
+ * 0x03cc (972) to 0x03c0 (960).  The binned array is 1296x972 and 972 is not
+ * a multiple of sixteen, so the whole pipeline -- this mode's output, the
+ * capture engine's stride, the encoder's macroblock grid and the
+ * application's frame copy -- would each have to decide separately what to
+ * do with the remainder.  Trimming in the sensor makes the answer the same
+ * everywhere and costs twelve rows of 972, or 1.2%, off the bottom.  It is
+ * also why the height is written here rather than taken from upstream:
+ * upstream has no such constraint.
  *
  * The mirror/flip bits (0x3821 = 0x03, 0x3820 = 0x41) are the same as the
  * VGA mode's, so the Bayer order the SoC side reconstructs is the same GBRG
@@ -398,10 +421,11 @@ static const struct ov5647_reg_s g_ov5647_640x480_regs[] = {
  *
  * The exposure/gain registers are not here: they are sensor settings the
  * driver owns and writes from its state on every stream start, for the same
- * reason the VGA mode leaves them out.
+ * reason the VGA mode leaves them out.  HTS and VTS are not here either,
+ * because they are what a mode's frame rate is: they are written from the
+ * mode that ends up in force, by ov5647_write_timing() below.
  */
 
-#if defined(CONFIG_OV5647_MODE_1296x960)
 static const struct ov5647_reg_s g_ov5647_1296x960_regs[] = {
   { 0x3036, 0x69 }, { 0x3821, 0x03 }, { 0x3820, 0x41 }, { 0x3612, 0x59 },
   { 0x3618, 0x00 }, { 0x5002, 0x41 }, { 0x3800, 0x00 }, { 0x3801, 0x00 },
@@ -412,23 +436,113 @@ static const struct ov5647_reg_s g_ov5647_1296x960_regs[] = {
   { 0x3a0b, 0xf6 }, { 0x3a0d, 0x08 }, { 0x3a0e, 0x06 }, { 0x4004, 0x04 },
   { 0x4837, 0x16 }, { 0x4800, 0x24 }, { 0x0100, 0x01 },
 };
-#endif
 
-/* The mode's timing, written every time the sensor starts streaming.  The
- * exposure and the gain are deliberately not here: they are the settings a
- * user may change, so they live in the driver's state and are written by
- * ov5647_write_exposure() and ov5647_write_gain() below.
+/* The modes, in the order OV5647_MODE_* names them.
  *
- * The multi-byte registers are big-endian, which is why each value appears
- * one byte per entry.
+ * These are sensor facts: the register set and the pixel clock behind each
+ * one, in the form everything downstream has to agree with.  The board's
+ * D-PHY rate, the capture engine's geometry and Bayer order, and the
+ * application's exposure ceiling are all read from here and from nowhere
+ * else, which is what keeps the three in step.
+ *
+ * The figures are the ones the upstream Linux driver programs (see its
+ * ov5647_modes[] table).  One relation is worth writing out because most of
+ * the behaviour follows from it: a frame lasts HTS * VTS pixel clocks, so
+ * 1296x960's 1896 * 1435 at 87.5 MHz is 32.2 fps -- advertised as 30, which
+ * is what the pack can be relied on to carry -- and 640x480's 1852 * 504 at
+ * 58.333 MHz is 62.5 fps, advertised as 60.
+ *
+ * VTS is also the exposure ceiling, because an exposure cannot outlast the
+ * frame it is part of.  That is the whole difference between the two
+ * 1296x960 entries: the second lengthens VTS and so lengthens the exposure
+ * the sensor can be given, at the cost of frame rate.  They share a link
+ * frequency, a Bayer order and a register set, so moving between them
+ * changes nothing outside the sensor -- no D-PHY rate to settle, no capture
+ * buffers to resize.  A scene that pins the gain at its ceiling in the
+ * 30 fps entry has somewhere to go in the 22 fps one; whether that trade is
+ * worth making is the application's to judge, which is why both are offered
+ * rather than one being chosen here.
+ *
+ * ★ How far that second entry can go is bounded by the width of the VTS
+ * field, and the bound is not obvious from the datasheet.
+ *
+ * 0x380e is described as "Bit[1:0]: Total vertical size[9:8]", which would
+ * make VTS ten bits and cap a frame at 1023 lines.  Its own reset value says
+ * otherwise: 0x07b0 is 1968, which does not fit in ten bits.  The
+ * description is a slip and the field is [2:0], so VTS is eleven bits and
+ * the longest frame these timings can describe is 2047 lines -- 1896 * 2047
+ * at 87.5 MHz, or 44.4 ms, which is 22.5 frames a second.  Twenty-two is
+ * what the pack can be relied on to carry, rounded down the same way 32.2 is
+ * advertised as 30.
+ *
+ * A longer frame is not refused by the sensor, which is what makes this
+ * worth writing down.  The part above 2047 is silently discarded: 2870
+ * reaches the sensor as 822, a frame shorter than the 960 active lines it
+ * has to hold.  The picture that comes out has broken colour and artifacts,
+ * because a frame that cannot contain its own readout is not a frame.  This
+ * entry was first written that way, to reach 15 fps, and that symptom is why
+ * ov5647_start_capture() now reads the timing registers back and complains.
+ *
+ * So 22 fps is the floor at this HTS, and the exposure ceiling that comes
+ * with it is 2043 lines -- 1.43 times the 30 fps entry's.  Anything slower
+ * needs a slower pixel clock, which is a different link rate and therefore
+ * no longer a change that stays inside the sensor.
+ *
+ * A D-PHY link is double data rate, so the rate the receiver is configured
+ * for per lane is twice the link frequency.  The two 1296x960 entries leave
+ * it at 218.75 MHz; 640x480 runs its link at 145.833 MHz, which is the one
+ * figure a mode change cannot make cheap.
+ *
+ * The Bayer order is per mode because a mode's readout can mirror or flip
+ * the sensor's native tile -- both of these do, see the register tables --
+ * and the order in the delivered buffer is what the capture engine has to be
+ * told.  It is stated here rather than derived at the point of use so that
+ * the one place that knows about mirroring is the place that also knows the
+ * answer.
  */
 
-static const struct ov5647_reg_s g_ov5647_timing_regs[] = {
-  { OV5647_HTS, (OV5647_MODE_HTS >> 8) & 0xffu },
-  { OV5647_HTS + 1, OV5647_MODE_HTS & 0xffu },
-  { OV5647_VTS, (OV5647_MODE_VTS >> 8) & 0xffu },
-  { OV5647_VTS + 1, OV5647_MODE_VTS & 0xffu },
+static const struct ov5647_mode_s g_ov5647_modes[OV5647_NUM_MODES] = {
+  {
+      .width = 1296,
+      .height = 960,
+      .fps = 30,
+      .hts = 1896u,
+      .vts = 1435u,
+      .pll = 0x69,
+      .link_freq = 218750000u,
+      .bayer = OV5647_BAYER_GBRG,
+  },
+  {
+      .width = 1296,
+      .height = 960,
+      .fps = 22,
+      .hts = 1896u,
+      .vts = 2047u,
+      .pll = 0x69,
+      .link_freq = 218750000u,
+      .bayer = OV5647_BAYER_GBRG,
+  },
+  {
+      .width = 640,
+      .height = 480,
+      .fps = 60,
+      .hts = 1852u,
+      .vts = 504u,
+      .pll = 0x46,
+      .link_freq = 145833300u,
+      .bayer = OV5647_BAYER_GBRG,
+  },
 };
+
+/* OV5647_NUM_MODES is what ov5647_mode() bounds its indices with, and it
+ * lives in the public header where the board and the application read it.
+ * The table is here, so the two are tied together at compile time rather
+ * than by a comment.
+ */
+
+static_assert(sizeof(g_ov5647_modes) / sizeof(g_ov5647_modes[0]) ==
+                  OV5647_NUM_MODES,
+              "OV5647_NUM_MODES must match the mode table");
 
 /* What the framework asks the application for, and what it validates
  * against.  The list is what the pair (this sensor + the SoC-side
@@ -445,6 +559,11 @@ static struct v4l2_fmtdesc g_ov5647_fmtdescs[] = {
   },
 };
 
+/* The geometries, each listed once.  The two 1296x960 modes share one, so
+ * they share an entry: this is the frame size the sensor can produce, and a
+ * frame rate is not part of it.
+ */
+
 static struct v4l2_frmsizeenum g_ov5647_frmsizes[] =
 {
   {
@@ -452,11 +571,34 @@ static struct v4l2_frmsizeenum g_ov5647_frmsizes[] =
     .type   = V4L2_FRMSIZE_TYPE_DISCRETE,
     .discrete =
       {
-        .width  = OV5647_MODE_WIDTH,
-        .height = OV5647_MODE_HEIGHT,
+        .width  = 1296,
+        .height = 960,
+      },
+  },
+  {
+    .index  = 1,
+    .type   = V4L2_FRMSIZE_TYPE_DISCRETE,
+    .discrete =
+      {
+        .width  = 640,
+        .height = 480,
       },
   },
 };
+
+/* The frame rates, one per entry in the mode table and in the same order.
+ *
+ * The framework hands these out as a flat list without filtering by frame
+ * size -- its VIDIOC_ENUM_FRAMEINTERVALS ignores the width and height that
+ * come with the request -- so what is here is the union over all the modes
+ * rather than a per-size list.  Which of them a particular stream runs at is
+ * settled by the frame size and this rate together, in
+ * ov5647_start_capture().
+ *
+ * The first entry is the rate the framework starts a capture stream at, so
+ * it has to be one the driver accepts; that is why this list is written in
+ * the mode table's order rather than sorted.
+ */
 
 static struct v4l2_frmivalenum g_ov5647_frmintervals[] =
 {
@@ -466,7 +608,25 @@ static struct v4l2_frmivalenum g_ov5647_frmintervals[] =
     .discrete =
       {
         .numerator   = 1,
-        .denominator = OV5647_MODE_FPS,
+        .denominator = 30,
+      },
+  },
+  {
+    .index     = 1,
+    .type      = V4L2_FRMIVAL_TYPE_DISCRETE,
+    .discrete =
+      {
+        .numerator   = 1,
+        .denominator = 22,
+      },
+  },
+  {
+    .index     = 2,
+    .type      = V4L2_FRMIVAL_TYPE_DISCRETE,
+    .discrete =
+      {
+        .numerator   = 1,
+        .denominator = 60,
       },
   },
 };
@@ -474,6 +634,7 @@ static struct v4l2_frmivalenum g_ov5647_frmintervals[] =
 static struct ov5647_s g_ov5647 = {
   .lock = NXMUTEX_INITIALIZER,
   .addr = CONFIG_OV5647_I2C_ADDR,
+  .mode = &g_ov5647_modes[CONFIG_OV5647_DEFAULT_MODE],
   .exposure_lines = OV5647_EXPOSURE_INIT,
   .analog_gain = OV5647_ANALOG_GAIN_INIT,
 };
@@ -511,6 +672,14 @@ static int ov5647_set_value(FAR struct imgsensor_s *sensor, uint32_t id,
 
 static int ov5647_write_exposure(FAR struct ov5647_s *priv);
 static int ov5647_write_gain(FAR struct ov5647_s *priv);
+static int ov5647_write_timing(FAR struct ov5647_s *priv);
+static int ov5647_write_mode_regs(FAR struct ov5647_s *priv);
+static int ov5647_program(FAR struct ov5647_s *priv);
+static void ov5647_clamp_exposure(FAR struct ov5647_s *priv);
+static FAR const struct ov5647_mode_s *
+ov5647_resolve_mode(uint16_t width, uint16_t height, uint32_t fps);
+static uint32_t ov5647_interval_fps(FAR const imgsensor_interval_t *interval);
+static bool ov5647_rate_supported(uint32_t fps);
 
 static const struct imgsensor_ops_s g_ov5647_ops = {
   .is_available = ov5647_is_available,
@@ -685,6 +854,122 @@ static bool ov5647_is_available(FAR struct imgsensor_s *sensor)
  * Name: ov5647_init
  ****************************************************************************/
 
+/****************************************************************************
+ * Name: ov5647_program
+ *
+ * Description:
+ *   Configure the sensor for the mode in force, from scratch.  The caller
+ *   must hold the driver lock.
+ *
+ *   ★ Why this is the whole configuration and not just the mode's own
+ *   register set.
+ *
+ *   The two mode tables are not supersets of each other.  Each writes
+ *   registers the other does not, and those registers are not written again
+ *   by anything else:
+ *
+ *     1296x960 writes 0x3811/0x3813 (ISP output offsets), 0x4837 and 0x5002;
+ *     640x480  writes 0x3708/0x3709 (subsampling), and neither the other's.
+ *
+ *   Writing only the incoming mode's table therefore leaves the outgoing
+ *   mode's private registers in place, and the sensor ends up in a state
+ *   neither table describes.  That is the whole failure mode:
+ *
+ *     - 1296x960 then 640x480: the ISP offsets stay at the binned mode's
+ *       values, and the picture comes out displaced and garbled -- every
+ *       time, because the register state is the same every time.
+ *
+ *     - 640x480 then 1296x960: the subsampling stages stay enabled in a mode
+ *       that must not subsample.  Whether it shows depends on what the mode
+ *       was before, which is why this one looks intermittent.
+ *
+ *     - and if what is left behind is the PLL multiplier (0x3036), the
+ *       sensor emits no clock, the D-PHY never reports its lanes ready, and
+ *       the receive chain spends its whole timeout failing to come up.  That
+ *       one is also intermittent, and it is the one that makes a switch take
+ *       twenty seconds instead of a fraction of a second.
+ *
+ *   The common table starts with software standby and then a software reset,
+ *   which returns every register to its reset value.  Writing it before the
+ *   mode's own table is therefore what makes a stream start equivalent to a
+ *   cold start: nothing survives from the mode that was running before, and
+ *   the only registers that differ afterwards are the ones a table states.
+ *
+ *   The cost is the reset's settling time and about eighty register writes,
+ *   once per stream.  That is paid at stream start, not per frame, and it buys
+ *   the property that a mode change cannot be affected by its history -- which
+ *   is what the alternative, writing only what changed, would have to be
+ *   proven correct about for every pair of modes.
+ *
+ ****************************************************************************/
+
+static int ov5647_program(FAR struct ov5647_s *priv)
+{
+  int ret;
+
+  /* 1. The sensor-wide configuration, which begins by putting the sensor in
+   *    software standby and resetting it.  The mode's registers below are
+   *    written on top of a known state because of those two writes, and the
+   *    standby is the state the mode table expects to be written in.
+   */
+
+  ret = ov5647_putregs(priv, g_ov5647_common_regs,
+                       sizeof(g_ov5647_common_regs) /
+                           sizeof(g_ov5647_common_regs[0]));
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  /* A software reset needs settling time before the rest is programmed on
+   * top of it.
+   */
+
+  usleep(OV5647_RESET_DELAY_US);
+
+  /* 2. The mode's own register set, which ends by taking the sensor out of
+   *    software standby.
+   */
+
+  ret = ov5647_write_mode_regs(priv);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  /* 3. Virtual channel 0: the driver reports everything on channel 0, and
+   *    the SoC side filters for exactly that.
+   */
+
+  ret = ov5647_putreg(priv, OV5647_MIPI_CTRL14, 0x00);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  /* 4. Leave the sensor's own white balance block switched off.
+   *
+   * This register enables an automatic white balance that scales the colour
+   * channels inside the sensor, and it runs on statistics the sensor gathers
+   * itself.  On a part that outputs raw Bayer, that scaling lands in the
+   * middle of the data the host is going to reconstruct colour from, and a
+   * mismatch between the channels shows up as a cast whose size follows the
+   * signal -- faint in the shadows, strong in the midtones, gone again once
+   * the channels clip together.
+   *
+   * The upstream driver leaves this off, and the reason is not hard to see:
+   * with the raw stream intact the host decides the colour, and any gain
+   * applied here is a decision taken twice.  Turning it on was an extra
+   * addition to this driver rather than something the reference does.
+   */
+
+  return ov5647_putreg(priv, OV5647_ISP_AWB, 0x00);
+}
+
+/****************************************************************************
+ * Name: ov5647_init
+ ****************************************************************************/
+
 static int ov5647_init(FAR struct imgsensor_s *sensor)
 {
   FAR struct ov5647_s *priv = (FAR struct ov5647_s *)sensor;
@@ -702,73 +987,23 @@ static int ov5647_init(FAR struct imgsensor_s *sensor)
       goto out;
     }
 
-  /* The module has its own 25 MHz oscillator and no SoC-controlled power or
-   * reset line, so a software reset over SCCB is the only reset available.
-   * The common table's first entries perform it.
+  /* The mode the driver was bound with, which is not necessarily the mode the
+   * first stream will run at: the application states what it wants after
+   * opening the device, and ov5647_start_capture() programs that.  What this
+   * is for is leaving the sensor in a configuration a receiver can make sense
+   * of in the meantime, rather than in the reset default, which is the whole
+   * 2592x1944 array.
    */
 
-  ret = ov5647_putregs(priv, g_ov5647_common_regs,
-                       sizeof(g_ov5647_common_regs) /
-                           sizeof(g_ov5647_common_regs[0]));
+  ret = ov5647_program(priv);
   if (ret < 0)
     {
       goto out;
     }
 
-  /* A software reset needs settling time before the mode's own registers
-   * are programmed on top of it.
-   */
-
-  usleep(OV5647_RESET_DELAY_US);
-
-#if defined(CONFIG_OV5647_MODE_1296x960)
-  ret = ov5647_putregs(priv, g_ov5647_1296x960_regs,
-                       sizeof(g_ov5647_1296x960_regs) /
-                           sizeof(g_ov5647_1296x960_regs[0]));
-#else
-  ret = ov5647_putregs(priv, g_ov5647_640x480_regs,
-                       sizeof(g_ov5647_640x480_regs) /
-                           sizeof(g_ov5647_640x480_regs[0]));
-#endif
-  if (ret < 0)
-    {
-      goto out;
-    }
-
-  /* Virtual channel 0: the driver reports everything on channel 0, and the
-   * SoC side filters for exactly that.
-   */
-
-  ret = ov5647_putreg(priv, OV5647_MIPI_CTRL14, 0x00);
-  if (ret < 0)
-    {
-      goto out;
-    }
-
-  /* Leave the sensor's own white balance block switched off.
-   *
-   * This register enables an automatic white balance that scales the colour
-   * channels inside the sensor, and it runs on statistics the sensor gathers
-   * itself.  On a part that outputs raw Bayer, that scaling lands in the
-   * middle of the data the host is going to reconstruct colour from, and a
-   * mismatch between the channels shows up as a cast whose size follows the
-   * signal -- faint in the shadows, strong in the midtones, gone again once
-   * the channels clip together.
-   *
-   * The upstream driver leaves this off, and the reason is not hard to see:
-   * with the raw stream intact the host decides the colour, and any gain
-   * applied here is a decision taken twice.  Turning it on was an extra
-   * addition to this driver rather than something the reference does.
-   */
-
-  ret = ov5647_putreg(priv, OV5647_ISP_AWB, 0x00);
-  if (ret < 0)
-    {
-      goto out;
-    }
-
-  _info("OV5647: initialised, %ux%u RAW10, 2 lanes\n", OV5647_MODE_WIDTH,
-        OV5647_MODE_HEIGHT);
+  _info("OV5647: initialised, %ux%u @ %u fps RAW10, 2 lanes\n",
+        (unsigned int)priv->mode->width, (unsigned int)priv->mode->height,
+        (unsigned int)priv->mode->fps);
 
   /* Report success explicitly rather than letting the last register write
    * stand in for it.  This is the one return value in the driver that the
@@ -821,6 +1056,142 @@ static const char *ov5647_get_driver_name(FAR struct imgsensor_s *sensor)
 }
 
 /****************************************************************************
+ * Name: ov5647_resolve_mode
+ *
+ * Description:
+ *   Turn a frame size and a frame rate into one of the modes, if the sensor
+ *   can produce that size at all.
+ *
+ *   The frame size has to match a mode exactly: the sensor has no scaler, so
+ *   a size it was not programmed for is not one it can deliver.
+ *
+ *   The frame rate is a preference among the modes that share that size,
+ *   not a requirement, and the distinction is deliberate.  The framework
+ *   validates a format and a frame rate with one call while holding the two
+ *   from different moments -- a format set now is checked against the rate in
+ *   force, and a rate set now against the format in force -- so a change from
+ *   one mode to another always produces at least one pairing that is not a
+ *   mode.  Refusing those would leave no way to change modes, and guessing
+ *   silently would hide a request that could not be met.  So the size decides,
+ *   the rate chooses among the candidates, and a rate that matches none is
+ *   reported by the caller rather than smoothed over.
+ *
+ * Input Parameters:
+ *   width  - Requested width, in pixels.
+ *   height - Requested height, in pixels.
+ *   fps    - Requested frame rate, or 0 for "whatever this size runs at".
+ *
+ * Returned Value:
+ *   The mode, or NULL if no mode has that frame size.
+ *
+ ****************************************************************************/
+
+static FAR const struct ov5647_mode_s *
+ov5647_resolve_mode(uint16_t width, uint16_t height, uint32_t fps)
+{
+  FAR const struct ov5647_mode_s *nearest = NULL;
+  uint32_t nearest_delta = 0;
+  unsigned int i;
+
+  for (i = 0; i < OV5647_NUM_MODES; i++)
+    {
+      FAR const struct ov5647_mode_s *mode = &g_ov5647_modes[i];
+      uint32_t delta;
+
+      if (mode->width != width || mode->height != height)
+        {
+          continue;
+        }
+
+      if (fps == 0u || (uint32_t)mode->fps == fps)
+        {
+          return mode;
+        }
+
+      delta = (uint32_t)mode->fps > fps ? (uint32_t)mode->fps - fps
+                                        : fps - (uint32_t)mode->fps;
+
+      if (nearest == NULL || delta < nearest_delta)
+        {
+          nearest = mode;
+          nearest_delta = delta;
+        }
+    }
+
+  return nearest;
+}
+
+/****************************************************************************
+ * Name: ov5647_interval_fps / ov5647_rate_supported
+ *
+ * Description:
+ *   The frame rate an interval asks for, and whether any mode runs at it.
+ *   A zero numerator or denominator is the framework's way of saying the
+ *   rate is not part of the request, and comes back as 0.
+ *
+ *   The rates are the modes', not a free choice: the frame length is written
+ *   by this driver and never by the sensor's own loop, so a rate that no mode
+ *   states is one the sensor cannot be given.
+ *
+ ****************************************************************************/
+
+static uint32_t ov5647_interval_fps(FAR const imgsensor_interval_t *interval)
+{
+  if (interval == NULL || interval->numerator == 0u ||
+      interval->denominator == 0u)
+    {
+      return 0u;
+    }
+
+  return interval->denominator / interval->numerator;
+}
+
+static bool ov5647_rate_supported(uint32_t fps)
+{
+  unsigned int i;
+
+  for (i = 0; i < OV5647_NUM_MODES; i++)
+    {
+      if ((uint32_t)g_ov5647_modes[i].fps == fps)
+        {
+          return true;
+        }
+    }
+
+  return false;
+}
+
+/****************************************************************************
+ * Name: ov5647_clamp_exposure
+ *
+ * Description:
+ *   Keep the stored exposure inside the mode that is in force.  The caller
+ *   must hold the driver lock.
+ *
+ *   An exposure cannot outlast the frame it is part of.  A line count that
+ *   was legal in the previous mode may not be in this one -- the mode with
+ *   the larger vertical total exists precisely to allow longer exposures --
+ *   and a sensor told to integrate for longer than a frame truncates, with
+ *   nothing to say so.  Clamping here is what keeps the value reported
+ *   through the control interface equal to the one in the registers.
+ *
+ ****************************************************************************/
+
+static void ov5647_clamp_exposure(FAR struct ov5647_s *priv)
+{
+  uint32_t max = OV5647_MODE_EXPOSURE_MAX(priv->mode);
+
+  if (priv->exposure_lines < OV5647_EXPOSURE_MIN)
+    {
+      priv->exposure_lines = OV5647_EXPOSURE_MIN;
+    }
+  else if (priv->exposure_lines > max)
+    {
+      priv->exposure_lines = max;
+    }
+}
+
+/****************************************************************************
  * Name: ov5647_validate_frame_setting
  ****************************************************************************/
 
@@ -830,6 +1201,7 @@ static int ov5647_validate_frame_setting(FAR struct imgsensor_s *sensor,
                                          FAR imgsensor_format_t *datafmts,
                                          FAR imgsensor_interval_t *interval)
 {
+  uint32_t fps = ov5647_interval_fps(interval);
   int i;
 
   if (datafmts == NULL || nr_datafmts == 0)
@@ -837,10 +1209,20 @@ static int ov5647_validate_frame_setting(FAR struct imgsensor_s *sensor,
       return -EINVAL;
     }
 
-  /* The sensor has no scaler in this mode and no format choice: the mode is
-   * what it is, and the SoC side demosaics to a fixed format.  Everything
-   * the framework can ask for is therefore either exactly right or
-   * impossible.
+  /* The sensor has no scaler and no format choice: it delivers the size it
+   * was programmed for, and the SoC side demosaics to a fixed format.
+   * Everything the framework can ask for is therefore either something one of
+   * the modes produces or impossible.
+   *
+   * That the two are checked against the modes separately, rather than as a
+   * pair, is the point of this function rather than an oversight in it.  It
+   * is reached from VIDIOC_S_FMT with whatever frame rate is in force and
+   * from VIDIOC_S_PARM with whatever format is in force, so during a change
+   * of mode one of the two calls always arrives carrying the other's previous
+   * value.  Requiring the pair to name a mode would reject that call, and the
+   * first of the two could never be accepted -- which is to say, no mode
+   * change would be possible at all.  Which mode the pair eventually names is
+   * settled once, when the stream starts; see ov5647_start_capture().
    */
 
   for (i = 0; i < nr_datafmts; i++)
@@ -851,25 +1233,16 @@ static int ov5647_validate_frame_setting(FAR struct imgsensor_s *sensor,
           return -EINVAL;
         }
 
-      if (datafmts[i].width != OV5647_MODE_WIDTH ||
-          datafmts[i].height != OV5647_MODE_HEIGHT)
+      if (ov5647_resolve_mode(datafmts[i].width, datafmts[i].height, 0u) ==
+          NULL)
         {
           return -EINVAL;
         }
     }
 
-  if (interval != NULL && interval->denominator != 0 &&
-      interval->numerator != 0)
+  if (fps != 0u && !ov5647_rate_supported(fps))
     {
-      /* Only the exact mode rate is offered; a slower request would need
-       * the sensor to be re-timed, which this driver does not do.
-       */
-
-      if (interval->denominator >
-          OV5647_MODE_FPS * (uint32_t)interval->numerator)
-        {
-          return -EINVAL;
-        }
+      return -EINVAL;
     }
 
   return OK;
@@ -908,6 +1281,85 @@ static int ov5647_write_gain(FAR struct ov5647_s *priv)
   };
 
   return ov5647_putregs(priv, regs, 2);
+}
+
+/****************************************************************************
+ * Name: ov5647_write_timing
+ *
+ * Description:
+ *   Write the frame length of the mode in force.  The caller must hold the
+ *   driver lock.
+ *
+ *   HTS and VTS are where the frame rate comes from -- a frame lasts
+ *   HTS * VTS pixel clocks -- so they are written from the mode rather than
+ *   from a table fixed at build time.  That is what makes a change of frame
+ *   rate cheap: the clock, the link and the readout window all stay exactly
+ *   as they were, and only the number of lines in a frame moves.
+ *
+ *   VTS is also the exposure ceiling, which is why the two travel together
+ *   in the mode rather than one of them being derived at the point of use.
+ *
+ *   The multi-byte registers are big-endian, which is why each value appears
+ *   one byte per entry.
+ *
+ ****************************************************************************/
+
+static int ov5647_write_timing(FAR struct ov5647_s *priv)
+{
+  struct ov5647_reg_s regs[4] = {
+    { OV5647_HTS, (priv->mode->hts >> 8) & 0xffu },
+    { OV5647_HTS + 1, priv->mode->hts & 0xffu },
+    { OV5647_VTS, (priv->mode->vts >> 8) & 0xffu },
+    { OV5647_VTS + 1, priv->mode->vts & 0xffu },
+  };
+
+  return ov5647_putregs(priv, regs, 4);
+}
+
+/****************************************************************************
+ * Name: ov5647_write_mode_regs
+ *
+ * Description:
+ *   Program the register set of the mode in force.  The caller must hold the
+ *   driver lock.
+ *
+ *   There are two sets and the mode's geometry says which applies: the 2x2
+ *   binned mode needs no subsampling registers because the bin alone reaches
+ *   its size, and the 2x2 binned and subsampled mode does.  A mode that
+ *   names neither is one this driver has no registers for, which is worth an
+ *   error rather than a guess -- the sensor would otherwise be left in
+ *   whatever the previous mode set up, streaming a geometry nobody asked for.
+ *
+ *   The set ends by taking the sensor out of software standby, so the caller
+ *   has to have put it in.  These registers include the PLL multiplier and
+ *   the readout window; a sensor still streaming while they change drives the
+ *   link at the old rate with the new geometry for as long as the writes take.
+ *
+ ****************************************************************************/
+
+static int ov5647_write_mode_regs(FAR struct ov5647_s *priv)
+{
+  FAR const struct ov5647_reg_s *regs;
+  unsigned int num;
+
+  if (priv->mode->width == 640u && priv->mode->height == 480u)
+    {
+      regs = g_ov5647_640x480_regs;
+      num = sizeof(g_ov5647_640x480_regs) / sizeof(g_ov5647_640x480_regs[0]);
+    }
+  else if (priv->mode->width == 1296u && priv->mode->height == 960u)
+    {
+      regs = g_ov5647_1296x960_regs;
+      num = sizeof(g_ov5647_1296x960_regs) / sizeof(g_ov5647_1296x960_regs[0]);
+    }
+  else
+    {
+      _err("ERROR: OV5647 has no register set for %ux%u\n", priv->mode->width,
+           priv->mode->height);
+      return -EINVAL;
+    }
+
+  return ov5647_putregs(priv, regs, num);
 }
 
 /****************************************************************************
@@ -953,6 +1405,8 @@ static int ov5647_start_capture(FAR struct imgsensor_s *sensor,
                                 FAR imgsensor_interval_t *interval)
 {
   FAR struct ov5647_s *priv = (FAR struct ov5647_s *)sensor;
+  FAR const struct ov5647_mode_s *mode;
+  uint32_t fps;
   int ret;
 
   ret = nxmutex_lock(&priv->lock);
@@ -967,27 +1421,83 @@ static int ov5647_start_capture(FAR struct imgsensor_s *sensor,
       return -ENODEV;
     }
 
-  /* The mode's timing and the exposure/gain pair.
+  if (datafmts == NULL || nr_datafmts == 0u)
+    {
+      nxmutex_unlock(&priv->lock);
+      return -EINVAL;
+    }
+
+  /* Which mode this stream runs at, from the frame size and the frame rate
+   * the application set.
    *
-   * Upstream applies its control defaults at exactly this point in the
-   * sequence -- after the mode registers, before the interface is opened.
-   * The order matters: MIPI_CTRL00 is what lets the sensor leave bus-idle,
-   * and it should not do so until there is a complete configuration behind
-   * it, or the first frames are exposed with whatever the previous run left.
+   * This is the first moment the two are known to belong to the same
+   * request: the framework validates a format and a frame rate apart from
+   * each other, so a pairing that names no mode is normal on the way here --
+   * see ov5647_validate_frame_setting().  Resolving once, at this point, is
+   * what lets the two be set in either order and still arrive at a mode.
+   *
+   * A rate that matches no mode is not refused.  It cannot be honoured, so
+   * something has to be chosen, and taking the nearest rate for the size the
+   * application asked for gives up only the part that was impossible while
+   * keeping the shape of the picture -- which is the part a person watching
+   * can see.  It is said out loud, because a frame rate that has quietly
+   * followed something other than the request is exactly the kind of thing
+   * that turns into a mystery later.
    */
 
-  ret = ov5647_putregs(priv, g_ov5647_timing_regs,
-                       sizeof(g_ov5647_timing_regs) /
-                           sizeof(g_ov5647_timing_regs[0]));
+  fps = ov5647_interval_fps(interval);
+  mode = ov5647_resolve_mode(datafmts[0].width, datafmts[0].height, fps);
+  if (mode == NULL)
+    {
+      _err("ERROR: OV5647 cannot produce %ux%u\n", datafmts[0].width,
+           datafmts[0].height);
+      nxmutex_unlock(&priv->lock);
+      return -EINVAL;
+    }
+
+  if (fps != 0u && (uint32_t)mode->fps != fps)
+    {
+      _warn("WARNING: OV5647 %ux%u cannot run at %u fps; using %u fps\n",
+            (unsigned int)datafmts[0].width, (unsigned int)datafmts[0].height,
+            (unsigned int)fps, (unsigned int)mode->fps);
+    }
+
+  priv->mode = mode;
+
+  /* The sensor is configured from scratch, not patched.
+   *
+   * This is the point at which the request is known -- the application states
+   * the format and the frame rate after opening the device -- and it is also
+   * the point at which the previous stream stopped, so it is the point at
+   * which the configuration has to become the new mode's and nothing else's.
+   * ov5647_program() is what makes that true regardless of what ran before;
+   * see the note there for what happens when only the incoming mode's own
+   * registers are written.
+   *
+   * The frame length and the exposure/gain pair follow, in that order,
+   * because the exposure is bounded by the mode and the pair is written from
+   * the driver's own state rather than from either table.
+   */
+
+  ret = ov5647_program(priv);
+  if (ret < 0)
+    {
+      goto out;
+    }
+
+  ret = ov5647_write_timing(priv);
   if (ret < 0)
     {
       goto out;
     }
 
   /* The exposure and gain come from the driver's state rather than from the
-   * table above, so that a value set through the control interface is what
-   * the next stream actually uses.
+   * tables above, so that a value set through the control interface is what
+   * the next stream actually uses.  The exposure is clamped to the mode first:
+   * it was stored while some mode was in force, and this may not be that one.
    */
+
+  ov5647_clamp_exposure(priv);
 
   ret = ov5647_write_exposure(priv);
   if (ret < 0)
@@ -1039,6 +1549,11 @@ static int ov5647_start_capture(FAR struct imgsensor_s *sensor,
    * indistinguishable from the captured image alone, print the register
    * values instead of assuming them.  This runs once per stream start, in
    * task context, so the transfers are cheap and allowed to sleep.
+   *
+   * The mode is printed with them because this line is also the one evidence
+   * that a change of mode took effect: the HTS and VTS that come back are the
+   * frame length the sensor is really running, and the pair of them is what
+   * names the mode.
    */
 
   {
@@ -1046,8 +1561,15 @@ static int ov5647_start_capture(FAR struct imgsensor_s *sensor,
     uint8_t gain[2] = { 0, 0 };
     uint8_t hts[2] = { 0, 0 };
     uint8_t vts[2] = { 0, 0 };
+    uint8_t outw[2] = { 0, 0 };
+    uint8_t outh[2] = { 0, 0 };
+    uint8_t pll = 0;
     uint8_t aec_agc = 0;
     uint8_t mipi = 0;
+    uint32_t got_hts;
+    uint32_t got_vts;
+    uint32_t got_w;
+    uint32_t got_h;
 
     ov5647_getreg(priv, OV5647_EXPOSURE, &exposure[0]);
     ov5647_getreg(priv, OV5647_EXPOSURE + 1, &exposure[1]);
@@ -1058,13 +1580,135 @@ static int ov5647_start_capture(FAR struct imgsensor_s *sensor,
     ov5647_getreg(priv, OV5647_HTS + 1, &hts[1]);
     ov5647_getreg(priv, OV5647_VTS, &vts[0]);
     ov5647_getreg(priv, OV5647_VTS + 1, &vts[1]);
+    ov5647_getreg(priv, OV5647_TIMING_X_OUTPUT_SIZE, &outw[0]);
+    ov5647_getreg(priv, OV5647_TIMING_X_OUTPUT_SIZE + 1, &outw[1]);
+    ov5647_getreg(priv, OV5647_TIMING_Y_OUTPUT_SIZE, &outh[0]);
+    ov5647_getreg(priv, OV5647_TIMING_Y_OUTPUT_SIZE + 1, &outh[1]);
+    ov5647_getreg(priv, OV5647_PLL_MULTIPLIER, &pll);
     ov5647_getreg(priv, OV5647_AEC_AGC, &aec_agc);
     ov5647_getreg(priv, OV5647_MIPI_CTRL00, &mipi);
 
-    _info("OV5647: readback exposure 0x%02x%02x%02x gain 0x%02x%02x"
-          " hts 0x%02x%02x vts 0x%02x%02x aec_agc 0x%02x mipi_ctrl00 0x%02x\n",
-          exposure[0], exposure[1], exposure[2], gain[0], gain[1], hts[0],
-          hts[1], vts[0], vts[1], aec_agc, mipi);
+    got_hts = ((uint32_t)hts[0] << 8) | hts[1];
+    got_vts = ((uint32_t)vts[0] << 8) | vts[1];
+    got_w = ((uint32_t)outw[0] << 8) | outw[1];
+    got_h = ((uint32_t)outh[0] << 8) | outh[1];
+
+    _info("OV5647: streaming %ux%u @ %u fps, readback exposure"
+          " 0x%02x%02x%02x gain 0x%02x%02x hts %u vts %u out %ux%u pll 0x%02x"
+          " aec_agc 0x%02x mipi_ctrl00 0x%02x\n",
+          (unsigned int)priv->mode->width, (unsigned int)priv->mode->height,
+          (unsigned int)priv->mode->fps, exposure[0], exposure[1], exposure[2],
+          gain[0], gain[1], got_hts, got_vts, got_w, got_h, pll, aec_agc,
+          mipi);
+
+    /* Read back the registers that place the tile.
+     *
+     * The timing above says when a frame happens; these say where the tile
+     * sits inside it.  A mode change that leaves one of them at the previous
+     * mode's value -- or at a value whose parity the mode's table did not
+     * mean -- produces a picture that is off-colour with no failure anywhere,
+     * so the values are printed rather than assumed, and the two that are
+     * parity questions are checked.
+     */
+
+    {
+      uint8_t winx = 0;
+      uint8_t winy = 0;
+      uint8_t offx = 0;
+      uint8_t offy = 0;
+      uint8_t incx = 0;
+      uint8_t incy = 0;
+      uint8_t flip = 0;
+      uint8_t mirror = 0;
+      uint8_t ss0 = 0;
+      uint8_t ss1 = 0;
+
+      ov5647_getreg(priv, OV5647_WINDOW_X_START + 1, &winx);
+      ov5647_getreg(priv, OV5647_WINDOW_Y_START + 1, &winy);
+      ov5647_getreg(priv, OV5647_ISP_X_OFFSET, &offx);
+      ov5647_getreg(priv, OV5647_ISP_Y_OFFSET, &offy);
+      ov5647_getreg(priv, OV5647_TIMING_X_INC, &incx);
+      ov5647_getreg(priv, OV5647_TIMING_Y_INC, &incy);
+      ov5647_getreg(priv, OV5647_FLIP, &flip);
+      ov5647_getreg(priv, OV5647_MIRROR, &mirror);
+      ov5647_getreg(priv, OV5647_SUBSAMPLE_0, &ss0);
+      ov5647_getreg(priv, OV5647_SUBSAMPLE_1, &ss1);
+
+      _info("OV5647: phase: window x lo %u y lo %u, isp offset x %u y %u,"
+            " inc x 0x%02x y 0x%02x, flip 0x%02x mirror 0x%02x,"
+            " subsample 0x%02x 0x%02x\n",
+            winx, winy, offx, offy, incx, incy, flip, mirror, ss0, ss1);
+
+      /* An odd window start is the one form of this that can be called out
+       * exactly: the low byte of the start address is the window's own
+       * column or row, so its parity is the parity of the tile.
+       */
+
+      if ((winx & 1u) != 0u)
+        {
+          _err("ERROR: OV5647 readout window starts on an odd column (x start"
+               " low byte %u).  That swaps the two columns of the Bayer tile,"
+               " so green lands on the other diagonal and the order"
+               " configured downstream no longer describes the frame.\n",
+               winx);
+        }
+
+      if ((winy & 1u) != 0u)
+        {
+          _err("ERROR: OV5647 readout window starts on an odd row (y start"
+               " low byte %u).  That swaps the two rows of the Bayer tile, so"
+               " green lands on the other diagonal and the order configured"
+               " downstream no longer describes the frame.\n",
+               winy);
+        }
+    }
+
+    /* And check that what came back describes the mode that was asked for.
+     *
+     * The registers that carry a mode are narrower than the values a mode may
+     * want to state, they are not all written by every mode's table, and none
+     * of them is refused when the value does not fit.  The result is a sensor
+     * that is not the sensor the rest of the path was configured for, and
+     * every downstream figure -- the frame rate, the exposure ceiling, the
+     * D-PHY's timing band, the geometry the capture engine waits for -- is
+     * then computed from something that is not true.
+     *
+     * Four registers are checked, and each catches a different way of being
+     * wrong:
+     *
+     *   - 0x3036, the PLL multiplier, sets the pixel clock and so the link
+     *     rate.  Wrong, and the receiver is listening at a rate nothing is
+     *     sending at -- which shows up as a failed bring-up, not a wrong
+     *     picture, because the D-PHY's lanes never come ready.
+     *
+     *   - the output size is what the capture engine has been told to expect.
+     *     Wrong, and the frame is cut or padded, which is the picture coming
+     *     out displaced or torn rather than merely off-colour.
+     *
+     *   - HTS and VTS are the frame length, and VTS is also the exposure
+     *     ceiling.  VTS above 2047 wraps, because 0x380e carries only three of
+     *     its bits; that is the case this driver was first written to miss.
+     *
+     * The readback above is therefore not only a log line.
+     */
+
+    if ((((uint32_t)pll) != (uint32_t)priv->mode->pll) ||
+        got_w != priv->mode->width || got_h != priv->mode->height ||
+        got_hts != priv->mode->hts || got_vts != priv->mode->vts)
+      {
+        _err("ERROR: OV5647 is not configured for %ux%u @ %u fps.  Asked for"
+             " pll 0x%02x hts %u vts %u out %ux%u, read back pll 0x%02x hts %u"
+             " vts %u out %ux%u.  The frame rate, the exposure ceiling and the"
+             " link rate are all wrong until this is fixed.  VTS is an eleven"
+             " bit field (0x380e[2:0] with 0x380f), so anything above 2047"
+             " wraps; a mode whose table omits a register another mode writes"
+             " can also be the cause.\n",
+             (unsigned int)priv->mode->width, (unsigned int)priv->mode->height,
+             (unsigned int)priv->mode->fps, (unsigned int)priv->mode->pll,
+             (unsigned int)priv->mode->hts, (unsigned int)priv->mode->vts,
+             (unsigned int)priv->mode->width, (unsigned int)priv->mode->height,
+             (unsigned int)pll, got_hts, got_vts, got_w, got_h);
+      }
   }
 
   priv->streaming = true;
@@ -1108,13 +1752,21 @@ static int ov5647_get_frame_interval(FAR struct imgsensor_s *sensor,
                                      imgsensor_stream_type_t type,
                                      FAR imgsensor_interval_t *interval)
 {
+  FAR struct ov5647_s *priv = (FAR struct ov5647_s *)sensor;
+
   if (interval == NULL)
     {
       return -EINVAL;
     }
 
+  /* The mode in force, which is the one the last stream was started with.
+   * The framework only asks while a stream is running, and the mode is
+   * settled before it starts, so this is the rate the frames are really
+   * arriving at rather than a table entry that may not apply.
+   */
+
   interval->numerator = 1;
-  interval->denominator = OV5647_MODE_FPS;
+  interval->denominator = priv->mode->fps;
 
   return OK;
 }
@@ -1235,17 +1887,8 @@ static int ov5647_set_value(FAR struct imgsensor_s *sensor, uint32_t id,
          * brighter, not start failing.
          */
 
-        wanted = (uint32_t)value.value32;
-        if (wanted < OV5647_EXPOSURE_MIN)
-          {
-            wanted = OV5647_EXPOSURE_MIN;
-          }
-        else if (wanted > OV5647_MODE_VTS - 4u)
-          {
-            wanted = OV5647_MODE_VTS - 4u;
-          }
-
-        priv->exposure_lines = wanted;
+        priv->exposure_lines = (uint32_t)value.value32;
+        ov5647_clamp_exposure(priv);
         ret = ov5647_write_exposure(priv);
         break;
 
@@ -1357,6 +2000,15 @@ static int ov5647_set_value(FAR struct imgsensor_s *sensor, uint32_t id,
  ****************************************************************************/
 
 /****************************************************************************
+ * Name: ov5647_mode
+ ****************************************************************************/
+
+FAR const struct ov5647_mode_s *ov5647_mode(unsigned int index)
+{
+  return index < OV5647_NUM_MODES ? &g_ov5647_modes[index] : NULL;
+}
+
+/****************************************************************************
  * Name: ov5647_initialize
  ****************************************************************************/
 
@@ -1370,6 +2022,27 @@ int ov5647_initialize(FAR struct i2c_master_s *i2c)
     }
 
   priv->i2c = i2c;
+
+  /* The exposure the driver starts from.
+   *
+   * Zero is what CONFIG_OV5647_EXPOSURE_LINES means by "unset", and resolves
+   * to the mode's own maximum -- which is the right default for a bring-up
+   * where the light is unknown.  A configured value is clamped to the same
+   * ceiling rather than trusted, because a line count that is legal in one
+   * mode is not necessarily legal in another, and this setting is stated
+   * without reference to any particular mode.
+   *
+   * The gain needs no resolving: its range is the part's rather than a
+   * mode's.
+   */
+
+  priv->exposure_lines = OV5647_EXPOSURE_INIT;
+  if (priv->exposure_lines == 0u)
+    {
+      priv->exposure_lines = OV5647_MODE_EXPOSURE_MAX(priv->mode);
+    }
+
+  ov5647_clamp_exposure(priv);
 
   priv->sensor.ops = &g_ov5647_ops;
   priv->sensor.fmtdescs_num =

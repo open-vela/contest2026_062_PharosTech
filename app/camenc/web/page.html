@@ -108,6 +108,35 @@
         font-family: var(--mono)
     }
 
+    select {
+        -webkit-appearance: none;
+        appearance: none;
+        flex: 1 1 auto;
+        min-width: 0;
+        padding: 5px 8px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--chip);
+        color: var(--fg);
+        font-family: var(--mono);
+        font-size: 12px;
+        cursor: pointer
+    }
+
+    select:hover {
+        border-color: #3a3a47
+    }
+
+    select:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 3px #7ccfff44
+    }
+
+    select:disabled {
+        color: var(--dim);
+        cursor: default
+    }
+
     .r {
         display: flex;
         align-items: center;
@@ -276,6 +305,13 @@
         </svg></button>
     <div id=p>
         <div id=mo>-</div>
+        <h3>sensor mode</h3>
+        <div class=r><span>mode</span><select id=ms>
+                <option value=0>1296x960 @ 30 fps</option>
+                <option value=1>1296x960 @ 22 fps</option>
+                <option value=2>640x480 @ 60 fps</option>
+            </select></div>
+        <div class=n id=mn>changing this restarts the stream</div>
         <h3>exposure and gain</h3>
         <div class=r><span>exposure</span><input id=es type=range><b id=ev>-</b></div>
         <div class=r><span>gain</span><input id=gs type=range><b id=gv>-</b></div>
@@ -296,9 +332,35 @@
         const v = document.getElementById('v'), s = document.getElementById('s');
         let sb = null, q = [], rx = 0, msgs = 0, err = '', note = '';
         let ws = null, st = {}, have3a = false, show = true;
+        /* The player, and the generation that owns it.
+           `ms` is the MediaSource the element is showing, `ready` whether it has
+           reached sourceopen, and `gen` counts rebuilds.  The counter is what
+           keeps a MediaSource that has already been replaced from installing a
+           SourceBuffer: without it, two rebuilds close together leave the older
+           one's handler able to run, and every append to what it installs fails
+           with "not, or no longer, usable". */
+        let codec = '@@@@@@@@@@@', ms = null, ready = false, gen = 0;
+        /* Reconnecting attempts since the last successful connection, and the
+           delay before the next one.
+           The board cannot accept while it is changing mode -- the same task
+           runs the server and does the switch -- so a reconnection has to
+           outlast the switch rather than the other way round.  The delay grows
+           so that a board that is simply off is not knocked at continuously,
+           and the budget is generous because the cost of being patient is a
+           few seconds of black and the cost of giving up is a page that has to
+           be reloaded by hand. */
+        let tries = 0, retry_ms = 500;
+        const RETRY_MS_MAX = 4000;
+        const RETRY_MS_BUDGET = 90000;
+        /* How many segments may be waiting to be appended before the oldest are
+           dropped.
+           A page that cannot keep up must not become the reason the board
+           throws it away: an unbounded queue turns a slow append into socket
+           backpressure, and the board answers that by dropping the client,
+           which reconnects and starts over.  The group length is two, so an IDR
+           is never more than two frames away and dropping the oldest is cheap. */
+        const QMAX = 60;
         const HOLD = {};
-        const ms = new MediaSource();
-        v.src = URL.createObjectURL(ms);
         /* How far behind the newest data the picture is allowed to fall before
            the playhead is brought forward. Half a second keeps the picture
            close to live while leaving enough in hand not to stutter. */
@@ -315,14 +377,47 @@
             s.textContent = 'msgs=' + msgs + ' rx=' + rx + 'B q=' + q.length +
                 ' lag=' + lag + '\n' +
                 'sb=' + (sb ? sb.readyState : 'none') + ' upd=' + (sb ? sb.updating : '-') +
-                ' ms=' + ms.readyState + ' buffered=' + br + '\n' +
+                ' ms=' + (ms ? ms.readyState : 'none') + ' codec=' + codec +
+                ' buffered=' + br + '\n' +
                 't=' + v.currentTime.toFixed(2) + ' vw=' + v.videoWidth + 'x' +
                 v.videoHeight + ' rs=' + v.readyState + ' paused=' + v.paused + '\n' +
                 'verr=' + (v.error ? v.error.code + ':' + v.error.message : '-') +
                 ' err=' + (err || '-') + (note ? ' note=' + note : '');
         }
+        /* Append what is queued, one segment at a time.
+
+           Nothing is created until the board's first segment arrives, because
+           that segment is the only thing that names the stream: the codec the
+           server wrote into this document describes whatever stream was running
+           when the page was fetched, and a change of sensor mode makes it stale.
+           The placeholder is the fallback, not the source.
+
+           Every connection begins with an initialisation segment, so a stream
+           that has just started is the only state this can be in when it first
+           runs.  After that the queue holds fragments. */
         function pump() {
-            if (!sb || sb.updating || !q.length) return;
+            if (!ready || !q.length) return;
+            if (!sb) {
+                if (!isInit(q[0])) {
+                    q.shift();
+                    note = 'dropped a segment before any initialisation';
+                    pump();
+                    return;
+                }
+                codec = codecFromInit(q[0]) || codec;
+                try {
+                    sb = ms.addSourceBuffer('video/mp4; codecs="' + codec + '"');
+                } catch (e) {
+                    err = 'addSourceBuffer: ' + e.name + ': ' + e.message;
+                    say();
+                    return;
+                }
+                sb.mode = 'segments';
+                sb.addEventListener('updateend', () => { note = 'updateend'; pump(); });
+                sb.addEventListener('error', () => { err = 'sourcebuffer error'; say(); });
+                sb.addEventListener('abort', () => { err = 'sourcebuffer abort'; say(); });
+            }
+            if (sb.updating) return;
             try {
                 const b = sb.buffered;
                 if (b.length) {
@@ -363,33 +458,117 @@
             } catch (e) { err = e.name + ': ' + e.message; }
             say();
         }
-        ms.addEventListener('sourceopen', () => {
-            try {
-                sb = ms.addSourceBuffer('video/mp4; codecs="@@@@@@@@@@@');
-            } catch (e) { err = 'addSourceBuffer: ' + e.name + ': ' + e.message; say(); return; }
-            sb.mode = 'segments';
-            sb.addEventListener('updateend', () => { note = 'updateend'; pump(); });
-            sb.addEventListener('error', () => { err = 'sourcebuffer error'; say(); });
-            sb.addEventListener('abort', () => { err = 'sourcebuffer abort'; say(); });
-            /* Assigned, not declared: the control panel below the fold of this
-               script sends on the same socket, so it has to be reachable from
-               outside this handler. */
+        /* Whether a segment is an initialisation segment, which in fragmented
+           MP4 means it begins with an ftyp box. */
+        function isInit(u8) {
+            return u8.length >= 8 && u8[4] === 0x66 && u8[5] === 0x74 &&
+                u8[6] === 0x79 && u8[7] === 0x70;
+        }
+        /* The codec string an initialisation segment describes, read from the
+           avcC box: configurationVersion, then profile, compatibility and
+           level, which are the same three bytes the codec string carries. */
+        function codecFromInit(u8) {
+            for (let i = 0; i + 8 < u8.length; i++)
+                if (u8[i] === 0x61 && u8[i + 1] === 0x76 && u8[i + 2] === 0x63 &&
+                    u8[i + 3] === 0x43)
+                    return 'avc1.' + [u8[i + 5], u8[i + 6], u8[i + 7]]
+                        .map(b => b.toString(16).padStart(2, '0')).join('');
+            return null;
+        }
+        /* Build a player for the connection that is starting.
+
+           A MediaSource is made fresh for each one, because a SourceBuffer is
+           fixed to the configuration it was created with -- addSourceBuffer()
+           refuses a second configuration for the same type -- and because the
+           timestamps restart whenever the stream does.  The board gives every
+           connection an initialisation segment and closes the connections when
+           it changes sensor mode, so a connection is the start of a stream as
+           far as this page is concerned, and a new player for it is right for
+           both a reconnect and a mode change.
+
+           The old URL is revoked late rather than at once.  The element may
+           still be finishing the load it began from it, and taking the URL away
+           underneath that is what makes a browser report the media as
+           undecodable. */
+        function openMedia() {
+            const old = v.src;
+            const mine = ++gen;
+            q = [];
+            sb = null;
+            ready = false;
+            ms = new MediaSource();
+            v.src = URL.createObjectURL(ms);
+            if (old && old.slice(0, 5) === 'blob:')
+                setTimeout(() => URL.revokeObjectURL(old), 10000);
+            ms.addEventListener('sourceopen', () => {
+                if (mine !== gen) return;
+                ready = true;
+                pump();
+            });
+            ms.addEventListener('sourceclose', () => {
+                if (mine !== gen) return;
+                err = 'media source closed';
+                say();
+            });
+            say();
+        }
+        /* The socket.
+
+           One live connection at a time.  The board closes it when it changes
+           sensor mode, and reconnecting is the page's half of that: each
+           connection brings its own initialisation segment, so each one builds
+           its own player -- see openMedia(). */
+        function connect() {
             ws = new WebSocket('ws://' + location.host + '/stream');
             ws.binaryType = 'arraybuffer';
-            ws.onopen = () => { note = 'ws open'; say(); };
+            /* A connection is a stream.  The board sends an initialisation
+               segment to every client it accepts, so this is where a player is
+               built for what is about to arrive -- see openMedia(). */
+            ws.onopen = () => { note = 'ws open'; openMedia(); };
             /* Two kinds of message come back on this one socket: the video, as
                binary, and the settings, as text. They have to be told apart here
                or a status line is fed to the video decoder as a segment, which
                is the kind of mistake that looks like a broken stream. */
             ws.onmessage = e => {
                 if (typeof e.data === 'string') { ontext(e.data); return; }
+                /* A connection that has carried a frame is working, so the
+                   budget is refilled here rather than on the handshake.  A
+                   server that upgrades and then drops the client immediately
+                   would otherwise let the page retry for ever. */
+                tries = 0; retry_ms = 500;
                 q.push(new Uint8Array(e.data));
-                rx += e.data.byteLength; msgs++; say(); pump();
+                rx += e.data.byteLength; msgs++;
+                /* Only once the SourceBuffer exists, which is to say once the
+                   initialisation segment has been taken off the front. */
+                if (sb && q.length > QMAX) q.splice(0, q.length - QMAX / 2);
+                say(); pump();
             };
             ws.onerror = () => { err = 'ws error'; say(); };
-            ws.onclose = e => { err = 'ws closed code=' + e.code; say(); };
-        });
-        ms.addEventListener('sourceclose', () => { err = 'media source closed'; say(); });
+            ws.onclose = e => {
+                err = 'ws closed code=' + e.code; say();
+                /* The board closes the connection when it changes sensor mode,
+                   and reconnecting is the page's half of that.  It is bounded
+                   in time rather than in attempts, because how long a switch
+                   takes is the board's business and a count would either give
+                   up too early or hammer too long. */
+                tries++;
+                const waited = (tries - 1) * retry_ms;
+                if (waited < RETRY_MS_BUDGET) {
+                    note = 'reconnect ' + tries + ' in ' + retry_ms + 'ms';
+                    say();
+                    setTimeout(connect, retry_ms);
+                    retry_ms = Math.min(retry_ms * 2, RETRY_MS_MAX);
+                } else {
+                    err = 'gave up reconnecting after ' +
+                        Math.round(RETRY_MS_BUDGET / 1000) + 's';
+                    say();
+                }
+            };
+        }
+        /* Nothing is shown until a connection is made, and the first thing that
+           connection brings is a segment describing the stream.  So there is no
+           player to build here; the socket's onopen does it. */
+        connect();
         setInterval(say, 500);
         /* The 3A controls.
         
@@ -456,6 +635,17 @@
         function draw() {
             if (!have3a) return;
             const ae = st.ae === 1, aw = st.aw === 1;
+
+            /* The menu follows the mode in force, which is the one the board
+               reports rather than the one last asked for: a request the board
+               refused leaves the stream where it was, and a menu showing the
+               request would then be describing a stream that does not exist. */
+            if (st.mo !== undefined) {
+                const sel = $('ms'), want = String(st.mo);
+                if (sel.value !== want &&
+                    sel.querySelector('option[value="' + want + '"]'))
+                    sel.value = want;
+            }
             if (!HOLD.es) { $('es').min = st.emin; $('es').max = st.emax; $('es').value = st.e; }
             if (!HOLD.gs) { $('gs').min = st.gmin; $('gs').max = st.gmax; $('gs').value = st.g; }
             /* The gain sliders, bounded by what the driver will accept rather
@@ -508,6 +698,15 @@
         });
         $('ea').onchange = () => { st.ae = $('ea').checked ? 1 : 0; cmd('ae', st.ae); draw(); };
         $('wa').onchange = () => { st.aw = $('wa').checked ? 1 : 0; cmd('aw', st.aw); draw(); };
+        /* The mode, by its index in the sensor driver's mode table. The labels
+           beside those indices live here because the control channel carries a
+           name and a number and nothing else, and the board is what knows how
+           many modes there are -- it refuses an index that names none. */
+        $('ms').onchange = () => {
+            cmd('mo', +$('ms').value);
+            note = 'switching to mode ' + $('ms').value;
+            draw();
+        };
         /* A board whose capture driver has no 3A control plane never sends a
            status line, and the panel must say so rather than sit there looking
            like a control that does nothing. */

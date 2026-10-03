@@ -181,6 +181,37 @@ int kickpi_k7_hdmi_initialize(void);
  ****************************************************************************/
 
 int kickpi_k7_camera_initialize(void);
+
+/****************************************************************************
+ * Name: kickpi_k7_camera_set_mode
+ *
+ * Description:
+ *   Point the receive chain at another of the sensor's capture modes.  The
+ *   mode is named by its index in the sensor driver's mode table; see
+ *   ov5647.h.
+ *
+ *   A change of frame rate within one geometry does nothing here, because
+ *   nothing outside the sensor depends on it.  A change of geometry also
+ *   changes the D-PHY link rate and the capture engine's frame buffers, and
+ *   both drivers are asked to move in place -- the lane rate as a PHY power
+ *   cycle, the geometry as a buffer change -- so the receive chain's clocks,
+ *   resets, power domain, interrupt and 3A control device are all left alone.
+ *
+ *   The capture device has to be closed first, because the sensor has to be
+ *   stopped for the D-PHY to accept new timing parameters.  In practice that
+ *   means this is called by the application between closing the camera and
+ *   opening it again, not by anything that is streaming.
+ *
+ * Input Parameters:
+ *   index - The mode to switch to, one of the sensor's OV5647_MODE_*.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure, with the receive
+ *   chain left in the mode that was already configured.
+ *
+ ****************************************************************************/
+
+int kickpi_k7_camera_set_mode(unsigned int index);
 #endif
 
 #endif /* __ASSEMBLY__ */

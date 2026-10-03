@@ -1539,14 +1539,14 @@ int rk3576_vepu510_regs_me(FAR HalVepu510RegSet *regs,
  *       Intra refresh needs a P-slice schedule, which an all-intra stream does
  *       not have.
  *
- * The one call that is neither implemented nor inert is
- * setup_vepu510_recn_refr (line 2076), which programs the reconstructed-frame
- * write address from a driver-allocated buffer.  This driver allocates no such
- * buffer, so that address stays zero while the codec block marks an IDR as a
- * reference.  That combination is unverified and must be the first thing
- * tested on hardware: either allocate the buffer as MPP does, or establish
- * that an intra-only stream is never read back as a reference and drop the
- * reference marker. */
+ * The call that is neither one of those: setup_vepu510_recn_refr (line 2076)
+ * programs the reconstructed-frame write and reference read addresses from
+ * driver-allocated buffers.  It is implemented as rk3576_vepu510_regs_recn()
+ * above, called from rk3576_vepu510_regs_build(), and the working sets it
+ * needs come from rk3576_vepu_recn_alloc() in rk3576_vepu.c.  The read side it
+ * programs is exercised only by a picture that predicts, so an all-intra
+ * stream leaves those registers at zero and never says whether the fetch
+ * works. */
 
 int rk3576_vepu510_regs_build(FAR HalVepu510RegSet *regs,
                               FAR const struct rk3576_vepu510_frame_s *frm,

@@ -420,6 +420,91 @@ int rk3576_csi_host_uninitialize(void)
 }
 
 /****************************************************************************
+ * Name: rk3576_csi_host_set_lane_rate
+ ****************************************************************************/
+
+int rk3576_csi_host_set_lane_rate(uint32_t hs_rate)
+{
+  struct rk3576_csi_host_s *priv = &g_csi_host;
+  uint32_t mbps = (hs_rate + 999999u) / 1000000u;
+  int ret;
+
+  if (hs_rate == 0)
+    {
+      return -EINVAL;
+    }
+
+  ret = nxmutex_lock(&priv->lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (!priv->initialized)
+    {
+      nxmutex_unlock(&priv->lock);
+      return -ENODEV;
+    }
+
+  /* The controller is held in reset and its errors are masked while the PHY
+   * is being reprogrammed, so nothing arrives half-decoded.  This is the
+   * same order the bring-up uses, for the same reason: the controller must
+   * not be listening to a lane whose timing parameters are mid-change.
+   */
+
+  rk3576_csi_host_putreg(priv->base, RK3576_CSIHOST_CSI2_RESETN, 0);
+  rk3576_csi_host_putreg(priv->base, RK3576_CSIHOST_MSK1,
+                         RK3576_CSIHOST_MSK_ALL);
+  rk3576_csi_host_putreg(priv->base, RK3576_CSIHOST_MSK2,
+                         RK3576_CSIHOST_MSK_ALL);
+
+  /* Down and up through the D-PHY's own power-off/power-on pair, which is
+   * where the per-rate timing parameters (settle, dlysel) are programmed.
+   * Only those two registers change between rates; the lane count, the
+   * lane enables, the BIAS block and the CSI-2 mode selection are all the
+   * same afterwards, which is why this is a rate change and not a bring-up.
+   *
+   * A rate change is only legal while the sensor is not driving the lanes:
+   * the data lanes have to be in the stop state for the PHY to accept new
+   * timing parameters, and the caller is the one that knows whether the
+   * sensor is streaming.  The capture device has to be closed, in practice,
+   * because its stream is what starts the sensor.
+   */
+
+  ret = rk3576_dcphy_rx_power_off();
+  if (ret < 0)
+    {
+      _err("WARNING: CSI HOST could not power down the DCPHY RX lanes: %d\n",
+           ret);
+    }
+
+  ret = rk3576_dcphy_rx_power_on(priv->lanes, mbps);
+  if (ret < 0)
+    {
+      _err("ERROR: CSI HOST failed to bring the DCPHY RX lanes back up at"
+           " %" PRIu32 " Mbps: %d\n",
+           mbps, ret);
+      goto errout;
+    }
+
+  priv->hs_rate = hs_rate;
+
+  rk3576_csi_host_clear_errors(priv->base);
+  rk3576_csi_host_putreg(priv->base, RK3576_CSIHOST_CSI2_RESETN,
+                         RK3576_CSIHOST_CSI2_RESETN_RELEASE);
+  up_udelay(10);
+
+  _info("CSI HOST%u: %u lanes at %" PRIu32 " Hz/lane, PHY_STATE=%08" PRIx32
+        "\n",
+        (unsigned int)priv->host, (unsigned int)priv->lanes, hs_rate,
+        rk3576_csi_host_getreg(priv->base, RK3576_CSIHOST_PHY_STATE));
+
+errout:
+  nxmutex_unlock(&priv->lock);
+  return ret;
+}
+
+/****************************************************************************
  * Name: rk3576_csi_host_get_phy_state / _get_err1 / _get_err2
  ****************************************************************************/
 

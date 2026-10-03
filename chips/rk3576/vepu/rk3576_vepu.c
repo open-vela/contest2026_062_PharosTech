@@ -90,6 +90,15 @@
  * debug control, so turning video debugging on shows this driver's detail
  * along with every other video driver's.
  *
+ * Note which switches that takes.  CONFIG_DEBUG_VIDEO_INFO is one of three
+ * children of CONFIG_DEBUG_VIDEO, which defaults to off, so a configuration
+ * that names only the child has that line dropped by Kconfig without a
+ * warning and builds a driver that appears to have nothing to say -- which is
+ * how this driver's clock selection, its divider readback and the size of its
+ * reconstruction sets were all invisible in the configuration the driver
+ * ships with.  The camera configuration turns on all of them, so the detail
+ * is there when a boot log is what is being read.
+ *
  * Errors are unaffected.  They are reported whatever the debug options say,
  * and rk3576_vepu_dump() prints the registers when an encode fails, which is
  * where the clock and status detail is actually wanted.
@@ -942,9 +951,11 @@ static int rk3576_vepu_recn_alloc(FAR struct rk3576_vepu510_frame_s *frm,
   g_vepu_recn_height = frm->height;
 
   vinfo("VEPU0: reconstruction sets for %ux%u: pixel %" PRIu32
-        " (header %" PRIu32 "), thumb %" PRIu32 ", smear %" PRIu32 ", x%d\n",
+        " (header %" PRIu32 "), thumb %" PRIu32 ", smear %" PRIu32
+        ", slots %08" PRIxPTR "/%08" PRIxPTR ", x%d\n",
         (unsigned int)frm->width, (unsigned int)frm->height, size.pixel,
-        size.header, size.thumb, size.smear, RK3576_VEPU_RECN_SLOTS);
+        size.header, size.thumb, size.smear, (uintptr_t)g_vepu_recn[0].pixel,
+        (uintptr_t)g_vepu_recn[1].pixel, RK3576_VEPU_RECN_SLOTS);
 
 describe:
   /* The published pointer is the virtual address, which for this heap is
@@ -1602,47 +1613,6 @@ enum rk3576_vepu_pattern_e
 static const char *const g_vepu_pattern_name[RK3576_VEPU_PATTERN_COUNT] = {
   "solid   ", "gradient", "noise   "
 };
-
-/* Geometry and layout of the test.  Small on purpose: this asks whether the
- * encoder is doing the right thing, not how fast it does it.
- *
- * The destination carries a guard region past the end.  It is not a buffer
- * the driver is told about -- frm.dst_size covers the real part only -- so
- * anything the encoder writes there is an overrun.  Without it, an encoder
- * that ignored its own size limit would corrupt whatever the DMA heap handed
- * out next, and nothing would say so until much later.
- */
-
-#define RK3576_VEPU_ST_W          320u
-#define RK3576_VEPU_ST_H          240u
-#define RK3576_VEPU_ST_FRAMES     6u
-#define RK3576_VEPU_ST_DST        (1024u * 1024u)
-#define RK3576_VEPU_ST_GUARD      (64u * 1024u)
-
-#define RK3576_VEPU_ST_GUARD_BYTE 0xa5u
-
-/* Geometry of the sequence test, which is the same picture size asking a
- * different question: not "does it encode" but "does it predict".
- */
-
-#define RK3576_VEPU_SEQ_W      320u
-#define RK3576_VEPU_SEQ_H      240u
-#define RK3576_VEPU_SEQ_FRAMES 8u
-#define RK3576_VEPU_SEQ_GOP    2u
-#define RK3576_VEPU_SEQ_SHIFT  4u
-#define RK3576_VEPU_SEQ_DST    (1024u * 1024u)
-
-/* How much of each frame the sequence test prints, in bytes.
- *
- * Enough for the slice header and the first macroblock, which is all it takes
- * to tell a picture that used its reference from one that did not: a P slice
- * begins with mb_skip_run, so a predicted picture starts with a long run of
- * skips and one that coded its macroblocks starts with a zero followed by an
- * intra type.  Bounded rather than complete because it has to be readable in
- * a log, and the answer is in the first few bytes of either kind.
- */
-
-#define RK3576_VEPU_SEQ_PEEK 64u
 
 /* Geometry and layout of the test.  Small on purpose: this asks whether the
  * encoder is doing the right thing, not how fast it does it.
@@ -2554,7 +2524,7 @@ errout:
  * Name: rk3576_vepu_selftest
  *
  * Description:
- *   Run both halves of the encoder's bring-up acceptance test.
+ *   Run the encoder's bring-up acceptance tests.
  *
  * Input Parameters:
  *   None.

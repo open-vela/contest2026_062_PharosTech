@@ -35,11 +35,20 @@
  *     that is all the register layer was ported and verified for.  So there
  *     is no bitrate or frame-rate control to set, and the frame rate is
  *     carried for the VUI only.
- *   - It is not all-intra by accident.  It is all-intra because the hardware
- *     this tree drives reports bframe=0 and because P-slices need the
- *     reference-list machinery of MPP's slice layer, which is not ported.
- *     Every frame is an IDR, which is why the frames can be appended and
- *     dropped freely -- there is nothing to reorder and nothing to miss.
+ *   - It predicts, and the group length is the caller's to choose.  The
+ *     hardware reports bframe=0, so a group is an IDR followed by P pictures
+ *     that predict from it and from each other; see RK3576_VEPU_CID_GOP and
+ *     RK3576_VEPU_DEFAULT_GOP.  A group of one is all-intra, which is what
+ *     this driver encoded before it could predict.
+ *
+ *     What that costs anything passing the stream on is worth stating where
+ *     the choice is made: a picture that is not the first of its group
+ *     cannot be dropped on its own.  The pictures after it predict from it,
+ *     and a decoder that never received it reconstructs them from the wrong
+ *     reference -- which shows as a burst of wrong colour rather than as one
+ *     missing picture.  Anything that discards pictures has to tell its
+ *     client to start again at the next group instead; see the note on
+ *     `waiting` in app/camenc/camenc_ws.h.
  ****************************************************************************/
 
 #ifndef __CHIPS_RK3576_VEPU_RK3576_VEPU_CODEC_H

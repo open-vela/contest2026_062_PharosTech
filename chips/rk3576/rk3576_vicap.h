@@ -174,6 +174,42 @@ int rk3576_vicap_initialize(FAR const struct rk3576_vicap_config *config,
 int rk3576_vicap_uninitialize(void);
 
 /****************************************************************************
+ * Name: rk3576_vicap_reconfigure
+ *
+ * Description:
+ *   Point an initialised capture engine at another geometry, leaving the
+ *   block itself up.
+ *
+ *   What a mode change actually needs from VICAP is a new frame layout: a new
+ *   stride, new frame buffers of the new size, and the registers that carry
+ *   the geometry.  Everything else about the block -- the power domain, the
+ *   resets, the clocks, the interrupt, the 3A control device -- is the same
+ *   whichever geometry is being captured, so this leaves all of it alone.
+ *
+ *   That is also why it exists next to uninitialize/initialize rather than
+ *   instead of them: taking the block down and building it again would do the
+ *   same job, at the cost of releasing and re-acquiring everything above, and
+ *   with a window in which the 3A device does not exist.
+ *
+ *   The new buffers are obtained before the old ones are released, so a
+ *   failure leaves the driver on the geometry it already had, capturing, with
+ *   its buffers intact.
+ *
+ * Input Parameters:
+ *   config - The geometry to move to.  Its input and id must match what the
+ *            block was brought up with; a different port is a bring-up.
+ *
+ * Returned Value:
+ *   OK on success; a negated errno value on failure.  -ENODEV if the block is
+ *   not initialised, -EBUSY if a stream is running, -EINVAL for a different
+ *   input or an impossible geometry, -ENOMEM if the buffers could not be
+ *   obtained.
+ *
+ ****************************************************************************/
+
+int rk3576_vicap_reconfigure(FAR const struct rk3576_vicap_config *config);
+
+/****************************************************************************
  * Name: rk3576_vicap_dump
  *
  * Description:

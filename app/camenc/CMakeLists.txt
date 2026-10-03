@@ -48,4 +48,18 @@ if(CONFIG_EXAMPLES_CAMENC)
     ${CONFIG_EXAMPLES_CAMENC_STACKSIZE}
     PRIORITY
     ${CONFIG_EXAMPLES_CAMENC_PRIORITY})
+
+  # The page above is a build input of camenc_ws.c that no tool can see.
+  # .incbin is an assembler directive inside a C file, so the compiler's own
+  # dependency scan finds nothing, and the DEPENDS argument above lists the
+  # page for the build system's benefit rather than the object's.
+  #
+  # Without this, editing web/page.html changes nothing: the page is compiled
+  # in, and the object that carries it is only rebuilt when its C source
+  # moves.  The firmware then keeps serving the previous page, which looks
+  # exactly like a browser holding on to a cached one and is not.
+  set_property(
+    SOURCE camenc_ws.c
+    APPEND
+    PROPERTY OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/page.html)
 endif()
