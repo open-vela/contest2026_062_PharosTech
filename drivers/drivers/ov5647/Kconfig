@@ -43,10 +43,43 @@ config VIDEO_OV5647
 		lanes.  Its control interface is SCCB, which is an I2C subset the
 		standard NuttX I2C driver drives directly.
 
-		Only the 640x480 mode is implemented so far: 2x2 binned and
-		subsampled, full field of view, 10 bits per pixel.
+		Two modes are implemented, selected by the choice below: 640x480
+		(2x2 binned and subsampled) and 1296x960 (2x2 binned, full field of
+		view, trimmed from the sensor's 1296x972 output to land on the
+		encoder's macroblock grid).  The board and its VICAP/CSI
+		configuration must agree with the mode chosen here; see the board's
+		KICKPI_K7 camera source.
 
 if VIDEO_OV5647
+
+choice
+	prompt "OV5647 capture mode"
+	default OV5647_MODE_1296x960
+
+config OV5647_MODE_640x480
+	bool "640x480 (2x2 binned + subsampled, 60 fps)"
+	---help---
+		640x480 at 60 fps.  This is the original single mode: the sensor
+		2x2-bins and then subsamples the full array down to VGA.  The link
+		runs at 145.833 MHz and the vertical total is 504 lines, bounding
+		the exposure to VTS-4 = 500 lines.
+
+config OV5647_MODE_1296x960
+	bool "1296x960 (2x2 binned, full field of view, ~30 fps)"
+	---help---
+		1296x960 at about 30 fps.  The sensor 2x2-bins the full array with
+		no subsampling -- that yields 1296x972 -- and the bottom twelve rows
+		are then trimmed so the height is a multiple of sixteen, which the
+		encoder's macroblock grid and camenc's frame copy both require.  The
+		result keeps the whole field of view and is sharper than the VGA
+		mode.
+
+		The link runs at 218.75 MHz and the vertical total is 1435 lines, so
+		the exposure ceiling is VTS-4 = 1431 lines -- nearly three times the
+		VGA mode's, which is what eases the 60 fps "exposure and gain pinned
+		to their ceiling" problem.
+
+endchoice
 
 config OV5647_EXPOSURE_LINES
 	int "Manual exposure in lines (0 = the mode's maximum)"
