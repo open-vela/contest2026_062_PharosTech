@@ -472,6 +472,45 @@ static int rk3576_fracpll_set_rate(FAR struct clk_s *clk, uint32_t rate,
  *   the bootloader owns the PLL configuration.
  ****************************************************************************/
 
+/* SPLL's rate, as a fixed figure rather than something read back.
+ *
+ * SPLL is an integer PLL whose configuration lives in SECURECRU
+ * (SECURECRU_SPLL_CON0/1/4/5/6 at 0x27210000 + 0x4220).  It is published
+ * here as a constant because that is what the vendor's own reference does,
+ * and that is the strongest evidence available about whether those
+ * registers may be consulted at all:
+ *
+ *   - The kernel's rk3576 clock driver registers seven PLLs -- gpll, cpll,
+ *     aupll, vpll, lpll, bpll, ppll -- and no spll; it never reads
+ *     0x27210000.  "spll" appears there only as a parent *name*, resolved
+ *     through the device tree.
+ *   - The device tree accordingly describes it as a fixed-clock:
+ *     clock-spll { compatible = "fixed-clock"; clock-frequency = <702000000>;
+ * }
+ *   - The clock binding has PLL_CPLL and PLL_GPLL but no PLL_SPLL.
+ *
+ * The value is not the reset default either: spll_m resets to 0x15f (351)
+ * and FOUT = 24MHz * m / (p * 2^s), which is 351 MHz at the reset p and s.
+ * 702 MHz is what the boot firmware programs, and reading the register back
+ * would report the firmware's choice rather than a fact this driver owns.
+ *
+ * Registering the name is what matters, not the number's provenance: the
+ * VEPU0 core selector resets onto SPLL and the device tree assigns that
+ * core 702 MHz, so a tree that cannot resolve SPLL leaves the encoder on a
+ * source it cannot divide to a known rate -- which is why the core used to
+ * run at GPLL/2 = 594 MHz instead.
+ *
+ * Its parent names what it is derived from -- the 24 MHz crystal -- for
+ * provenance, the convention clk_hdmiphy_pixel0_o already follows for the
+ * same kind of node (a PLL output that only this side cannot program).  The
+ * link is inert for the rate: a fixed-rate clock returns the figure it was
+ * registered with and never consults its parent, and nothing propagates a
+ * rate request up to it either, because the VEPU core selector carries no
+ * CLK_SET_RATE_PARENT.
+ */
+
+#define RK3576_SPLL_HZ 702000000u
+
 static void rk3576_clk_register_pll_factors(void)
 {
   struct clk_s *clk;
@@ -482,6 +521,16 @@ static void rk3576_clk_register_pll_factors(void)
 
   clk = clk_register_fixed_rate("xin_osc0", NULL, CLK_NAME_IS_STATIC,
                                 CONFIG_RK3576_OSC_FREQ);
+  _assert_registered(clk);
+
+  /* SPLL — 702 MHz, fixed, fed by the 24 MHz crystal.  Why the figure is a
+   * constant rather than a register read, and why the name has to be
+   * registered at all, is set out above RK3576_SPLL_HZ.
+   */
+
+  clk = clk_register_fixed_rate("clk_spll", "xin_osc0",
+                                CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                                RK3576_SPLL_HZ);
   _assert_registered(clk);
 
   /* GPLL (FRACPLL) — rate derived from GPLL_CON(0..2) at runtime.
@@ -640,7 +689,7 @@ static void rk3576_clk_register_axi(void)
     static const char *parents[] = {
       "clk_gpll",  /* 3'b000 */
       "clk_cpll",  /* 3'b001 */
-      "clk_spll",  /* 3'b010 — clk_spll_mux, not yet modelled */
+      "clk_spll",  /* 3'b010 — clk_spll_mux */
       "clk_aupll", /* 3'b011 */
       "clk_bpll",  /* 3'b100 — clk_bpll_src, not yet modelled */
     };
@@ -3039,12 +3088,17 @@ static void rk3576_clk_register_vo0(void)
  *     - pclk_dsihost0    : APB bus interface gate, GATE_CON64[5], fed
  *                          from pclk_vo0_root (CLKSEL_CON149[12:11])
  *
- *   clk_dsihost0_sel references clk_spll/clk_vpll/clk_bpll, which are not
- *   registered yet; clk_lpll is registered by
- *   rk3576_clk_register_litcore().  Unregistered parents stay orphan and
- *   are reparented automatically once they are registered, so naming them
- *   here is safe.  The mux resets to 3'b010 (clk_spll), so the chain rate
- *   reads back as 0 until the selector is moved to a registered source.
+ *   clk_dsihost0_sel references clk_spll/clk_vpll/clk_bpll and clk_lpll.
+ *   clk_spll and clk_lpll are registered (by
+ *   rk3576_clk_register_pll_factors() and rk3576_clk_register_litcore()
+ *   respectively); clk_vpll and clk_bpll are not, and stay orphan until they
+ *   are -- naming them is safe, because the framework reparents a clock to
+ *   them by name once they appear.
+ *
+ *   With clk_spll registered, the mux's reset value (3'b010 = clk_spll) now
+ *   resolves, to SPLL / (divider) rather than to nothing.  The DSI driver
+ *   still moves the selector onto a source of its own choosing -- see the
+ *   note in rk3576_mipi_dsi.c -- rather than relying on the reset value.
  ****************************************************************************/
 
 static void rk3576_clk_register_dsi(void)
@@ -3052,7 +3106,7 @@ static void rk3576_clk_register_dsi(void)
   static const char *dsi_sclk_parents[] = {
     "clk_gpll", /* 0b000: clk_gpll_mux */
     "clk_cpll", /* 0b001: clk_cpll_mux */
-    "clk_spll", /* 0b010: clk_spll_mux — not registered yet */
+    "clk_spll", /* 0b010: clk_spll_mux */
     "clk_vpll", /* 0b011: clk_vpll_mux — not registered yet */
     "clk_bpll", /* 0b100: clk_bpll_src — not registered yet */
     "clk_lpll", /* 0b101: clk_lpll_src */
@@ -3376,7 +3430,9 @@ static void rk3576_clk_register_hdmi(void)
  *   Below the TRM mux names are mapped to the CLK-framework clock names:
  *     clk_gpll_mux/clk_cpll_mux/clk_aupll_mux -> clk_gpll/clk_cpll/clk_aupll
  *     clk_lpll_src -> clk_lpll
- *     clk_spll_mux/clk_vpll_mux/clk_bpll_src -> not registered yet, stay
+ *     clk_spll_mux -> clk_spll (registered as a fixed 702 MHz by
+ *       rk3576_clk_register_pll_factors())
+ *     clk_vpll_mux/clk_bpll_src -> not registered yet, stay
  *       orphan until those PLLs are added (the framework reparents them on
  *       late registration)
  *     clk_hdmiphy_pixel0_o -> the HDMI PHY pixel clock, registered as a
@@ -3413,7 +3469,7 @@ static void rk3576_clk_register_vop(void)
     "clk_gpll",  /* 3'b000: clk_gpll_mux */
     "clk_cpll",  /* 3'b001: clk_cpll_mux */
     "clk_aupll", /* 3'b010: clk_aupll_mux */
-    "clk_spll",  /* 3'b011: clk_spll_mux — not registered yet */
+    "clk_spll",  /* 3'b011: clk_spll_mux */
     "clk_lpll",  /* 3'b100: clk_lpll_src */
   };
 
@@ -3734,7 +3790,7 @@ static void rk3576_clk_register_vop(void)
  *
  *   aclk_vi_root -- CLKSEL_CON128[7:5] mux, [4:0] divider, GATE_CON53[0]:
  *     3'b000 clk_gpll_mux
- *     3'b001 clk_spll_mux        -- not registered yet (orphan name)
+ *     3'b001 clk_spll_mux
  *     3'b010 clk_isp_pvtpll_src  -- not registered yet (orphan name)
  *     3'b011 clk_bpll_src        -- not registered yet (orphan name)
  *     3'b100 clk_lpll_src
@@ -3800,7 +3856,7 @@ static void rk3576_clk_register_vi(void)
 
   static const char *aclk_vi_root_parents[] = {
     "clk_gpll",           /* 3'b000: clk_gpll_mux */
-    "clk_spll",           /* 3'b001: clk_spll_mux -- not registered */
+    "clk_spll",           /* 3'b001: clk_spll_mux */
     "clk_isp_pvtpll_src", /* 3'b010 -- not registered */
     "clk_bpll",           /* 3'b011: clk_bpll_src -- not registered */
     "clk_lpll",           /* 3'b100: clk_lpll_src */
@@ -4203,15 +4259,15 @@ static void rk3576_clk_register_vicap(void)
  *   where the intended source gives 594.  Close enough to a plausible
  *   answer to pass unnoticed, and coupled to the CPU clock.
  *
- *   Caveat the encoder driver must know about: the reset value of the core
- *   selector is 2'b010 = SPLL.  SPLL is not modelled by this clock tree
- *   (it is a spread-spectrum audio PLL), so until the driver calls
- *   clk_set_parent() on clk_vepu0_core_sel, clk_get_rate(clk_vepu0_core)
- *   cannot resolve and reads back as 0.  That is a reporting limitation,
- *   not a hardware problem: clk_enable() still walks the chain and
- *   programs the gates correctly, which is all bring-up needs.  The aclk
- *   and hclk roots are unaffected -- both reset to a modelled source
- *   (gpll and gpll_div6 respectively).
+ *   The core selector's reset value is 2'b010 = SPLL, which this clock tree
+ *   registers as a fixed 702 MHz (see rk3576_clk_register_pll_factors()),
+ *   so the chain resolves out of reset rather than reading back 0.  The
+ *   encoder driver still selects a source explicitly, because it wants the
+ *   figure measured rather than assumed and because the rate it is after is
+ *   the 702 MHz the device tree assigns to this core -- which is SPLL/1, a
+ *   division no other source offers.  The aclk and hclk roots are
+ *   unaffected by any of this: both reset to a modelled source (gpll and
+ *   gpll_div6 respectively).
  *
  ****************************************************************************/
 
@@ -4220,16 +4276,15 @@ static void rk3576_clk_register_vepu(void)
   const unsigned long cru = RK3576_CRU_ADDR;
   FAR struct clk_s *clk;
 
-  /* clk_vepu0_core 3-bit mux parents (CLKSEL_CON124[15:13]).  spll and
-   * bpll are placeholders so that the array index keeps matching the
-   * register encoding; neither is registered, and the reset value picks
-   * the (unmodelled) spll entry -- see the caveat above.
+  /* clk_vepu0_core 3-bit mux parents (CLKSEL_CON124[15:13]).  bpll is a
+   * placeholder so that the array index keeps matching the register
+   * encoding; it is not registered.
    */
 
   static const char *vepu0_core_parents[] = {
     "clk_gpll", /* 3'b000 */
     "clk_cpll", /* 3'b001 */
-    "clk_spll", /* 3'b010 (the reset value) -- not modelled */
+    "clk_spll", /* 3'b010 (the reset value) */
     "clk_lpll", /* 3'b011 */
     "clk_bpll", /* 3'b100 -- not modelled */
   };

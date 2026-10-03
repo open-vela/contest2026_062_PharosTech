@@ -235,28 +235,40 @@ static void rk3576_vepu_assert_resets(void)
  *   Point a selector at the source that runs its clock closest to the
  *   target without going over, and program the divider to match.
  *
- *   Both selectors reset to a source this tree does not model -- the core
- *   selector to SPLL, and SPLL's rate reads back as zero because nothing
- *   describes it.  A clock that cannot be resolved cannot be divided to a
- *   known frequency either, so out of reset the encoder runs at whatever
- *   the bootloader left SPLL at, which is neither reported nor chosen.
+ *   Both selectors are pointed at a source from a candidate list, and the
+ *   one that runs the clock closest to the target without going over is
+ *   chosen, with its divider programmed to match.
  *
- *   Only the two general-purpose PLLs are considered.  SPLL and BPLL are
- *   left out because they are not modelled and so cannot be measured, and
- *   LPLL is left out despite being modelled: it is the CPU's PLL, and
- *   pointing a peripheral at it is the hazard spelled out at length in
- *   rk3576_clk_register_vop().  The candidates are measured rather than
- *   assumed, because the PLL rates belong to the bootloader and are read
- *   back from the PLL registers at run time.
+ *   SPLL is the first candidate for the core because it is the exact figure
+ *   the core is assigned: 702 MHz is SPLL/1, and nothing else reaches it,
+ *   because the divider is an integer -- GPLL is 1188 MHz, whose integer
+ *   divisions are 1188, 594, 396, ..., none of which is 702.  That is why
+ *   the core ran at 594 before: the next-best source was GPLL divided by
+ *   two.
  *
- *   A tie goes to the earlier candidate, which is GPLL -- the source the
- *   CPU and the AXI root already run on, and therefore the one that is
- *   known to be running.
+ *   BPLL is left out (not modelled).  LPLL is left out despite being
+ *   modelled: it is the CPU's PLL, and pointing a peripheral at it is the
+ *   hazard spelled out at length in rk3576_clk_register_vop().  The rates
+ *   the other candidates offer belong to the bootloader and are read back
+ *   from the PLL registers rather than assumed; SPLL's is a constant this
+ *   tree states, for the reason given at RK3576_SPLL_HZ.
+ *
+ *   A tie goes to the earlier candidate.
+ *
+ *   The candidates are the caller's, because the two selectors this serves
+ *   do not have the same parents.  The core selector offers SPLL, GPLL and
+ *   CPLL; the AXI root selector offers only GPLL and CPLL.  Offering SPLL to
+ *   the AXI root is rejected by the framework -- SPLL is not one of its
+ *   parents -- and reporting that rejection as a failure to select a source
+ *   is a false alarm, which is what a list shared between the two callers
+ *   used to produce.
  *
  * Input Parameters:
- *   mux    - the selector to point at the chosen source
- *   clk    - the clock whose rate is wanted, a descendant of the mux
- *   target - the rate wanted
+ *   mux      - the selector to point at the chosen source
+ *   clk      - the clock whose rate is wanted, a descendant of the mux
+ *   target   - the rate wanted
+ *   sources  - the candidate source names, in preference order
+ *   nsources - how many candidates there are
  *
  * Returned Value:
  *   the rate the clock ends up at, or 0 if no source could be used
@@ -265,20 +277,20 @@ static void rk3576_vepu_assert_resets(void)
 
 static uint32_t rk3576_vepu_select_source(FAR struct clk_s *mux,
                                           FAR struct clk_s *clk,
-                                          uint32_t target)
+                                          uint32_t target,
+                                          FAR const char *const *sources,
+                                          size_t nsources)
 {
-  static const char *sources[] = { "clk_gpll", "clk_cpll" };
-
   FAR struct clk_s *best = NULL;
   uint32_t best_rate = 0;
-  int i;
+  size_t i;
 
   if (mux == NULL || clk == NULL)
     {
       return 0;
     }
 
-  for (i = 0; i < nitems(sources); i++)
+  for (i = 0; i < nsources; i++)
     {
       FAR struct clk_s *src = clk_get(sources[i]);
       uint32_t rate;
@@ -389,16 +401,31 @@ static int rk3576_vepu_prepare_clocks(void)
    * it has not been set to.
    */
 
+  /* The candidate sources differ between the two selectors, so each states
+   * its own.
+   *
+   * SPLL comes first for the core because it is the rate the core is
+   * assigned: 702 MHz is SPLL/1, and no division of the other two reaches it
+   * -- GPLL is 1188 MHz whose integer divisions are 1188, 594, 396..., and
+   * the core used to run at the 594.  The AXI root selector has no SPLL
+   * among its parents and so does not offer it.
+   */
+
+  static const char *const core_sources[] = { "clk_spll", "clk_gpll",
+                                              "clk_cpll" };
+  static const char *const aclk_sources[] = { "clk_gpll", "clk_cpll" };
+
   core_rate = rk3576_vepu_select_source(clk_get("clk_vepu0_core_sel"),
-                                        g_vepu_clks.core, RK3576_VEPU_CORE_HZ);
+                                        g_vepu_clks.core, RK3576_VEPU_CORE_HZ,
+                                        core_sources, nitems(core_sources));
   if (core_rate == 0)
     {
       _err("ERROR: VEPU0 could not give its core clock a source\n");
     }
 
-  aclk_rate = rk3576_vepu_select_source(clk_get("aclk_vepu0_root_sel"),
-                                        clk_get("aclk_vepu0_root"),
-                                        RK3576_VEPU_ACLK_HZ);
+  aclk_rate = rk3576_vepu_select_source(
+      clk_get("aclk_vepu0_root_sel"), clk_get("aclk_vepu0_root"),
+      RK3576_VEPU_ACLK_HZ, aclk_sources, nitems(aclk_sources));
   if (aclk_rate == 0)
     {
       _err("ERROR: VEPU0 could not give its AXI clock a source\n");
