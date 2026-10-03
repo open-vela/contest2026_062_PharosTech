@@ -1,5 +1,5 @@
 ############################################################################
-# apps/system/camenc/Kconfig
+# apps/examples/camenc/Kconfig
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -20,7 +20,7 @@
 #
 ############################################################################
 
-config SYSTEM_CAMENC
+config EXAMPLES_CAMENC
         tristate "Camera to H.264 encoder"
         default n
         depends on KICKPI_K7_CAMERA && RK3576_VEPU_CODEC
@@ -38,17 +38,17 @@ config SYSTEM_CAMENC
                 callback. Lifting it into another application means copying one
                 file and supplying a different destination.
 
-if SYSTEM_CAMENC
+if EXAMPLES_CAMENC
 
-config SYSTEM_CAMENC_PROGNAME
+config EXAMPLES_CAMENC_PROGNAME
         string "Program name"
         default "camenc"
 
-config SYSTEM_CAMENC_PRIORITY
+config EXAMPLES_CAMENC_PRIORITY
         int "camenc task priority"
         default 100
 
-config SYSTEM_CAMENC_STACKSIZE
+config EXAMPLES_CAMENC_STACKSIZE
         int "camenc stack size"
         default 8192
 

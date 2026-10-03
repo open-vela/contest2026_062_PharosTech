@@ -309,8 +309,8 @@ CONFIG_RK3576_VEPU_CODEC_SELFTEST=y
 
 # Camera to H.264 to fragmented MP4, in one command, to a file or to a
 # browser over WebSocket.  Lives in app/camenc and is reached through
-# apps/system/camenc.
-CONFIG_SYSTEM_CAMENC=y
+# apps/examples/camenc.
+CONFIG_EXAMPLES_CAMENC=y
 
 CONFIG_DRIVERS_VIDEO=y
 CONFIG_VIDEO_STREAM=y
@@ -323,8 +323,8 @@ CONFIG_OV5647_I2C_FREQUENCY=100000
 # Exposure and gain, in the absence of the sensor's own loops.
 #
 # These are only starting values.  Both are reachable at run time through
-# VIDIOC_S_CTRL, which camctl exposes as -e and -g, so the right setting for
-# a scene can be found by sweeping on the board instead of rebuilding.
+# VIDIOC_S_CTRL, so the right setting for a scene can be found by sweeping
+# on the board instead of rebuilding.
 #
 # 2.0x was too dark to read the picture and 64x saturated it, so the default
 # sits between the two; roughly 5x below saturation is a deliberate bias
@@ -333,8 +333,3 @@ CONFIG_OV5647_I2C_FREQUENCY=100000
 CONFIG_OV5647_ANALOG_GAIN=256
 
 CONFIG_KICKPI_K7_CAMERA=y
-
-# Acceptance tool: streams from /dev/video0 through the capture framework
-# and reports frame count, sequence gaps, frame rate and a luma summary.
-
-CONFIG_SYSTEM_CAMCTL=y

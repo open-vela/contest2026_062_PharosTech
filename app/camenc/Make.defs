@@ -1,5 +1,5 @@
 ############################################################################
-# apps/system/camenc/Make.defs
+# apps/examples/camenc/Make.defs
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -20,6 +20,6 @@
 #
 ############################################################################
 
-ifneq ($(CONFIG_SYSTEM_CAMENC),)
-CONFIGURED_APPS += $(APPDIR)/system/camenc
+ifneq ($(CONFIG_EXAMPLES_CAMENC),)
+CONFIGURED_APPS += $(APPDIR)/examples/camenc
 endif

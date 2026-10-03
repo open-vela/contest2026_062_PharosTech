@@ -1,5 +1,5 @@
 ############################################################################
-# apps/system/camenc/Makefile
+# apps/examples/camenc/Makefile
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -22,10 +22,10 @@
 
 include $(APPDIR)/Make.defs
 
-PROGNAME  = $(CONFIG_SYSTEM_CAMENC_PROGNAME)
-PRIORITY  = $(CONFIG_SYSTEM_CAMENC_PRIORITY)
-STACKSIZE = $(CONFIG_SYSTEM_CAMENC_STACKSIZE)
-MODULE    = $(CONFIG_SYSTEM_CAMENC)
+PROGNAME  = $(CONFIG_EXAMPLES_CAMENC_PROGNAME)
+PRIORITY  = $(CONFIG_EXAMPLES_CAMENC_PRIORITY)
+STACKSIZE = $(CONFIG_EXAMPLES_CAMENC_STACKSIZE)
+MODULE    = $(CONFIG_EXAMPLES_CAMENC)
 
 MAINSRC = camenc_main.c
 CSRCS   = camenc_stream.c camenc_ws.c camenc_3a.c

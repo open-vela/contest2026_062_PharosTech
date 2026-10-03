@@ -1,5 +1,5 @@
 ############################################################################
-# apps/system/camenc/CMakeLists.txt
+# apps/examples/camenc/CMakeLists.txt
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -25,16 +25,16 @@
 # build rather than only asserted in a comment.  It depends on nothing but
 # the C library, which is what lets the same file be compiled on a host.
 
-if(CONFIG_SYSTEM_CAMENC)
+if(CONFIG_EXAMPLES_CAMENC)
   # camenc_ws.c embeds web/page.html with an inline .incbin directive.  That
   # resolves its path relative to the compiler's working directory, so point
   # the source directory in to let the same relative name "web/page.html"
   # resolve here as it does in the make build.
   nuttx_add_application(
     MODULE
-    ${CONFIG_SYSTEM_CAMENC}
+    ${CONFIG_EXAMPLES_CAMENC}
     NAME
-    ${CONFIG_SYSTEM_CAMENC_PROGNAME}
+    ${CONFIG_EXAMPLES_CAMENC_PROGNAME}
     SRCS
     camenc_main.c
     camenc_stream.c
@@ -45,7 +45,7 @@ if(CONFIG_SYSTEM_CAMENC)
     DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/web/page.html
     STACKSIZE
-    ${CONFIG_SYSTEM_CAMENC_STACKSIZE}
+    ${CONFIG_EXAMPLES_CAMENC_STACKSIZE}
     PRIORITY
-    ${CONFIG_SYSTEM_CAMENC_PRIORITY})
+    ${CONFIG_EXAMPLES_CAMENC_PRIORITY})
 endif()
