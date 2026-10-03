@@ -49,12 +49,14 @@
 
 #include <nuttx/config.h>
 
+#include <assert.h>
 #include <debug.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <syslog.h>
 
 #include <nuttx/arch.h>
+#include <nuttx/clock.h>
 #include <nuttx/i2c/i2c_master.h>
 #include <nuttx/video/v4l2_cap.h>
 
@@ -88,34 +90,11 @@
 #define KICKPI_K7_CAM_SCL_PIN (GPIO_PORT3 | GPIO_PIN_C0)
 #define KICKPI_K7_CAM_SDA_PIN (GPIO_PORT3 | GPIO_PIN_B7)
 
-/* OV5647 capture mode, matched to the sensor driver's CONFIG_OV5647_MODE_*
- * selection.  The geometry and the link frequency must agree with what the
- * sensor is actually programmed to output, since the SoC-side receiver is
- * configured once from these figures.
- *
- * The sensor's link frequency follows the mode:
- *   - 640x480:  145.833 MHz (pixel clock 58.333 MHz)
- *   - 1296x960: 218.75 MHz  (pixel clock 87.5 MHz)
- *
- * A D-PHY link is double data rate, so the per-lane data rate the PHY has
- * to be configured for is twice the link frequency.  Getting this wrong does
- * not stop the link from coming up; it leaves the receiver's timing
- * parameters in the wrong rate band, which shows up as intermittent packet
- * errors.
+/* Number of MIPI data lanes.  Every mode the sensor offers runs on two, so
+ * this is a property of the wiring rather than of the mode.
  */
 
-#if defined(CONFIG_OV5647_MODE_1296x960)
-#define KICKPI_K7_CAM_WIDTH     1296
-#define KICKPI_K7_CAM_HEIGHT    960
-#define KICKPI_K7_CAM_LINK_FREQ 218750000u
-#else
-#define KICKPI_K7_CAM_WIDTH     640
-#define KICKPI_K7_CAM_HEIGHT    480
-#define KICKPI_K7_CAM_LINK_FREQ 145833300u
-#endif
-
-#define KICKPI_K7_CAM_LANES   2
-#define KICKPI_K7_CAM_HS_RATE (2u * KICKPI_K7_CAM_LINK_FREQ)
+#define KICKPI_K7_CAM_LANES 2
 
 /* CSI-2 data type for RAW10. */
 
@@ -129,11 +108,81 @@
 
 static FAR struct gpio_dev_s *g_kickpi_k7_cam_pdn;
 
-static const struct rk3576_csi_config g_kickpi_k7_cam_csi = {
-  .host = 0,
-  .lanes = KICKPI_K7_CAM_LANES,
-  .hs_rate = KICKPI_K7_CAM_HS_RATE,
-};
+/* The capture mode the receive chain is configured for, as an index into the
+ * sensor driver's mode table.
+ *
+ * Everything the two SoC-side drivers have to be told -- the link rate the
+ * D-PHY runs at, the geometry and Bayer order the capture engine is
+ * programmed with, and the size of its buffers -- follows from the entry this
+ * names, so this is the single thing that says which set of them is current.
+ *
+ * The sensor keeps its own view of the mode, which is whatever the
+ * application asked for when it started the stream.  The two are moved
+ * together by the application telling the board before it opens the device,
+ * which is what kickpi_k7_camera_set_mode() is for; there is no shared state
+ * between them to get out of step, only this one direction of travel.
+ */
+
+static unsigned int g_kickpi_k7_cam_mode = CONFIG_OV5647_DEFAULT_MODE;
+
+/* The sensor names its Bayer orders, and the capture engine names the same
+ * four in its own enum, because they are separate interfaces.
+ *
+ * What the engine has to be told is the order of the buffer it is about to
+ * demosaic, which is the sensor's order after the mode's readout has had its
+ * way with it -- so the mode's answer is the right one to hand over directly.
+ * The check makes the shorthand safe rather than lucky: if either enum is
+ * ever renumbered, this stops the build instead of leaving the picture to
+ * quietly lose its colour, which is what a wrong order looks like.
+ */
+
+static_assert((unsigned int)OV5647_BAYER_BGGR ==
+                      (unsigned int)RK3576_VICAP_BAYER_BGGR &&
+                  (unsigned int)OV5647_BAYER_GBRG ==
+                      (unsigned int)RK3576_VICAP_BAYER_GBRG &&
+                  (unsigned int)OV5647_BAYER_GRBG ==
+                      (unsigned int)RK3576_VICAP_BAYER_GRBG &&
+                  (unsigned int)OV5647_BAYER_RGGB ==
+                      (unsigned int)RK3576_VICAP_BAYER_RGGB,
+              "the sensor's Bayer order and the capture engine's must agree");
+
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: kickpi_k7_camera_csi_config / kickpi_k7_camera_vicap_config
+ *
+ * Description:
+ *   Describe one capture mode to the two drivers that have to know it.
+ *
+ *   Every figure comes from the sensor's mode table, which is the only place
+ *   that knows what the sensor has been programmed to output: the geometry it
+ *   delivers, the rate its link runs at, and the Bayer order its readout
+ *   leaves in the buffer.  Stating any of them again here would be a second
+ *   answer to a question that already has one, and the two would drift.
+ *
+ *   A D-PHY link is double data rate, so the per-lane rate the PHY is
+ *   configured for is twice the link frequency.  Getting it wrong does not
+ *   stop the link from coming up; it leaves the receiver's timing parameters
+ *   in the wrong rate band, which shows up as intermittent packet errors
+ *   rather than as anything that looks like a configuration mistake.
+ *
+ ****************************************************************************/
+
+static void kickpi_k7_camera_csi_config(unsigned int index,
+                                        FAR struct rk3576_csi_config *config)
+{
+  FAR const struct ov5647_mode_s *mode = ov5647_mode(index);
+
+  const struct rk3576_csi_config cfg = {
+    .host = 0,
+    .lanes = KICKPI_K7_CAM_LANES,
+    .hs_rate = 2u * mode->link_freq,
+  };
+
+  *config = cfg;
+}
 
 /* VICAP is told the sensor's real geometry and Bayer order.  The samples are
  * taken uncompacted and high-aligned, which puts a 10-bit value in bits
@@ -141,13 +190,16 @@ static const struct rk3576_csi_config g_kickpi_k7_cam_csi = {
  *
  * The order is GBRG, for two reasons that have to hold together.
  *
- * First the sensor.  Its native tile is BGGR, and this mode mirrors the
- * readout horizontally -- the mode's register table sets r_mirror_snr
- * (0x3821 bit 1) and clears r_vflip_snr (0x3820 bit 1).  A horizontal
- * mirror swaps the two columns of every tile, and BGGR mirrored is GBRG.
- * The upstream Linux driver reports the same thing for this mode: its HFLIP
- * control is inverted precisely because the sensor has this flip built in,
- * so its default (hflip = 0, vflip = 0) resolves to MEDIA_BUS_FMT_SGBRG10.
+ * First the sensor.  Its native tile is BGGR, and these modes mirror the
+ * readout horizontally -- their register tables set r_mirror_snr (0x3821
+ * bit 1) and clear r_vflip_snr (0x3820 bit 1).  A horizontal mirror swaps the
+ * two columns of every tile, and BGGR mirrored is GBRG.  The upstream Linux
+ * driver reports the same thing for the same modes: its HFLIP control is
+ * inverted precisely because the sensor has this flip built in, so its
+ * default (hflip = 0, vflip = 0) resolves to MEDIA_BUS_FMT_SGBRG10.  Both
+ * register tables carry the identical bits, so the answer is the same one for
+ * every mode -- which is a thing to have checked rather than assumed, and the
+ * sensor's mode table is where it is written down.
  *
  * Then the buffer.  What VICAP has to be told is the order of the *buffer's*
  * first row, and the buffer begins where the sensor's frame begins only
@@ -170,24 +222,50 @@ static const struct rk3576_csi_config g_kickpi_k7_cam_csi = {
  * other two, because green is a Bayer sensor's most sensitive channel; if
  * that pair is the one the configured order does not call green at all,
  * this setting is the one to change.
+ *
+ * It is worth checking again after every change of mode rather than once per
+ * board.  The order depends on where the frame starts, so a mode whose
+ * readout window begins elsewhere can reverse the tile even when its mirror
+ * bits read the same.
  */
 
-static const struct rk3576_vicap_config g_kickpi_k7_cam_vicap = {
-  .input = RK3576_VICAP_INPUT_MIPI0,
-  .id = 0,
-  .bayer = RK3576_VICAP_BAYER_GBRG,
-  .raw_bits = 10,
-  .width = KICKPI_K7_CAM_WIDTH,
-  .height = KICKPI_K7_CAM_HEIGHT,
-  .vc = 0,
-  .dt = KICKPI_K7_CAM_DT_RAW10,
-  .uncompact = true,
-  .align_high = true,
-};
+static void
+kickpi_k7_camera_vicap_config(unsigned int index,
+                              FAR struct rk3576_vicap_config *config)
+{
+  FAR const struct ov5647_mode_s *mode = ov5647_mode(index);
+
+  const struct rk3576_vicap_config cfg = {
+    .input = RK3576_VICAP_INPUT_MIPI0,
+    .id = 0,
+    .bayer = mode->bayer,
+    .raw_bits = 10,
+    .width = mode->width,
+    .height = mode->height,
+    .vc = 0,
+    .dt = KICKPI_K7_CAM_DT_RAW10,
+    .uncompact = true,
+    .align_high = true,
+  };
+
+  *config = cfg;
+}
 
 /****************************************************************************
- * Private Functions
+ * Name: kickpi_k7_camera_now_us
+ *
+ * Description:
+ *   The system tick as microseconds, for timing the steps of a mode change.
+ *   Coarse -- a tick is ten milliseconds here -- which is the point: what is
+ *   being measured is a path that either takes about as long as a frame or
+ *   takes seconds, and a ten-millisecond ruler says which of the two it is.
+ *
  ****************************************************************************/
+
+static uint64_t kickpi_k7_camera_now_us(void)
+{
+  return (uint64_t)clock_systime_ticks() * (1000000ULL / TICK_PER_SEC);
+}
 
 /****************************************************************************
  * Name: kickpi_k7_camera_module_enable
@@ -287,6 +365,8 @@ int kickpi_k7_camera_initialize(void)
   FAR struct i2c_master_s *i2c;
   FAR struct imgsensor_s *sensors[1];
   FAR struct imgdata_s *data = NULL;
+  struct rk3576_csi_config csi;
+  struct rk3576_vicap_config vicap;
   int ret;
 
   /* 1. Power the module, then give it time to settle before it is
@@ -314,26 +394,39 @@ int kickpi_k7_camera_initialize(void)
       return ret;
     }
 
-  /* 3. The receive chain.  The PHY comes up first inside the CSI HOST
-   *    driver, because the host's lane count may only be changed while the
-   *    D-PHY lanes are in the stop state -- which is exactly the state they
-   *    are in while the sensor is not yet streaming.
+  /* 3. The receive chain, configured for the mode the board starts in.  The
+   *    PHY comes up first inside the CSI HOST driver, because the host's
+   *    lane count may only be changed while the D-PHY lanes are in the stop
+   *    state -- which is exactly the state they are in while the sensor is
+   *    not yet streaming.
    *
    *    The DCPHY is shared with the DSI output.  Neither side resets or
    *    reconfigures the other's, so a running display is not disturbed by
    *    bringing the camera up (and vice versa).
    */
 
-  ret = rk3576_csi_host_initialize(&g_kickpi_k7_cam_csi);
+  g_kickpi_k7_cam_mode = CONFIG_OV5647_DEFAULT_MODE;
+  kickpi_k7_camera_csi_config(g_kickpi_k7_cam_mode, &csi);
+
+  ret = rk3576_csi_host_initialize(&csi);
   if (ret < 0)
     {
       _err("ERROR: camera failed to bring up CSI HOST0: %d\n", ret);
       return ret;
     }
 
-  /* 4. The capture engine, and the device file the application opens. */
+  /* 4. The capture engine, and the device file the application opens.
+   *
+   *    The interface that comes back is a member of the capture driver's own
+   *    instance, so its address is the same one every time this pair is taken
+   *    down and brought back up.  That is what lets a later change of mode
+   *    re-run this step without re-registering the device file: the capture
+   *    framework was handed this address once and it stays the right one.
+   */
 
-  ret = rk3576_vicap_initialize(&g_kickpi_k7_cam_vicap, &data);
+  kickpi_k7_camera_vicap_config(g_kickpi_k7_cam_mode, &vicap);
+
+  ret = rk3576_vicap_initialize(&vicap, &data);
   if (ret < 0)
     {
       _err("ERROR: camera failed to bring up VICAP: %d\n", ret);
@@ -353,8 +446,167 @@ int kickpi_k7_camera_initialize(void)
       return ret;
     }
 
-  syslog(LOG_INFO, "kickpi-k7: OV5647 on CSI0 ready as %s (%ux%u)\n",
-         KICKPI_K7_CAM_DEVPATH, KICKPI_K7_CAM_WIDTH, KICKPI_K7_CAM_HEIGHT);
+  syslog(LOG_INFO, "kickpi-k7: OV5647 on CSI0 ready as %s (%ux%u mode %u)\n",
+         KICKPI_K7_CAM_DEVPATH, ov5647_mode(g_kickpi_k7_cam_mode)->width,
+         ov5647_mode(g_kickpi_k7_cam_mode)->height, g_kickpi_k7_cam_mode);
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: kickpi_k7_camera_set_mode
+ *
+ * Description:
+ *   Point the receive chain at another of the sensor's capture modes.
+ *
+ *   How much has to change depends on how far apart the two modes are, and
+ *   this decides that rather than making the caller know:
+ *
+ *     - Modes that share a geometry and a link rate differ only in frame
+ *       rate, and a frame rate is a register the sensor driver writes when the
+ *       stream starts.  The link rate, the capture geometry and the buffer
+ *       sizes are all the same, so nothing outside the sensor moves and this
+ *       is done.
+ *
+ *     - Modes with different geometries also differ in link rate, in the
+ *       geometry the capture engine is programmed with, and in the size of
+ *       the buffers it holds.  Both drivers are asked to move, and neither is
+ *       taken down: the lane rate is a PHY power cycle and the geometry is a
+ *       buffer change, so the block's clocks, resets, power domain,
+ *       interrupt and 3A device all stay exactly as they were.
+ *
+ *   The lane rate goes first, because it is the D-PHY that has to be
+ *   reprogrammed before the sensor starts driving the lanes again.
+ *
+ *   The caller has to have closed the capture device first.  Not because the
+ *   drivers would be left inconsistent -- the 3A device now outlives a mode
+ *   change -- but because the sensor has to be stopped for the D-PHY to
+ *   accept new timing parameters at all.  The intended caller is the
+ *   application, between closing the camera and opening it again.
+ *
+ * Input Parameters:
+ *   index - The mode to switch to, one of the sensor's OV5647_MODE_*.
+ *
+ * Returned Value:
+ *   OK on success; a negated errno value on failure.  On failure the receive
+ *   chain is left as it was found, so the caller can carry on with the mode
+ *   that is still configured.
+ *
+ ****************************************************************************/
+
+int kickpi_k7_camera_set_mode(unsigned int index)
+{
+  FAR const struct ov5647_mode_s *mode = ov5647_mode(index);
+  FAR const struct ov5647_mode_s *current = ov5647_mode(g_kickpi_k7_cam_mode);
+  struct rk3576_csi_config csi;
+  struct rk3576_vicap_config vicap;
+  uint64_t started;
+  int ret;
+
+  if (mode == NULL)
+    {
+      _err("ERROR: camera mode %u does not exist\n", index);
+      return -EINVAL;
+    }
+
+  if (index == g_kickpi_k7_cam_mode)
+    {
+      return OK;
+    }
+
+  /* A change of frame rate alone never leaves the sensor.  It is worth
+   * recognising rather than treating as a small mode change: it is the one
+   * transition that cannot fail, cannot lose the stream for longer than the
+   * sensor takes to reload its frame length, and needs no buffers moved.
+   */
+
+  if (current != NULL && mode->width == current->width &&
+      mode->height == current->height && mode->link_freq == current->link_freq)
+    {
+      g_kickpi_k7_cam_mode = index;
+
+      _info("kickpi-k7: camera mode %u (%ux%u @ %u fps), link unchanged\n",
+            index, (unsigned int)mode->width, (unsigned int)mode->height,
+            (unsigned int)mode->fps);
+      return OK;
+    }
+
+  /* A different geometry, and with it a different link rate and a different
+   * set of frame buffers.
+   *
+   * Both are changed in place rather than by taking the receive chain down
+   * and building it again.  The chain's clocks, resets, power domain,
+   * interrupt and 3A control device do not depend on the geometry, so
+   * releasing and re-acquiring them buys nothing and costs a window in which
+   * the camera does not exist; and each of those steps is code that only ever
+   * runs on a mode change, which is the worst place for it to be wrong.
+   *
+   * The lane rate goes first.  It is the D-PHY that has to be reprogrammed
+   * before the sensor starts driving the lanes, and the sensor is not
+   * streaming here -- the capture device is closed, which is what "not
+   * streaming" means, and it is also what makes the lanes sit in the stop
+   * state the PHY wants for new timing parameters.
+   */
+
+  kickpi_k7_camera_csi_config(index, &csi);
+  kickpi_k7_camera_vicap_config(index, &vicap);
+
+  started = kickpi_k7_camera_now_us();
+
+  ret = rk3576_csi_host_set_lane_rate(csi.hs_rate);
+  if (ret < 0)
+    {
+      _err("ERROR: camera failed to move CSI HOST0 to %u Hz/lane for mode"
+           " %u: %d\n",
+           (unsigned int)csi.hs_rate, index, ret);
+      return ret;
+    }
+
+  _info("kickpi-k7: lane rate to %u Hz took %" PRIu64 " ms\n",
+        (unsigned int)csi.hs_rate,
+        (kickpi_k7_camera_now_us() - started) / 1000u);
+
+  ret = rk3576_vicap_reconfigure(&vicap);
+  if (ret < 0)
+    {
+      _err("ERROR: camera failed to reconfigure VICAP for mode %u: %d\n",
+           index, ret);
+
+      /* The capture engine refused, so the mode is not changing and the link
+       * rate must not be left at the rate that belongs to a mode nothing else
+       * was moved to.  Put it back, and report the failure the caller cares
+       * about rather than whatever that put-back returns.
+       */
+
+      if (current != NULL)
+        {
+          (void)rk3576_csi_host_set_lane_rate(2u * current->link_freq);
+        }
+
+      return ret;
+    }
+
+  /* Only now is the change complete, so only now is it recorded.  The
+   * elapsed time is reported for the same reason the two steps above are
+   * timed: a change of mode is the one path in this driver that only runs
+   * when someone asks for it, so it is the one path with no frame rate to
+   * notice a stall against, and a switch that takes seconds looks from the
+   * application exactly like a board that has gone away.
+   *
+   * Recording it is what makes the next switch decide correctly.  Leaving it
+   * out does not fail here -- it fails on the switch after, when the "only
+   * the frame rate changed" test compares the new mode against a mode the
+   * board stopped being on, decides nothing needs reconfiguring, and leaves
+   * the capture engine on a geometry the sensor is no longer producing.
+   */
+
+  g_kickpi_k7_cam_mode = index;
+
+  _info("kickpi-k7: camera mode %u (%ux%u @ %u fps), link %u Hz,"
+        " reconfigure %" PRIu64 " ms\n",
+        index, (unsigned int)mode->width, (unsigned int)mode->height,
+        (unsigned int)mode->fps, (unsigned int)csi.hs_rate,
+        (kickpi_k7_camera_now_us() - started) / 1000u);
 
   return OK;
 }

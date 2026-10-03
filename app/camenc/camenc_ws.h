@@ -260,6 +260,26 @@ void camenc_ws_set_command(FAR struct camenc_ws_s *ws, camenc_ws_cmd_t fn,
 
 void camenc_ws_stop(FAR struct camenc_ws_s *ws);
 
+/* Close every connection but leave the server listening.
+ *
+ * Used when the stream changes shape underneath the clients.  A new frame size
+ * means a new initialisation segment and a different sample description, and a
+ * browser that keeps appending to the one SourceBuffer it built from the old
+ * codec configuration ends up with a buffer that cannot describe both.  There
+ * is no message that tells it to start again -- the remedy is the one every
+ * page already has for a server that went away, which is to reconnect -- so
+ * the connections are closed and the page rebuilds.
+ *
+ * The cached initialisation segment goes with them, because it describes the
+ * stream that has ended; a client that reconnects before the next one has
+ * produced its own would otherwise be started on the wrong picture size.
+ *
+ * The transmit buffers are kept: they belong to the slot rather than to the
+ * connection, and a client that comes back gets one that is already there.
+ */
+
+void camenc_ws_drop_clients(FAR struct camenc_ws_s *ws);
+
 /* Service the server: accept new connections, read what clients have sent
  * (which is how their going away is noticed), and push out what is queued.
  *

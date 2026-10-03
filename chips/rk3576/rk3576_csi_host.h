@@ -130,6 +130,37 @@ int rk3576_csi_host_initialize(FAR const struct rk3576_csi_config *config);
 int rk3576_csi_host_uninitialize(void);
 
 /****************************************************************************
+ * Name: rk3576_csi_host_set_lane_rate
+ *
+ * Description:
+ *   Change the rate the D-PHY RX lanes run at, leaving the controller and
+ *   everything else about it alone.
+ *
+ *   The lane rate is the one thing a capture mode can change that the
+ *   receiver cares about but the controller does not: the lane count, the
+ *   CSI-2 mode and the error masks are all the same afterwards, and only the
+ *   PHY's per-rate timing parameters differ.  So this is a power cycle of the
+ *   RX lanes rather than a bring-up, and it exists so that a mode change does
+ *   not have to take the whole receive chain down and build it again.
+ *
+ *   The controller is held in reset across the change, and the new rate is
+ *   only accepted while the lanes are in the stop state -- which means the
+ *   sensor must not be streaming.  Closing the capture device is what
+ *   guarantees that in practice.
+ *
+ * Input Parameters:
+ *   hs_rate - New per-lane high-speed data rate in Hz.  This is twice the
+ *             MIPI link frequency, because the link is double data rate.
+ *
+ * Returned Value:
+ *   OK on success; a negated errno value on failure.  -ENODEV if the
+ *   controller has not been initialised.
+ *
+ ****************************************************************************/
+
+int rk3576_csi_host_set_lane_rate(uint32_t hs_rate);
+
+/****************************************************************************
  * Name: rk3576_csi_host_get_phy_state / _get_err1 / _get_err2
  *
  * Description:

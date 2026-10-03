@@ -87,9 +87,24 @@
 #define RK3576_DCPHY_M_RESETN_BIT (3)
 #define RK3576_DCPHY_S_RESETN_BIT (4)
 
-/* Poll timeout for PLL lock / PHY ready. */
+/* Poll timeout for PLL lock / PHY ready.
+ *
+ * A microsecond does not come in ones: up_udelay(1) costs a call and a
+ * calibration lookup as well as the microsecond it waits for, so a loop of a
+ * million of them runs for something closer to twenty seconds than to the one
+ * second the count suggests.  That mattered: a caller can be the application
+ * changing the camera's mode, and it is blocked for the whole of this --
+ * including the server it is also running, so a switch that could not bring
+ * the PHY up looked to a browser like a board that had gone away.
+ *
+ * The timeout is stated as a time and stepped in tens of microseconds, which
+ * is what makes the arithmetic above honest.  A second is generous by orders
+ * of magnitude for a PLL lock or a lane reaching its ready state; what it is
+ * for is bounding a failure, not accommodating one.
+ */
 
-#define RK3576_DCPHY_POLL_LOOPS (1000000)
+#define RK3576_DCPHY_POLL_STEP_US 10
+#define RK3576_DCPHY_POLL_LOOPS   (100000) /* 100000 * 10 us = 1 s */
 
 /* D-PHY reference clock (24 MHz oscillator). */
 
@@ -660,7 +675,7 @@ static int rk3576_dcphy_wait_pll_lock(struct rk3576_dcphy_s *priv)
           return OK;
         }
 
-      up_udelay(1);
+      up_udelay(RK3576_DCPHY_POLL_STEP_US);
     }
 
   return -ETIMEDOUT;
@@ -682,7 +697,7 @@ static int rk3576_dcphy_wait_lane_ready(uintptr_t base, uint32_t gnr_con0)
           return OK;
         }
 
-      up_udelay(1);
+      up_udelay(RK3576_DCPHY_POLL_STEP_US);
     }
 
   return -ETIMEDOUT;

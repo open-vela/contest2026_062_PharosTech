@@ -129,8 +129,23 @@
 #define RK3576_VICAP_MIPI_CTRL_DMA_RST             (1u << 16)
 #define RK3576_VICAP_MIPI_CTRL_SOFT_RST            (1u << 17)
 #define RK3576_VICAP_MIPI_CTRL_SOFT_RST_MODE_SHIFT 18
+#define RK3576_VICAP_MIPI_CTRL_SOFT_RST_MODE_MASK  (3u << 18)
 #define RK3576_VICAP_MIPI_CTRL_WATER_LINE_SHIFT    20
 #define RK3576_VICAP_MIPI_CTRL_DEBUG_EN            (1u << 31)
+
+/* What sw_soft_rst_mode selects.
+ *
+ * The two preserving modes exist for the path into the ISP, which has frames
+ * of its own to keep intact.  This driver writes RAW to DDR and never uses
+ * that path, so the plain reset is the one it wants -- and it is the one to
+ * ask for explicitly, because the field's reset value names a preserving mode
+ * and a reset that waits for a frame boundary is a reset that never happens on
+ * an idle path.
+ */
+
+#define RK3576_VICAP_MIPI_CTRL_SOFT_RST_MODE_PRESERVE          0u
+#define RK3576_VICAP_MIPI_CTRL_SOFT_RST_MODE_PRESERVE_DROP_CAP 1u
+#define RK3576_VICAP_MIPI_CTRL_SOFT_RST_MODE_DIRECT            2u
 
 /* Frame buffer addresses, ping-pong: the hardware alternates FRAME0 (even)
  * frames and FRAME1 (odd) frames by itself, so the driver only has to give

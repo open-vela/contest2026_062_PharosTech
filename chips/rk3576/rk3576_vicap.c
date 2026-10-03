@@ -132,7 +132,14 @@
 
 #define RK3576_VICAP_PMU_HWM(bits)                ((bits) << 16)
 
-#define RK3576_VICAP_PMU_POLL_LOOPS               1000000
+/* Poll step for the power domain coming up.  A microsecond does not come in
+ * ones -- up_udelay(1) costs a call as well as the wait -- so the step and the
+ * count are stated separately, and the product is the timeout.  A million
+ * singles is not a second in practice; it is closer to twenty.
+ */
+
+#define RK3576_VICAP_PMU_POLL_STEP_US 10
+#define RK3576_VICAP_PMU_POLL_LOOPS   (100000) /* 10 us * 1e5 = 1 s */
 
 /* VICAP core clock.
  *
@@ -241,15 +248,27 @@
  * interval is an average rather than this frame's, it came from a previous
  * frame, and the worker can be scheduled late.
  *
- * A wrong answer here is not a slow frame but a torn one, so the factor has
- * to leave room for the worker being delayed.  At 1296x960 the demosaic is
- * about 15 ms against a 32 ms interval, so it uses about 47% of the real
- * window and a factor of 2 admits it; a factor of 3 does not, which is why
- * this board used to copy every frame.  The worker sharing one core with the
- * application is what the remaining headroom is exposed to, and the
- * post-read boundary check below is what catches it if that exposure is ever
- * taken -- at the cost of one torn frame, after which this stream keeps
- * copying.
+ * A wrong answer here is not a slow frame but a torn one, and the check that
+ * is meant to catch it cannot.  That check compares the DMA-end count either
+ * side of the read, and a DMA end is raised when a write *finishes* -- so a
+ * write that has begun into the buffer being read, but has not finished
+ * before the read does, raises nothing and is counted as no race at all.
+ * The read would then be of a buffer that is partly one frame and partly
+ * another, which is a region at a different level, on the frames where it
+ * happens, alternating with the buffer it happens in -- and none of that is
+ * something the check can see.
+ *
+ * Three is therefore the value in use: it does not admit a demosaic that
+ * takes more than a third of the interval, which at 1296x960 (15 ms against
+ * 31 ms) means every frame is copied rather than read in place.  Copying
+ * costs about 8 ms a frame and drops the stream to 26 fps, which is why the
+ * value below is two.
+ *
+ * That experiment has been run, and the answer was no: with every frame
+ * copied, so that the demosaic could not have been reading a buffer the DMA
+ * was writing, the fault was still there.  The read path is not where this
+ * comes from, and the question above about the check's blind spot, while
+ * still true, is no longer what is being chased.
  */
 
 #define RK3576_VICAP_INPLACE_MARGIN 2u
@@ -315,6 +334,24 @@ struct rk3576_vicap_s
 
   struct work_s work;
   volatile int raw_pending; /* RAW buffer index awaiting demosaic, -1 none */
+
+  /* The ping-pong buffer the last DMA end landed in.
+   *
+   * The pair alternates, and the hardware says which one finished by setting
+   * that buffer's interrupt bit -- which is enough while the handler keeps up.
+   * It is not enough when it does not: two frames can finish before this runs,
+   * both bits arrive together, and the bits carry no order, so reading one of
+   * them picks a buffer by accident.  Half the time that is the one the DMA is
+   * writing into at that moment, and demosaicing it yields a frame whose top
+   * rows belong to the previous picture -- a torn frame, which is what a
+   * horizontal band of rubbish at the top and a broken Bayer grid look like.
+   *
+   * Remembering the last index is what makes the both-set case decidable: the
+   * pair alternates, so the newer of the two is the other one.
+   */
+
+  volatile int dma_idx; /* -1 until the first DMA end of a stream */
+
   volatile bool frame_scheduled;
 
   /* Bumped on every start and every stop.  A frame carries the value it was
@@ -341,7 +378,18 @@ struct rk3576_vicap_s
   uint32_t drop_stale;   /* Stream ended under the frame */
   uint32_t drop_queue;   /* Work queue refused the frame */
   uint32_t errstat;      /* Sticky OR of VICAP error interrupt bits */
-  uint32_t frame_us;     /* Accumulated CPU time spent producing frames */
+
+  /* The error bits already reported to the log.
+   *
+   * The sticky mask above is the record; this is the record of what has been
+   * said about it.  Keeping the two apart is what lets the report be made
+   * from the worker rather than from the interrupt -- a bit set while the
+   * worker is printing is still unseen and is picked up on the next frame,
+   * where a read-and-clear would lose it.
+   */
+
+  uint32_t errstat_reported;
+  uint32_t frame_us; /* Accumulated CPU time spent producing frames */
 
   /* Frame boundaries seen, counted where they are noticed.  A copy taken
    * across one of these may straddle two frames, so comparing the count
@@ -552,7 +600,7 @@ static int rk3576_vicap_power_domain_on(void)
           return OK;
         }
 
-      up_udelay(1);
+      up_udelay(RK3576_VICAP_PMU_POLL_STEP_US);
     }
 
   _err("ERROR: VICAP PD_VI never reported powered up\n");
@@ -1695,6 +1743,77 @@ static void rk3576_vicap_debayer(FAR struct rk3576_vicap_s *priv,
 }
 
 /****************************************************************************
+ * Name: rk3576_vicap_report_errors
+ *
+ * Description:
+ *   Say, once, which error conditions the interface has reported.
+ *
+ *   The block reports the things that mean "the picture is wrong" rather than
+ *   "the picture arrived": a FIFO that overflowed, bandwidth the DMA could not
+ *   keep up with, and a frame whose size was not the size the capture path was
+ *   told to expect.  They are the hardware's own account of a frame that is
+ *not what it should be, which is the only account available for a fault whose
+ *   symptom is in the pixels.
+ *
+ *   Saying it as it happens rather than only in the closing dump is the point.
+ *   A size error is what a frame boundary that lands on the wrong line looks
+ *   like from here, and the picture that follows has its row and column parity
+ *   shifted: the wrong colour, with the first row belonging to the frame
+ *before. That symptom invites a search through the demosaic and the sensor,
+ *neither of which is where the fault is.
+ *
+ *   Called from the worker, not the interrupt, and only for bits that have not
+ *   been reported before.
+ *
+ ****************************************************************************/
+
+static void rk3576_vicap_report_errors(FAR struct rk3576_vicap_s *priv)
+{
+  uint32_t fresh;
+
+  fresh = priv->errstat & ~priv->errstat_reported;
+
+  if (fresh == 0u)
+    {
+      return;
+    }
+
+  priv->errstat_reported |= fresh;
+
+  if ((fresh & RK3576_VICAP_MIPI_INT_DMA_Y_FIFO_OVF) != 0u)
+    {
+      _err("ERROR: VICAP luma FIFO overflowed -- the DMA is not keeping up "
+           "with the interface\n");
+    }
+
+  if ((fresh & RK3576_VICAP_MIPI_INT_DMA_UV_FIFO_OVF) != 0u)
+    {
+      _err("ERROR: VICAP chroma FIFO overflowed -- the DMA is not keeping up "
+           "with the interface\n");
+    }
+
+  if ((fresh & RK3576_VICAP_MIPI_INT_BANDWIDTH_LACK) != 0u)
+    {
+      _err("ERROR: VICAP reported insufficient bandwidth\n");
+    }
+
+  if ((fresh & RK3576_VICAP_MIPI_INT_CSI2RX_FIFO_OVF) != 0u)
+    {
+      _err("ERROR: VICAP CSI-2 receive FIFO overflowed\n");
+    }
+
+  if ((fresh & RK3576_VICAP_MIPI_INT_SIZE_ERR_ID0) != 0u)
+    {
+      _err("ERROR: VICAP received a frame whose size is not the %ux%u it was "
+           "configured for.  This is what a frame boundary that lands on the "
+           "wrong line looks like from here, and the picture that follows has "
+           "its row parity shifted -- the wrong colour, with the first row "
+           "belonging to the frame before\n",
+           priv->cfg.width, priv->cfg.height);
+    }
+}
+
+/****************************************************************************
  * Name: rk3576_vicap_worker
  *
  * Description:
@@ -1720,6 +1839,13 @@ static void rk3576_vicap_worker(FAR void *arg)
   bool inplace;
   int idx;
   irqstate_t flags;
+
+  /* Say what the interface has reported since the last frame, if anything.
+   * Done here rather than in the interrupt so that the printing -- which goes
+   * to a console that may block -- stays off the interrupt path.
+   */
+
+  rk3576_vicap_report_errors(priv);
 
   /* Claim this frame together with the buffer the framework has offered for
    * it.
@@ -1959,8 +2085,36 @@ static int rk3576_vicap_isr(int irq, FAR void *context, FAR void *arg)
   if ((status & (RK3576_VICAP_MIPI_INT_FRAME0_DMA_END_ID0 |
                  RK3576_VICAP_MIPI_INT_FRAME1_DMA_END_ID0)) != 0)
     {
-      int idx =
-          (status & RK3576_VICAP_MIPI_INT_FRAME0_DMA_END_ID0) != 0 ? 0 : 1;
+      bool both = (status & (RK3576_VICAP_MIPI_INT_FRAME0_DMA_END_ID0 |
+                             RK3576_VICAP_MIPI_INT_FRAME1_DMA_END_ID0)) ==
+                  (RK3576_VICAP_MIPI_INT_FRAME0_DMA_END_ID0 |
+                   RK3576_VICAP_MIPI_INT_FRAME1_DMA_END_ID0);
+      int idx;
+
+      if (both)
+        {
+          /* Two boundaries in one interrupt: this handler did not run between
+           * them, so a frame was missed.  The bits say which buffers finished
+           * but not in what order, and the pair alternates -- so the newer is
+           * the one the last DMA end was not.
+           *
+           * Counted as an overrun rather than ignored: a frame nobody
+           * demosaiced is exactly what the figure is for, and a stream that
+           * reports none while producing torn pictures would be a report that
+           * argues against its own evidence.
+           */
+
+          priv->dropcount++;
+          priv->drop_overrun++;
+          idx = priv->dma_idx >= 0 ? !priv->dma_idx : 0;
+        }
+      else
+        {
+          idx =
+              (status & RK3576_VICAP_MIPI_INT_FRAME0_DMA_END_ID0) != 0 ? 0 : 1;
+        }
+
+      priv->dma_idx = idx;
 
       /* Count the boundary where it is noticed, so the demosaic can tell
        * whether a copy straddled one.
@@ -2019,6 +2173,10 @@ static int rk3576_vicap_isr(int irq, FAR void *context, FAR void *arg)
        * healthy frame, so OR-ing the whole status in would leave the
        * diagnostic permanently non-zero and hide whether anything is
        * actually wrong.
+       *
+       * Only recorded here.  Saying it is the worker's job: printing from an
+       * interrupt handler means writing to a console that may block, on a
+       * path that has already shown it can fall behind.
        */
 
       priv->errstat |= (status & RK3576_VICAP_MIPI_INT_ERRORS);
@@ -2296,10 +2454,13 @@ static int rk3576_vicap_start_capture(FAR struct imgdata_s *data,
   priv->arg = arg;
   priv->capturing = true;
   priv->raw_pending = -1;
+  priv->dma_idx = -1;
   priv->frame_scheduled = false;
   priv->errstat = 0;
+  priv->errstat_reported = 0;
   priv->fs_count = 0;
   priv->fe_count = 0;
+  priv->isr_frames = 0;
   priv->stream_epoch++;
 
   /* The two measurements the in-place decision is made from start empty, so
@@ -2357,6 +2518,61 @@ static int rk3576_vicap_start_capture(FAR struct imgdata_s *data,
   /* Drop anything a previous run may have left pending. */
 
   rk3576_vicap_putreg(base, RK3576_VICAP_MIPI_INTSTAT(input), 0xffffffffu);
+
+  /* Reset the interface and its DMA before programming them.
+   *
+   * The interface keeps its own idea of where a frame begins, and that idea
+   * outlives a stream.  A sensor restarted between streams is not a receiver
+   * restarted with it, so the receiver's boundary can lock onto the truncated
+   * first frame the restart produces -- and because the DMA is told to follow
+   * the boundary (sw_dma_adapt_en), everything the receiver then carries is
+   * displaced by that one line.
+   *
+   * What that looks like is worth stating, because it names none of this: the
+   * picture keeps its brightness and loses its colour, gains a fine grid over
+   * it, and has a first row belonging to the frame before.  The demosaic is
+   * reading the right order at the wrong phase -- one line of displacement
+   * puts the sites it calls red and blue both on green -- so no white balance
+   * setting improves it and nothing fails.  The frame counters agree
+   * throughout, which is why this is worth resetting on the way in rather
+   * than diagnosing on the way out.
+   *
+   * The reset covers the interface and its DMA but not the register file, so
+   * the geometry and addresses programmed below survive it.  It is done first
+   * so that what gets programmed is what the fresh state sees.
+   *
+   * A stream that begins on a receiver that has just been initialised comes
+   * out right, and that is the state this reproduces for every stream: the
+   * same reset the power-on path leaves behind.  Nothing here is specific to
+   * a geometry or a frame rate -- the displacement follows where the boundary
+   * was left, not how long the frame is.
+   */
+
+  {
+    uint32_t saved = rk3576_vicap_getreg(base, RK3576_VICAP_MIPI_CTRL(input));
+
+    rk3576_vicap_putreg(
+        base, RK3576_VICAP_MIPI_CTRL(input),
+        (saved & ~RK3576_VICAP_MIPI_CTRL_SOFT_RST_MODE_MASK) |
+            ((uint32_t)RK3576_VICAP_MIPI_CTRL_SOFT_RST_MODE_DIRECT
+             << RK3576_VICAP_MIPI_CTRL_SOFT_RST_MODE_SHIFT) |
+            RK3576_VICAP_MIPI_CTRL_SOFT_RST | RK3576_VICAP_MIPI_CTRL_DMA_RST);
+
+    /* Long enough for a reset of the block's own clock domain to settle, and
+     * short enough that it cannot be mistaken for a frame's worth of time.
+     */
+
+    up_udelay(10);
+
+    /* Releasing dma_rst is what completes the DMA's reset, and restoring the
+     * saved value is what keeps the drop-frame counters and cap_en as they
+     * were rather than zeroing them.
+     */
+
+    rk3576_vicap_putreg(base, RK3576_VICAP_MIPI_CTRL(input),
+                        saved & ~(RK3576_VICAP_MIPI_CTRL_SOFT_RST |
+                                  RK3576_VICAP_MIPI_CTRL_DMA_RST));
+  }
 
   rk3576_vicap_input_configure(priv);
 
@@ -2429,7 +2645,8 @@ static void rk3576_vicap_dump_locked(FAR struct rk3576_vicap_s *priv)
   uint32_t sum = 0;
   uint32_t n = 0;
   uint32_t unaligned = 0;
-  uint32_t first_unaligned = 0;
+  int first_unaligned_row = -1;
+  int first_unaligned_col = -1;
   unsigned int i;
 
   size_num = rk3576_vicap_getreg(base, RK3576_VICAP_MIPI_SIZE_NUM_ID0(input) +
@@ -2599,49 +2816,79 @@ static void rk3576_vicap_dump_locked(FAR struct rk3576_vicap_s *priv)
           (uint32_t)(csum[2] / cnum[2]), (uint32_t)(csum[3] / cnum[3]));
   }
 
-  for (i = 0; i < (unsigned int)(priv->rawlen / 2u); i++)
-    {
-      uint16_t v = ((FAR const uint16_t *)priv->raw[0])[i];
+  /* Scan only the pixels the sensor filled.
+   *
+   * The stride is wider than the frame -- 1312 pixels carrying 1296 -- and
+   * the allocation is taller than the frame, so walking the whole buffer
+   * counts two regions no one ever wrote: the sixteen pixels of padding at
+   * the end of every row, and the sixty-four slack rows below the picture.
+   * Whatever the DMA heap happened to contain there is not raw data and
+   * cannot be unaligned raw data either, and counting it made this figure
+   * read in the tens of thousands on every healthy frame -- which is the
+   * same as not having it.
+   *
+   * Over the active area it means what it says, and it is the one check here
+   * that looks at the sensor's own words rather than at anything derived
+   * from them: a DMA that drops or misplaces part of a line leaves words
+   * whose low six bits are not clear.  A non-zero count over the picture is
+   * therefore a capture fault, and the first one's position says where.
+   */
 
-      /* Uncompacted RAW10 is written high-aligned, so the sample occupies
-       * bits [15:6] and the low six bits are left clear.  A word that breaks
-       * that is not a pixel value at all, however plausible its magnitude
-       * looks, so it is counted and kept out of the range below -- otherwise
-       * one stray word decides what the frame's peak signal appears to be.
-       */
+  {
+    FAR const uint16_t *rp = (FAR const uint16_t *)priv->raw[0];
+    size_t stride_px = priv->stride / 2u;
+    int row;
+    int col;
 
-      if ((v & 0x3fu) != 0u)
-        {
-          if (unaligned == 0u)
-            {
-              first_unaligned = (uint32_t)i;
-            }
+    for (row = 0; row < (int)priv->cfg.height; row++)
+      {
+        for (col = 0; col < (int)priv->cfg.width; col++)
+          {
+            uint16_t v = rp[(size_t)row * stride_px + (size_t)col];
 
-          unaligned++;
-          continue;
-        }
+            /* Uncompacted RAW10 is written high-aligned, so the sample
+             * occupies bits [15:6] and the low six bits are left clear.  A
+             * word that breaks that is not a pixel value at all, however
+             * plausible its magnitude looks, so it is counted and kept out
+             * of the range below -- otherwise one stray word decides what
+             * the frame's peak signal appears to be.
+             */
 
-      /* Report the range in the sensor's own units, where full scale is
-       * 1023.  That is the number that says whether the light reaching the
-       * sensor is anywhere near filling it, which absolute 16-bit words do
-       * not make obvious.
-       */
+            if ((v & 0x3fu) != 0u)
+              {
+                if (unaligned == 0u)
+                  {
+                    first_unaligned_row = row;
+                    first_unaligned_col = col;
+                  }
 
-      v >>= 6;
+                unaligned++;
+                continue;
+              }
 
-      if (v < lo)
-        {
-          lo = v;
-        }
+            /* Report the range in the sensor's own units, where full scale
+             * is 1023.  That is the number that says whether the light
+             * reaching the sensor is anywhere near filling it, which
+             * absolute 16-bit words do not make obvious.
+             */
 
-      if (v > hi)
-        {
-          hi = v;
-        }
+            v >>= 6;
 
-      sum += v;
-      n++;
-    }
+            if (v < lo)
+              {
+                lo = v;
+              }
+
+            if (v > hi)
+              {
+                hi = v;
+              }
+
+            sum += v;
+            n++;
+          }
+      }
+  }
 
   /* Peak and mean in sensor units.  A capture that is merely dim shows a
    * low peak; one that is broken or unlit shows a peak sitting on the black
@@ -2650,8 +2897,9 @@ static void rk3576_vicap_dump_locked(FAR struct rk3576_vicap_s *priv)
    */
 
   _info("VICAP: raw[0] peak %" PRIu32 "/1023, min %" PRIu32 ", mean %" PRIu32
-        ", unaligned words %" PRIu32 " (first at %" PRIu32 ")\n",
-        hi, lo, n > 0 ? sum / n : 0u, unaligned, first_unaligned);
+        ", unaligned words %" PRIu32 " (first at row %d col %d)\n",
+        hi, lo, n > 0 ? sum / n : 0u, unaligned, first_unaligned_row,
+        first_unaligned_col);
 
   _info("VICAP: wb gains %" PRIu32 "/256 %" PRIu32 "/256 %" PRIu32 "/256\n",
         priv->wb[0], priv->wb[1], priv->wb[2]);
@@ -2880,6 +3128,146 @@ static int rk3576_vicap_cam3a_register(void)
 }
 
 /****************************************************************************
+ * Name: rk3576_vicap_buffers_free
+ *
+ * Description:
+ *   Hand back the frame buffers and the demosaic copy.  The caller must hold
+ *   the driver lock, and must have stopped the capture path first: these are
+ *   the addresses the DMA writes to.
+ *
+ ****************************************************************************/
+
+static void rk3576_vicap_buffers_free(FAR struct rk3576_vicap_s *priv)
+{
+  unsigned int i;
+
+  for (i = 0; i < RK3576_VICAP_NBUF; i++)
+    {
+      if (priv->raw[i] != NULL)
+        {
+          rk3576_dma_free(priv->raw[i], priv->dmaalloc);
+          priv->raw[i] = NULL;
+        }
+    }
+
+  if (priv->snap != NULL)
+    {
+      kmm_free(priv->snap);
+      priv->snap = NULL;
+    }
+}
+
+/****************************************************************************
+ * Name: rk3576_vicap_buffers_alloc
+ *
+ * Description:
+ *   Work out the frame layout a mode needs and allocate for it.  The caller
+ *   must hold the driver lock and must have stopped the capture path, and
+ *   must release the buffers the driver is holding itself.
+ *
+ *   The new buffers are obtained into locals and only published once every
+ *   one of them has succeeded.  That ordering is what makes this safe to run
+ *   on a driver that is already up: a failure halfway leaves the driver's own
+ *   pointers and sizes exactly as they were, so a caller that was receiving
+ *   frames can carry on receiving them instead of being left with nothing.
+ *
+ *   The DMA is pointed straight at physical DDR addresses, so the frame
+ *   buffers come from the DMA heap: physically contiguous, below 4GB and
+ *   already 64-byte aligned.  The demosaic copy is ordinary memory -- nothing
+ *   but the CPU touches it -- and is aligned to a cache line for tidiness
+ *   rather than necessity.
+ *
+ * Input Parameters:
+ *   priv   - Driver state.  Its stride, rawlen, dmaalloc, raw[] and snap are
+ *            replaced on success and left untouched on failure.
+ *   config - The mode to lay the buffers out for.
+ *
+ * Returned Value:
+ *   OK on success; -ENOMEM if the heaps could not supply the buffers.
+ *
+ ****************************************************************************/
+
+static int
+rk3576_vicap_buffers_alloc(FAR struct rk3576_vicap_s *priv,
+                           FAR const struct rk3576_vicap_config *config)
+{
+  FAR uint8_t *raw[RK3576_VICAP_NBUF];
+  FAR uint8_t *snap = NULL;
+  uint32_t raw_stride;
+  size_t stride;
+  size_t rawlen;
+  size_t dmaalloc;
+  unsigned int i;
+
+  /* RAW frame geometry.  Uncompacted samples take one 16-bit word each;
+   * compacted RAW10 packs four samples into five bytes.
+   */
+
+  if (config->uncompact)
+    {
+      raw_stride = (uint32_t)config->width * 2u;
+    }
+  else
+    {
+      raw_stride =
+          ((uint32_t)config->width * (uint32_t)config->raw_bits + 7u) / 8u;
+    }
+
+  stride = (raw_stride + RK3576_VICAP_STRIDE_ALIGN - 1u) &
+           ~(RK3576_VICAP_STRIDE_ALIGN - 1u);
+  rawlen = stride * config->height;
+  dmaalloc = stride * (config->height + RK3576_VICAP_DMA_SLACK_LINES);
+
+  for (i = 0; i < RK3576_VICAP_NBUF; i++)
+    {
+      raw[i] = NULL;
+    }
+
+  for (i = 0; i < RK3576_VICAP_NBUF; i++)
+    {
+      raw[i] = rk3576_dma_alloc(dmaalloc);
+      if (raw[i] == NULL)
+        {
+          _err("ERROR: VICAP out of DMA heap (%zu bytes x %u)\n", dmaalloc,
+               (unsigned int)RK3576_VICAP_NBUF);
+          goto errout;
+        }
+    }
+
+  snap = kmm_memalign(64, rawlen);
+  if (snap == NULL)
+    {
+      _err("ERROR: VICAP out of memory for a %zu-byte frame copy\n", rawlen);
+      goto errout;
+    }
+
+  /* Everything was obtained, so the driver's own layout can be replaced. */
+
+  priv->stride = stride;
+  priv->rawlen = rawlen;
+  priv->dmaalloc = dmaalloc;
+
+  for (i = 0; i < RK3576_VICAP_NBUF; i++)
+    {
+      priv->raw[i] = raw[i];
+    }
+
+  priv->snap = snap;
+  return OK;
+
+errout:
+  for (i = 0; i < RK3576_VICAP_NBUF; i++)
+    {
+      if (raw[i] != NULL)
+        {
+          rk3576_dma_free(raw[i], dmaalloc);
+        }
+    }
+
+  return -ENOMEM;
+}
+
+/****************************************************************************
  * Name: rk3576_vicap_initialize
  ****************************************************************************/
 
@@ -2887,7 +3275,6 @@ int rk3576_vicap_initialize(FAR const struct rk3576_vicap_config *config,
                             FAR struct imgdata_s **data)
 {
   FAR struct rk3576_vicap_s *priv = &g_vicap;
-  uint32_t raw_stride;
   int ret;
 
   if (config == NULL || data == NULL)
@@ -2916,26 +3303,6 @@ int rk3576_vicap_initialize(FAR const struct rk3576_vicap_config *config,
   priv->base = RK3576_VICAP_ADDR;
   priv->cfg = *config;
 
-  /* RAW frame geometry.  Uncompacted samples take one 16-bit word each;
-   * compacted RAW10 packs four samples into five bytes.
-   */
-
-  if (config->uncompact)
-    {
-      raw_stride = (uint32_t)config->width * 2u;
-    }
-  else
-    {
-      raw_stride =
-          ((uint32_t)config->width * (uint32_t)config->raw_bits + 7u) / 8u;
-    }
-
-  priv->stride = (raw_stride + RK3576_VICAP_STRIDE_ALIGN - 1u) &
-                 ~(RK3576_VICAP_STRIDE_ALIGN - 1u);
-  priv->rawlen = (size_t)priv->stride * config->height;
-  priv->dmaalloc =
-      (size_t)priv->stride * (config->height + RK3576_VICAP_DMA_SLACK_LINES);
-
   /* Bring the power domain up before touching any register in it: until the
    * initial reset is released the whole domain reads back zero.
    */
@@ -2954,38 +3321,9 @@ int rk3576_vicap_initialize(FAR const struct rk3576_vicap_config *config,
       goto errout_unlock;
     }
 
-  /* The DMA is pointed straight at physical DDR addresses, so the frame
-   * buffers have to come from the DMA heap: physically contiguous, below
-   * 4GB and already 64-byte aligned.
-   */
-
-  {
-    unsigned int i;
-
-    for (i = 0; i < RK3576_VICAP_NBUF; i++)
-      {
-        priv->raw[i] = rk3576_dma_alloc(priv->dmaalloc);
-        if (priv->raw[i] == NULL)
-          {
-            _err("ERROR: VICAP out of DMA heap (%zu bytes x %u)\n",
-                 priv->dmaalloc, (unsigned int)RK3576_VICAP_NBUF);
-            ret = -ENOMEM;
-            goto errout_free;
-          }
-      }
-  }
-
-  /* The demosaic works on a copy rather than on a DMA buffer directly, so
-   * this one is ordinary memory: nothing but the CPU touches it.  It is
-   * aligned to a cache line for tidiness rather than necessity.
-   */
-
-  priv->snap = kmm_memalign(64, priv->rawlen);
-  if (priv->snap == NULL)
+  ret = rk3576_vicap_buffers_alloc(priv, config);
+  if (ret < 0)
     {
-      _err("ERROR: VICAP out of memory for a %zu-byte frame copy\n",
-           priv->rawlen);
-      ret = -ENOMEM;
       goto errout_free;
     }
 
@@ -3071,24 +3409,7 @@ int rk3576_vicap_initialize(FAR const struct rk3576_vicap_config *config,
   return OK;
 
 errout_free:
-  {
-    unsigned int i;
-
-    for (i = 0; i < RK3576_VICAP_NBUF; i++)
-      {
-        if (priv->raw[i] != NULL)
-          {
-            rk3576_dma_free(priv->raw[i], priv->dmaalloc);
-            priv->raw[i] = NULL;
-          }
-      }
-  }
-
-  if (priv->snap != NULL)
-    {
-      kmm_free(priv->snap);
-      priv->snap = NULL;
-    }
+  rk3576_vicap_buffers_free(priv);
 
   if (priv->iclk != NULL)
     {
@@ -3194,6 +3515,150 @@ int rk3576_vicap_uninitialize(void)
 
   unregister_driver(CAM3A_DEVPATH);
 
+  return OK;
+}
+
+/****************************************************************************
+ * Name: rk3576_vicap_reconfigure
+ ****************************************************************************/
+
+int rk3576_vicap_reconfigure(FAR const struct rk3576_vicap_config *config)
+{
+  FAR struct rk3576_vicap_s *priv = &g_vicap;
+  FAR uint8_t *oldraw[RK3576_VICAP_NBUF];
+  FAR uint8_t *oldsnap;
+  size_t olddmaalloc;
+  unsigned int i;
+  int ret;
+
+  if (config == NULL)
+    {
+      return -EINVAL;
+    }
+
+  if (config->input > RK3576_VICAP_INPUT_MIPI4 || config->id > 3 ||
+      config->width == 0 || config->height == 0 || (config->width & 3u) != 0)
+    {
+      return -EINVAL;
+    }
+
+  ret = nxmutex_lock(&priv->lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (!priv->initialized)
+    {
+      nxmutex_unlock(&priv->lock);
+      return -ENODEV;
+    }
+
+  /* Two things may not change here, and both are refused rather than
+   * attempted.
+   *
+   * A different input would be a different MIPI port, with its own clock
+   * gate, its own reset line and its own set of registers: that is a
+   * bring-up, not a reconfiguration.
+   *
+   * And a stream has to be off.  The frame buffers below are the addresses
+   * the DMA writes to, so replacing them under a running capture would hand
+   * the hardware memory that is no longer its own.
+   */
+
+  if (config->input != priv->cfg.input || config->id != priv->cfg.id)
+    {
+      _err("ERROR: VICAP cannot reconfigure from MIPI%u ID%u to MIPI%u ID%u;"
+           " that needs a bring-up\n",
+           (unsigned int)priv->cfg.input, (unsigned int)priv->cfg.id,
+           (unsigned int)config->input, (unsigned int)config->id);
+      nxmutex_unlock(&priv->lock);
+      return -EINVAL;
+    }
+
+  if (priv->capturing)
+    {
+      _err("ERROR: VICAP cannot reconfigure while a stream is running\n");
+      nxmutex_unlock(&priv->lock);
+      return -EBUSY;
+    }
+
+  /* Stop the path and drop anything it may have latched, so that nothing is
+   * still writing to the buffers that are about to go away.  Idempotent, and
+   * cheap next to what follows.
+   */
+
+  rk3576_vicap_input_disable(priv);
+
+  /* Obtain the new buffers before releasing the old ones.
+   *
+   * A frame that arrived despite the stop above would otherwise be able to
+   * write into a block that the heap had already taken back and handed to the
+   * next caller; in this order the worst it can reach is memory that is still
+   * VICAP's own and is about to be released anyway.
+   *
+   * The old buffers are kept here rather than read from the driver afterwards
+   * for a second reason: they have to be released with the size they were
+   * taken at, and the allocation is about to replace that size along with
+   * everything else.
+   */
+
+  for (i = 0; i < RK3576_VICAP_NBUF; i++)
+    {
+      oldraw[i] = priv->raw[i];
+    }
+
+  oldsnap = priv->snap;
+  olddmaalloc = priv->dmaalloc;
+
+  ret = rk3576_vicap_buffers_alloc(priv, config);
+  if (ret < 0)
+    {
+      /* Nothing was published and nothing was released, so the driver is
+       * still on the mode it had, buffers and all.  A reconfiguration that
+       * could not be afforded therefore does not cost the caller the stream
+       * it already had.
+       */
+
+      _err("ERROR: VICAP could not reconfigure to %ux%u: %d\n", config->width,
+           config->height, ret);
+      nxmutex_unlock(&priv->lock);
+      return ret;
+    }
+
+  for (i = 0; i < RK3576_VICAP_NBUF; i++)
+    {
+      if (oldraw[i] != NULL)
+        {
+          rk3576_dma_free(oldraw[i], olddmaalloc);
+        }
+    }
+
+  if (oldsnap != NULL)
+    {
+      kmm_free(oldsnap);
+    }
+
+  /* Only now, with buffers that belong to the new geometry in place, is the
+   * new geometry the one the driver is on.  Everything that reads the
+   * configuration per frame -- the demosaic, the white balance update, the
+   * frame validation -- follows it from here on.
+   */
+
+  priv->cfg = *config;
+
+  rk3576_vicap_mmu_configure(priv->base);
+  rk3576_vicap_input_configure(priv);
+
+  _info("VICAP: reconfigured to MIPI%u ID%u, %ux%u RAW%u %s%s, stride=%" PRIu32
+        ", frame=%zu bytes\n",
+        (unsigned int)config->input, (unsigned int)config->id, config->width,
+        config->height, (unsigned int)config->raw_bits,
+        config->uncompact ? "uncompact" : "compact",
+        (config->uncompact && config->align_high) ? " high-align" : "",
+        priv->stride, priv->rawlen);
+
+  nxmutex_unlock(&priv->lock);
   return OK;
 }
 

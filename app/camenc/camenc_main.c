@@ -72,6 +72,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/boardctl.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/time.h>
@@ -83,6 +84,7 @@
 #include "camenc_3a.h"
 #include "camenc_stream.h"
 #include "camenc_ws.h"
+#include "ov5647.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -98,32 +100,18 @@
  * sixteen.
  *
  * Named here rather than asked for, because the sensor reports neither.  The
- * exposure ceiling is the mode's VTS less a few lines; the driver clamps to
- * the same figure, so a loop that asks for more is corrected rather than
- * believed.
+ * exposure ceiling is a mode's own frame length less room to read out, which
+ * is OV5647_MODE_EXPOSURE_MAX() in the sensor's header -- it moves with the
+ * mode, so it is read from the mode in force rather than written down here.
+ * The driver clamps to the same figure, so a loop that asks for more is
+ * corrected rather than believed.
  */
 
 #define CAMENC_3A_EXPOSURE_MIN 4u
 
-/* The exposure ceiling follows the sensor's mode.  The sensor driver clamps
- * to the same figure, so a loop that asks for more is corrected rather than
- * believed.  VTS is the mode's vertical total: it is what bounds how long a
- * frame may integrate, and the driver reserves four lines for readout.
- *
- * The 60 fps VGA mode only has 500 usable lines, which is why it pins the
- * exposure and gain to their ceilings in low light; the ~30 fps 1296x960
- * mode has 1431, nearly three times as much.
- */
-
-#if defined(CONFIG_OV5647_MODE_1296x960)
-#define CAMENC_3A_EXPOSURE_MAX 1431u /* VTS - 4 in the 1296x960 mode */
-#else
-#define CAMENC_3A_EXPOSURE_MAX 500u /* VTS - 4 in the 640x480 mode */
-#endif
-
-#define CAMENC_3A_GAIN_MIN 16u
-#define CAMENC_3A_GAIN_MAX 1023u
-#define CAMENC_3A_GAIN_ONE 16u
+#define CAMENC_3A_GAIN_MIN     16u
+#define CAMENC_3A_GAIN_MAX     1023u
+#define CAMENC_3A_GAIN_ONE     16u
 
 /* The brightness the loop steers to, on the 0..255 scale the capture driver
  * measures in.  About half of the range leaves room to be wrong in both
@@ -168,15 +156,32 @@
 
 #define CAMENC_3A_AWB_MIN_MEAN 12u
 
-#if defined(CONFIG_OV5647_MODE_1296x960)
-#define CAMENC_DEFAULT_WIDTH  1296
-#define CAMENC_DEFAULT_HEIGHT 960
-#else
-#define CAMENC_DEFAULT_WIDTH  640
-#define CAMENC_DEFAULT_HEIGHT 480
-#endif
-#define CAMENC_DEFAULT_FRAMES 300
-#define CAMENC_DEFAULT_QP     26
+/* The sensor mode the program starts in, as an index into the sensor
+ * driver's mode table.
+ *
+ * A mode is a geometry, a frame rate and a link rate together, and the board
+ * has to be told which one to configure its receive chain for before the
+ * camera is opened -- so the same index is what selects the geometry here,
+ * what is handed to ov5647_mode() to get it, and what the boardctl command
+ * below carries.  The three modes and what each is for are in ov5647.h.
+ */
+
+#define CAMENC_DEFAULT_MODE CONFIG_OV5647_DEFAULT_MODE
+
+/* The board's request to point the capture path at another sensor mode; the
+ * argument is a mode index.
+ *
+ * One past BOARDIOC_USER, which is the last command the framework itself
+ * defines.  There is no shared header for this pair, so the two halves name
+ * each other: the receiving half is BOARDIOC_CAMERA_SET_MODE in the board's
+ * kickpi_k7_boardctl.c, which is also where the reasons for a mode being the
+ * board's business rather than this program's are written down.
+ */
+
+#define CAMENC_BOARDIOC_SET_MODE (BOARDIOC_USER + 1)
+
+#define CAMENC_DEFAULT_FRAMES    300
+#define CAMENC_DEFAULT_QP        26
 
 /* The encoder's default group length, and this program keeps it.
  *
@@ -218,31 +223,29 @@
  * is reached, which is what keeps it from being a silent ceiling.
  *
  * One segment is one access unit plus its fMP4 boxes: a moof, an mdat header
- * and the sample.  The size therefore follows the resolution, and follows
- * the quantiser harder still, so it is derived from the mode rather than
- * fixed.
+ * and the sample.  The size therefore follows the resolution, and follows the
+ * quantiser harder still -- and since the sensor's mode can be changed while
+ * the program runs, it follows the mode as well.  The server's transmit
+ * buffer is sized once, when the server starts, and is the caller's to
+ * choose; so this cannot follow anything.  It is the largest of the modes.
  *
  * 64 KiB was sized for 640x480, where a frame is a few kilobytes.  At
  * 1296x960 with the default quantiser a frame is around 57 KiB and the first
  * IDR reaches 71 KiB, which is larger than the whole buffer the old figure
- * produced -- so no segment fit and no client could be served at all.  512
+ * produced -- so no segment fitted and no client could be served at all.  512
  * KiB covers that with room for a much lower quantiser; a segment beyond it
  * drops the client, which is the designed degradation rather than a fault.
  *
- * The buffer is the caller's to size because only the caller knows how large
- * a segment can be and how much memory there is for it.  It is the encoder's
- * advertised capture buffer that bounds a segment absolutely, but that is
- * the size of an uncompressed frame (1.8 MiB here) and sizing four clients
- * for it would cost seven megabytes to carry frames of tens of kilobytes.
+ * Sizing for the largest mode is paid whichever mode is running, and it is
+ * the price of not having to know, when the server starts, which mode it will
+ * end up serving.  It is also why a mode change does not have to restart the
+ * server: the buffer it takes a segment into is already big enough for any of
+ * them.
  */
 
-#if defined(CONFIG_OV5647_MODE_1296x960)
 #define CAMENC_WS_MAX_SEGMENT (512 * 1024)
-#else
-#define CAMENC_WS_MAX_SEGMENT (64 * 1024)
-#endif
 
-#define CAMENC_DEFAULT_PORT 8080
+#define CAMENC_DEFAULT_PORT   8080
 
 /* How often the loop says anything at all, in frames.  A hundred is about
  * a second and a half at the rate this camera runs, which is often enough
@@ -344,6 +347,19 @@ struct camenc_ui_s
   uint32_t exposure;
   uint32_t gain;
   uint32_t wb[3];
+
+  /* The sensor mode the page has asked for, and whether it has asked.
+   *
+   * Recorded rather than acted on.  The callback that fills this in runs
+   * inside camenc_ws_poll(), which the capture loop calls between frames and
+   * waits on; changing a mode closes both devices, has the board tear down
+   * and rebuild the capture chain, and replaces every buffer and the muxer
+   * with them -- far more than a callback the loop is blocked in may do.  So
+   * the loop carries it out itself, which is what the second field tells it.
+   */
+
+  int32_t want_mode;
+  bool mode_pending;
 };
 
 static struct camenc_ui_s g_ui;
@@ -409,10 +425,18 @@ static bool camenc_ui_arg(FAR const char *text, FAR const char *name,
  *   kr <gain>     the red white balance gain by hand, which turns that loop
  *   kg <gain>     off -- as are the other two.  256 is unity, and the names
  *   kb <gain>     are the ones the status line reports them under
+ *   mo <index>    the sensor mode to switch to, by its index in the sensor
+ *                 driver's mode table
  *
  * Setting a value by hand stops the loop for it rather than moving a slider
  * that the loop will pull back on the next frame.  That is what a user means
  * by dragging it, and it is the difference between a control and a display.
+ *
+ * A mode is not a value, so it is not set by hand the same way; what the two
+ * have in common is that both are recorded here and applied by the loop, and
+ * that the status line reports them under the same names that set them.  The
+ * status line reports the mode in force, which is what the menu shows and
+ * what the next command is a move away from.
  *
  * Anything else is ignored in silence.  The page and this program are the
  * only two ends of this, and the alternative -- refusing, or disconnecting --
@@ -463,6 +487,17 @@ static void camenc_ui_command(FAR const char *text, FAR void *arg)
       ui->have_awb = true;
       ui->awb_auto = false;
     }
+  else if (camenc_ui_arg(text, "mo", &value))
+    {
+      /* Range is the board's to check, and it will: it refuses an index that
+       * names no mode before it takes anything down.  Refusing here as well
+       * would need this file to know how many modes there are, which is the
+       * sensor's business and not the page protocol's.
+       */
+
+      ui->want_mode = value;
+      ui->mode_pending = true;
+    }
 }
 
 /* Send the page what the loops are holding, if it is not what they were told
@@ -477,7 +512,7 @@ static void camenc_ui_command(FAR const char *text, FAR void *arg)
 
 static void camenc_status_publish(FAR struct camenc_ws_s *ws,
                                   FAR const struct camenc_3a_s *a,
-                                  uint32_t frame)
+                                  uint32_t frame, uint32_t mode)
 {
   char line[CAMENC_STATUS_MAX];
   size_t n;
@@ -486,6 +521,23 @@ static void camenc_status_publish(FAR struct camenc_ws_s *ws,
   if (n == 0u)
     {
       return;
+    }
+
+  /* The sensor mode travels in the same line rather than in one of its own.
+   * It is a setting like the others -- the page has a control for it and the
+   * control has to show what is in force -- and a second line would be a
+   * second thing to keep in step with the first, including in the comparison
+   * below that decides when to send.
+   */
+
+  if (n + sizeof(" mo=4294967295") < sizeof(line))
+    {
+      int m = snprintf(line + n, sizeof(line) - n, " mo=%" PRIu32, mode);
+
+      if (m > 0)
+        {
+          n += (size_t)m;
+        }
     }
 
   if (n == strlen(g_status_last) && memcmp(line, g_status_last, n) == 0 &&
@@ -569,7 +621,7 @@ static void camenc_stage_reset(void)
 static void camenc_usage(void)
 {
   printf("Usage: camenc [-d camdev] [-e encdev] [-o outfile] [-n frames]\n");
-  printf("              [-w width] [-h height] [-q qp] [-x exposure]"
+  printf("              [-m mode] [-q qp] [-x exposure]"
          " [-g gain]\n");
   printf("  -d  capture device (default %s)\n", CAMENC_CAM_DEVPATH);
   printf("  -e  encoder device (default %s)\n", CAMENC_ENC_DEVPATH);
@@ -578,10 +630,11 @@ static void camenc_usage(void)
          " (default %d, 0 for none)\n",
          CAMENC_DEFAULT_PORT);
   printf("  -n  frames to encode (default %d)\n", CAMENC_DEFAULT_FRAMES);
-  printf("  -w  width (default %d, must be a multiple of 16)\n",
-         CAMENC_DEFAULT_WIDTH);
-  printf("  -h  height (default %d, must be a multiple of 16)\n",
-         CAMENC_DEFAULT_HEIGHT);
+  printf("  -m  sensor mode, by its index in the sensor driver's mode"
+         " table\n");
+  printf("      (default %d: 0 = 1296x960 at 30 fps, 1 = 1296x960 at"
+         " 22 fps,\n      2 = 640x480 at 60 fps)\n",
+         CAMENC_DEFAULT_MODE);
   printf("  -q  quantiser, 0..51 (default %d)\n", CAMENC_DEFAULT_QP);
   printf("  -G  pictures per group, 1..1000 (default %d; 1 makes every"
          " frame an\n      IDR, a larger value makes the first frame of"
@@ -589,6 +642,12 @@ static void camenc_usage(void)
          " before them.  2 is worth about\n      half the bit rate of 1"
          " and longer groups flatten out after that)\n",
          CAMENC_DEFAULT_GOP);
+  printf(
+      "  -W  give the encoder the leftmost W columns of the mode's picture\n"
+      "      rather than all of them (W a multiple of 16).  The encoder's\n"
+      "      reconstruction working set is sized in units of 64 pixels, so\n"
+      "      a mode whose width is not a multiple of 64 hands it a padded\n"
+      "      picture; this is how the two are told apart\n");
   printf("  -x  sensor exposure in lines, overrides the driver default\n");
   printf("  -g  sensor analog gain, 16 = 1.0x and 1023 = 64x\n");
   printf("  -A  automatic exposure, gain and white balance, 0 or 1"
@@ -774,6 +833,54 @@ static void camenc_describe_format(FAR const char *what,
          fmt->fmt.pix.bytesperline, fmt->fmt.pix.sizeimage);
 }
 
+/* Ask for a frame rate.
+ *
+ * This is not decoration, and leaving it out is not a small omission: the
+ * sensor's frame size and its frame rate are two separate halves of what
+ * picks one of its modes, and this is the only call that states the second
+ * half.  A capture stream that never makes it runs at whatever rate the
+ * sensor driver lists first -- which for the OV5647 is the fastest of the
+ * modes with that geometry -- so the modes that differ only in frame rate
+ * are not merely hard to reach, they are unreachable, while every log line
+ * and every menu entry goes on naming the one that was asked for.
+ *
+ * The framework validates this against the format in force and refuses it
+ * unless the stream is stopped, so it belongs after the format and before
+ * the buffers.
+ */
+
+static int camenc_set_interval(int fd, uint32_t type, uint16_t fps,
+                               FAR const char *what)
+{
+  struct v4l2_streamparm parm;
+
+  memset(&parm, 0, sizeof(parm));
+  parm.type = type;
+  parm.parm.capture.timeperframe.numerator = 1;
+  parm.parm.capture.timeperframe.denominator = fps;
+
+  if (ioctl(fd, VIDIOC_S_PARM, (unsigned long)&parm) < 0)
+    {
+      printf("camenc: %s VIDIOC_S_PARM to %u fps failed: %d\n", what,
+             (unsigned int)fps, errno);
+      return -errno;
+    }
+
+  /* The driver's answer, not the request: a sensor that cannot run at the
+   * rate asked for is entitled to say so, and the frame rate decides how long
+   * an exposure may be, so the two must not disagree.
+   */
+
+  if (parm.parm.capture.timeperframe.denominator != fps)
+    {
+      printf("camenc: %s runs at %" PRIu32 " fps, not the %u asked for\n",
+             what, parm.parm.capture.timeperframe.denominator,
+             (unsigned int)fps);
+    }
+
+  return 0;
+}
+
 /* How many bytes one NV12 frame of this geometry occupies.
  *
  * From the geometry, not from bytesperline: the capture framework never
@@ -790,6 +897,51 @@ static size_t camenc_frame_size(FAR const struct v4l2_format *fmt)
                                                  : fmt->fmt.pix.width;
 
   return stride * fmt->fmt.pix.height * 3u / 2u;
+}
+
+/* Move one NV12 frame from the camera's buffer to the encoder's.
+ *
+ * When the two sides agree on geometry this is one block copy of the whole
+ * frame.  A crop -- the encoder given fewer columns than the mode has -- makes
+ * their strides differ, and a block copy would then shear the picture instead
+ * of cropping it, so the rows are copied one at a time.  The chroma plane is
+ * the same byte width as the luma's and half as many rows, which is what 4:2:0
+ * sampling is.
+ *
+ * The return value is what the caller reports as the frame's length, so the
+ * two cannot disagree about how much of the buffer is a picture.
+ */
+
+static size_t camenc_copy_frame(FAR uint8_t *dst, FAR const uint8_t *src,
+                                uint32_t dst_stride, uint32_t src_stride,
+                                uint32_t width, uint32_t height)
+{
+  size_t total = (size_t)dst_stride * height * 3u / 2u;
+  uint32_t rows = height / 2u;
+  uint32_t r;
+
+  if (dst_stride == src_stride && width == src_stride)
+    {
+      memcpy(dst, src, total);
+      return total;
+    }
+
+  for (r = 0; r < height; r++)
+    {
+      memcpy(dst + (size_t)r * dst_stride, src + (size_t)r * src_stride,
+             width);
+    }
+
+  dst += (size_t)height * dst_stride;
+  src += (size_t)height * src_stride;
+
+  for (r = 0; r < rows; r++)
+    {
+      memcpy(dst + (size_t)r * dst_stride, src + (size_t)r * src_stride,
+             width);
+    }
+
+  return total;
 }
 
 /* Request buffers and map them.
@@ -990,6 +1142,7 @@ int main(int argc, FAR char *argv[])
   FAR const char *camdev = CAMENC_CAM_DEVPATH;
   FAR const char *encdev = CAMENC_ENC_DEVPATH;
   FAR const char *outfile = NULL;
+  FAR const struct ov5647_mode_s *cur = NULL;
   struct camenc_stream_s st;
   struct camenc_sink_s sink;
   bool serving = false;
@@ -999,11 +1152,24 @@ int main(int argc, FAR char *argv[])
   int cap_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   int cam_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   FAR uint8_t *scratch = NULL;
-  uint32_t width = CAMENC_DEFAULT_WIDTH;
-  uint32_t height = CAMENC_DEFAULT_HEIGHT;
+  uint32_t mode = CAMENC_DEFAULT_MODE;
+  uint32_t width = 0;
+  uint32_t height = 0;
   uint32_t nbuf_cam = 0;
   uint32_t nbuf_out = 0;
   uint32_t nbuf_cap = 0;
+
+  /* How much of the picture the encoder is given.  Zero asks for all of it,
+   * which is the ordinary case; anything else is the leftmost that many
+   * columns, and exists so that a mode whose width is not the multiple of 64
+   * the encoder's working set is sized in can be compared against one that is
+   * without a sensor mode to match.
+   */
+
+  uint32_t enc_width_req = 0;
+  uint32_t enc_width = 0;
+  uint32_t enc_stride = 0;
+  uint32_t cam_stride = 0;
   size_t src_size;
   size_t copy_size;
   size_t max_au;
@@ -1013,7 +1179,8 @@ int main(int argc, FAR char *argv[])
   int port = 0;
   int exposure = -1;
   int gain = -1;
-  int threea = CAMENC_3A_DEFAULT;
+  bool threea_wanted = CAMENC_3A_DEFAULT != 0;
+  bool threea = CAMENC_3A_DEFAULT != 0;
   uint32_t target = CAMENC_3A_TARGET_DEFAULT;
   int fd3a = -1;
   bool threea_started = false;
@@ -1037,7 +1204,33 @@ int main(int argc, FAR char *argv[])
   uint64_t win_idr_bytes = 0;
   uint64_t win_p_bytes = 0;
 
-  while ((opt = getopt(argc, argv, "d:e:o:n:w:h:q:x:g:p:G:A:t:")) != -1)
+  /* When the page asked for the current change of mode.  A change of mode is
+   * the one path in this program that answers a request rather than a clock,
+   * so it is the one path whose duration is not implied by anything else, and
+   * a switch that takes seconds is otherwise indistinguishable from a board
+   * that has gone away -- the server this task also runs stops answering while
+   * it waits.  Reported in stages so that the answer is which stage.
+   */
+
+  uint64_t switch_t0 = 0;
+
+  /* Whether a stream has already seeded the page's controls, and whether one
+   * has converged a white balance worth carrying into the next.  Both are
+   * about what a change of mode should keep: the settings a person chose, and
+   * the colour of the light, neither of which the frame size has anything to
+   * do with.
+   */
+
+  bool ui_seeded = false;
+  bool wb_converged = false;
+
+  /* Whether this pass ended because the page asked for another mode, as
+   * opposed to running out of frames or failing.
+   */
+
+  bool switching = false;
+
+  while ((opt = getopt(argc, argv, "d:e:o:n:m:q:x:g:p:G:A:t:W:")) != -1)
     {
       switch (opt)
         {
@@ -1061,12 +1254,8 @@ int main(int argc, FAR char *argv[])
             frames = atoi(optarg);
             break;
 
-          case 'w':
-            width = (uint32_t)atoi(optarg);
-            break;
-
-          case 'h':
-            height = (uint32_t)atoi(optarg);
+          case 'm':
+            mode = (uint32_t)atoi(optarg);
             break;
 
           case 'q':
@@ -1075,6 +1264,10 @@ int main(int argc, FAR char *argv[])
 
           case 'G':
             gop = atoi(optarg);
+            break;
+
+          case 'W':
+            enc_width_req = (uint32_t)atoi(optarg);
             break;
 
           case 'x':
@@ -1086,7 +1279,7 @@ int main(int argc, FAR char *argv[])
             break;
 
           case 'A':
-            threea = atoi(optarg) != 0;
+            threea_wanted = atoi(optarg) != 0;
             break;
 
           case 't':
@@ -1105,14 +1298,31 @@ int main(int argc, FAR char *argv[])
         }
     }
 
-  /* The encoder works on whole macroblocks, so a geometry that is not a
-   * multiple of sixteen would be rounded and the picture would not be the one
-   * that was asked for.  Refusing is clearer than rounding quietly.  Both
-   * modes this program defaults to (640x480 and 1296x960) satisfy this.
+  /* The mode has to be one the sensor has, because it is what the board is
+   * asked to configure the receive chain for and what the geometry of every
+   * buffer follows from.  Checking it here rather than leaving it to the board
+   * keeps a typo from getting as far as taking a running stream down.
    */
 
-  if (frames <= 0 || width == 0 || height == 0 || (width & 15u) != 0 ||
-      (height & 15u) != 0)
+  cur = ov5647_mode(mode);
+  if (cur == NULL)
+    {
+      printf("camenc: mode %" PRIu32 " is not one of the sensor's\n", mode);
+      camenc_usage();
+      return EXIT_FAILURE;
+    }
+
+  width = cur->width;
+  height = cur->height;
+
+  /* The encoder works on whole macroblocks, so a geometry that is not a
+   * multiple of sixteen would be rounded and the picture would not be the one
+   * that was asked for.  Refusing is clearer than rounding quietly.  Every
+   * mode the sensor offers satisfies this; the check is here so that one added
+   * later which does not is caught here rather than in a buffer size.
+   */
+
+  if (frames <= 0 || (width & 15u) != 0 || (height & 15u) != 0)
     {
       camenc_usage();
       return EXIT_FAILURE;
@@ -1133,17 +1343,173 @@ int main(int argc, FAR char *argv[])
   memset(&sink, 0, sizeof(sink));
 
   /* ---------------------------------------------------------------- */
+  /* The server, and the file                                          */
+  /* ---------------------------------------------------------------- */
+
+  /* Both are set up once for the whole run rather than once per stream.
+   *
+   * The server is what a change of mode arrives through, so stopping it in
+   * order to change modes would be a way of never being able to change modes
+   * again; and its transmit buffer is already sized for the largest mode, so
+   * nothing about it depends on which one is running.  The connections
+   * themselves are dropped when the mode changes -- see the end of the stream
+   * loop -- because the browser has to rebuild its demuxer around a new frame
+   * size, and it reconnects by itself.
+   *
+   * The file stays open across a change of mode, so a run that switches modes
+   * while writing one writes two streams into it, each with its own
+   * initialisation segment.  That is not one file a player can follow, and the
+   * alternative -- quietly starting the file again -- would throw away what
+   * had already been written.  In practice the two do not meet: a change of
+   * mode only ever arrives from a page, and a page is only being served when
+   * the file is not the point of the run.
+   */
+
+  if (port > 0)
+    {
+      /* Room for the largest segment, and for the initialisation segment that
+       * goes to a client which has just connected.
+       *
+       * Both are in a client's buffer at the same time whenever its socket is
+       * slow to drain, so it is their sum rather than either one: a buffer
+       * sized for one segment alone is a buffer that drops a client on the
+       * frame that follows its handshake, which is what this used to do.
+       */
+
+      ret = camenc_ws_start(&g_ws, (uint16_t)port,
+                            CAMENC_WS_INIT_MAX + CAMENC_WS_MAX_SEGMENT +
+                                CAMENC_WS_TX_HEADER);
+      if (ret < 0)
+        {
+          printf("camenc: cannot serve on port %d: %d\n", port, ret);
+          return EXIT_FAILURE;
+        }
+
+      serving = true;
+      sink.ws = &g_ws;
+
+      /* Control messages from the page land here.  Nothing is applied in the
+       * callback -- see camenc_ui_s.
+       */
+
+      camenc_ws_set_command(&g_ws, camenc_ui_command, &g_ui);
+
+      printf("serving:  http://<board address>:%d/  (%u clients at most,\n"
+             "          %u-byte segments)\n",
+             port, CAMENC_WS_MAX_CLIENTS, CAMENC_WS_MAX_SEGMENT);
+    }
+
+  if (outfile != NULL)
+    {
+      sink.file = fopen(outfile, "wb");
+      if (sink.file == NULL)
+        {
+          printf("camenc: cannot create %s: %d\n", outfile, errno);
+          ret = -errno;
+          goto errout;
+        }
+    }
+
+  /* ---------------------------------------------------------------- */
+  /* One pass of what follows is one stream                            */
+  /* ---------------------------------------------------------------- */
+
+  /* It is reached again when the page asks for another sensor mode, which is a
+   * different stream in every way that matters -- a different frame size,
+   * stride, buffer set, muxer and initialisation segment -- so the setup below
+   * is written to be run more than once rather than to be the start of the
+   * program.  Frames are counted across the passes, so changing modes does not
+   * extend the run.
+   */
+
+stream_start:
+  threea = threea_wanted;
+
+  /* Whatever a previous pass left behind that a stale value would make
+   * dangerous.  The descriptors are the ones that matter: closing one that has
+   * already been closed closes whatever the task that has since taken the
+   * number has open, and device numbers are handed out again as soon as they
+   * are freed.
+   */
+
+  camfd = -1;
+  encfd = -1;
+  fd3a = -1;
+  threea_started = false;
+  codec_set = false;
+  have_prev = false;
+
+  /* `last_report` is set to the frame the stream starts on rather than to
+   * zero, because frames are counted across streams and the first report has
+   * to be over a window that belongs to this stream.  `reported_at` is zero
+   * for the opposite reason: the timestamps restart with the stream, so the
+   * first span is the time since its own first frame. */
+
+  last_report = i;
+  reported_at = 0;
+  encoded = 0;
+  dropped = 0;
+  win_idr = 0;
+  win_p = 0;
+  win_idr_bytes = 0;
+  win_p_bytes = 0;
+  camenc_stage_reset();
+
+  cur = ov5647_mode(mode);
+  width = cur->width;
+  height = cur->height;
+
+  /* The encode width, clamped to this mode.  A change of mode can make it too
+   * wide -- the page's menu moves between a 1296-column mode and a 640-column
+   * one -- and the right answer then is the whole picture rather than a
+   * refusal, because the mode is the thing that was asked for and the crop is
+   * only ever a way of comparing two ways of sizing the encoder's working set.
+   */
+
+  enc_width = enc_width_req;
+
+  if (enc_width == 0u || enc_width > width)
+    {
+      if (enc_width_req != 0u && enc_width_req > width)
+        {
+          printf("camenc: cannot encode %" PRIu32 " columns of a %" PRIu32
+                 "-column mode; using all of them\n",
+                 enc_width_req, width);
+        }
+
+      enc_width = width;
+    }
+
+  /* ---------------------------------------------------------------- */
   /* The camera                                                        */
   /* ---------------------------------------------------------------- */
+
+  if (switch_t0 != 0)
+    {
+      printf("camenc: mode change to reopening the devices took %" PRIu64
+             " ms\n",
+             (camenc_now_us() - switch_t0) / 1000u);
+      switch_t0 = 0;
+    }
+
+  printf("camera:   %s, mode %" PRIu32 " (%" PRIu32 "x%" PRIu32
+         " at %u fps)\n",
+         camdev, mode, width, height, (unsigned int)cur->fps);
+
+  if (enc_width != width)
+    {
+      printf("encoder:  encoding the leftmost %" PRIu32 " columns, %" PRIu32
+             " fewer than the mode has\n",
+             enc_width, width - enc_width);
+    }
 
   camfd = open(camdev, O_RDWR);
   if (camfd < 0)
     {
       printf("camenc: cannot open %s: %d\n", camdev, errno);
-      return EXIT_FAILURE;
+      ret = -errno;
+      goto errout;
     }
-
-  printf("camera:   %s\n", camdev);
 
   ret = camenc_set_format(camfd, V4L2_BUF_TYPE_VIDEO_CAPTURE,
                           V4L2_PIX_FMT_NV12, width, height, "camera", &fmt);
@@ -1153,6 +1519,19 @@ int main(int argc, FAR char *argv[])
     }
 
   camenc_describe_format("source", &fmt);
+
+  /* The other half of the mode.  The frame size above is what selects between
+   * geometries; this is what selects between the rates a geometry can run at,
+   * and without it a stream always runs at the first rate the sensor lists --
+   * see camenc_set_interval().
+   */
+
+  ret = camenc_set_interval(camfd, V4L2_BUF_TYPE_VIDEO_CAPTURE, cur->fps,
+                            "camera");
+  if (ret < 0)
+    {
+      goto errout;
+    }
 
   /* The sensor's own defaults are used unless asked otherwise.  Its
    * exposure and gain are in manual mode, so these are the only things that
@@ -1209,6 +1588,7 @@ int main(int argc, FAR char *argv[])
       int read_gain = 0;
       uint32_t seed_exp;
       uint32_t seed_gain;
+      uint32_t keep_wb[3];
       bool seeded_from_hw;
 
       seeded_from_hw =
@@ -1219,7 +1599,7 @@ int main(int argc, FAR char *argv[])
 
       seed_exp = seeded_from_hw  ? (uint32_t)read_exp
                  : exposure >= 0 ? (uint32_t)exposure
-                                 : CAMENC_3A_EXPOSURE_MAX;
+                                 : OV5647_MODE_EXPOSURE_MAX(cur);
       seed_gain = seeded_from_hw ? (uint32_t)read_gain
                   : gain >= 0    ? (uint32_t)gain
                                  : CAMENC_3A_GAIN_MIN;
@@ -1269,7 +1649,15 @@ int main(int argc, FAR char *argv[])
           memset(&cfg3a, 0, sizeof(cfg3a));
           cfg3a.target = target;
           cfg3a.exposure_min = CAMENC_3A_EXPOSURE_MIN;
-          cfg3a.exposure_max = CAMENC_3A_EXPOSURE_MAX;
+
+          /* The ceiling is the mode's own frame length less room to read out,
+           * so it moves when the mode does.  Read from the same expression
+           * the sensor driver clamps with, in the sensor's header, rather than
+           * written down again here -- the two have to agree for the loop to
+           * be able to trust what it reads back.
+           */
+
+          cfg3a.exposure_max = OV5647_MODE_EXPOSURE_MAX(cur);
           cfg3a.gain_min = CAMENC_3A_GAIN_MIN;
           cfg3a.gain_max = CAMENC_3A_GAIN_MAX;
           cfg3a.gain_one = CAMENC_3A_GAIN_ONE;
@@ -1278,23 +1666,48 @@ int main(int argc, FAR char *argv[])
           cfg3a.settle = CAMENC_3A_SETTLE;
           cfg3a.awb_min_mean = CAMENC_3A_AWB_MIN_MEAN;
 
-          camenc_3a_init(&threea_state, &cfg3a, seed_exp, seed_gain, probe.wb,
-                         probe.sequence);
+          /* The white balance is the one setting a change of mode has no
+           * reason to disturb: the colour of the light has not moved because
+           * the frame it is measured in got bigger.  So a loop that has
+           * already converged hands its gains to the next stream as the
+           * starting point, and only a first stream takes what the driver
+           * holds.  They are copied out first because the seed argument would
+           * otherwise alias the array that is about to be written.
+           */
+
+          if (wb_converged)
+            {
+              keep_wb[0] = threea_state.wb[0];
+              keep_wb[1] = threea_state.wb[1];
+              keep_wb[2] = threea_state.wb[2];
+            }
+
+          camenc_3a_init(&threea_state, &cfg3a, seed_exp, seed_gain,
+                         wb_converged ? keep_wb : probe.wb, probe.sequence);
 
           /* The page starts from the settings the loop starts from, so that
            * the first slider moved is a change from what is in force rather
-           * than from a zero that would clamp.
+           * than from a zero that would clamp.  On a first stream only,
+           * though: after that the page is the one holding the settings, and
+           * a change of mode must not put back an automatic loop that
+           * somebody had taken by hand.
            */
 
-          g_ui.ae_auto = true;
-          g_ui.awb_auto = true;
-          g_ui.exposure = threea_state.exposure;
-          g_ui.gain = threea_state.gain;
-          g_ui.wb[0] = threea_state.wb[0];
-          g_ui.wb[1] = threea_state.wb[1];
-          g_ui.wb[2] = threea_state.wb[2];
+          if (!ui_seeded)
+            {
+              g_ui.ae_auto = true;
+              g_ui.awb_auto = true;
+              g_ui.exposure = threea_state.exposure;
+              g_ui.gain = threea_state.gain;
+              g_ui.wb[0] = threea_state.wb[0];
+              g_ui.wb[1] = threea_state.wb[1];
+              g_ui.wb[2] = threea_state.wb[2];
+
+              ui_seeded = true;
+            }
 
           threea_started = true;
+          wb_converged = true;
 
           /* The gains are handed over explicitly, which is also what stops
            * the driver's own loop from steering them.  Leaving both running
@@ -1331,6 +1744,14 @@ int main(int argc, FAR char *argv[])
     }
 
   src_size = camenc_frame_size(&fmt);
+
+  /* The camera's own bytes per row, kept here because the encoder's format
+   * calls below overwrite the shared descriptor.  The camera reports nothing,
+   * so this is its width -- see camenc_frame_size().
+   */
+
+  cam_stride = fmt.fmt.pix.bytesperline != 0 ? fmt.fmt.pix.bytesperline
+                                             : fmt.fmt.pix.width;
 
   /* The length QUERYBUF reported is a real buffer's, so it is what says
    * whether a frame fits.  The format's sizeimage is a request the driver
@@ -1370,13 +1791,21 @@ int main(int argc, FAR char *argv[])
   /* Output side first: it is what the capture side's geometry follows. */
 
   ret = camenc_set_format(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT, V4L2_PIX_FMT_NV12,
-                          width, height, "encoder input", &fmt);
+                          enc_width, height, "encoder input", &fmt);
   if (ret < 0)
     {
       goto errout;
     }
 
   camenc_describe_format("input", &fmt);
+
+  /* The encoder does report a stride, unlike the camera.  It is what the copy
+   * writes rows at, and it is the width rounded up to sixteen when the driver
+   * has nothing more to say.
+   */
+
+  enc_stride = fmt.fmt.pix.bytesperline != 0 ? fmt.fmt.pix.bytesperline
+                                             : (enc_width + 15u) & ~15u;
 
   ret = camenc_set_format(encfd, V4L2_BUF_TYPE_VIDEO_CAPTURE,
                           V4L2_PIX_FMT_H264, 0, 0, "encoder output", &fmt);
@@ -1439,6 +1868,20 @@ int main(int argc, FAR char *argv[])
              src_size, g_out[0].length, copy_size);
     }
 
+  /* A crop reads columns the camera's rows have, which is the one thing the
+   * copy below cannot check for itself.
+   */
+
+  if (cam_stride < enc_width)
+    {
+      printf("camenc: the camera's rows are %" PRIu32 " bytes and the"
+             " encoder was asked for %" PRIu32
+             "; it cannot be given a picture that wide\n",
+             cam_stride, enc_width);
+      ret = -EINVAL;
+      goto errout;
+    }
+
   /* The encoder refuses to produce more than the buffer it advertises, so
    * that size bounds an access unit and therefore sizes the muxer's
    * workspace.  One fragment is the boxes plus the unit itself, with its
@@ -1455,18 +1898,7 @@ int main(int argc, FAR char *argv[])
       goto errout;
     }
 
-  if (outfile != NULL)
-    {
-      sink.file = fopen(outfile, "wb");
-      if (sink.file == NULL)
-        {
-          printf("camenc: cannot create %s: %d\n", outfile, errno);
-          ret = -errno;
-          goto errout;
-        }
-    }
-
-  ret = camenc_stream_init(&st, width, height, (uint32_t)max_au, scratch,
+  ret = camenc_stream_init(&st, enc_width, height, (uint32_t)max_au, scratch,
                            (size_t)max_au + CAMENC_STREAM_SLACK, camenc_emit,
                            &sink);
   if (ret < 0)
@@ -1475,45 +1907,12 @@ int main(int argc, FAR char *argv[])
       goto errout;
     }
 
-  /* The stream is served from the same buffers it is muxed into; the server
-   * takes a copy of each segment for each client, so nothing outlives the
-   * call that produced it.
+  /* The mode in force is what the page's menu has to show, so that the next
+   * command is a move away from the picture on the screen rather than from
+   * whatever the page happened to load with.
    */
 
-  if (port > 0)
-    {
-      /* Room for the largest segment, and for the initialisation segment
-       * that goes to a client which has just connected.
-       *
-       * Both are in a client's buffer at the same time whenever its socket
-       * is slow to drain, so it is their sum rather than either one: a
-       * buffer sized for one segment alone is a buffer that drops a client
-       * on the frame that follows its handshake, which is what this used to
-       * do.
-       */
-
-      ret = camenc_ws_start(&g_ws, (uint16_t)port,
-                            CAMENC_WS_INIT_MAX + CAMENC_WS_MAX_SEGMENT +
-                                CAMENC_WS_TX_HEADER);
-      if (ret < 0)
-        {
-          printf("camenc: cannot serve on port %d: %d\n", port, ret);
-          goto errout;
-        }
-
-      serving = true;
-      sink.ws = &g_ws;
-
-      /* Control messages from the page land here.  Nothing is applied in
-       * the callback -- see camenc_ui_s.
-       */
-
-      camenc_ws_set_command(&g_ws, camenc_ui_command, &g_ui);
-
-      printf("serving:  http://<board address>:%d/  (%u clients at most,\n"
-             "          %u-byte segments)\n",
-             port, CAMENC_WS_MAX_CLIENTS, CAMENC_WS_MAX_SEGMENT);
-    }
+  g_ui.want_mode = (int32_t)mode;
 
   /* ---------------------------------------------------------------- */
   /* Streams                                                           */
@@ -1570,7 +1969,7 @@ int main(int argc, FAR char *argv[])
         }
     }
 
-  printf("\nencoding %d frames at qp %d...\n", frames, qp);
+  printf("\nencoding %d frames at qp %d, groups of %d\n", frames, qp, gop);
 
   t0 = camenc_now_us();
 
@@ -1578,7 +1977,7 @@ int main(int argc, FAR char *argv[])
   /* The loop                                                          */
   /* ---------------------------------------------------------------- */
 
-  for (i = 0; i < frames; i++)
+  for (; i < frames; i++)
     {
       struct v4l2_buffer cbuf;
       struct v4l2_buffer obuf;
@@ -1588,6 +1987,37 @@ int main(int argc, FAR char *argv[])
       uint64_t pts;
       uint64_t mark;
       uint32_t camidx;
+
+      /* A change of mode, asked for by the page and recorded by the server's
+       * callback.
+       *
+       * Checked at the top of the frame rather than where the command arrives,
+       * for two reasons.  The callback runs inside camenc_ws_poll(), which the
+       * loop is blocked in, so a mode change cannot be done there; and doing
+       * it here, before a frame is taken, is what keeps the last frames of the
+       * old mode out of the new stream -- they would be a different size, and
+       * the muxer has already been told what size to write.
+       *
+       * A request for the mode already in force is not a change and does not
+       * interrupt anything; the menu sends one whenever it is redrawn.
+       */
+
+      if (g_ui.mode_pending)
+        {
+          int32_t want = g_ui.want_mode;
+
+          g_ui.mode_pending = false;
+
+          if (want != (int32_t)mode)
+            {
+              printf("camenc: mode %" PRId32 " requested; ending this"
+                     " stream\n",
+                     want);
+              switch_t0 = camenc_now_us();
+              switching = true;
+              break;
+            }
+        }
 
       /* A frame from the camera. */
 
@@ -1646,8 +2076,9 @@ int main(int argc, FAR char *argv[])
 
       mark = camenc_now_us();
 
-      memcpy(out->start, g_cam[camidx].start, copy_size);
-      out->desc.bytesused = (uint32_t)copy_size;
+      out->desc.bytesused = (uint32_t)camenc_copy_frame(
+          out->start, g_cam[camidx].start, enc_stride, cam_stride, enc_width,
+          height);
 
       camenc_stage_account(CAMENC_STAGE_COPY, mark);
 
@@ -1932,7 +2363,7 @@ int main(int argc, FAR char *argv[])
 
           if (serving)
             {
-              camenc_status_publish(&g_ws, &threea_state, (uint32_t)i);
+              camenc_status_publish(&g_ws, &threea_state, (uint32_t)i, mode);
             }
         }
 
@@ -2060,6 +2491,21 @@ int main(int argc, FAR char *argv[])
         }
     }
 
+  /* A change of mode ends this stream rather than the run.
+   *
+   * There is nothing to flush and nothing worth reporting about the part that
+   * was interrupted: the frames that would follow belong to a different
+   * stream, with a different frame size, its own initialisation segment and a
+   * timeline of its own, so the stream is taken down and the next one built in
+   * its place.
+   */
+
+  if (switching)
+    {
+      ret = OK;
+      goto errout_camoff;
+    }
+
   t1 = camenc_now_us();
 
   if (ret < 0)
@@ -2134,18 +2580,17 @@ errout_streamoff:
   camenc_stream_off(encfd, &cap_type);
 
 errout:
-  if (serving)
-    {
-      camenc_ws_stop(&g_ws);
-      serving = false;
-    }
-
-  if (sink.file != NULL)
-    {
-      fclose(sink.file);
-    }
+  /* The stream's own resources, released whether it ended by running out of
+   * frames, by being interrupted for a change of mode, or by failing.
+   *
+   * The server and the file are deliberately not among them: both outlive a
+   * change of mode, and are released once at the end of the run below.  That
+   * is also why nothing here returns: on a change of mode this is the middle
+   * of the program rather than its end.
+   */
 
   free(scratch);
+  scratch = NULL;
 
   for (i = 0; i < CAMENC_BUFFERS; i++)
     {
@@ -2197,6 +2642,92 @@ errout:
   if (camfd >= 0)
     {
       close(camfd);
+    }
+
+  /* A change of mode is not the end of the run.
+   *
+   * The board is asked to make it, and asked rather than told: a mode is not
+   * only the sensor's business.  It brings a link rate and a frame size with
+   * it, and the D-PHY, the CSI HOST and the capture engine all have to be
+   * moved to match -- which the board is the only place able to do together
+   * and in the right order.  It also refuses an index that names no mode,
+   * which is why the answer is checked rather than assumed: a request the
+   * board will not take has to leave the run on the mode it already has,
+   * rather than on one nothing is configured for.
+   */
+
+  if (switching)
+    {
+      uint32_t want = (uint32_t)g_ui.want_mode;
+      uint64_t t_board;
+
+      switching = false;
+
+      printf("camenc: stream down after %" PRIu64 " ms\n",
+             (camenc_now_us() - switch_t0) / 1000u);
+
+      t_board = camenc_now_us();
+
+      if (boardctl(CAMENC_BOARDIOC_SET_MODE, (uintptr_t)want) < 0)
+        {
+          /* The board refused, and it says so only after leaving the receive
+           * chain as it found it -- so the mode that was running is still the
+           * mode that is configured, and the run continues on it.
+           *
+           * This used to end the program, which was wrong in a way worth
+           * naming: a request the board would not take is a fact about that
+           * request, not a reason to stop filming.  The page reconnects,
+           * asks for the status, and is told which mode is in force -- which
+           * is what makes the menu snap back to the picture on the screen
+           * instead of showing a mode nothing is running.
+           */
+
+          printf("camenc: the board will not switch to mode %" PRIu32
+                 ": %d; staying on mode %" PRIu32 "\n",
+                 want, errno, mode);
+        }
+      else
+        {
+          mode = want;
+
+          /* The clients are watching a stream that is about to stop existing,
+           * and the one replacing it has a different frame size and a
+           * different initialisation segment.  Letting them go is not a
+           * failure to serve them: the page has exactly one way to rebuild its
+           * demuxer, which is to reconnect, and it already does that for a
+           * server that went away.  See camenc_ws_drop_clients().
+           */
+
+          if (serving)
+            {
+              camenc_ws_drop_clients(&g_ws);
+              printf("camenc: clients released; the page will reconnect\n");
+            }
+
+          printf("camenc: switching to mode %" PRIu32 "\n", mode);
+        }
+
+      printf("camenc: board took %" PRIu64 " ms\n",
+             (camenc_now_us() - t_board) / 1000u);
+
+      goto stream_start;
+    }
+
+  /* The whole run's resources, released once however it ended.  What reaches
+   * here is either the loop running out of frames or a failure inside a
+   * stream; a change of mode goes back up instead of through.
+   */
+
+  if (serving)
+    {
+      camenc_ws_stop(&g_ws);
+      serving = false;
+    }
+
+  if (sink.file != NULL)
+    {
+      fclose(sink.file);
+      sink.file = NULL;
     }
 
   return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;

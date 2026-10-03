@@ -20,6 +20,7 @@ CONFIG_ARCH_EARLY_PRINT=y
 CONFIG_ARCH_INTERRUPTSTACK=4096
 CONFIG_ARCH_IRQPRIO=y
 CONFIG_ARM64_GIC_VERSION=2
+CONFIG_BOARDCTL_IOCTL=y
 CONFIG_BOARDCTL_RESET=y
 CONFIG_BOARD_LOOPSPERMSEC=116524
 CONFIG_BOARD_LATE_INITIALIZE=y
@@ -31,6 +32,17 @@ CONFIG_DEBUG_ASSERTIONS=y
 CONFIG_DEBUG_FEATURES=y
 CONFIG_DEBUG_FULLOPT=y
 CONFIG_DEBUG_SYMBOLS=y
+# The video subsystem's error channels.  Both have to be named: DEBUG_VIDEO is
+# the parent and defaults to off, and its children are inside that "if", so a
+# defconfig that asks for DEBUG_VIDEO_ERROR alone has the line silently
+# discarded -- no warning, and a build whose video stack cannot report a fault
+# at all.  Errors and warnings are worth having in a shipped build for that
+# reason; the informational channel is not turned on, because the driver and
+# the capture path use it for bring-up detail that a running stream does not
+# need to repeat.
+CONFIG_DEBUG_VIDEO=y
+CONFIG_DEBUG_VIDEO_ERROR=y
+CONFIG_DEBUG_VIDEO_WARN=y
 CONFIG_DEFAULT_TASK_STACKSIZE=8192
 CONFIG_DEV_URANDOM=y
 CONFIG_DRIVERS_IEEE80211=y
@@ -325,7 +337,15 @@ CONFIG_VIDEO_STREAM=y
 
 CONFIG_NYABULA_CUSTOM_DRIVERS=y
 CONFIG_VIDEO_OV5647=y
-CONFIG_OV5647_MODE_1296x960=y
+
+# The sensor mode the board starts in, as an index into the driver's mode
+# table: 0 = 1296x960@30, 1 = 1296x960@22, 2 = 640x480@60.  All three are
+# compiled in and reachable at run time -- camenc switches between them on
+# request from the web page -- so this only sets what a boot with no request
+# gets: the sharp mode, which is the one whose exposure ceiling is high
+# enough to expose a normal scene without pinning the gain.
+CONFIG_OV5647_DEFAULT_MODE=0
+
 CONFIG_OV5647_I2C_ADDR=0x36
 CONFIG_OV5647_I2C_FREQUENCY=100000
 

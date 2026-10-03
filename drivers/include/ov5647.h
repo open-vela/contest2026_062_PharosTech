@@ -41,8 +41,132 @@
 #ifdef CONFIG_VIDEO_OV5647
 
 /****************************************************************************
+ * Public Types
+ ****************************************************************************/
+
+/* The four Bayer orders, named by the colour of the first two pixels of the
+ * first row.
+ *
+ * This describes the buffer the capture path delivers, which is not always
+ * the sensor's native order: a mode whose readout is mirrored swaps the two
+ * columns of every 2x2 tile, and one that is flipped as well swaps the rows.
+ * The order is therefore a property of the mode rather than of the part, and
+ * it is carried per mode rather than assumed.  Getting it wrong does not
+ * fail -- it costs the picture its colour -- so it is worth stating where it
+ * can be read rather than wherever it happens to be needed.
+ */
+
+enum ov5647_bayer_e
+{
+  OV5647_BAYER_BGGR = 0,
+  OV5647_BAYER_GBRG = 1,
+  OV5647_BAYER_GRBG = 2,
+  OV5647_BAYER_RGGB = 3,
+};
+
+/* One capture mode: a geometry, the rate it runs at, and the link that
+ * carries both.
+ *
+ * The sensor has no scaler and no format choice, so a mode is the whole of
+ * what it can be asked to do, and it is what everything downstream has to
+ * agree with: the board's D-PHY rate, the capture engine's geometry and
+ * Bayer order, and the application's exposure ceiling are all derived from
+ * these figures and from nothing else.  Stating them once, here, is what
+ * keeps the three from drifting apart.
+ *
+ * The figures are sensor facts.  They come from the mode's register set and
+ * its pixel clock -- the same values the upstream Linux driver programs in
+ * its ov5647_modes[] table -- and are not the board's or the application's
+ * to choose.
+ */
+
+struct ov5647_mode_s
+{
+  uint16_t width;  /* Output width, in pixels */
+  uint16_t height; /* Output height, in pixels */
+  uint16_t fps;    /* Frame rate, as advertised to the framework */
+  uint16_t hts;    /* Horizontal total, in pixel clocks */
+  uint16_t vts;    /* Vertical total, in lines */
+
+  /* Register 0x3036: the PLL multiplier that sets the pixel clock.
+   *
+   * It is here because it is the one figure that ties the sensor to the link:
+   * the pixel clock is this multiplied by a fixed reference, the link runs at
+   * a rate that follows the pixel clock, and the D-PHY's timing parameters are
+   * programmed from that rate.  A sensor left on another mode's multiplier is
+   * therefore a receiver configured for a rate nothing is sending at, which is
+   * worth being able to check rather than only being able to reason about.
+   */
+
+  uint8_t pll;
+
+  uint32_t link_freq; /* MIPI link frequency, in Hz */
+  uint8_t bayer;      /* enum ov5647_bayer_e, of the delivered buffer */
+};
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* The modes this driver implements, as indices into ov5647_mode().
+ *
+ * Two of them share a geometry and differ only in frame rate.  That is a
+ * cheaper kind of change than it looks: a frame lasts HTS * VTS pixel
+ * clocks, so holding everything else still and lengthening VTS is the whole
+ * of it, and the receiver's link rate, the capture engine's buffer geometry
+ * and the encoder all stay exactly as they were.  Lengthening VTS is also
+ * the only way this sensor can be given more exposure time than one frame's
+ * worth of lines, which is what the second entry is for.
+ *
+ * The order here is the order the modes are enumerated to the application
+ * in, and the first entry is the framework's own default -- see
+ * CONFIG_OV5647_DEFAULT_MODE for how a different boot mode is selected.
+ */
+
+#define OV5647_MODE_1296x960_30 0u
+#define OV5647_MODE_1296x960_22 1u
+#define OV5647_MODE_640x480_60  2u
+#define OV5647_NUM_MODES        3u
+
+/* The shortest exposure the sensor can be asked for, in lines.  Four is the
+ * sensor's own minimum, and it is also the margin the maximum leaves: a
+ * frame cannot be exposed for the whole of itself, because the lines it is
+ * read out on take time of their own.
+ */
+
+#define OV5647_EXPOSURE_MIN 4u
+
+/* The longest exposure a mode can be given, in lines.  A mode's vertical
+ * total is the length of one of its frames, and the exposure is bounded by
+ * the frame it sits in.
+ */
+
+#define OV5647_MODE_EXPOSURE_MAX(m) ((uint32_t)(m)->vts - OV5647_EXPOSURE_MIN)
+
+/****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: ov5647_mode
+ *
+ * Description:
+ *   Describe one of the driver's capture modes.  The figures are sensor
+ *   facts, and they are what the board's D-PHY rate, the capture engine's
+ *   geometry and the application's exposure ceiling have to be derived
+ *   from; reading them from here rather than repeating them is what keeps
+ *   the three in step.
+ *
+ * Input Parameters:
+ *   index - Which mode, one of OV5647_MODE_*.
+ *
+ * Returned Value:
+ *   The mode, or NULL if the index names no mode.  The pointer refers to
+ *   read-only storage and stays valid for the life of the program.
+ *
+ ****************************************************************************/
+
+FAR const struct ov5647_mode_s *ov5647_mode(unsigned int index);
 
 /****************************************************************************
  * Name: ov5647_initialize

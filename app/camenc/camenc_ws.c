@@ -1161,6 +1161,49 @@ void camenc_ws_set_codec(FAR struct camenc_ws_s *ws, FAR const char *codec)
     }
 }
 
+void camenc_ws_drop_clients(FAR struct camenc_ws_s *ws)
+{
+  int i;
+
+  if (ws == NULL)
+    {
+      return;
+    }
+
+  for (i = 0; i < CAMENC_WS_MAX_CLIENTS; i++)
+    {
+      FAR struct camenc_ws_client_s *c = &ws->clients[i];
+
+      if (c->fd >= 0)
+        {
+          close(c->fd);
+          c->fd = -1;
+        }
+
+      /* Reset field by field rather than with memset, for the reason the
+       * accept path gives: the slot owns its transmit buffer, which outlives
+       * any one connection.
+       */
+
+      c->upgraded = false;
+      c->closing = false;
+      c->have_init = false;
+      c->waiting = false;
+      c->sent = 0;
+      c->skipped = 0;
+      c->rx_len = 0;
+      c->tx_len = 0;
+      c->tx_sent = 0;
+    }
+
+  /* The initialisation segment describes the stream that has just ended.  The
+   * buffer stays: it is reused by the next stream, which is about to write its
+   * own over it.
+   */
+
+  ws->init_len = 0;
+}
+
 void camenc_ws_stop(FAR struct camenc_ws_s *ws)
 {
   int i;
@@ -1390,13 +1433,25 @@ int camenc_ws_publish(FAR struct camenc_ws_s *ws, enum camenc_seg_e seg,
        * backlog at the start of a stream is what used to happen, every
        * time, and looked like a server that refused connections.
        *
-       * The caveat is P pictures.  A fragment whose pictures refer to the
-       * one before it cannot be dropped on its own, because the fragments
-       * that follow it refer to a picture the client never received.  Every
-       * fragment is a key fragment here, which is why this is safe today;
-       * when the encoder emits P pictures the flag that says so is what a
-       * fix has to use -- the client has to be told to start again at the
-       * next key fragment instead of being fed the ones in between.
+       * The caveat is P pictures, and it is worth stating even though
+       * nothing here acts on it.  A fragment whose pictures refer to the one
+       * before it cannot be dropped on its own, because the fragments that
+       * follow refer to a picture the client never received -- which a
+       * decoder shows as a frame's worth of garbage rather than as one
+       * missing frame.
+       *
+       * This was briefly made to set `waiting` here, so that a client that
+       * had dropped one would resume at the next picture a stream may start
+       * on.  It was put back because it made things worse in a way that is
+       * not hard to see in hindsight: a client whose socket stays full drops
+       * every frame including the key ones, so `waiting` never clears and
+       * the client receives nothing at all until it reconnects.  A stream
+       * that is degraded is still a stream; one that has stopped is not.
+       *
+       * So the drop is left as it was, and the concern stands as a thing
+       * this does not do.  What it needs is a way for the client itself to
+       * be told to start again -- a decoder refresh on the encoder, asked
+       * for when the drop happens -- rather than the server going quiet.
        */
 
       if (!ws_frame(ws, c, CAMENC_WS_OP_BIN, data, len))
