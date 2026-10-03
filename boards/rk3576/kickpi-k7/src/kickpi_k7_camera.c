@@ -88,21 +88,34 @@
 #define KICKPI_K7_CAM_SCL_PIN (GPIO_PORT3 | GPIO_PIN_C0)
 #define KICKPI_K7_CAM_SDA_PIN (GPIO_PORT3 | GPIO_PIN_B7)
 
-/* OV5647 640x480 10-bit mode, 2 data lanes.
+/* OV5647 capture mode, matched to the sensor driver's CONFIG_OV5647_MODE_*
+ * selection.  The geometry and the link frequency must agree with what the
+ * sensor is actually programmed to output, since the SoC-side receiver is
+ * configured once from these figures.
  *
- * The sensor's link frequency for this mode is 145.8333 MHz.  A D-PHY link
- * is double data rate, so the per-lane data rate the PHY has to be
- * configured for is twice that.  Getting this wrong does not stop the link
- * from coming up; it leaves the receiver's timing parameters in the wrong
- * rate band, which shows up as intermittent packet errors.
+ * The sensor's link frequency follows the mode:
+ *   - 640x480:  145.833 MHz (pixel clock 58.333 MHz)
+ *   - 1296x960: 218.75 MHz  (pixel clock 87.5 MHz)
+ *
+ * A D-PHY link is double data rate, so the per-lane data rate the PHY has
+ * to be configured for is twice the link frequency.  Getting this wrong does
+ * not stop the link from coming up; it leaves the receiver's timing
+ * parameters in the wrong rate band, which shows up as intermittent packet
+ * errors.
  */
 
-#define KICKPI_K7_CAM_LANES     2
-#define KICKPI_K7_CAM_LINK_FREQ 145833300u
-#define KICKPI_K7_CAM_HS_RATE   (2u * KICKPI_K7_CAM_LINK_FREQ)
-
+#if defined(CONFIG_OV5647_MODE_1296x960)
+#define KICKPI_K7_CAM_WIDTH     1296
+#define KICKPI_K7_CAM_HEIGHT    960
+#define KICKPI_K7_CAM_LINK_FREQ 218750000u
+#else
 #define KICKPI_K7_CAM_WIDTH     640
 #define KICKPI_K7_CAM_HEIGHT    480
+#define KICKPI_K7_CAM_LINK_FREQ 145833300u
+#endif
+
+#define KICKPI_K7_CAM_LANES   2
+#define KICKPI_K7_CAM_HS_RATE (2u * KICKPI_K7_CAM_LINK_FREQ)
 
 /* CSI-2 data type for RAW10. */
 

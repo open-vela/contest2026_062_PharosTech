@@ -66,6 +66,14 @@ CONFIG_RAW_BINARY=y
 CONFIG_READLINE_CMD_HISTORY=y
 CONFIG_RK3576_DDR_4G=y
 CONFIG_RK3576_DMA_ALLOC=y
+
+# The capture path's DMA footprint at 1296x960 is about 22 MiB, over the
+# 16 MiB default: VICAP's two raw frame buffers are 5.1 MiB on their own,
+# and the encoder adds its two reconstruction sets (4.0 MiB), the staging
+# buffer (1.8 MiB) and its input/output buffer pools (5.3 MiB each) on top.
+# With 16 MiB the encoder's second REQBUFS fails with ENOMEM and camenc
+# aborts before the camera ever starts; 32 MiB leaves room to run.
+CONFIG_RK3576_DMA_HEAP_SIZE_MB=32
 CONFIG_RK3576_EMMC=y
 CONFIG_RK3576_SDMMC=y
 CONFIG_RK3576_SDIO=y
@@ -317,6 +325,7 @@ CONFIG_VIDEO_STREAM=y
 
 CONFIG_NYABULA_CUSTOM_DRIVERS=y
 CONFIG_VIDEO_OV5647=y
+CONFIG_OV5647_MODE_1296x960=y
 CONFIG_OV5647_I2C_ADDR=0x36
 CONFIG_OV5647_I2C_FREQUENCY=100000
 
