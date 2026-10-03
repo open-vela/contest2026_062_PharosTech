@@ -104,10 +104,26 @@
  */
 
 #define CAMENC_3A_EXPOSURE_MIN 4u
+
+/* The exposure ceiling follows the sensor's mode.  The sensor driver clamps
+ * to the same figure, so a loop that asks for more is corrected rather than
+ * believed.  VTS is the mode's vertical total: it is what bounds how long a
+ * frame may integrate, and the driver reserves four lines for readout.
+ *
+ * The 60 fps VGA mode only has 500 usable lines, which is why it pins the
+ * exposure and gain to their ceilings in low light; the ~30 fps 1296x960
+ * mode has 1431, nearly three times as much.
+ */
+
+#if defined(CONFIG_OV5647_MODE_1296x960)
+#define CAMENC_3A_EXPOSURE_MAX 1431u /* VTS - 4 in the 1296x960 mode */
+#else
 #define CAMENC_3A_EXPOSURE_MAX 500u /* VTS - 4 in the 640x480 mode */
-#define CAMENC_3A_GAIN_MIN     16u
-#define CAMENC_3A_GAIN_MAX     1023u
-#define CAMENC_3A_GAIN_ONE     16u
+#endif
+
+#define CAMENC_3A_GAIN_MIN 16u
+#define CAMENC_3A_GAIN_MAX 1023u
+#define CAMENC_3A_GAIN_ONE 16u
 
 /* The brightness the loop steers to, on the 0..255 scale the capture driver
  * measures in.  About half of the range leaves room to be wrong in both
@@ -152,10 +168,15 @@
 
 #define CAMENC_3A_AWB_MIN_MEAN 12u
 
-#define CAMENC_DEFAULT_WIDTH   640
-#define CAMENC_DEFAULT_HEIGHT  480
-#define CAMENC_DEFAULT_FRAMES  300
-#define CAMENC_DEFAULT_QP      26
+#if defined(CONFIG_OV5647_MODE_1296x960)
+#define CAMENC_DEFAULT_WIDTH  1296
+#define CAMENC_DEFAULT_HEIGHT 960
+#else
+#define CAMENC_DEFAULT_WIDTH  640
+#define CAMENC_DEFAULT_HEIGHT 480
+#endif
+#define CAMENC_DEFAULT_FRAMES 300
+#define CAMENC_DEFAULT_QP     26
 
 /* The encoder's default group length, and this program keeps it.
  *
@@ -193,17 +214,35 @@
  *
  * A segment is copied whole into each client's transmit buffer, so this is
  * what one client costs in memory, and a segment larger than it drops that
- * client rather than stalling the capture loop.  The encoder advertises its
- * capture buffer as a frame's size, which is many times what a frame at this
- * resolution occupies -- around three kilobytes at the quantiser below -- so
- * sizing the server for the advertised figure would cost megabytes for
- * nothing.  The limit is logged when it is reached, which is what keeps it
- * from being a silent ceiling.
+ * client rather than stalling the capture loop.  The limit is logged when it
+ * is reached, which is what keeps it from being a silent ceiling.
+ *
+ * One segment is one access unit plus its fMP4 boxes: a moof, an mdat header
+ * and the sample.  The size therefore follows the resolution, and follows
+ * the quantiser harder still, so it is derived from the mode rather than
+ * fixed.
+ *
+ * 64 KiB was sized for 640x480, where a frame is a few kilobytes.  At
+ * 1296x960 with the default quantiser a frame is around 57 KiB and the first
+ * IDR reaches 71 KiB, which is larger than the whole buffer the old figure
+ * produced -- so no segment fit and no client could be served at all.  512
+ * KiB covers that with room for a much lower quantiser; a segment beyond it
+ * drops the client, which is the designed degradation rather than a fault.
+ *
+ * The buffer is the caller's to size because only the caller knows how large
+ * a segment can be and how much memory there is for it.  It is the encoder's
+ * advertised capture buffer that bounds a segment absolutely, but that is
+ * the size of an uncompressed frame (1.8 MiB here) and sizing four clients
+ * for it would cost seven megabytes to carry frames of tens of kilobytes.
  */
 
+#if defined(CONFIG_OV5647_MODE_1296x960)
+#define CAMENC_WS_MAX_SEGMENT (512 * 1024)
+#else
 #define CAMENC_WS_MAX_SEGMENT (64 * 1024)
+#endif
 
-#define CAMENC_DEFAULT_PORT   8080
+#define CAMENC_DEFAULT_PORT 8080
 
 /* How often the loop says anything at all, in frames.  A hundred is about
  * a second and a half at the rate this camera runs, which is often enough
@@ -1068,7 +1107,8 @@ int main(int argc, FAR char *argv[])
 
   /* The encoder works on whole macroblocks, so a geometry that is not a
    * multiple of sixteen would be rounded and the picture would not be the one
-   * that was asked for.  Refusing is clearer than rounding quietly.
+   * that was asked for.  Refusing is clearer than rounding quietly.  Both
+   * modes this program defaults to (640x480 and 1296x960) satisfy this.
    */
 
   if (frames <= 0 || width == 0 || height == 0 || (width & 15u) != 0 ||
