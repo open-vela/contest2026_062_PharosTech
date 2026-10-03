@@ -26,6 +26,10 @@
 # the C library, which is what lets the same file be compiled on a host.
 
 if(CONFIG_SYSTEM_CAMENC)
+  # camenc_ws.c embeds web/page.html with an inline .incbin directive.  That
+  # resolves its path relative to the compiler's working directory, so point
+  # the source directory in to let the same relative name "web/page.html"
+  # resolve here as it does in the make build.
   nuttx_add_application(
     MODULE
     ${CONFIG_SYSTEM_CAMENC}
@@ -36,6 +40,10 @@ if(CONFIG_SYSTEM_CAMENC)
     camenc_stream.c
     camenc_ws.c
     camenc_3a.c
+    INCLUDE_DIRECTORIES
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/web/page.html
     STACKSIZE
     ${CONFIG_SYSTEM_CAMENC_STACKSIZE}
     PRIORITY

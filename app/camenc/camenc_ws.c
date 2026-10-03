@@ -159,392 +159,59 @@
  * because a MediaSource refuses data whose codec string does not match it.
  */
 
-/* The page, in two pieces, with the codec string's place between them.
+/* The page is no longer a C string in this file.  It lives in web/page.html
+ * and is embedded verbatim from there by the .incbin assembler directive
+ * below, which defines the two symbols delimiting its bytes.  Editing the
+ * page is now editing an HTML file, not splicing a string across C source.
  *
- * There is no third piece and no buffer holding the whole of it.  The reply
- * used to be composed into one -- `char body[sizeof(g_page) + slack]`, sized
- * from the page so that the number could not drift -- and that is a stack
- * frame the size of the page.  The page grew, the frame grew with it, and it
- * passed the 8192-byte task stack and faulted on the first request: a crash
- * in the server, on the board, from an edit to some CSS.
- *
- * The mistake was not the size.  It was copying a constant in order to
- * change eleven bytes in the middle of it.  The page already lives in
- * read-only memory; the only thing needed from it in a buffer is the codec
- * string, which is a pointer and a length that are already there.  So the
- * three parts are queued in order into the buffer that is going to carry
- * them anyway, and nothing anywhere is the size of the page.
- *
- * That also settles two things the composition kept having to work around:
- * the length in the reply is exact rather than the length of a buffer that
- * was large enough, and the page is no longer a printf format string -- so
- * a per cent sign in it means a per cent sign, and does not have to be
- * written as two.
+ * The page still has to end up in one reply as a single body, and it still
+ * has to have the stream's codec string (something like "avc1.42c016",
+ * eleven bytes) written into it rather than baked in, because the codec is
+ * only known once the encoder's first parameter set has been seen.  The page
+ * therefore carries an eleven-byte placeholder where the codec belongs --
+ * the same length as a codec string -- which this file overwrites at request
+ * time.  The placeholder being exactly codec-sized means filling it moves
+ * nothing and the page keeps its length, so no buffer has to hold the whole
+ * page and the reply's Content-Length stays exact.  The placeholder is found
+ * by a search rather than a hard-coded offset, so it can move with the page.
  */
 
-/* The page's own look, and the two decisions in it worth writing down.
- *
- * The button carries an icon rather than a word because it opens the panel
- * and not the 3A controls: the panel is where controls live, and the 3A ones
- * are only the first of them.  A label naming the contents would be wrong the
- * first time anything else is put in there.
- *
- * The diagnostics sit along the bottom rather than across the top.  They are
- * a readout rather than a control, they are wide rather than tall, and along
- * the top they would compete with the picture for the eye -- which is
- * backwards, because the picture is the thing being looked at.
- *
- * The three custom widget styles are here rather than in a stylesheet
- * because there is no stylesheet: the page is one string in this file, so
- * that serving it is a write() and there is nothing else to keep in step.
+#define CAMENC_WS_CODEC_SLOT_SIZE 11
+
+/* .incbin takes its path relative to the assembler's working directory,
+ * which in the Makefile build is this application's own directory
+ * (Config.mk runs `make -C system/camenc`), so "web/page.html" resolves
+ * here. */
+
+__asm__(".section .rodata\n\t"
+        ".align 2\n\t"
+        ".global _g_page_html_start\n\t"
+        ".type _g_page_html_start, %object\n\t"
+        "_g_page_html_start:\n\t"
+        ".incbin \"web/page.html\"\n\t"
+        ".global _g_page_html_end\n\t"
+        ".type _g_page_html_end, %object\n\t"
+        "_g_page_html_end:\n\t");
+
+extern const char _g_page_html_start[];
+extern const char _g_page_html_end[];
+
+/* The offset of the codec slot from the start of the page, found at request
+ * time by looking for the placeholder.  A fixed offset would quietly point
+ * past the slot the first time a line is added above it.  Returns
+ * (size_t)-1 if the placeholder is not there, which cannot be a valid slot.
  */
 
-static const char g_page_head[] =
-    "<!DOCTYPE html>\n"
-    "<html><head><meta charset=\"utf-8\">"
-    "<meta name=viewport content=\"width=device-width,initial-scale=1\">\n"
-    "<title>camenc</title></head>\n"
-    "<style>\n"
-    ":root{\n"
-    "  "
-    "--bg:#0f0f13;--panel:#16161c;--line:#26262f;--fg:#d4d4dd;--dim:#82828f;\n"
-    "  --accent:#7ccfff;--track:#2c2c36;--chip:#1b1b22;\n"
-    "  --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;\n"
-    "  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;\n"
-    "  --dbg:84px;--side:327px;\n"
-    "}\n"
-    "*{box-sizing:border-box}\n"
-    "body{margin:0;overflow:hidden;background:var(--bg);color:var(--fg);"
-    "font-family:var(--sans);font-size:13px;line-height:1.5}\n"
-    "#b{position:fixed;top:8px;left:8px;z-index:12;width:34px;height:34px;"
-    "padding:0;display:flex;align-items:center;justify-content:center;"
-    "border:1px solid var(--line);border-radius:9px;background:var(--chip);"
-    "color:var(--dim);cursor:pointer}\n"
-    "#b:hover{color:var(--fg);border-color:#3a3a47}\n"
-    "#b:active{transform:scale(.95)}\n"
-    "#p{position:fixed;top:0;bottom:0;left:0;width:var(--side);"
-    "z-index:8;background:var(--panel);border-right:1px solid var(--line);"
-    "padding:52px 14px 14px;overflow:auto}\n"
-    "#p.off{display:none}\n"
-    "#p h3{margin:22px 0 10px;padding-top:16px;"
-    "border-top:1px solid var(--line);font-size:11px;font-weight:600;"
-    "letter-spacing:.09em;text-transform:uppercase;color:var(--dim)}\n"
-    "#p h3:first-of-type{margin-top:0;padding-top:0;border-top:0}\n"
-    "#mo{padding:7px 9px;margin:0 0 4px;border:1px solid var(--line);"
-    "border-radius:7px;background:var(--chip);color:var(--dim);font-size:11px;"
-    "font-family:var(--mono)}\n"
-    ".r{display:flex;align-items:center;gap:10px;margin-bottom:9px}\n"
-    ".r span{flex:0 0 66px;color:var(--dim);font-size:12px}\n"
-    ".r b{flex:0 0 46px;text-align:right;font-family:var(--mono);"
-    "font-size:12px;font-variant-numeric:tabular-nums}\n"
-    ".n{margin:-4px 0 0 76px;color:var(--dim);font-size:11px;"
-    "font-family:var(--mono)}\n"
-    ".foot{margin-top:20px;color:#5f5f6b;font-size:10px;line-height:1.6}\n"
-    "input[type=range]{-webkit-appearance:none;appearance:none;flex:1 1 auto;"
-    "min-width:0;height:14px;margin:0;background:transparent;cursor:pointer}\n"
-    "input[type=range]::-webkit-slider-runnable-track{height:3px;"
-    "border-radius:2px;background:var(--track)}\n"
-    "input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;"
-    "width:12px;height:12px;margin-top:-4.5px;border:0;border-radius:50%;"
-    "background:var(--accent)}\n"
-    "input[type=range]::-moz-range-track{height:3px;border-radius:2px;"
-    "background:var(--track)}\n"
-    "input[type=range]::-moz-range-thumb{width:12px;height:12px;border:0;"
-    "border-radius:50%;background:var(--accent)}\n"
-    "input[type=range]:focus{outline:none}\n"
-    "input[type=range]:focus-visible::-webkit-slider-thumb{"
-    "box-shadow:0 0 0 3px #7ccfff44}\n"
-    "input[type=checkbox]{-webkit-appearance:none;appearance:none;"
-    "flex:0 0 auto;width:16px;height:16px;margin:0;border:1px solid #3b3b47;"
-    "border-radius:5px;background:#1c1c23;cursor:pointer}\n"
-    "input[type=checkbox]:checked{background-color:var(--accent);"
-    "border-color:var(--accent);background-image:url(\"data:image/svg+xml,"
-    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath "
-    "d='M3.5 8.6l3 3 6-7' fill='none' stroke='%230f0f13' stroke-width='2.6' "
-    "stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");"
-    "background-repeat:no-repeat;background-position:center;"
-    "background-size:11px}\n"
-    "input:disabled{opacity:.4;cursor:not-allowed}\n"
-    "#s{position:fixed;left:var(--side);right:0;bottom:0;height:var(--dbg);"
-    "z-index:9;background:#0b0b0e;border-top:1px solid var(--line);"
-    "padding:6px 11px;overflow:auto;white-space:pre-wrap;"
-    "font-family:var(--mono);font-size:11px;color:var(--dim);"
-    "transition:left .18s ease}\n"
-    "#s.full{left:0}\n"
-    "#w{position:fixed;top:0;right:0;bottom:var(--dbg);left:var(--side);"
-    "display:flex;align-items:center;justify-content:center;padding:10px;"
-    "transition:left .18s ease}\n"
-    "#w.full{left:0}\n"
-    "#v{display:block;max-width:100%;max-height:100%;border-radius:6px;"
-    "background:#000}\n"
-    "</style></head>\n"
-    "<body>\n"
-    "<button id=b onclick=toggle() aria-label=\"toggle sidebar\" "
-    "aria-expanded=\"true\" title=\"toggle sidebar\">\n"
-    "<svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" "
-    "stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\">"
-    "<path d=\"M2 4h12M2 8h12M2 12h12\"/></svg></button>\n"
-    "<div id=p>\n"
-    "<div id=mo>-</div>\n"
-    "<h3>exposure and gain</h3>\n"
-    "<div class=r><span>exposure</span>"
-    "<input id=es type=range><b id=ev>-</b></div>\n"
-    "<div class=r><span>gain</span>"
-    "<input id=gs type=range><b id=gv>-</b></div>\n"
-    "<div class=r><span>automatic</span>"
-    "<input id=ea type=checkbox checked></div>\n"
-    "<div class=n id=lv>level -</div>\n"
-    "<h3>white balance</h3>\n"
-    "<div class=r><span>red</span>"
-    "<input id=wr type=range><b id=wrv>-</b></div>\n"
-    "<div class=r><span>green</span>"
-    "<input id=wg type=range><b id=wgv>-</b></div>\n"
-    "<div class=r><span>blue</span>"
-    "<input id=wb type=range><b id=wbv>-</b></div>\n"
-    "<div class=r><span>automatic</span>"
-    "<input id=wa type=checkbox checked></div>\n"
-    "<div class=n id=wv>-</div>\n"
-    "<div class=foot>gains are 8-bit fixed point, 256 = 1.0x, and green is "
-    "the reference the other two are compared with.</div>\n"
-    "</div>\n"
-    "<div id=w><video id=v autoplay muted playsinline></video></div>\n"
-    "<div id=s>connecting...</div>\n"
-    "<script>\n"
-    "const v=document.getElementById('v'),s=document.getElementById('s');\n"
-    "let sb=null,q=[],rx=0,msgs=0,err='',note='';\n"
-    "let ws=null,st={},have3a=false,show=true;\n"
-    "const HOLD={};\n"
-    "const ms=new MediaSource();\n"
-    "v.src=URL.createObjectURL(ms);\n"
-    "/* How far behind the newest data the picture is allowed to fall before\n"
-    "   the playhead is brought forward. Half a second keeps the picture\n"
-    "   close to live while leaving enough in hand not to stutter. */\n"
-    "const MAXLAG=0.6;\n"
-    "function say(){\n"
-    "  const b=sb?sb.buffered:null;\n"
-    "  let br='-',lag='-';\n"
-    "  if(b&&b.length){\n"
-    "    const e=b.end(b.length-1);\n"
-    "    br=b.start(0).toFixed(2)+'..'+e.toFixed(2)+' ('+b.length+')';\n"
-    "    lag=(e-v.currentTime).toFixed(2)+'s'+\n"
-    "      (e-v.currentTime>MAXLAG?' LATE':'');\n"
-    "  }\n"
-    "  s.textContent='msgs='+msgs+' rx='+rx+'B q='+q.length+\n"
-    "    ' lag='+lag+'\\n'+\n"
-    "    'sb='+(sb?sb.readyState:'none')+' upd='+(sb?sb.updating:'-')+\n"
-    "    ' ms='+ms.readyState+' buffered='+br+'\\n'+\n"
-    "    't='+v.currentTime.toFixed(2)+' vw='+v.videoWidth+'x'+\n"
-    "    v.videoHeight+' rs='+v.readyState+' paused='+v.paused+'\\n'+\n"
-    "    'verr='+(v.error?v.error.code+':'+v.error.message:'-')+\n"
-    "    ' err='+(err||'-')+(note?' note='+note:'');\n"
-    "}\n"
-    "function pump(){\n"
-    "  if(!sb||sb.updating||!q.length)return;\n"
-    "  try{\n"
-    "    const b=sb.buffered;\n"
-    "    if(b.length){\n"
-    "      const end=b.end(b.length-1);\n"
-    "      /* A live stream does not start at zero for a client that joined\n"
-    "         late: the first fragment it was given carries the timestamp of\n"
-    "         the frame it was, which is however long the stream had been\n"
-    "         running. The player, meanwhile, sits at zero -- where there is\n"
-    "         no data and so nothing to show, which is a black picture that\n"
-    "         looks like a broken stream and is not one. Put it where the\n"
-    "         data is, which is what any live player has to do. */\n"
-    "      if(v.currentTime<b.start(0)){\n"
-    "        v.currentTime=b.start(0);\n"
-    "        note='seek to '+b.start(0).toFixed(2);\n"
-    "      }\n"
-    "      /* And it does not wait. A browser plays at exactly real time, so\n"
-    "         anything that makes it stall -- a slow append, a busy machine,\n"
-    "         a burst of frames -- is never made up: the picture simply runs\n"
-    "         later and later, and stays there. Bringing the playhead "
-    "forward\n"
-    "         when the backlog grows is the difference between a stream that\n"
-    "         ends up a second late for ever and one that is about as late "
-    "as\n"
-    "         it was when it started. */\n"
-    "      else if(end-v.currentTime>MAXLAG){\n"
-    "        const behind=end-v.currentTime;\n"
-    "        v.currentTime=end-MAXLAG/2;\n"
-    "        note='caught up from '+behind.toFixed(2)+'s';\n"
-    "      }\n"
-    "      v.play().catch(e=>{note='play:'+e.name;});\n"
-    "      if(v.currentTime-b.start(0)>4){\n"
-    "        note='removing';\n"
-    "        sb.remove(0,v.currentTime-1);\n"
-    "        return;\n"
-    "      }\n"
-    "    }\n"
-    "    const f=q.shift();\n"
-    "    sb.appendBuffer(f);\n"
-    "    note='appended '+f.length+'B';\n"
-    "  }catch(e){err=e.name+': '+e.message;}\n"
-    "  say();\n"
-    "}\n"
-    "ms.addEventListener('sourceopen',()=>{\n"
-    "  try{\n"
-    "    sb=ms.addSourceBuffer('video/mp4; codecs=\"";
+static size_t page_codec_slot(void)
+{
+  static const char marker[] = "@@@@@@@@@@@";
 
-static const char g_page_tail[] =
-    "\"');\n"
+  FAR const char *p = memmem(_g_page_html_start,
+                             (size_t)(_g_page_html_end - _g_page_html_start),
+                             marker, CAMENC_WS_CODEC_SLOT_SIZE);
 
-    "  }catch(e){err='addSourceBuffer: '+e.name+': "
-    "'+e.message;say();return;}\n"
-    "  sb.mode='segments';\n"
-    "  sb.addEventListener('updateend',()=>{note='updateend';pump();});\n"
-    "  sb.addEventListener('error',()=>{err='sourcebuffer error';say();});\n"
-    "  sb.addEventListener('abort',()=>{err='sourcebuffer abort';say();});\n"
-    "  /* Assigned, not declared: the control panel below the fold of this\n"
-    "     script sends on the same socket, so it has to be reachable from\n"
-    "     outside this handler. */\n"
-    "  ws=new WebSocket('ws://'+location.host+'/stream');\n"
-    "  ws.binaryType='arraybuffer';\n"
-    "  ws.onopen=()=>{note='ws open';say();};\n"
-    "  /* Two kinds of message come back on this one socket: the video, as\n"
-    "     binary, and the settings, as text. They have to be told apart here\n"
-    "     or a status line is fed to the video decoder as a segment, which\n"
-    "     is the kind of mistake that looks like a broken stream. */\n"
-    "  ws.onmessage=e=>{\n"
-    "    if(typeof e.data==='string'){ontext(e.data);return;}\n"
-    "    q.push(new Uint8Array(e.data));\n"
-    "    rx+=e.data.byteLength;msgs++;say();pump();};\n"
-    "  ws.onerror=()=>{err='ws error';say();};\n"
-    "  ws.onclose=e=>{err='ws closed code='+e.code;say();};\n"
-    "});\n"
-    "ms.addEventListener('sourceclose',()=>{err='media source "
-    "closed';say();});\n"
-    "setInterval(say,500);\n"
-    "/* The 3A controls.\n"
-    "\n"
-    "   The server sends a status line whenever the settings move, and the\n"
-    "   sliders follow it: a slider nobody is touching is a display of what\n"
-    "   the loop is doing, not a copy of what was last sent to it. That is\n"
-    "   what makes an automatic loop visible rather than mysterious.\n"
-    "\n"
-    "   The one that is being dragged is left alone, because a value being\n"
-    "   held should not be pulled out from under the finger by a status that\n"
-    "   was computed before the drag. It catches up when the pointer is\n"
-    "   released.\n"
-    "\n"
-    "   Moving a slider switches that loop to manual, which is what a user\n"
-    "   means by moving it, and is the difference between a control and a\n"
-    "   display: nothing is worse than a slider that springs back. */\n"
-    "const $=i=>document.getElementById(i);\n"
-    "function send(m){if(ws&&ws.readyState===1)ws.send(m);}\n"
-    "/* One place where a command is named.  These names and the names the\n"
-    "   board accepts are two halves of one protocol, and a script can only\n"
-    "   check them against each other if each is written down once. */\n"
-    "/* Slider, command and status field, in one table: a gain's name in the\n"
-    "   report is the name that sets it, so the two cannot drift apart. The\n"
-    "   mapping is a table rather than a function because a script can read\n"
-    "   a table to check the page and the board still agree. */\n"
-    "const CMD={es:'e',gs:'g',wr:'kr',wg:'kg',wb:'kb'};\n"
-    "function cmd(n,v){send(n+' '+v);}\n"
-    "function toggle(){show=!show;$('p').classList.toggle('off',!show);\n"
-    "  /* The picture and the diagnostics both begin where the panel ends, "
-    "so\n"
-    "     that the panel runs the whole height of the window and those two\n"
-    "     share the space beside it.  They move together, which is why one\n"
-    "     class drives both. */\n"
-    "  $('w').classList.toggle('full',!show);\n"
-    "  $('s').classList.toggle('full',!show);\n"
-    "  /* The button says what it does, and now says whether it is open.\n"
-    "     A toggle whose state is only visible in the thing it toggles is\n"
-    "     invisible to anything reading the page rather than looking at it. "
-    "*/\n"
-    "  $('b').setAttribute('aria-expanded',show);}\n"
-    "/* The three white balance gains are the numbers the demosaicer is\n"
-    "   handed, 256 being unity, and there is deliberately no colour\n"
-    "   temperature in front of them. A kelvin would have to come from a\n"
-    "   calibration of this sensor against a known lamp; camenc_3a.h says\n"
-    "   at length why what was here before instead was a number that could\n"
-    "   not be derived from the gains and so could only ever report what\n"
-    "   was last typed into it. */\n"
-    "const WBS=['wr','wg','wb'];\n"
-    "function ontext(t){\n"
-    "  if(t.slice(0,3)!=='3a ')return;\n"
-    "  const o={};\n"
-    "  for(const f of t.slice(3).split(' ')){\n"
-    "    const i=f.indexOf('=');\n"
-    "    if(i>0)o[f.slice(0,i)]=+f.slice(i+1);\n"
-    "  }\n"
-    "  st=o;have3a=true;\n"
-    "  /* A status line means the board has a control plane, whatever the\n"
-    "     panel said before it arrived. The lookup below may have given up\n"
-    "     waiting and disabled everything. */\n"
-    "  SL.concat(['ea','wa']).forEach(i=>{$(i).disabled=false;});\n"
-    "  draw();\n"
-    "}\n"
-    "const STN=['moving','settled','settled, out of range','by hand'];\n"
-    "function draw(){\n"
-    "  if(!have3a)return;\n"
-    "  const ae=st.ae===1,aw=st.aw===1;\n"
-    "  "
-    "if(!HOLD.es){$('es').min=st.emin;$('es').max=st.emax;$('es').value=st.e;}"
-    "\n"
-    "  "
-    "if(!HOLD.gs){$('gs').min=st.gmin;$('gs').max=st.gmax;$('gs').value=st.g;}"
-    "\n"
-    "  /* The gain sliders, bounded by what the driver will accept rather\n"
-    "     than by what the automatic loop keeps to: those are different\n"
-    "     things, and the narrower of the two is a policy this page has no\n"
-    "     business enforcing. */\n"
-    "  WBS.forEach((id,k)=>{const el=$(id);\n"
-    "    el.min=st.wbmin;el.max=st.wbmax;\n"
-    "    if(!HOLD[id])el.value=[st.kr,st.kg,st.kb][k];});\n"
-    "  $('ea').checked=ae;$('wa').checked=aw;\n"
-    "  /* The sliders stay live while a loop is automatic, and that is the\n"
-    "     point of them: they show what the loop has decided, and grabbing\n"
-    "     one is how a user says \"not this, this\". Disabling them while\n"
-    "     automatic would leave the checkbox as the only way to take a loop\n"
-    "     over, which is the thing the slider is for. */\n"
-    "  $('ev').textContent=st.e;$('gv').textContent=st.g;\n"
-    "  $('wrv').textContent=st.kr;$('wgv').textContent=st.kg;\n"
-    "  $('wbv').textContent=st.kb;\n"
-    "  /* What the three gains amount to, as ratios against green, which is\n"
-    "     the reference the other two are there to be compared with. It is\n"
-    "     arithmetic on the numbers beside it rather than a model of a\n"
-    "     lamp, so it cannot disagree with them. */\n"
-    "  $('wv').textContent=st.kg?'r/g '+(st.kr/st.kg).toFixed(3)+\n"
-    "    '   b/g '+(st.kb/st.kg).toFixed(3):'-';\n"
-    "  $('lv').textContent='level '+st.lv+' / '+st.tg;\n"
-    "  $('mo').textContent=(ae?'auto':'manual')+' exposure, '+\n"
-    "    (aw?'auto':'manual')+' white balance, '+\n"
-    "    (STN[st.st]||'-');\n"
-    "}\n"
-    "const SL=['es','gs'].concat(WBS);\n"
-    "SL.forEach(id=>{\n"
-    "  const el=$(id);\n"
-    "  el.oninput=()=>{\n"
-    "    /* The value is echoed into the state as well as sent, so that the\n"
-    "       redraw below shows what was just asked for rather than what the\n"
-    "       board last reported.  Without it a slider moved by the keyboard\n"
-    "       -- which is an input with no pointer pressed -- would be written\n"
-    "       back to the old value on the next line. */\n"
-    "    const v=+el.value;\n"
-    "    if(id==='es'||id==='gs'){st.ae=0;}else{st.aw=0;}\n"
-    "    st[CMD[id]]=v;\n"
-    "    cmd(CMD[id],v);\n"
-    "    draw();\n"
-    "  };\n"
-    "  el.onpointerdown=()=>{HOLD[id]=1;};\n"
-    "  ['pointerup','pointercancel','blur'].forEach(e=>\n"
-    "    el.addEventListener(e,()=>{HOLD[id]=0;draw();}));\n"
-    "});\n"
-    "$('ea').onchange=()=>{st.ae=$('ea').checked?1:0;cmd('ae',st.ae);draw();};"
-    "\n"
-    "$('wa').onchange=()=>{st.aw=$('wa').checked?1:0;cmd('aw',st.aw);draw();};"
-    "\n"
-    "/* A board whose capture driver has no 3A control plane never sends a\n"
-    "   status line, and the panel must say so rather than sit there looking\n"
-    "   like a control that does nothing. */\n"
-    "setTimeout(()=>{\n"
-    "  if(have3a)return;\n"
-    "  $('mo').textContent='no 3A control plane on this board';\n"
-    "  SL.concat(['ea','wa']).forEach(i=>{$(i).disabled=true;});\n"
-    "},2500);\n"
-    "</script></body></html>\n";
+  return p != NULL ? (size_t)(p - _g_page_html_start) : (size_t)-1;
+}
 
 /****************************************************************************
  * Private Functions
@@ -893,10 +560,31 @@ static void ws_serve_page(FAR struct camenc_ws_s *ws,
                           FAR struct camenc_ws_client_s *c)
 {
   FAR const char *codec = ws->codec[0] != '\0' ? ws->codec : "avc1.42c016";
-  char head[256];
+  size_t page_len = (size_t)(_g_page_html_end - _g_page_html_start);
+  size_t slot = page_codec_slot();
   size_t clen = strlen(codec);
-  size_t blen = sizeof(g_page_head) - 1u + clen + sizeof(g_page_tail) - 1u;
+  size_t blen;
+  char head[256];
   int hlen;
+
+  /* The reply is the page with the codec slot's bytes replaced by the codec
+   * string, so its length is the page's with the slot swapped for the codec
+   * -- equal in practice, kept exact by the subtraction.
+   */
+
+  if (slot == (size_t)-1 || slot + CAMENC_WS_CODEC_SLOT_SIZE > page_len)
+    {
+      /* The placeholder is missing or mis-sized: serve the page as-is rather
+       * than write the codec over some unrelated byte.  A player will refuse
+       * the MediaSource, but the page itself still loads.
+       */
+
+      blen = page_len;
+    }
+  else
+    {
+      blen = page_len - CAMENC_WS_CODEC_SLOT_SIZE + clen;
+    }
 
   hlen = snprintf(head, sizeof(head),
                   "HTTP/1.1 200 OK\r\n"
@@ -923,25 +611,34 @@ static void ws_serve_page(FAR struct camenc_ws_s *ws,
       return;
     }
 
-  /* The reply in four pieces, all of them const and none of them a copy --
-   * see the note above the page.  They are queued rather than written, so a
-   * reply larger than one write is not a special case: it accumulates in
-   * the client's own buffer exactly as a segment does.
+  /* The page's bytes are queued in pieces -- before the slot, the codec,
+   * after the slot -- rather than composed into one buffer, for the same
+   * reason the page used to be two strings: nothing anywhere holds the
+   * whole page, and a reply larger than one write is not a special case.
+   * The page lives in read-only memory, so the slot is not overwritten in
+   * place; it is skipped and the codec queued in its stead, and the reply's
+   * length stays exact because the slot and the codec swap one-for-one.
    */
 
-  if (!ws_queue(ws, c, (FAR const uint8_t *)head, (size_t)hlen) ||
-      !ws_queue(ws, c, (FAR const uint8_t *)g_page_head,
-                sizeof(g_page_head) - 1u) ||
-      !ws_queue(ws, c, (FAR const uint8_t *)codec, clen) ||
-      !ws_queue(ws, c, (FAR const uint8_t *)g_page_tail,
-                sizeof(g_page_tail) - 1u))
+  if (!ws_queue(ws, c, (FAR const uint8_t *)head, (size_t)hlen))
     {
-      /* ws_queue has already dropped the client it could not fit.  Stopping
-       * here rather than queueing the rest is the difference between a
-       * client that is gone and one being quietly filled with a reply
-       * nobody will read.
-       */
+      return;
+    }
 
+  if (slot == (size_t)-1 || slot + CAMENC_WS_CODEC_SLOT_SIZE > page_len)
+    {
+      if (!ws_queue(ws, c, (FAR const uint8_t *)_g_page_html_start, page_len))
+        {
+          return;
+        }
+    }
+  else if (!ws_queue(ws, c, (FAR const uint8_t *)_g_page_html_start, slot) ||
+           !ws_queue(ws, c, (FAR const uint8_t *)codec, clen) ||
+           !ws_queue(ws, c,
+                     (FAR const uint8_t *)(_g_page_html_start + slot +
+                                           CAMENC_WS_CODEC_SLOT_SIZE),
+                     page_len - slot - CAMENC_WS_CODEC_SLOT_SIZE))
+    {
       return;
     }
 
