@@ -234,14 +234,37 @@
 /* How much room the demosaic has to leave inside a frame interval before the
  * frame may be read where it lies.
  *
- * The buffer just finished is stable for exactly one frame interval, and the
- * margin covers what the measurement does not: it is the average interval
- * rather than this frame's, it was taken from a previous frame whose cache
- * state differed, and the worker can be scheduled late.  A wrong answer here
- * is not a slow frame but a torn one, so the value is deliberately large.
+ * The just-finished buffer is stable for one frame interval: the DMA fills
+ * the other buffer meanwhile, and only begins overwriting this one when the
+ * frame after next starts, one interval later.  The margin is a safety
+ * factor on top of that window, covering what the prediction cannot: the
+ * interval is an average rather than this frame's, it came from a previous
+ * frame, and the worker can be scheduled late.
+ *
+ * A wrong answer here is not a slow frame but a torn one, so the factor has
+ * to leave room for the worker being delayed.  At 1296x960 the demosaic is
+ * about 15 ms against a 32 ms interval, so it uses about 47% of the real
+ * window and a factor of 2 admits it; a factor of 3 does not, which is why
+ * this board used to copy every frame.  The worker sharing one core with the
+ * application is what the remaining headroom is exposed to, and the
+ * post-read boundary check below is what catches it if that exposure is ever
+ * taken -- at the cost of one torn frame, after which this stream keeps
+ * copying.
  */
 
-#define RK3576_VICAP_INPLACE_MARGIN 3u
+#define RK3576_VICAP_INPLACE_MARGIN 2u
+
+/* How many demosaics to average before deciding whether a frame may be read
+ * where it lies.
+ *
+ * One sample is not enough.  The first demosaics of a stream run with a cold
+ * cache and are the slowest of them all, and the answer is latched, so a
+ * single unlucky frame would keep the stream copying for its whole length.
+ * A handful of frames costs a fraction of a second at the start and makes
+ * the figure describe the mode rather than the frame.
+ */
+
+#define RK3576_VICAP_INPLACE_SAMPLES 8u
 
 /* Bayer 2x2 colour at (row parity, column parity); 0 = R, 1 = G, 2 = B. */
 
@@ -349,16 +372,17 @@ struct rk3576_vicap_s
    *
    * The frame interval does not change while a stream runs, so this is a
    * property of the stream rather than of the frame: it is worked out once,
-   * from the first interval and the first demosaic that are both known, and
-   * then latched.  Deciding it afresh on every frame makes it flicker -- the
-   * measurement moves by a tick either way, and any threshold near the
-   * demosaic time then alternates between the two paths from one frame to
-   * the next.  The two paths are also measured apart, so that the cost of
-   * each is known rather than only the average of both.
+   * from the average of several demosaics and the interval measured between
+   * DMA ends, and then latched.  Deciding it afresh on every frame makes it
+   * flicker -- the measurement moves by a tick either way, and any threshold
+   * near the demosaic time then alternates between the two paths from one
+   * frame to the next.  The two paths are also measured apart, so that the
+   * cost of each is known rather than only the average of both.
    */
 
   bool inplace_decided;
   bool inplace_ok;
+  uint32_t inplace_samples; /* Demosaics summed so far */
   uint32_t inplace_frames;
   uint32_t inplace_us_sum;
   uint32_t copy_frames;
@@ -1771,16 +1795,19 @@ static void rk3576_vicap_worker(FAR void *arg)
 
   gettimeofday(&t0, NULL);
 
-  /* The decision uses the previous frame's demosaic, so the first frame of a
-   * stream takes the copy and a mode too slow for its frame rate keeps it.
-   * It is taken once and then held; see the note on the fields.
+  /* The decision is taken once the first few frames have been measured, and
+   * until then, and for a mode too slow for its frame rate afterwards, every
+   * frame takes the copy.  See the note on the fields.
    */
 
-  if (!priv->inplace_decided && priv->interval_ticks != 0u &&
-      priv->debayer_us != 0u)
+  if (!priv->inplace_decided &&
+      priv->inplace_samples >= RK3576_VICAP_INPLACE_SAMPLES &&
+      priv->interval_ticks != 0u)
     {
+      uint32_t average = priv->debayer_us_sum / priv->inplace_samples;
+
       priv->inplace_decided = true;
-      priv->inplace_ok = (priv->debayer_us * RK3576_VICAP_INPLACE_MARGIN <
+      priv->inplace_ok = (average * RK3576_VICAP_INPLACE_MARGIN <
                           priv->interval_ticks * USEC_PER_TICK);
     }
 
@@ -1835,6 +1862,7 @@ static void rk3576_vicap_worker(FAR void *arg)
   priv->debayer_us = (uint32_t)((td1.tv_sec - td0.tv_sec) * 1000000 +
                                 (td1.tv_usec - td0.tv_usec));
   priv->debayer_us_sum += priv->debayer_us;
+  priv->inplace_samples++;
 
   /* Reading where the frame lies is exposed for as long as the read takes,
    * which is the whole of the demosaic, so the boundary is checked after it
@@ -2286,6 +2314,7 @@ static int rk3576_vicap_start_capture(FAR struct imgdata_s *data,
   priv->debayer_us = 0;
   priv->inplace_decided = false;
   priv->inplace_ok = false;
+  priv->inplace_samples = 0;
 
   /* The counts start again with the stream so that the report at the end of
    * it describes that stream rather than a lifetime total: a mode and a
