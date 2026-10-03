@@ -270,7 +270,7 @@ static struct camenc_buf_s g_cap[CAMENC_BUFFERS];
 
 /* The server keeps a receive buffer for each client it may have, which makes
  * it 8464 bytes -- more than the whole of this task's stack, which is
- * CONFIG_SYSTEM_CAMENC_STACKSIZE and 8192 by default.  As a local variable
+ * CONFIG_EXAMPLES_CAMENC_STACKSIZE and 8192 by default.  As a local variable
  * it overran: the frame alone was 9520 bytes, so the first store into it
  * ran off the end of the stack into whatever the heap had put there, and
  * the allocation that followed walked the damage and faulted.  It is here
