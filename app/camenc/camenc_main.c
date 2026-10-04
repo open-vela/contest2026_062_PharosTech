@@ -137,11 +137,28 @@
 #define CAMENC_3A_GAIN_ONE     16u
 
 /* The brightness the loop steers to, on the 0..255 scale the capture driver
- * measures in.  About half of the range leaves room to be wrong in both
- * directions; a target near the top spends its time clipped.
+ * measures in -- a scale that counts light and not what the eye makes of it.
+ *
+ * That distinction is the whole of this number.  The counts are proportional
+ * to the light that arrived, so a value halfway up the range is not the
+ * middle of anything: photographic mid grey is an 18% reflectance and lands
+ * at 0.18 * 255, which is 46, and the eye's own half-way point -- sRGB 128 --
+ * is 55 in these units.  A target of 128 is more than a stop above mid grey
+ * and spends its time in clipping, and the first version of this line asked
+ * for 110, which is 43% of full scale and the same mistake made smaller.
+ *
+ * Sixty is mid grey with about a third of a stop of headroom: bright enough
+ * to read a room by, and dark enough that a lamp or a window in the frame
+ * stays a minority of the measurement rather than most of it.
+ *
+ * The quantity being steered is the whole frame's brightness, with any
+ * clipped sample counted at the top of the range -- see camenc_3a_measure.
+ * So a scene with blown highlights reads brighter than its surviving detail
+ * does, which is the point: the figure this is compared against is a claim
+ * about the whole picture and not only about the part of it that came back.
  */
 
-#define CAMENC_3A_TARGET_DEFAULT 110u
+#define CAMENC_3A_TARGET_DEFAULT 60u
 
 /* Whether the loop runs when the caller does not say.
  *

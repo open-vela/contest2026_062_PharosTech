@@ -81,13 +81,75 @@
  * luma is accumulated in 64 bits.  Doing it in 32 would silently wrap on any
  * picture with something in it, and wrap to a small number, which reads as a
  * very dark frame and drives the exposure wide open.
+ *
+ * TWO BRIGHTNESSES COME OUT, AND THE DIFFERENCE BETWEEN THEM IS THE CLIPPED
+ * SAMPLES
+ *
+ * The driver leaves a 2x2 block out of `sum` and `count` as soon as any of
+ * its four samples is at the top of the range -- see cam3a.h -- because past
+ * full scale the code the sensor reports stops depending on how much light
+ * arrived, so the ratios between the channels there describe the ceiling and
+ * not the scene.  That is right for the white balance and wrong for the
+ * exposure, and wrong in the one direction that matters.
+ *
+ * An exposure loop steering on the counted samples alone measures a frame
+ * *darker* the more of it is blown out: the blown part is dropped from the
+ * measurement rather than counted as the brightest part of it.  The target
+ * then reads as "the unclipped part averages to the target", which any
+ * amount of clipping satisfies, so there is no overshoot that ends it.  And
+ * because the measured brightness falls as the light rises, the loop asks
+ * for more light precisely when it should be asking for less -- which is how
+ * a camera ends up holding its gain at the ceiling with the highlights gone,
+ * the picture measuring dark while it is the brightest frame there is.
+ *
+ * So the exposure is given the whole frame's brightness, with every clipped
+ * sample counted at the top of its range.  That is the least the sample's
+ * true value could be -- it is at or past full scale by definition -- so the
+ * figure is a lower bound that rises with the clipping, which is what gives
+ * the loop something to close on.  The white balance keeps the measurement
+ * over the counted samples, where a mean still describes the colour of the
+ * light, and that one comes out in `awb_level`.
+ *
+ * `count` is in samples and not blocks -- the driver counts the four samples
+ * of each block it accepted -- so width * height - count is the number of
+ * samples that were left out, and the two can be combined directly.
+ *
+ * A block is left out whole, so a block with one saturated sample counts
+ * four times here and not once.  That errs towards closing the exposure
+ * down, which is the direction to err in: the alternative is to leave a
+ * blown highlight uncounted, and that is the failure this exists to fix.
+ *
+ * The geometry is carried in the measurement rather than assumed because a
+ * change of mode changes the pixel count, and a mean built from one frame's
+ * sums over another frame's area belongs to neither.
  */
 
 static uint32_t camenc_3a_measure(FAR const struct cam3a_stats_s *stats,
-                                  FAR uint32_t *mean)
+                                  FAR uint32_t *mean, FAR uint32_t *awb_level)
 {
   uint64_t luma;
+  uint64_t full;
+  uint32_t counted;
   unsigned int i;
+
+  if (stats->count == 0u)
+    {
+      /* No sample was counted, so every block held a saturated sample: a
+       * frame that is black counts its samples, so a count of zero is not
+       * darkness but a frame with no unclipped part at all.  There is no
+       * colour in it to balance, and steering the exposure to the top of
+       * the range is what stops the loop asking for more light on the frame
+       * that is most plainly getting too much.
+       */
+
+      for (i = 0; i < 3u; i++)
+        {
+          mean[i] = 0u;
+        }
+
+      *awb_level = 0u;
+      return 255u;
+    }
 
   for (i = 0; i < 3u; i++)
     {
@@ -98,7 +160,24 @@ static uint32_t camenc_3a_measure(FAR const struct cam3a_stats_s *stats,
          CAMENC_3A_LUMA_G * (uint64_t)stats->sum[1] +
          CAMENC_3A_LUMA_B * (uint64_t)stats->sum[2];
 
-  return (uint32_t)(luma / (CAMENC_3A_LUMA_SUM * (uint64_t)stats->count));
+  counted = (uint32_t)(luma / (CAMENC_3A_LUMA_SUM * (uint64_t)stats->count));
+  *awb_level = counted;
+
+  full = (uint64_t)stats->width * stats->height;
+
+  if (full <= stats->count)
+    {
+      /* Either nothing was clipped, or the frame has no geometry and there
+       * is nothing to say about the samples that were left out.  The two
+       * brightnesses are then the same number.
+       */
+
+      return counted;
+    }
+
+  return (uint32_t)(((uint64_t)counted * stats->count +
+                     255u * (full - stats->count)) /
+                    full);
 }
 
 /* Move `current` a fraction of the way to `want`, taking at least one step
@@ -242,15 +321,21 @@ uint32_t camenc_3a_update(FAR struct camenc_3a_s *a,
   FAR const struct camenc_3a_cfg_s *cfg = &a->cfg;
   uint32_t mean[3];
   uint32_t level;
+  uint32_t awb_level;
   uint32_t changed = 0;
   unsigned int i;
 
-  /* Nothing to measure, and nothing that can be concluded from it.  The
-   * driver reports no counted samples when every block was clipped; the sums
-   * then mean nothing and moving on them would be moving on a guess.
+  /* A brightness needs an area to be one, and the driver publishes the sums
+   * and the frame's size together.  No size means the demosaicer has not
+   * produced a frame yet, and there is nothing to conclude from a frame that
+   * has not been measured.
+   *
+   * A count of zero is a different case and not this one: it is a frame with
+   * no unclipped samples at all, which is the brightest frame there is
+   * rather than a frame with nothing in it.  See camenc_3a_measure.
    */
 
-  if (stats->count == 0u)
+  if (stats->width == 0u || stats->height == 0u)
     {
       return CAMENC_3A_NONE;
     }
@@ -267,7 +352,7 @@ uint32_t camenc_3a_update(FAR struct camenc_3a_s *a,
   a->sequence = stats->sequence;
   a->started = true;
 
-  level = camenc_3a_measure(stats, mean);
+  level = camenc_3a_measure(stats, mean, &awb_level);
 
   /* The measurement is worth reporting whether or not it is acted on: it is
    * what the picture is, and a status line that went blank every time a
@@ -459,9 +544,15 @@ uint32_t camenc_3a_update(FAR struct camenc_3a_s *a,
            * must not re-expose the frame, because the level already belongs
            * to the exposure and raising it would push the bright parts into
            * clipping.  The driver's own loop makes the same choice.
+           *
+           * The luma here is the one over the counted samples and not the
+           * whole frame's, because `mean` is a mean over those samples: a
+           * luma that counted the clipped ones would steer them up by the
+           * amount that was clipped, which is a brightness the exposure has
+           * already decided and not one the colour gets to change.
            */
 
-          tagain = (uint32_t)((uint64_t)CAM3A_WB_ONE * level / mean[i]);
+          tagain = (uint32_t)((uint64_t)CAM3A_WB_ONE * awb_level / mean[i]);
 
           if (tagain < CAMENC_3A_WB_MIN)
             {

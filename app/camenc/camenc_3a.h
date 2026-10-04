@@ -169,8 +169,13 @@ enum camenc_3a_change_e
 struct camenc_3a_cfg_s
 {
   /* The luma the loop steers towards, on the same 0..255 scale the driver's
-   * measurement uses.  About half of the range leaves room to be wrong in
-   * both directions; a target near the top spends its time clipped.
+   * measurement uses.
+   *
+   * That scale is linear in light, so this is not a percentage of what the
+   * picture looks like: mid grey is 46 and the eye's own half-way point is
+   * 55.  A target chosen as "half the range" is more than a stop too bright,
+   * which is a mistake this line made once.  See CAMENC_3A_TARGET_DEFAULT in
+   * camenc_main.c for what the default is and why it is where it is.
    */
 
   uint32_t target;
@@ -298,6 +303,13 @@ struct camenc_3a_s
   /* The brightness of the last frame measured, whether or not it was acted
    * on.  It is what a status line has to show; the loop's own memory is the
    * last level it *believed*, which is a different thing.
+   *
+   * This is the whole frame's brightness, with clipped samples counted at
+   * the top of the range, which is the figure the exposure steers on.  The
+   * white balance steers on a luma over the counted samples alone -- the
+   * same ones its channel means are taken over -- so that the two agree
+   * about what the picture's colour is.  The two differ by exactly the part
+   * of the frame that was blown out; see camenc_3a_measure.
    */
 
   uint32_t level;
