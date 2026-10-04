@@ -394,10 +394,15 @@ int main(int argc, FAR char *argv[])
           "the same frame steered the loop twice");
   }
 
-  /* A black frame carries no information, and a loop that acted on it would
-   * drive the exposure wide open on a scene it cannot see. */
+  /* A frame with no counted samples is either a frame with no unclipped part
+   * at all or one that has not been measured yet, and as the first frame it
+   * is a baseline rather than an instruction: there is nothing to compare it
+   * with.  What the loop does with the next such frame -- which is to turn
+   * the light down, because a fully clipped picture is the brightest one
+   * there is -- is in the case further down.
+   */
 
-  printf("a frame with nothing in it is not acted on\n");
+  printf("a first frame with no counted samples is a baseline\n");
   camenc_3a_init(&a, &c, 500u, 32u, wb, 0u);
 
   {
@@ -856,6 +861,81 @@ int main(int argc, FAR char *argv[])
     check("nothing is written",
           camenc_3a_status(&m, small, 8u) == 0u && small[0] == '\0',
           "a truncated line was handed to the caller as a whole one");
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* A frame with blown highlights                                        */
+  /* ------------------------------------------------------------------ */
+
+  /* The driver leaves a 2x2 block out of its measurement as soon as any of
+   * its four samples is at the top of the range, because a saturated sample
+   * carries no colour to balance.  That is right for the white balance and
+   * wrong for the exposure: steering on the counted samples alone measures a
+   * frame *darker* the more of it is blown out, and the loop then asks for
+   * more light on the frame that is plainly getting too much -- which is how
+   * a camera ends up holding its gain at the ceiling with the highlights
+   * gone and the dark parts of the picture still short of the target.
+   *
+   * So the exposure is given the whole frame's brightness, with each clipped
+   * sample counted at the top of the range.  What these two cases pin is the
+   * direction, which is the part that was wrong.
+   */
+
+  printf("a frame with blown highlights is not read as dark\n");
+
+  {
+    struct camenc_3a_s m;
+    uint32_t anchor[3] = { 256u, 256u, 256u };
+    uint32_t held;
+    unsigned int k;
+
+    /* Started at both ceilings, which is where a loop that has been chasing
+     * a blown frame ends up.
+     */
+
+    camenc_3a_init(&m, &c, c.exposure_max, c.gain_max, anchor, 0u);
+
+    /* Half the frame at the top of the range and half of it dark: with the
+     * clipped half left out, the counted samples average 40 out of 255.
+     */
+
+    for (k = 0; k < 4u; k++)
+      {
+        memset(&g_stats, 0, sizeof(g_stats));
+        g_stats.count = COUNT / 2u;
+        g_stats.sum[0] = 40u * (COUNT / 2u);
+        g_stats.sum[1] = 40u * (COUNT / 2u);
+        g_stats.sum[2] = 40u * (COUNT / 2u);
+        g_stats.width = WIDTH;
+        g_stats.height = HEIGHT;
+        g_stats.sequence = g_seq++;
+        camenc_3a_update(&m, &g_stats);
+      }
+
+    snprintf(buf, sizeof(buf),
+             "level %" PRIu32 ", the counted samples alone average 40",
+             m.level);
+    check("the frame reads bright, not dark", m.level > c.target, buf);
+
+    held = m.gain;
+
+    /* And a frame with nothing unclipped at all is an instruction to close
+     * down, not a frame with no information in it.  Left as one, the loop
+     * stops and holds the setting that produced it.
+     */
+
+    for (k = 0; k < 4u; k++)
+      {
+        memset(&g_stats, 0, sizeof(g_stats));
+        g_stats.width = WIDTH;
+        g_stats.height = HEIGHT;
+        g_stats.sequence = g_seq++;
+        camenc_3a_update(&m, &g_stats);
+      }
+
+    check("a frame that is entirely clipped still turns the light down",
+          m.gain < held,
+          "the loop held its setting on a frame with no unclipped part");
   }
 
   printf("\n%s\n", g_fails == 0 ? "all checks passed" : "FAILURES");
