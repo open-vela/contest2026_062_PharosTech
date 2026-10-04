@@ -324,7 +324,7 @@
         <div class=r><span>automatic</span><input id=wa type=checkbox checked></div>
         <div class=n id=wv>-</div>
         <div class=foot>gains are 8-bit fixed point, 256 = 1.0x, and green is the reference the other two are compared
-            with.</div>
+            with. The three tracks are logarithmic, so the same travel is the same factor wherever it is.</div>
     </div>
     <div id=w><video id=v autoplay muted playsinline></video></div>
     <div id=s>connecting...</div>
@@ -655,6 +655,38 @@
            not be derived from the gains and so could only ever report what
            was last typed into it. */
         const WBS = ['wr', 'wg', 'wb'];
+        /* The white balance gains go on a logarithmic track.
+
+           A gain is a multiplier and not an amount: 256 is one, 1024 is four,
+           8191 is thirty-two. Bounded by the driver's range -- which is what
+           they should be bounded by, since the narrower range the automatic
+           loop keeps to is a policy and not a limit -- that is thirteen
+           doublings, and on a linear track the loop's own 64..1024 is under
+           an inch of travel at the far left.  A control that cannot be aimed
+           is not a control, so the position is the log of the gain, which puts
+           the loop's range across the middle third and still leaves both ends
+           reachable.
+
+           WBN is how many steps that is.  Ten thousand makes one step a
+           relative 0.09%, which is finer than one unit of gain everywhere the
+           loop goes -- one unit in 1024 is 0.1% -- so nothing the loop can
+           choose is unreachable from the keyboard.  Below about a gain of
+           1100 the step is *finer* than the gain itself, so several positions
+           name the same gain; that is the gain's resolution and not the
+           slider's, and it is why the readout is the gain rather than the
+           position. */
+        const WBN = 10000;
+        function wbPos(g) {
+            const lo = st.wbmin, hi = st.wbmax;
+            if (!(hi > lo) || !(g > lo)) return 0;
+            return Math.round(WBN * Math.log(g / lo) / Math.log(hi / lo));
+        }
+        function wbGain(p) {
+            const lo = st.wbmin, hi = st.wbmax;
+            if (!(hi > lo)) return lo;
+            const g = Math.round(lo * Math.pow(hi / lo, p / WBN));
+            return Math.max(lo, Math.min(hi, g));
+        }
         function ontext(t) {
             if (t.slice(0, 3) !== '3a ') return;
             const o = {};
@@ -686,14 +718,16 @@
             }
             if (!HOLD.es) { $('es').min = st.emin; $('es').max = st.emax; $('es').value = st.e; }
             if (!HOLD.gs) { $('gs').min = st.gmin; $('gs').max = st.gmax; $('gs').value = st.g; }
-            /* The gain sliders, bounded by what the driver will accept rather
-               than by what the automatic loop keeps to: those are different
-               things, and the narrower of the two is a policy this page has no
-               business enforcing. */
+            /* The gain sliders, on the log track -- see wbPos -- and bounded by
+               what the driver will accept rather than by what the automatic
+               loop keeps to: those are different things, and the narrower of
+               the two is a policy this page has no business enforcing.
+
+               What is written here is a position and not a gain, and the
+               readout beside it is the gain: the two are different numbers
+               about the same slider, and only one of them is worth showing. */
             WBS.forEach((id, k) => {
-                const el = $(id);
-                el.min = st.wbmin; el.max = st.wbmax;
-                if (!HOLD[id]) el.value = [st.kr, st.kg, st.kb][k];
+                if (!HOLD[id]) $(id).value = wbPos([st.kr, st.kg, st.kb][k]);
             });
             $('ea').checked = ae; $('wa').checked = aw;
             /* The sliders stay live while a loop is automatic, and that is the
@@ -716,6 +750,15 @@
                 (STN[st.st] || '-');
         }
         const SL = ['es', 'gs'].concat(WBS);
+        /* The gain sliders carry a position where the other two carry a value,
+           so their range is the track's and not the gains': everything the
+           gain does with a number happens in wbPos and wbGain.  Set up once
+           rather than per status line, because the track does not move when
+           the light does. */
+        WBS.forEach(id => {
+            const el = $(id);
+            el.min = 0; el.max = WBN; el.step = 1;
+        });
         SL.forEach(id => {
             const el = $(id);
             el.oninput = () => {
@@ -724,7 +767,7 @@
                    board last reported.  Without it a slider moved by the keyboard
                    -- which is an input with no pointer pressed -- would be written
                    back to the old value on the next line. */
-                const v = +el.value;
+                const v = id === 'es' || id === 'gs' ? +el.value : wbGain(+el.value);
                 if (id === 'es' || id === 'gs') { st.ae = 0; } else { st.aw = 0; }
                 st[CMD[id]] = v;
                 cmd(CMD[id], v);
