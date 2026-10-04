@@ -1135,6 +1135,7 @@ static void vepu_free_buf(FAR void *priv, FAR void *addr)
 static int vepu_output_streamon(FAR void *priv)
 {
   FAR struct rk3576_vepu_codec_priv_s *state = priv;
+  int ret;
 
   if (state->staging == NULL)
     {
@@ -1152,6 +1153,33 @@ static int vepu_output_streamon(FAR void *priv)
   state->frame_num = 0;
   state->poc_lsb = 0;
   state->force_idr = true;
+
+  /* And the hardware begins where the first stream of the run began.
+   *
+   * Restarting the counters is not enough, for the same reason that rewriting
+   * the registers is not: the block and the working buffers it reads both
+   * carry something from the stream before this one, and neither is cleared
+   * by anything in a mode change.  A stream started after the capture mode
+   * changed was wrong while the first stream of the run was right, and
+   * switching back did not repair it -- which is the shape of state that
+   * outlives the stream that made it.  Closing this device node releases a
+   * staging buffer and nothing else, and opening it again writes the same
+   * registers the first stream did.
+   *
+   * So a stream start is a cold start: the block is soft reset here as well
+   * as in rk3576_vepu_recn_alloc(), which zeroes the working set it takes
+   * when the geometry changes.  The two are separate because they cover
+   * different cases -- a restart at the same size reuses the buffers and
+   * never goes near the allocator -- and the cost is a few register writes
+   * per stream, against a fault that is invisible until a decoder shows it.
+   */
+
+  ret = rk3576_vepu_reset();
+  if (ret < 0)
+    {
+      _err("ERROR: VEPU0 could not be reset for a new stream: %d\n", ret);
+      return ret;
+    }
 
   state->output_streaming = true;
   return vepu_service(state);

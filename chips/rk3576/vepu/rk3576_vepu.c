@@ -884,6 +884,23 @@ static void rk3576_vepu_recn_free(void)
 }
 
 /****************************************************************************
+ * Name: rk3576_vepu_recn_clear
+ *
+ * Description:
+ *   Put a freshly allocated reconstruction buffer into the state a cold block
+ *   would have left it in, and make sure that is what the encoder reads.
+ *
+ ****************************************************************************/
+
+static void rk3576_vepu_recn_clear(FAR void *buf, uint32_t bytes)
+{
+  uintptr_t addr = (uintptr_t)buf;
+
+  memset(buf, 0, bytes);
+  up_clean_dcache(addr, addr + bytes);
+}
+
+/****************************************************************************
  * Name: rk3576_vepu_recn_alloc
  *
  * Description:
@@ -945,6 +962,32 @@ static int rk3576_vepu_recn_alloc(FAR struct rk3576_vepu510_frame_s *frm,
         {
           goto errout_nomem;
         }
+
+      /* Zero them, because the heap hands back whatever was there.
+       *
+       * These are working buffers that the encoder writes and then reads on
+       * later pictures, not scratch space that is fully overwritten before
+       * anything looks at it, so what they hold at a stream's start is
+       * visible in that stream.  The case that proved it is a change of
+       * geometry: the sets are freed and taken again at the new size, the
+       * allocator returns the block it just released -- so a 640x480 stream
+       * begins on 1296x960's leftovers, and a stream that goes back to
+       * 1296x960 begins on 640x480's.
+       *
+       * The anti-smear area is the one that carries the most: it is written
+       * during one picture and read during the next, so a stale picture of
+       * "where the smear was" is read as a statement about the new stream.  A
+       * cold block has never had a picture through it and would hold zeros,
+       * which is what this restores.
+       *
+       * The clean matters as much as the memset: these are mapped cacheable
+       * and the next reader is the encoder, so the zeros have to reach memory
+       * rather than sit in a cache line the CPU happens to be holding.
+       */
+
+      rk3576_vepu_recn_clear(g_vepu_recn[i].pixel, size.pixel);
+      rk3576_vepu_recn_clear(g_vepu_recn[i].thumb, size.thumb);
+      rk3576_vepu_recn_clear(g_vepu_recn[i].smear, size.smear);
     }
 
   g_vepu_recn_width = frm->width;
@@ -1210,6 +1253,146 @@ int rk3576_vepu_uninitialize(void)
 
   nxmutex_unlock(&g_vepu_lock);
   return ret;
+}
+
+/****************************************************************************
+ * Name: rk3576_vepu_reset
+ *
+ * Description:
+ *   Ask the block to clear itself with the same soft reset the vendor kernel
+ *   uses, so that a stream start begins where a power-on begins.
+ *
+ *   Why this has to exist.  The block holds state of its own that no register
+ *   write reaches.  Every register in the image is rewritten from scratch for
+ *   each picture out of the driver's own structures, so a stream whose
+ *   registers are all correct can still be encoded with the wrong state
+ *   underneath them, and it will decode to a picture that differs from its
+ *   source by the reference's own local mean -- with the hardware reporting
+ *   success, because its reconstruction is internally consistent with the
+ *   state it is holding.
+ *
+ *   What made that visible is that a stream started after a capture mode
+ *   changed was wrong while the first stream of the run was right, and
+ *   switching back did not repair it.  Nothing in the switching resets the
+ *   block: closing the codec's device node releases a staging buffer and
+ *   nothing else, and opening it again writes the same registers the first
+ *   one did.  So the first stream began on a block that had just come out of
+ *   reset, and every stream after it began on a block that had been encoding
+ *   something else.
+ *
+ *   How, and why not the obvious other ways.  Two were tried on hardware and
+ *   both leave the encoder unable to complete a job -- it stops with the
+ *   interrupt status still zero while its registers read back normally, which
+ *   is what the block looks like when its bus interface is not issuing
+ *   transactions:
+ *
+ *     - a power cycle (uninitialize then initialize) does not work.  Bring-up
+ *       is not written to be repeated with the block already running, and the
+ *       encoder does not come back from it.
+ *
+ *     - pulsing the CRU resets does not work either, on its own.  The vendor
+ *       kernel treats those as the *fallback* for when the soft reset below
+ *       fails, and wraps them in a bus-idle request that this driver does not
+ *       make.  Resetting the block without that leaves the interface unable
+ *       to move data, which is the failure above.
+ *
+ *   The soft reset is the vendor's primary path and needs neither: safe_clr
+ *   asks the block to put itself back, the done bit in int_sta says whether
+ *   it did, force_clr completes it, and clearing the register returns the
+ *   block to ordinary operation.  It goes through the block's own logic
+ *   instead of cutting its clock and reset lines underneath it, which is why
+ *   it is safe to do from a driver that is not prepared to rebuild the whole
+ *   bring-up afterwards.
+ *
+ *   The done bit is checked rather than assumed, because it is the only way
+ *   to know the request was accepted -- and a block that ignored it is worth
+ *   a line in the log rather than a stream that decodes wrong later.
+ *
+ *   Returned Value:
+ *   OK on success, a negated errno on failure.  A block that does not report
+ *   the safe clear is logged and the reset is completed anyway.
+ *
+ ****************************************************************************/
+
+int rk3576_vepu_reset(void)
+{
+  int ret;
+  int loops;
+  bool done = false;
+
+  ret = nxmutex_lock(&g_vepu_lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (!g_vepu_powered || !g_vepu_irq_attached)
+    {
+      /* Nothing has been brought up, so there is no state to clear.  Not an
+       * error: the caller is starting a stream, and a stream started before
+       * bring-up is refused further along.
+       */
+
+      nxmutex_unlock(&g_vepu_lock);
+      return OK;
+    }
+
+  vinfo("VEPU0: cold start -- soft reset\n");
+
+  /* Mask first.  The reset can raise the status bit it is being watched
+   * through, and an interrupt delivered for it would look exactly like a
+   * completed picture.
+   */
+
+  rk3576_vepu_putreg(RK3576_VEPU510_INT_MSK_OFFSET, 0xffffffffu);
+
+  rk3576_vepu_putreg(RK3576_VEPU510_ENC_CLR_OFFSET,
+                     RK3576_VEPU510_ENC_CLR_SAFE_CLR);
+
+  /* The vendor polls with no delay between reads and a five microsecond
+   * budget.  A microsecond apiece for the same total is friendlier to the
+   * scheduler and still far inside the budget it was given.
+   */
+
+  for (loops = 0; loops < 5; loops++)
+    {
+      if (rk3576_vepu_getreg(RK3576_VEPU510_INT_STA_OFFSET) &
+          RK3576_VEPU510_INT_SCLR_DONE)
+        {
+          done = true;
+          break;
+        }
+
+      up_udelay(1);
+    }
+
+  if (!done)
+    {
+      _warn("WARNING: VEPU0 did not report the safe reset; the force reset "
+            "below is what clears it\n");
+    }
+
+  /* Written whether or not the safe clear was acknowledged, because it is
+   * what the vendor kernel writes unconditionally -- the done bit says
+   * whether the block took the gentle request, not whether this one is
+   * wanted.
+   */
+
+  rk3576_vepu_putreg(RK3576_VEPU510_ENC_CLR_OFFSET,
+                     RK3576_VEPU510_ENC_CLR_FORCE_CLR);
+  up_udelay(5);
+  rk3576_vepu_putreg(RK3576_VEPU510_ENC_CLR_OFFSET, 0);
+
+  /* The status is cleared through both registers the vendor clears it
+   * through, so that nothing the reset raised is left standing between this
+   * stream and the next.
+   */
+
+  rk3576_vepu_putreg(RK3576_VEPU510_INT_CLR_OFFSET, 0xffffffffu);
+  rk3576_vepu_putreg(RK3576_VEPU510_INT_STA_OFFSET, 0);
+
+  nxmutex_unlock(&g_vepu_lock);
+  return OK;
 }
 
 int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,

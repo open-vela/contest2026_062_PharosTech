@@ -108,6 +108,13 @@
 #define RK3576_VEPU510_ENC_CLR_SAFE_CLR  0x00000001 /* [0] */
 #define RK3576_VEPU510_ENC_CLR_FORCE_CLR 0x00000002 /* [1] */
 
+/* What the block reports in int_sta when it has finished the safe clear --
+ * the same bit the vendor kernel polls after writing safe_clr, and the only
+ * way to know whether the block accepted the request rather than ignoring it.
+ */
+
+#define RK3576_VEPU510_INT_SCLR_DONE     (1u << 2)
+
 /* Interrupt registers, and the watchdog timeout threshold.  All four live
  * inside the CTL block and share one bit layout: bit n means the same event
  * in int_en, int_msk, int_clr and int_sta.
