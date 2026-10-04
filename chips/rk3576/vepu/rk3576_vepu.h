@@ -182,6 +182,35 @@ int rk3576_vepu_initialize(void);
 int rk3576_vepu_uninitialize(void);
 
 /****************************************************************************
+ * Name: rk3576_vepu_reset
+ *
+ * Description:
+ *   Ask the block to clear itself, with the same soft reset the vendor kernel
+ *   uses, so that a stream start begins where a power-on begins.
+ *
+ *   The block keeps internal state that no register write reaches, and a
+ *   stream whose registers are all correct can still be encoded with the
+ *   wrong state underneath them.  A stream start is therefore a cold start:
+ *   the codec calls this when a stream begins, so that the second stream of a
+ *   run begins where the first one did.
+ *
+ *   It is the soft reset (enc_clr) rather than a power cycle or a reset of
+ *   the block's clock and reset lines, which the vendor kernel treats as the
+ *   fallback for when this fails, and which were both tried on hardware here
+ *   and both leave the encoder unable to complete a job.  See the note in the
+ *   driver for what each of them does to it.
+ *
+ *   Safe to call whenever the block is up, and does nothing if it is not.
+ *
+ * Returned Value:
+ *   OK on success, a negated errno on failure.  A block that does not report
+ *   the safe clear is logged, and the reset completes with a force clear.
+ *
+ ****************************************************************************/
+
+int rk3576_vepu_reset(void);
+
+/****************************************************************************
  * Name: rk3576_vepu_encode
  *
  * Description:
