@@ -118,14 +118,17 @@
 
 /* Two pictures per group: one IDR and one P that predicts from it.
  *
- * This is the shortest group that predicts at all, and it is where the saving
- * measured on a 640x480 capture of a static scene is: one picture per group
- * costs 1454 kbit/s, two cost 747 -- 48.7% off -- and four costs 705, another
- * 5.6% that is not worth what it costs elsewhere.  See
- * chips/rk3576/vepu/README.md for the table and for why four gives so little.
+ * This is the shortest group that predicts at all, and it is the driver's
+ * default because the driver does not know how its stream is consumed.  A
+ * group is also how long a decoder that arrived late has to wait before it can
+ * start, so its length is a property of how a stream is watched rather than of
+ * the encoding, and the caller is the one that can answer it.
  *
- * A caller that wants the 5.6% anyway passes a longer group to
- * RK3576_VEPU_CID_GOP.
+ * What the choice is worth is measured on this silicon in
+ * chips/rk3576/vepu/README.md: two pictures per group is half the rate of one,
+ * a longer group keeps paying, and a P picture is under one per cent of an
+ * IDR.  The streaming application asks for fifteen, which is half a second at
+ * its frame rate.
  */
 
 #define RK3576_VEPU_DEFAULT_GOP 2

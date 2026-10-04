@@ -183,8 +183,9 @@ struct rk3576_vepu_codec_priv_s
    * gop_index is the picture's place in its group.  gop of 1 makes every
    * picture an IDR, which is the all-intra stream this driver produced
    * before it could predict; gop of 2 gives one IDR and one P that predicts
-   * from it, which is the default and the shortest predictive group there
-   * is.  Everything else follows from gop_index: whether this picture is an
+   * from it, which is the driver's default and the shortest predictive group
+   * there is.  Everything else follows from gop_index: whether this picture is
+   * an
    * IDR is gop_index == 0, and nothing in the driver needs to know the group
    * length for any other purpose.
    */
@@ -817,7 +818,11 @@ static int vepu_open(FAR void *cookie, FAR void **priv)
   state->cfg.tune.deblur_en = RK3576_H264_DEBLUR_EN_DEFAULT;
   state->cfg.tune.deblur_str = RK3576_H264_DEBLUR_STR_DEFAULT;
 
-  /* All-intra until asked otherwise: see RK3576_VEPU_DEFAULT_GOP. */
+  /* The default group length, which is the driver's rather than this layer's
+   * -- see RK3576_VEPU_DEFAULT_GOP.  An application that knows how its stream
+   * is watched should ask for what it wants; the streaming application in
+   * app/camenc does.
+   */
 
   state->gop = RK3576_VEPU_DEFAULT_GOP;
 

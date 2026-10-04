@@ -136,10 +136,10 @@ struct camenc_ws_client_s
    * what it looked like from the outside.
    *
    * Waiting costs the client one group of pictures before the picture
-   * appears, which is two frames here.  It is the price of not replaying,
-   * and replaying cannot be made to work: the client's window is bounded by
-   * how fast its socket drains, and a replay is by definition larger than
-   * the frames arriving during it.
+   * appears, which is fifteen frames here -- half a second at the mode's
+   * rate.  It is the price of not replaying, and replaying cannot be made to
+   * work: the client's window is bounded by how fast its socket drains, and a
+   * replay is by definition larger than the frames arriving during it.
    */
 
   bool have_init;
