@@ -327,6 +327,17 @@ CONFIG_RK3576_VEPU_SELFTEST=y
 CONFIG_RK3576_VEPU_CODEC=y
 CONFIG_RK3576_VEPU_CODEC_SELFTEST=y
 
+# The encoder's diagnostic switches used to live here.  They are gone rather
+# than turned off: each one changed what was being measured, and the questions
+# they were written for are answered.  What they found is recorded where it
+# belongs -- in the comments on the code they instrumented, and in the commit
+# that removed them -- so that a future run can put one back from history
+# rather than carry it in every build.
+#
+# The two findings that outlived them are behaviour now, not switches: the
+# vendor kernel's 0x5300 counter clear is written on every job, and the
+# anti-smear block's state fields are written with MPP 1.0.6's constants.
+
 # Camera to H.264 to fragmented MP4, in one command, to a file or to a
 # browser over WebSocket.  Lives in app/camenc and is reached through
 # apps/examples/camenc.
