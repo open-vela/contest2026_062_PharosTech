@@ -674,30 +674,53 @@ int rk3576_vepu510_regs_anti_flicker(FAR HalVepu510RegSet *regs,
  * Name: rk3576_vepu510_regs_anti_smear
  *
  * Description:
- *   Fill the SQI block's anti-smear thresholds, weights and quantiser delta:
- *   the part of the register image that is derived from what the *previous*
- *   picture reported about itself.
+ *   Fill the SQI block's anti-smear thresholds, weights and quantiser delta.
  *
- *   Mirrors MPP setup_vepu510_anti_smear() exactly, including the branch
- *   structure, because every branch is reachable from the configuration this
- *   driver exposes -- the deblur tuning selects between two threshold sets
- *   and one of them is also selected by whether anything was detected as
- *   smeared.
+ *   Most of this is mirrored from MPP's setup_vepu510_anti_smear() -- every
+ *   threshold, every weight, and the branch that the deblur tuning selects
+ *   between two threshold sets.  Three fields are deliberately not:
+ *   stated_mode, rdo_smear_dlt_qp and rdo_smear_lvl16_multi are written with
+ *   the constants MPP 1.0.6 used, not the values develop derives from the
+ *   previous picture's status word.
  *
- *   Leaving this block at zero is not the same as switching it off.  The
- *   eight-bit threshold fields and the two-bit stated_mode take values MPP
- *   never writes, and the mode is the one that carries across pictures:
- *   MPP sets it to 1 when this picture or the previous one is an I slice and
- *   to 2 otherwise.  A driver that always wrote 0 would produce the same
- *   registers for the first picture after an IDR as for every picture after
- *   that, which is exactly the distinction this block exists to make.
+ *   Why is measured rather than reasoned.  A P picture came back differing
+ *   from its source by exactly the reference's own local mean, in every
+ *   plane, on every picture that read a reference -- a whole-reference error
+ *   from a mechanism that acts on the reference as a whole.  Porting
+ *   develop's block and then writing 1.0.6's constants for those three
+ *   fields is what removed it: the leak fell from 38.2 to 0.14 in luma and
+ *   from 59.5 to 0.02 in chroma, against 0.17 and 0.012 for MPP itself on
+ *   the same source, while the I pictures stayed bit-identical.  Two other
+ *   switches that moved in the same build were excluded afterwards by a run
+ *   that already held them fixed.
+ *
+ *   The three fields are constant in 1.0.6 because its setup_vepu510_sqi()
+ *   takes the register block and nothing else -- it has no state to be in.
+ *   develop gave the block the previous picture's status and made these
+ *   derive from it, and on this silicon that derivation describes the
+ *   reference wrongly.  It is worth being explicit about the consequence:
+ *   the values 1.0.6 programs cannot be reached from the code below under
+ *   any configuration, so this is a difference between two MPP versions
+ *   rather than a setting this driver got wrong.  The board runs 1.0.6.
+ *
+ *   Nothing else in the block is state dependent.  The thresholds turn on
+ *   the deblur tuning alone, and the counts that select between threshold
+ *   sets reach the hardware, in this configuration, through the quantiser
+ *   delta alone -- which is why that one field is the whole of the
+ *   behavioural change and the other two are consistency.
+ *
+ *   The smear counts themselves are read correctly: the status word is at
+ *   0x40a4, which is where MPP's own Vepu510Status puts st_smear_cnt.  What
+ *   was wrong was what develop does with it here.
  *
  * Input Parameters:
  *   regs        - register set to fill
  *   cfg         - encoder syntax configuration, for the deblur tuning
  *   slice_is_i  - true when the picture being programmed is an I slice
  *   prev        - what the previous picture reported; zeroed on the first
- *                 picture of a stream, as MPP's own context is
+ *                 picture of a stream, as MPP's own context is.  Still read,
+ *                 because the thresholds that do not depend on it are
+ *                 computed alongside the ones that do.
  *
  * Returned Value:
  *   OK on success, -EINVAL if cfg is not usable or deblur_str is out of

@@ -781,6 +781,21 @@ static int vepu_open(FAR void *cookie, FAR void **priv)
   state->cfg.fps_num = 30;
   state->cfg.fps_den = 1;
 
+  /* The profile and entropy mode are left at the defaults set with the rest
+   * of this block: Baseline, CAVLC.  That is deliberate rather than an
+   * oversight, and the reason is worth keeping because the combination looks
+   * like a gap.
+   *
+   * The vendor's own stack runs Main profile with CABAC, and switching this
+   * driver to match is not a one-line change: a CABAC picture that is not an
+   * I picture has to carry cabac_init_idc in its slice header, and the syntax
+   * layer does not write that field.  Turning the entropy mode on without it
+   * produces a malformed stream, not a faster one.  Baseline with CAVLC is
+   * legal, this driver's I pictures decode exactly, and -- after the
+   * anti-smear correction in vepu510_regs.c -- so do its P pictures.  So the
+   * profile is not what was wrong and is not worth changing blind.
+   */
+
   /* MPP's own tuning defaults, so the encoder runs with the rate-distortion
    * setup the register layer was verified against rather than with whatever
    * a zeroed structure happens to mean. */

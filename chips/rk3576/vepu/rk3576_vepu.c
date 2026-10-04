@@ -996,7 +996,24 @@ describe:
     }
   else
     {
-      memset(&frm->ref, 0, sizeof(frm->ref));
+      /* No reference this picture, so point the read side at the frame being
+       * written -- which is what MPP does and what this driver did not.
+       *
+       * This was left as zero for a long time, on the argument that a picture
+       * with nothing to predict from reads nothing there, so the difference
+       * cannot reach the hardware.  That argument is sound about the
+       * prediction and unsound about the fetch: zero is not "off", it is
+       * physical address zero, and this is the only picture in the stream
+       * whose reference registers describe an address rather than a buffer.
+       * MPP's own fallback (h264e_dpb.c: an empty reference slot resolves to
+       * the current frame) is cheap to copy and removes the last place where
+       * this driver hands the encoder an address MPP never hands it.
+       */
+
+      frm->ref.pixel_phys = frm->recn.pixel_phys;
+      frm->ref.body_offset = frm->recn.body_offset;
+      frm->ref.thumb_phys = frm->recn.thumb_phys;
+      frm->ref.smear_phys = frm->recn.smear_phys;
     }
 
   return OK;
@@ -1367,6 +1384,14 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
                      RK3576_VEPU510_DVBM_HOLD_VALUE);
   rk3576_vepu_putreg(RK3576_VEPU510_DVBM_STATE_OFFSET,
                      RK3576_VEPU510_DVBM_STATE_VALUE);
+
+  /* Clear the vendor's counter, which the kernel does on every job and this
+   * driver did not -- see the note at RK3576_VEPU510_CLR_COUNTER_OFFSET.  It
+   * is written before the start command, as the kernel writes it.
+   */
+
+  rk3576_vepu_putreg(RK3576_VEPU510_CLR_COUNTER_OFFSET,
+                     RK3576_VEPU510_CLR_COUNTER_VALUE);
 
   /* Enable the slice-done interrupt, which the register image leaves clear
    * and the kernel sets for VEPU510.

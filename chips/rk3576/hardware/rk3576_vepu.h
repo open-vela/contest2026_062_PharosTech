@@ -207,6 +207,26 @@
 #define RK3576_VEPU510_DVBM_STATE_OFFSET 0x0308
 #define RK3576_VEPU510_DVBM_STATE_VALUE  0x00050000 /* BIT(18) | BIT(16) */
 
+/* 0x5300: the kernel writes 2 here before every job and calls it a hardware
+ * counter clear.  It is the one register the kernel writes that this driver
+ * did not, and it is written on every job here for that reason.
+ *
+ * It is above every register class the HAL models -- the status block ends at
+ * 0x40a4 and the debug class at 0x5230 -- and it is in none of MPP's tables
+ * either, so nothing in the register image can supply it and no diff of the
+ * image can see it missing.  That is why it survived the register-by-register
+ * comparison that cleared everything else.
+ *
+ * Nothing here needs a counter cleared, and a run with and a run without it
+ * produced the same stream to within the measurement: it is a counter clear.
+ * It is written anyway, because it is what the platform does before a job and
+ * because being outside the register image means agreeing with the kernel
+ * about it costs one write and disagreeing is invisible until it is not.
+ */
+
+#define RK3576_VEPU510_CLR_COUNTER_OFFSET 0x5300
+#define RK3576_VEPU510_CLR_COUNTER_VALUE  0x00000002
+
 /* 0x300 = reg192 (enc_pic).  Bit 30 is set for every VEPU510 job.  Bit 31
  * selects the reconstruction-frame compression behaviour and is set only
  * when FBC is disabled -- and only with the core clock stopped, because

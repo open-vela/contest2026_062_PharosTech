@@ -481,26 +481,26 @@ int rk3576_vepu510_regs_recn(FAR HalVepu510RegSet *regs,
   /* The read side.  These are the addresses the encoder fetches the
    * reference picture's reconstructed pixels and downscale from.
    *
-   * A picture that predicts from nothing -- the first of a stream, and every
-   * IDR -- leaves them at the zero the caller set.  That is what this driver
-   * has always programmed, it is what an all-intra stream runs with today,
-   * and it is safe because such a picture reads nothing there.  It is worth
-   * saying that it is not what MPP leaves: with no reference buffer MPP
-   * points the read side at the very buffer it is writing (its
-   * h264e_dpb.c falls back to the current frame when the reference slot is
-   * empty), which is equally harmless and equally unread.  The difference
-   * does not reach the hardware's behaviour, so it is not worth a write.
+   * They are programmed whenever the caller supplies them, which now includes
+   * the pictures that predict from nothing.  The vendor stack points those at
+   * the very buffer it is writing rather than leaving the read side at zero
+   * (its h264e_dpb.c resolves an empty reference slot to the current frame),
+   * and this driver follows it -- that is the caller's decision, made in
+   * rk3576_vepu.c, and this layer just writes what it is given.
+   *
+   * A caller that supplies nothing still gets nothing written.  That is the
+   * older behaviour and it is what the self-tests rely on, where the register
+   * image is built for pictures with no reference at all.
+   *
+   * Zero is not "off" for these registers: it is physical address zero.  A
+   * partially-filled set is therefore still refused rather than programmed.
    */
 
-  if (!frm->ref_valid)
+  if (frm->ref.pixel_phys == 0 && frm->ref.thumb_phys == 0 &&
+      frm->ref.smear_phys == 0)
     {
       return OK;
     }
-
-  /* A reference is named, so it has to be usable.  The same reasoning as
-   * for the write set applies: zero is not "off" here, it is physical
-   * address zero, which is where the reference fetch would then read from.
-   */
 
   if (frm->ref.pixel_phys == 0 || frm->ref.thumb_phys == 0 ||
       frm->ref.smear_phys == 0)
@@ -1203,6 +1203,46 @@ int rk3576_vepu510_regs_anti_smear(
   reg->smear_st_thd.madp_cnt_th1 = (flg2 != 0) ? 0u : 5u;
   reg->smear_st_thd.madp_cnt_th2 = (flg2 != 0) ? 0u : 1u;
   reg->smear_st_thd.madp_cnt_th3 = (flg2 != 0) ? 0u : 3u;
+
+  /* The three fields the block above derives from the previous picture's
+   * status are written with constants instead -- MPP 1.0.6's.
+   *
+   * This is not a tuning preference.  A P picture used to come back differing
+   * from its source by exactly the reference's own local mean, in every
+   * plane, on every picture that read a reference.  With these three fields
+   * at 1.0.6's values that stopped: the leak fell from 38.2 to 0.14 in luma
+   * and from 59.5 to 0.02 in chroma, against 0.17 and 0.012 for MPP itself on
+   * the same source, with the I pictures coming out bit-identical.  Two other
+   * switches that moved in the same build were excluded afterwards by a run
+   * that held them fixed, and the status word this reads was confirmed to be
+   * at the offset MPP's own Vepu510Status puts it at.
+   *
+   * Why 1.0.6 rather than develop.  The board runs MPP 1.0.6, and 1.0.6's
+   * setup_vepu510_sqi() takes the register block and nothing else -- it has
+   * no state, so all three of these are constants there.  develop gave the
+   * block the previous picture's status and made them derive from it, and on
+   * this silicon that derivation describes the reference wrongly.  The values
+   * 1.0.6 writes cannot be reached from the arithmetic above under any
+   * configuration, so this is a difference between two MPP versions rather
+   * than a setting this driver got wrong.
+   *
+   * The arithmetic above is left in place rather than deleted, because it is
+   * the record of what the difference is: deleting these four lines restores
+   * develop's behaviour and the fault, which is how the two were compared.
+   *
+   * The thresholds are deliberately untouched.  At this driver's tuning they
+   * already agree with 1.0.6 field for field, so changing them would put a
+   * second variable into the same experiment.  One difference is known to
+   * remain unexamined for that same reason: the anti-flicker tables are
+   * indexed by a strength this driver defaults to 1, where 1.0.6's constants
+   * correspond to 3.  It is left alone because the fault is already gone
+   * without it.
+   */
+
+  reg->smear_opt_cfg.rdo_smear_en = 0;
+  reg->smear_opt_cfg.rdo_smear_lvl16_multi = 9;
+  reg->smear_opt_cfg.rdo_smear_dlt_qp = 0;
+  reg->smear_opt_cfg.stated_mode = 0;
 
   return OK;
 }
