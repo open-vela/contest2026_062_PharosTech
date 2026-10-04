@@ -18,7 +18,7 @@
         --chip: #1b1b22;
         --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
         --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        --dbg: 84px;
+        --dbg: 120px;
         --side: 327px;
     }
 
@@ -332,6 +332,25 @@
         const v = document.getElementById('v'), s = document.getElementById('s');
         let sb = null, q = [], rx = 0, msgs = 0, err = '', note = '';
         let ws = null, st = {}, have3a = false, show = true;
+        /* The rate at which the stream is arriving, in the readout below.
+
+           A rate read off the configuration would be a claim about what the
+           encoder was asked for.  This is what the connection actually carried,
+           which is the number that matters when the picture is stuttering, and
+           it needs nothing from the board: `rx` counts the video bytes, and the
+           difference between two samples of it is the rate.
+
+           Two details, both of them there because the other choice reports the
+           wrong thing rather than merely a noisier one.  The window is four
+           ticks rather than one, because a group at fifteen pictures is half a
+           second and one tick would report the IDR's share of it as if it were
+           the whole rate -- a number that swings by an order of magnitude
+           between one refresh and the next.  And the rate is measured against
+           the clock rather than against the number of ticks, so a page in a
+           background tab, where the interval is throttled and the ticks are
+           seconds apart, still reports the rate instead of a fraction of it. */
+        const BR_TICK = 500, BR_WIN = 4;
+        let br_hist = [], br_text = '-';
         /* The player, and the generation that owns it.
            `ms` is the MediaSource the element is showing, `ready` whether it has
            reached sourceopen, and `gen` counts rebuilds.  The counter is what
@@ -357,8 +376,10 @@
            A page that cannot keep up must not become the reason the board
            throws it away: an unbounded queue turns a slow append into socket
            backpressure, and the board answers that by dropping the client,
-           which reconnects and starts over.  The group length is two, so an IDR
-           is never more than two frames away and dropping the oldest is cheap. */
+           which reconnects and starts over.  The group length is fifteen, so an
+           IDR is at most half a second away, and that is what dropping the
+           oldest can cost: the pictures after the one dropped predict from it,
+           so what is lost is the rest of its group rather than one frame. */
         const QMAX = 60;
         const HOLD = {};
         /* How far behind the newest data the picture is allowed to fall before
@@ -376,6 +397,7 @@
             }
             s.textContent = 'msgs=' + msgs + ' rx=' + rx + 'B q=' + q.length +
                 ' lag=' + lag + '\n' +
+                'rate=' + br_text + '\n' +
                 'sb=' + (sb ? sb.readyState : 'none') + ' upd=' + (sb ? sb.updating : '-') +
                 ' ms=' + (ms ? ms.readyState : 'none') + ' codec=' + codec +
                 ' buffered=' + br + '\n' +
@@ -569,7 +591,23 @@
            connection brings is a segment describing the stream.  So there is no
            player to build here; the socket's onopen does it. */
         connect();
-        setInterval(say, 500);
+        /* One sampling of the received byte count, and then the readout.  The
+           rate is the bytes between the oldest sample still held and the newest
+           one, over the time between them, which is why the samples carry the
+           clock rather than only the byte count. */
+        function tick() {
+            const now = performance.now();
+            br_hist.push([now, rx]);
+            while (br_hist.length > BR_WIN + 1) br_hist.shift();
+            if (br_hist.length > 1) {
+                const t0 = br_hist[0], t1 = br_hist[br_hist.length - 1];
+                const kbps = (t1[1] - t0[1]) * 8 / (t1[0] - t0[0]);
+                br_text = kbps >= 1000 ? (kbps / 1000).toFixed(2) + ' Mbit/s'
+                    : kbps.toFixed(0) + ' kbit/s';
+            }
+            say();
+        }
+        setInterval(tick, BR_TICK);
         /* The 3A controls.
         
            The server sends a status line whenever the settings move, and the
