@@ -7,13 +7,63 @@ this file records the measurement.
 
 ## Group length
 
-Two pictures per group is the default
-(`RK3576_VEPU_DEFAULT_GOP`), and `camenc` follows it
-(`CAMENC_DEFAULT_GOP`).  The numbers below are the reason.
+A group is one IDR followed by pictures that predict from it and from each
+other, so its length is what decides how much of a stream is the expensive
+kind.  Two questions get two answers here: the driver's default is two
+pictures (`RK3576_VEPU_DEFAULT_GOP`) and the streaming application asks for
+fifteen (`CAMENC_DEFAULT_GOP`).  The driver does not know how its stream is
+consumed, so it takes the shortest group that predicts at all; the
+application does know, so it takes the group that is worth having and pays for
+it knowingly.
 
-Measured on a 640x480 capture of a static scene -- a ceiling light, no motion
-in frame, 60 frames, quantiser 26, no rate control -- from the driver's own
-streams:
+### Measured after the fault was fixed
+
+This is the number to use.  1296x960 at quantiser 26, thirty frames a second,
+on a source the encoder is asked to draw itself -- one constant background
+with a small square moving slowly round it -- over 597 pictures.  Payload
+bytes, so the container is not counted:
+
+| pictures per group | IDR | P | payload | rate |
+| --- | --- | --- | --- | --- |
+| 2 | 299 at 31350 B | 298 at 253 B | 9449442 B | 3799 kbit/s |
+| 4 | 150 at 31368 B | 447 at 248 B | 4816531 B | **1937 kbit/s** |
+
+Doubling the group halves the rate -- four is 51.0% of two -- and where the
+bytes are says why.  Half the groups at two open with an IDR; a quarter of
+them at four do.  Nothing else stands out, because a P is under one per cent
+of an IDR and no P differs much from its neighbours:
+
+| position in the group | 0 | 1 | 2 | 3 |
+| --- | --- | --- | --- | --- |
+| mean bytes | 31368 | 256 | 238 | 250 |
+
+The quality is not what is being spent.  Decoding both streams and comparing
+every picture with the source gives an RMSE of 0.78, and it is 0.78 for the
+IDR and for each of the three P positions of a four-picture group: nothing
+accumulates through the group.
+
+Two numbers are enough to say what a longer group would do, because the rate
+is `fps * 8 * (IDR/G + P)`: 3824 and 1942 kbit/s for two and four against the
+3799 and 1937 measured, and 561 for fifteen.  What that also says is where
+the model stops being the answer.  The only term that falls with the group is
+the IDR's, and it falls as 1/G, so the rate keeps improving -- but the price
+of a long group is not in the rate.  A decoder that joined late, or that
+missed a fragment, has to wait for the next picture a stream may start on,
+which is one group away, and a fragment missed is not one picture lost but
+everything up to that next start.
+
+Fifteen is where those meet for a stream watched live: half a second at
+thirty frames a second, which is a hiccup and not a wait, and far enough along
+the curve that the rate is already a thirteenth of all-intra's.  Doubling it
+again would take another 251 kbit/s off and add another half second to every
+client's wait -- which is the trade, stated in the numbers it is made in.
+
+### Measured before it was fixed, which is what the fault looked like
+
+The same measurement was taken on a 640x480 capture of a static scene -- a
+ceiling light, no motion in frame, 60 frames, quantiser 26, no rate control --
+while the encoder carried the fault described below.  It said a long group was
+not worth having:
 
 | pictures per group | IDR | P | payload | rate | against all-intra |
 | --- | --- | --- | --- | --- | --- |
@@ -26,15 +76,12 @@ multiplied by 60, which is sound because the IDR mean is the same at both
 group lengths to within 0.03% (3111 B against 3110 B) -- the cost of an IDR
 does not depend on what surrounds it.
 
-Two things fall out of the table.
+**Two was where the saving was.**  Going from one picture per group to two
+took 48.7% off the rate, and it all came from the P pictures: a P was 84 bytes
+where an IDR was 3111, which is 2.7%.
 
-**Two is where the saving is.**  Going from one picture per group to two takes
-48.7% off the rate, and it all comes from the P pictures: a P is 84 bytes
-where an IDR is 3111, which is 2.7%.
-
-**Four is not.**  Doubling the group again halves the number of IDRs and buys
-5.6%.  The reason is visible in the per-frame sizes.  At four pictures per
-group the sizes settle into a repeating shape:
+**Four was not.**  Doubling the group again halved the number of IDRs and
+bought 5.6%.  The per-frame sizes said why:
 
 ```
 I 3010   p 100   p 3384   p  14
@@ -42,35 +89,38 @@ I 3006   p  12   p 3380   p  12
 I 3014   p   9   p 3370   p  16
 ```
 
-One P in every group costs as much as the IDR that opened it -- 3380 bytes
-against 3010.  Those frames are worth 42415 of the 47830 bytes that doubling
-the group saves.  Had they been as cheap as the P pictures at two per group,
-four per group would have come out at 374 kbit/s; instead it comes out at 705.
+One P in every group cost as much as the IDR that opened it -- 3380 bytes
+against 3010 -- and those frames were worth 42415 of the 47830 bytes that
+doubling the group saved.  Had they been as cheap as the P pictures at two per
+group, four per group would have come out at 374 kbit/s; instead it came out
+at 705.
 
-Nothing is wrong with the streams.  Decoding both captures and comparing them
-frame for frame gives an RMSE of about 1.1 out of 255, for every frame after
-the first two, so the two encodings are the same pictures.  And within a
-group at four, the reconstruction never gets more than 1.2 RMSE away from the
-IDR that opened it.  This is a rate-efficiency finding, not a correctness one.
+Nothing was wrong with the streams, which is what made this look like a
+property of the content: decoding both captures and comparing them frame for
+frame gave an RMSE of about 1.1 out of 255 for every frame after the first
+two, and within a group the reconstruction never got more than 1.2 RMSE away
+from the IDR that opened it.
 
-**The expensive P is not explained.**  It is reproducible on this scene and
-appears in no other capture we have.  The other one, `out.mp4`, is also four
-pictures per group at 640x480 and its P pictures are 9 bytes throughout; its
-IDRs average 920 bytes against this scene's 3110, so it is the simpler picture
-of the two, and that is a correlation rather than an explanation.  The frame is
-not tied to the driver's reference handling either: the driver uses two
-reconstruction slots and a job writes the one it is not reading, so every P
-reads the picture immediately before it, at every group length.  Raising the
-slot count to four was tried and produced byte-identical streams, which rules
-the slots out.  A note on `rk3576_vepu_selftest_sequence()`, in
-`rk3576_vepu.c`, describes a synthetic source on which the same thing happens
-far more severely; that source is pathological -- a hard vertical edge walking
-across the frame -- and is close to the worst input a predictive encoder can be
-given.  It is kept as a canary, not as evidence about this scene.
+**The expensive P was the fault.**  It is explained now.  The register layer
+programmed the anti-smear stage from the previous picture's state, which is
+what the newer vendor code does and what the 1.0.6 library this driver was
+measured against does not; with that state in force, a picture predicted from
+a reference with its own local mean taken out of it.  The residual that leaves
+is wrong, so the rate-distortion decision finds prediction not worth taking
+and codes those pictures almost as intra -- which is exactly a P that costs
+what an IDR costs, on content whose P pictures are otherwise nearly free.
+Writing the 1.0.6 constants instead made both symptoms go: the pictures, which
+had been drifting by the reference's own mean, and the rate.  The change is in
+the driver's history.  A note on `rk3576_vepu_selftest_sequence()`, in
+`rk3576_vepu.c`, describes a synthetic source on which the same thing used to
+happen far more severely; that source is pathological -- a hard vertical edge
+walking across the frame -- and is close to the worst input a predictive
+encoder can be given.  It is kept as a canary, not as evidence about a scene.
 
-So the default is set where the measurement is solid and no un-explained frame
-is involved.  A caller that wants 5.6% and accepts that some content gives it
-away passes a longer group to `RK3576_VEPU_CID_GOP`.
+Both tables are kept because they are the two halves of one lesson: a fault in
+the prediction of P pictures shows up as a rate as much as as a picture, and
+the rate finding was read as a fact about the content for as long as the
+picture finding was read as a separate bug.
 
 ## Upstream
 
@@ -85,8 +135,11 @@ has a comment about holding a reference buffer as a skip picture's
 reconstruction buffer.  That option is off by default.  Issue #961, on this
 same silicon with a long group, is open and unresolved.
 
-None of this is a workaround; it is why the driver sets its own default rather
-than inheriting MPP's, and why the default is short.
+None of this is a workaround, and none of it is what this driver had: the
+fault above was in the state the driver programmed, not in the silicon's
+handling of skip pictures.  It is kept here because a long group is what makes
+the question worth asking -- issue #961 is a report of horizontal bars from
+this encoder, on this silicon, with a long group, and it is unresolved.
 
 ## The self-test
 

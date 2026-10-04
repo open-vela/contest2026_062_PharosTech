@@ -206,20 +206,36 @@
 #define CAMENC_DEFAULT_FRAMES    300
 #define CAMENC_DEFAULT_QP        26
 
-/* The encoder's default group length, and this program keeps it.
+/* The group length this program streams at.
  *
- * Two pictures per group is where the saving is: 1454 kbit/s to 747 on the
- * capture it was measured from, and a longer group adds 5.6% on top of that,
- * because one P in every group of four costs as much as the IDR that opened
- * the group.  chips/rk3576/vepu/README.md has the numbers.
+ * Fifteen pictures, which is half a second at the mode's rate.  The
+ * measurement behind it is in chips/rk3576/vepu/README.md; what matters here
+ * is the two sides of the trade.
  *
- * A longer group also trades away a decoder's ability to join the stream late
- * and to recover from a lost fragment, and which of those matters more is a
- * property of how the stream is being watched rather than of the encoder --
- * so it is the caller's question, not this program's default.
+ * The saving is nearly all of what a group can give.  Halving the rate needs
+ * only that the group be long compared with how many pictures an IDR is worth,
+ * and on this encoder a P is under one per cent of an IDR -- a group of two
+ * and a group of four were measured at 3799 and 1937 kbit/s, and the two
+ * numbers fit `rate = fps * 8 * (IDR/G + P)` closely enough to say what a
+ * longer group does without measuring it.  What that model also says is where
+ * the diminishing returns are not: the rate keeps falling with the group,
+ * because the term that falls is the IDR's, and it falls as 1/G.
+ *
+ * What stops being worth it is the other side of the same coin.  A group is
+ * also how long a decoder that joined late, or that missed a fragment, has to
+ * wait before it can start: the pictures after a missing one predict from a
+ * picture the client never received, so what it sees is not one missing frame
+ * but everything up to the next picture a stream may start on.  At two that is
+ * a fifteenth of a second and nobody notices.  At fifteen it is half a second,
+ * which is a hiccup.  At sixty it is two seconds of garbage or black, and the
+ * page this is streamed to would also have to be changed: it keeps a second of
+ * history, which is two groups at fifteen and would be less than one at sixty.
+ *
+ * So fifteen, and not higher, for a stream watched live.  A caller that is
+ * not watching live -- writing a file, say -- can pass any group it likes.
  */
 
-#define CAMENC_DEFAULT_GOP 2
+#define CAMENC_DEFAULT_GOP 15
 
 /* Three, as the capture tool uses: enough that a frame being worked on does
  * not stall the one arriving, few enough that the latency stays short.
@@ -383,7 +399,6 @@ enum camenc_source_e
 };
 
 static enum camenc_source_e g_src_kind = CAMENC_SRC_CAMERA;
-
 
 /* The server keeps a receive buffer for each client it may have, which makes
  * it 8464 bytes -- more than the whole of this task's stack, which is
@@ -703,9 +718,11 @@ static void camenc_usage(void)
   printf("  -o  write fragmented MP4 here (default none, encode only)\n");
   printf("  -i  read the frames from this file of bare NV12 frames instead\n");
   printf("      of from the camera, which is how a picture whose contents\n");
-  printf("      are known exactly is put through the encoder with no sensor,\n");
+  printf(
+      "      are known exactly is put through the encoder with no sensor,\n");
   printf("      lens, focus or scene in the way\n");
-  printf("  -S  encode a picture this program draws itself instead of one it\n");
+  printf(
+      "  -S  encode a picture this program draws itself instead of one it\n");
   printf("      is given: a flat background with one 64x64 dark square\n");
   printf("      moving slowly round it, and +-5 of noise over both.  Same\n");
   printf("      purpose as -i, with nothing to carry and a known answer\n");
@@ -720,7 +737,8 @@ static void camenc_usage(void)
          CAMENC_PROBE_AMP);
   printf("      background perfectly flat\n");
   printf("  -r  rate to hand the frames over at, in fps, for -i and -S\n");
-  printf("      (default the mode's own, to keep the encoder's timing as it\n");
+  printf(
+      "      (default the mode's own, to keep the encoder's timing as it\n");
   printf("      would be; 0 runs it back to back, which is faster and is a\n");
   printf("      different timing environment)\n");
   printf("  -l  start the source again when it runs out, for a run longer\n");
@@ -740,8 +758,11 @@ static void camenc_usage(void)
   printf("  -G  pictures per group, 1..1000 (default %d; 1 makes every"
          " frame an\n      IDR, a larger value makes the first frame of"
          " each group one and\n      the rest predict from the frame"
-         " before them.  2 is worth about\n      half the bit rate of 1"
-         " and longer groups flatten out after that)\n",
+         " before them.  A P picture costs\n      under one per cent of"
+         " an IDR on this encoder, so the rate is\n      roughly"
+         " proportional to the group's length -- but a group is also"
+         " how\n      long a client that joins late waits for a picture it"
+         " can start on)\n",
          CAMENC_DEFAULT_GOP);
   printf(
       "  -W  give the encoder the leftmost W columns of the mode's picture\n"
@@ -1161,20 +1182,20 @@ bad:
 
 struct camenc_probe_s
 {
-  uint32_t y;                   /* background luma */
-  uint32_t u;                   /* background chroma, both planes  */
+  uint32_t y; /* background luma */
+  uint32_t u; /* background chroma, both planes  */
   uint32_t v;
-  int      cx;                  /* orbit centre */
-  int      cy;
-  int      radius;              /* orbit radius, pixels */
-  int      side;                /* square side, pixels */
-  int      side_y;              /* square luma */
-  int      amp;                 /* noise amplitude, +- this */
-  int32_t  c;                   /* cosine of the angle, Q20 */
-  int32_t  s;                   /* sine of the angle, Q20 */
-  int32_t  dc;                  /* cosine of one step, Q20 */
-  int32_t  ds;                  /* sine of one step, Q20 */
-  uint32_t rng;                 /* the noise's own state */
+  int cx; /* orbit centre */
+  int cy;
+  int radius;   /* orbit radius, pixels */
+  int side;     /* square side, pixels */
+  int side_y;   /* square luma */
+  int amp;      /* noise amplitude, +- this */
+  int32_t c;    /* cosine of the angle, Q20 */
+  int32_t s;    /* sine of the angle, Q20 */
+  int32_t dc;   /* cosine of one step, Q20 */
+  int32_t ds;   /* sine of one step, Q20 */
+  uint32_t rng; /* the noise's own state */
   uint32_t frame;
 };
 
@@ -1184,17 +1205,14 @@ struct camenc_probe_s
  * one of these and not on the others.
  */
 
-static const char *const g_probe_bg_name[] = {
-  "probe", "literal", "gray", "red", "blue", "magenta"
-};
+static const char *const g_probe_bg_name[] = { "probe", "literal", "gray",
+                                               "red",   "blue",    "magenta" };
 
 static const int g_probe_bg_rgb[][3] = {
-  { 0, 255, 0 },                /* probe: green */
-  { 0, 255, 0 },                /* literal: green, the slower orbit */
-  { 128, 128, 128 },            /* gray: no chroma to shift */
-  { 255, 0, 0 },
-  { 0, 0, 255 },
-  { 255, 0, 255 }
+  { 0, 255, 0 },     /* probe: green */
+  { 0, 255, 0 },     /* literal: green, the slower orbit */
+  { 128, 128, 128 }, /* gray: no chroma to shift */
+  { 255, 0, 0 },     { 0, 0, 255 }, { 255, 0, 255 }
 };
 
 #define CAMENC_PROBE_NB (sizeof(g_probe_bg_name) / sizeof(g_probe_bg_name[0]))
@@ -1289,8 +1307,8 @@ static void camenc_probe_open(struct camenc_probe_s *p, int which, int radius,
 
   {
     static const int32_t step[][2] = {
-      { 1042766, 109596 },      /* 6 degrees, Q20 */
-      { 1047154,  54841 }       /* 3 degrees, Q20 */
+      { 1042766, 109596 }, /* 6 degrees, Q20 */
+      { 1047154, 54841 }   /* 3 degrees, Q20 */
     };
 
     int k = rev == CAMENC_PROBE_REV ? 0 : 1;
@@ -1408,9 +1426,8 @@ static void camenc_probe_fill(struct camenc_probe_s *p, uint8_t *buf,
 
           for (k = 0; k < 4 && i + k < n; k++)
             {
-              buf[i + k] =
-                  camenc_probe_clamp((int)buf[i + k] +
-                                     (int)(v & 0xffu) % (2 * amp + 1) - amp);
+              buf[i + k] = camenc_probe_clamp(
+                  (int)buf[i + k] + (int)(v & 0xffu) % (2 * amp + 1) - amp);
               v >>= 8;
             }
         }
@@ -1627,7 +1644,8 @@ int main(int argc, FAR char *argv[])
   FAR const char *camdev = CAMENC_CAM_DEVPATH;
   FAR const char *encdev = CAMENC_ENC_DEVPATH;
   FAR const char *infile = NULL;
-  FAR const char *outfile = NULL;  FAR const struct ov5647_mode_s *cur = NULL;
+  FAR const char *outfile = NULL;
+  FAR const struct ov5647_mode_s *cur = NULL;
   struct camenc_stream_s st;
   struct camenc_sink_s sink;
   bool serving = false;
@@ -1669,7 +1687,8 @@ int main(int argc, FAR char *argv[])
   int probe_bg = 0;
   int probe_radius = 0;
   int probe_amp = CAMENC_PROBE_AMP;
-  int port = 0;  int exposure = -1;
+  int port = 0;
+  int exposure = -1;
   int gain = -1;
   bool threea_wanted = CAMENC_3A_DEFAULT != 0;
   bool threea = CAMENC_3A_DEFAULT != 0;
@@ -1751,11 +1770,9 @@ int main(int argc, FAR char *argv[])
 
             if (probe_bg >= (int)CAMENC_PROBE_NB)
               {
-                printf("camenc: -S %s is not one of the backgrounds:",
-                       optarg);
+                printf("camenc: -S %s is not one of the backgrounds:", optarg);
 
-                for (probe_bg = 0; probe_bg < (int)CAMENC_PROBE_NB;
-                     probe_bg++)
+                for (probe_bg = 0; probe_bg < (int)CAMENC_PROBE_NB; probe_bg++)
                   {
                     printf(" %s", g_probe_bg_name[probe_bg]);
                   }
@@ -2094,12 +2111,13 @@ stream_start:
         }
 
       printf("source:   %s (file), mode %" PRIu32 " (%" PRIu32 "x%" PRIu32
-             ")\n", infile, mode, width, height);
+             ")\n",
+             infile, mode, width, height);
 
       if (enc_width != width)
         {
-          printf("encoder:  encoding the leftmost %" PRIu32 " columns, %"
-                 PRIu32 " fewer than the mode has\n",
+          printf("encoder:  encoding the leftmost %" PRIu32
+                 " columns, %" PRIu32 " fewer than the mode has\n",
                  enc_width, width - enc_width);
         }
 
@@ -2127,12 +2145,12 @@ stream_start:
                  ", square %dx%d at Y%d, centre (%d,%d)\n",
                  g_probe.y, g_probe.u, g_probe.v, g_probe.side, g_probe.side,
                  g_probe.side_y, g_probe.cx, g_probe.cy);
-          printf("          orbit radius %d, %d pixels per frame,"
-                 " noise +-%d\n",
-                 g_probe.radius,
-                 (int)(((int64_t)g_probe.radius * g_probe.ds + (1 << 19))
-                       >> 20),
-                 g_probe.amp);
+          printf(
+              "          orbit radius %d, %d pixels per frame,"
+              " noise +-%d\n",
+              g_probe.radius,
+              (int)(((int64_t)g_probe.radius * g_probe.ds + (1 << 19)) >> 20),
+              g_probe.amp);
 
           g_src_owned = true;
 
@@ -2171,7 +2189,8 @@ stream_start:
               if (loop_source)
                 {
                   printf("camenc: %s holds %zu frames and will be repeated;"
-                         " encoding %d\n", infile, in_file, frames);
+                         " encoding %d\n",
+                         infile, in_file, frames);
                 }
               else
                 {
@@ -2731,7 +2750,8 @@ source_ready:
                    */
 
                   printf("camenc: mode %" PRId32 " was asked for, but the"
-                         " source is not a camera\n", want);
+                         " source is not a camera\n",
+                         want);
                 }
               else
                 {
@@ -2775,14 +2795,12 @@ source_ready:
                   fread(g_cam[camidx].start, 1, g_src_frame, g_src_file) !=
                       g_src_frame)
                 {
-                  printf("camenc: the source file ended after %d frames\n",
-                         i);
+                  printf("camenc: the source file ended after %d frames\n", i);
                   ret = -EIO;
                   break;
                 }
 
-              printf("camenc: the source file started again at frame %d\n",
-                     i);
+              printf("camenc: the source file started again at frame %d\n", i);
             }
         }
       else
@@ -2838,9 +2856,8 @@ source_ready:
                 }
               else
                 {
-                  uint64_t due = file_t0 +
-                                 (uint64_t)file_frame * 1000000u /
-                                     (uint32_t)file_rate;
+                  uint64_t due = file_t0 + (uint64_t)file_frame * 1000000u /
+                                               (uint32_t)file_rate;
 
                   if (due > at)
                     {
