@@ -1395,18 +1395,35 @@ int rk3576_vepu_reset(void)
   return OK;
 }
 
-int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
-                       FAR const struct rk3576_h264_cfg_s *cfg,
-                       FAR const struct rk3576_vepu510_slice_s *slice,
-                       FAR struct rk3576_vepu_result_s *result)
+static int vepu_start_locked(FAR const struct rk3576_vepu510_frame_s *frm,
+                             FAR const struct rk3576_h264_cfg_s *cfg,
+                             FAR const struct rk3576_vepu510_slice_s *slice);
+static int vepu_wait_locked(FAR const struct rk3576_vepu510_frame_s *frm,
+                            FAR const struct rk3576_vepu510_slice_s *slice,
+                            FAR struct rk3576_vepu_result_s *result);
+
+/* Start one picture: everything up to the write that sets the encoder
+ * running, and nothing after it.
+ *
+ * The work is in two halves, and the reason they are separate is that the
+ * caller is not always the same.  Waiting is what a job's completion has to
+ * do, and where that runs depends on who is waiting for it: a caller that
+ * blocks does it immediately, and the split costs nothing, while a caller that
+ * would rather not has it done wherever the driver is told the job is over.
+ *
+ * g_vepu_lock is taken here and is not released until the job has been waited
+ * for -- by rk3576_vepu_finish(), which is the only thing allowed to release
+ * it once this has returned OK.  The hardware runs one job at a time and the
+ * lock is what says whose it is, so it cannot be let go between the halves.
+ * The caller is therefore holding it from the moment this returns until
+ * rk3576_vepu_finish() returns, and must not do anything that waits on
+ * another encoder job -- or on anything that does -- in between.
+ */
+
+int rk3576_vepu_start(FAR const struct rk3576_vepu510_frame_s *frm,
+                      FAR const struct rk3576_h264_cfg_s *cfg,
+                      FAR const struct rk3576_vepu510_slice_s *slice)
 {
-  uintptr_t base = RK3576_VEPU0_ADDR;
-  struct rk3576_vepu510_frame_s job;
-  uint32_t start;
-  uint32_t intsta;
-  uint32_t status_length;
-  uint32_t bs_length = 0;
-  bool complete;
   int ret;
 
   if (frm == NULL || cfg == NULL || slice == NULL)
@@ -1435,10 +1452,95 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
       return ret;
     }
 
+  ret = vepu_start_locked(frm, cfg, slice);
+  if (ret < 0)
+    {
+      /* Nothing was started, so the lock has no job to speak for and is let
+       * go here.  The reference is dropped for the reason given in
+       * rk3576_vepu_finish() below: a started job that failed may have
+       * written anything into the slot it was using.
+       */
+
+      g_vepu_recn_ref_valid = false;
+      nxmutex_unlock(&g_vepu_lock);
+      return ret;
+    }
+
+  return OK;
+}
+
+/* Finish the job rk3576_vepu_start() started: wait for it, read what it
+ * reported, and let the lock go.
+ *
+ * This is where a job's completion runs for a caller that had somewhere else
+ * to be, and it is the half that owns the lock -- see
+ * rk3576_vepu_start() for the contract between them.
+ *
+ * A failed job may have written anything into the slot it was using, and a
+ * reference that is silently wrong is worse than one that is known to be
+ * missing: it produces a stream that decodes to noise rather than an error.
+ * So the reference is dropped and the next P picture refuses to run until an
+ * IDR has re-established one.  Note the slot is not advanced either, so the
+ * damaged one is what that IDR overwrites.
+ */
+
+int rk3576_vepu_finish(FAR const struct rk3576_vepu510_frame_s *frm,
+                       FAR const struct rk3576_vepu510_slice_s *slice,
+                       FAR struct rk3576_vepu_result_s *result)
+{
+  int ret;
+
+  ret = vepu_wait_locked(frm, slice, result);
+  if (ret < 0)
+    {
+      g_vepu_recn_ref_valid = false;
+    }
+
+  nxmutex_unlock(&g_vepu_lock);
+  return ret;
+}
+
+/* Encode one picture, and wait for it.
+ *
+ * This is the whole of the hardware's job for a caller that has nothing else
+ * to do: the two halves below, with no gap between them in which the encoder
+ * could be handed to anybody else.
+ */
+
+int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
+                       FAR const struct rk3576_h264_cfg_s *cfg,
+                       FAR const struct rk3576_vepu510_slice_s *slice,
+                       FAR struct rk3576_vepu_result_s *result)
+{
+  int ret;
+
+  ret = rk3576_vepu_start(frm, cfg, slice);
+  if (ret >= 0)
+    {
+      ret = rk3576_vepu_finish(frm, slice, result);
+    }
+
+  return ret;
+}
+
+/* The first half: everything up to the write that starts the hardware.
+ *
+ * The caller holds g_vepu_lock and goes on holding it -- see
+ * rk3576_vepu_start() above for why it cannot be let go here.
+ */
+
+static int vepu_start_locked(FAR const struct rk3576_vepu510_frame_s *frm,
+                             FAR const struct rk3576_h264_cfg_s *cfg,
+                             FAR const struct rk3576_vepu510_slice_s *slice)
+{
+  uintptr_t base = RK3576_VEPU0_ADDR;
+  struct rk3576_vepu510_frame_s job;
+  uint32_t start;
+  int ret;
+
   if (!g_vepu_powered || !g_vepu_irq_attached || !g_vepu_sem_ready)
     {
-      ret = -ENODEV;
-      goto errout_unlock;
+      return -ENODEV;
     }
 
   /* The caller describes the picture and its own two buffers; the working
@@ -1459,7 +1561,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
   ret = rk3576_vepu_recn_alloc(&job, slice->idr);
   if (ret < 0)
     {
-      goto errout_unlock;
+      return ret;
     }
 
   /* A picture that predicts from another needs one to predict from, and the
@@ -1476,7 +1578,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
       _err("ERROR: VEPU0 asked for a P picture with no reference picture "
            "-- the stream has to restart with an IDR\n");
       ret = -EINVAL;
-      goto errout_unlock;
+      return ret;
     }
 
   /* Everything the encoder is told comes from here: the picture geometry and
@@ -1488,7 +1590,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
   ret = rk3576_vepu510_regs_build(&g_vepu_regs, &job, cfg, slice);
   if (ret < 0)
     {
-      goto errout_unlock;
+      return ret;
     }
 
   /* The CPU produced the source picture, so its dirty cache lines have to
@@ -1628,6 +1730,26 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
   memcpy(&start, &g_vepu_regs.reg_ctl.enc_strt, sizeof(start));
   rk3576_vepu_putreg(RK3576_VEPU510_ENC_STRT_OFFSET, start);
 
+  return OK;
+}
+
+/* The second half: wait for the job vepu_start_locked() started, and finish
+ * what it leaves behind.
+ *
+ * The caller holds g_vepu_lock, and this is the half after which it is no
+ * longer needed -- see rk3576_vepu_finish().
+ */
+
+static int vepu_wait_locked(FAR const struct rk3576_vepu510_frame_s *frm,
+                            FAR const struct rk3576_vepu510_slice_s *slice,
+                            FAR struct rk3576_vepu_result_s *result)
+{
+  uint32_t intsta;
+  uint32_t status_length;
+  uint32_t bs_length = 0;
+  bool complete;
+  int ret;
+
   ret = nxsem_tickwait(&g_vepu_done, MSEC2TICK(RK3576_VEPU_JOB_TIMEOUT_MS));
   if (ret < 0)
     {
@@ -1639,7 +1761,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
            (unsigned int)RK3576_VEPU_JOB_TIMEOUT_MS);
       rk3576_vepu_dump();
       ret = -ETIMEDOUT;
-      goto errout_unlock;
+      return ret;
     }
 
   intsta = rk3576_vepu_collect_status(g_vepu_intsta);
@@ -1701,7 +1823,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
 
       _err("ERROR: VEPU0 job woke with no interrupt status\n");
       ret = -EIO;
-      goto errout_unlock;
+      return ret;
     }
 
   if ((intsta & RK3576_VEPU510_INT_ERRORS) != 0)
@@ -1709,7 +1831,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
       _err("ERROR: VEPU0 encode failed, int_sta 0x%08" PRIx32 "\n", intsta);
       rk3576_vepu_dump();
       ret = -EIO;
-      goto errout_unlock;
+      return ret;
     }
 
   /* Completion is the slice FIFO's last record, not the interrupt's done
@@ -1734,7 +1856,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
           intsta, bs_length);
       rk3576_vepu_dump();
       ret = -EIO;
-      goto errout_unlock;
+      return ret;
     }
 
   if ((intsta & RK3576_VEPU510_INT_DONE) == 0)
@@ -1744,7 +1866,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
            intsta);
       rk3576_vepu_dump();
       ret = -EIO;
-      goto errout_unlock;
+      return ret;
     }
 
   if (bs_length == 0)
@@ -1757,7 +1879,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
            intsta);
       rk3576_vepu_dump();
       ret = -EIO;
-      goto errout_unlock;
+      return ret;
     }
 
   ret = OK;
@@ -1790,22 +1912,7 @@ int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
       rk3576_vepu_getreg(RK3576_VEPU510_ST_SMEAR_CNT_OFFSET),
       g_vepu_last_fb.smear_cnt);
 
-errout_unlock:
-  /* A failed job may have written anything into the slot it was using, and a
-   * reference that is silently wrong is worse than one that is known to be
-   * missing: it produces a stream that decodes to noise rather than an
-   * error.  So the reference is dropped and the next P picture refuses to
-   * run until an IDR has re-established one.  Note the slot is not advanced
-   * either, so the damaged one is what that IDR overwrites.
-   */
-
-  if (ret < 0)
-    {
-      g_vepu_recn_ref_valid = false;
-    }
-
-  nxmutex_unlock(&g_vepu_lock);
-  return ret;
+  return OK;
 }
 
 #ifdef CONFIG_RK3576_VEPU_SELFTEST

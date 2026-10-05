@@ -505,6 +505,8 @@ config RK3576_VEPU_CODEC
         default n
         depends on RK3576_VEPU
         depends on VIDEO_STREAM
+        select SCHED_WORKQUEUE
+        select SCHED_HPWORK
         ---help---
                 Present the encoder as a /dev/videoN node that takes NV12 frames
                 on its output side and returns an H.264 elementary stream on its
@@ -513,6 +515,11 @@ config RK3576_VEPU_CODEC
                 The output is annex-B and the stream's first frame carries the
                 sequence and picture parameter sets in front of it, so what comes
                 out of the device can be written to a file and played directly.
+
+                A job is started by the queue operation that submits it and
+                finished by the hardware's interrupt, so the bitstream is waited
+                for with poll() on the device rather than by the queue operation
+                blocking.  The completion runs on the high-priority work queue.
 
                 This is a fixed-QP encoder. There is no rate control, and the frame
                 rate only reaches the bitstream as VUI timing. Pictures are grouped,
