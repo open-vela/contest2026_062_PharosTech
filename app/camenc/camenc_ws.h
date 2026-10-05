@@ -46,6 +46,7 @@
 #ifndef __APP_CAMENC_CAMENC_WS_H
 #define __APP_CAMENC_CAMENC_WS_H
 
+#include <poll.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -280,13 +281,24 @@ void camenc_ws_stop(FAR struct camenc_ws_s *ws);
 
 void camenc_ws_drop_clients(FAR struct camenc_ws_s *ws);
 
-/* Service the server: accept new connections, read what clients have sent
- * (which is how their going away is noticed), and push out what is queued.
+/* Say which of the server's sockets to wait on, and act on the ones that
+ * became ready.
  *
- * Called from the capture loop between frames, so it must not block.
+ * The server has no thread of its own and does not wait: it asks to be put
+ * into the caller's poll() and is handed the ready set back afterwards.  That
+ * is what lets one wait cover the camera and every client together, so a
+ * connection or a command is answered when it arrives rather than whenever
+ * the frame in progress happens to finish.
+ *
+ * camenc_ws_fds() writes at most `max` entries and returns how many it wrote,
+ * so a caller with a fixed array can give the server whatever is left after
+ * its own descriptors.  camenc_ws_ready() is then handed that same array with
+ * poll()'s ready flags in it.  Neither one blocks.
  */
 
-void camenc_ws_poll(FAR struct camenc_ws_s *ws);
+int camenc_ws_fds(FAR struct camenc_ws_s *ws, FAR struct pollfd *fds, int max);
+void camenc_ws_ready(FAR struct camenc_ws_s *ws, FAR struct pollfd *fds,
+                     int n);
 
 /* Hand one segment to every client.
  *

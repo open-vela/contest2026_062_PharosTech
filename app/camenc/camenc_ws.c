@@ -68,21 +68,15 @@
 
 #include "camenc_ws.h"
 
-/* This server polls: it calls accept() between frames and expects to be told
- * EAGAIN when nobody is trying to connect.  On NuttX that only happens with
- * CONFIG_NET_TCPBACKLOG, and with it off accept() does not merely behave
- * differently -- it waits, forever, on the first call, and the application
- * stops where it stands.
- *
- * The reason is in the two halves of the stack that look after a connection
- * arriving at a listening socket.  tcp_accept_connection() hands the
- * connection to accept() only if some task is blocked in accept() at that
- * moment; the branch that puts it on a backlog instead -- so that a task
- * which is busy, as a video encoder is busy, can pick it up later -- is
- * inside #ifdef CONFIG_NET_TCPBACKLOG.  And the branch in accept() that
- * returns EAGAIN instead of waiting is inside the same #ifdef.  Without the
- * option there is no backlog for a connection to wait in and no way to ask
- * whether one is waiting, so the two cannot be combined into a server.
+/* A connection is taken when the caller's poll() says one is waiting, and the
+ * backlog is what makes that possible.  On NuttX a connection is handed to
+ * accept() only if some task is blocked in accept() at that moment; the branch
+ * that parks it in a backlog instead -- so that a task which is busy, as a
+ * video encoder is busy, can pick it up later -- is inside
+ * #ifdef CONFIG_NET_TCPBACKLOG.  And the branch in accept() that returns
+ * EAGAIN instead of waiting is inside the same #ifdef, so without the option
+ * there is no backlog for a connection to wait in and no way to ask whether
+ * one is waiting.
  *
  * Which is worth a build error rather than a log that stops in the middle of
  * a line: a connection that arrives while no task is blocked in accept() is
@@ -1236,20 +1230,24 @@ void camenc_ws_stop(FAR struct camenc_ws_s *ws)
   ws->init_len = 0;
 }
 
-void camenc_ws_poll(FAR struct camenc_ws_s *ws)
+/****************************************************************************
+ * Name: ws_accept
+ *
+ * Description:
+ *   Take every connection waiting on the listening socket.
+ *
+ *   Called only once poll() has said there is at least one, and looping
+ *   because more than one may have arrived.  A connection that arrived while
+ *   the loop was busy was held in the backlog by the stack rather than
+ *   waited for by this server, which is the arrangement the file header
+ *   describes.
+ *
+ ****************************************************************************/
+
+static void ws_accept(FAR struct camenc_ws_s *ws)
 {
   struct sockaddr_in addr;
   socklen_t alen;
-  int i;
-
-  if (ws == NULL || ws->listen_fd < 0)
-    {
-      return;
-    }
-
-  /* Take whatever is waiting.  Non-blocking, so this is one accept per
-   * connection and never a wait.
-   */
 
   for (;;)
     {
@@ -1320,8 +1318,71 @@ void camenc_ws_poll(FAR struct camenc_ws_s *ws)
 
       _info("CAMENC WS: client %d connected\n", slot);
     }
+}
+
+/****************************************************************************
+ * Name: ws_client_for
+ *
+ * Description:
+ *   The client a descriptor belongs to, or NULL if it is not one of ours.
+ *
+ *   Looked up by descriptor rather than remembered by position, because the
+ *   caller's array is built before the wait and consumed after it and a
+ *   descriptor is what the two ends of that have in common.  There are at
+ *   most CAMENC_WS_MAX_CLIENTS of them.
+ *
+ ****************************************************************************/
+
+static FAR struct camenc_ws_client_s *ws_client_for(FAR struct camenc_ws_s *ws,
+                                                    int fd)
+{
+  int i;
 
   for (i = 0; i < CAMENC_WS_MAX_CLIENTS; i++)
+    {
+      if (ws->clients[i].fd == fd)
+        {
+          return &ws->clients[i];
+        }
+    }
+
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: camenc_ws_fds
+ *
+ * Description:
+ *   Say which sockets the caller should wait on.
+ *
+ *   The listening socket always is, and so is every client's: a client is
+ *   read for because that is where its handshake and its controls arrive, and
+ *   also because a client that has gone away is noticed there.  Writability
+ *   is asked for only when there is something queued for that client, since a
+ *   socket that is writable with nothing to write would wake the loop for
+ *   nothing.
+ *
+ ****************************************************************************/
+
+int camenc_ws_fds(FAR struct camenc_ws_s *ws, FAR struct pollfd *fds, int max)
+{
+  int n = 0;
+  int i;
+
+  if (ws == NULL || ws->listen_fd < 0)
+    {
+      return 0;
+    }
+
+  if (n < max)
+    {
+      fds[n].fd = ws->listen_fd;
+      fds[n].events = POLLIN;
+      fds[n].revents = 0;
+      n++;
+    }
+
+  for (i = 0; i < CAMENC_WS_MAX_CLIENTS && n < max; i++)
     {
       FAR struct camenc_ws_client_s *c = &ws->clients[i];
 
@@ -1330,14 +1391,82 @@ void camenc_ws_poll(FAR struct camenc_ws_s *ws)
           continue;
         }
 
-      ws_read_client(ws, c);
+      fds[n].fd = c->fd;
+      fds[n].events = POLLIN;
+      if (c->tx_len > c->tx_sent)
+        {
+          fds[n].events |= POLLOUT;
+        }
 
-      if (c->fd < 0)
+      fds[n].revents = 0;
+      n++;
+    }
+
+  return n;
+}
+
+/****************************************************************************
+ * Name: camenc_ws_ready
+ *
+ * Description:
+ *   Act on the sockets that became ready.
+ *
+ *   The array is the one camenc_ws_fds() filled, with poll()'s answer in it.
+ *   Everything here is still non-blocking; what has changed is that the work
+ *   is done because poll() said there was something to do, rather than once
+ *   per frame whether or not there was.
+ *
+ ****************************************************************************/
+
+void camenc_ws_ready(FAR struct camenc_ws_s *ws, FAR struct pollfd *fds, int n)
+{
+  int i;
+
+  if (ws == NULL || ws->listen_fd < 0)
+    {
+      return;
+    }
+
+  for (i = 0; i < n; i++)
+    {
+      FAR struct camenc_ws_client_s *c;
+
+      if (fds[i].revents == 0)
         {
           continue;
         }
 
-      ws_flush(ws, c);
+      if (fds[i].fd == ws->listen_fd)
+        {
+          ws_accept(ws);
+          continue;
+        }
+
+      c = ws_client_for(ws, fds[i].fd);
+      if (c == NULL)
+        {
+          continue;
+        }
+
+      /* A hangup is read for rather than acted on directly: the read is what
+       * finds the end of the stream, and it is also where a client that has
+       * gone away is let go of -- see ws_read_client().
+       */
+
+      if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) != 0)
+        {
+          ws_read_client(ws, c);
+
+          if (c->fd < 0)
+            {
+              continue;
+            }
+        }
+
+      if ((fds[i].revents & POLLOUT) != 0)
+        {
+          ws_flush(ws, c);
+        }
     }
 }
 

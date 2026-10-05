@@ -67,6 +67,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -506,11 +507,11 @@ struct camenc_ui_s
   /* The sensor mode the page has asked for, and whether it has asked.
    *
    * Recorded rather than acted on.  The callback that fills this in runs
-   * inside camenc_ws_poll(), which the capture loop calls between frames and
-   * waits on; changing a mode closes both devices, has the board tear down
-   * and rebuild the capture chain, and replaces every buffer and the muxer
-   * with them -- far more than a callback the loop is blocked in may do.  So
-   * the loop carries it out itself, which is what the second field tells it.
+   * inside camenc_ws_ready(), which the loop calls from its wait; changing a
+   * mode closes both devices, has the board tear down and rebuild the capture
+   * chain, and replaces every buffer and the muxer with them -- far more than
+   * a callback the loop is in the middle of may do.  So the loop carries it
+   * out itself, which is what the second field tells it.
    */
 
   int32_t want_mode;
@@ -1724,6 +1725,17 @@ static int camenc_dequeue(int fd, uint32_t type, FAR struct v4l2_buffer *buf,
 
   if (ioctl(fd, VIDIOC_DQBUF, (unsigned long)buf) < 0)
     {
+      /* EAGAIN is not a fault and is not reported: a descriptor opened
+       * non-blocking answers this way when nothing is ready, which is a
+       * question the caller asked rather than a device that failed -- see
+       * camenc_wait() and the camera source below.
+       */
+
+      if (errno == EAGAIN)
+        {
+          return -EAGAIN;
+        }
+
       printf("camenc: %s VIDIOC_DQBUF failed: %d\n", what, errno);
       return -errno;
     }
@@ -1789,6 +1801,86 @@ static int camenc_emit(void *arg, enum camenc_seg_e seg, const uint8_t *data,
   sink->segments++;
 
   return 0;
+}
+
+/* How long the loop is willing to wait when nothing at all is happening.
+ *
+ * A bound rather than a polling interval, and the difference matters.  A
+ * waiting poll costs nothing: the task is suspended on a semaphore and is not
+ * scheduled again until an event posts it or this expires.  It will not
+ * normally expire at all, because the camera has a frame ready thirty times a
+ * second whatever this says.  What it is for is the case where the camera has
+ * stopped too, so that a board that has gone quiet still comes back round
+ * instead of sitting in the wait for ever.
+ */
+
+#define CAMENC_WAIT_MS 500
+
+/* The descriptors one wait can cover: the camera, plus whatever the server
+ * adds to it.  See camenc_ws_fds().
+ */
+
+#define CAMENC_WAIT_FDS (CAMENC_WS_MAX_CLIENTS + 1)
+
+/* Wait for the next thing to do, and do the part of it the server owns.
+ *
+ * This is the only place the loop sleeps, and it sleeps on everything at
+ * once: the camera's next frame and every socket the server has.  poll()
+ * answers as soon as any of them is ready, so a connection or a command waits
+ * for the frame in progress no longer than it takes to finish -- and, because
+ * the camera is what usually wakes it, waiting costs nothing when nothing is
+ * happening.
+ *
+ * Returns true when the camera has a frame waiting to be taken.  A source
+ * that is not the camera has its own pacing and is never waited for; for
+ * those this only serves the sockets and returns false, which that path
+ * ignores.
+ */
+
+static bool camenc_wait(int camfd)
+{
+  struct pollfd fds[CAMENC_WAIT_FDS];
+  int ncam = 0;
+  int n;
+  uint64_t mark;
+
+  if (camfd >= 0)
+    {
+      fds[0].fd = camfd;
+      fds[0].events = POLLIN;
+      fds[0].revents = 0;
+      ncam = 1;
+    }
+
+  n = ncam + camenc_ws_fds(&g_ws, &fds[ncam], CAMENC_WAIT_FDS - ncam);
+
+  mark = camenc_now_us();
+
+  if (poll(fds, (nfds_t)n, ncam != 0 ? CAMENC_WAIT_MS : 0) < 0 &&
+      errno != EINTR)
+    {
+      /* Nothing to say and nothing to do about it: the loop has no frame
+       * either way, and the next round asks again.
+       */
+
+      return false;
+    }
+
+  /* The wait is accounted as the camera stage, which is what that stage has
+   * always measured -- the time the loop spends with nothing to do.  The
+   * dequeue that follows no longer waits, so the figure stays comparable
+   * with runs that measured a blocking one.
+   */
+
+  camenc_stage_account(CAMENC_STAGE_CAMERA, mark);
+
+  mark = camenc_now_us();
+
+  camenc_ws_ready(&g_ws, &fds[ncam], n - ncam);
+
+  camenc_stage_account(CAMENC_STAGE_SERVE, mark);
+
+  return ncam != 0 && (fds[0].revents & POLLIN) != 0;
 }
 
 /****************************************************************************
@@ -2437,7 +2529,14 @@ stream_start:
              enc_width, width - enc_width);
     }
 
-  camfd = open(camdev, O_RDWR);
+  /* Non-blocking, because the loop waits in poll() rather than in the
+   * dequeue.  The wait has to cover the server's sockets as well, and a call
+   * that sleeps on one thing cannot be woken by another -- see camenc_wait().
+   * A dequeue with no frame ready then answers EAGAIN, which the loop reads
+   * as "not yet" rather than as a failure.
+   */
+
+  camfd = open(camdev, O_RDWR | O_NONBLOCK);
   if (camfd < 0)
     {
       printf("camenc: cannot open %s: %d\n", camdev, errno);
@@ -3050,7 +3149,12 @@ source_ready:
   /* The loop                                                          */
   /* ---------------------------------------------------------------- */
 
-  for (; i < frames; i++)
+  /* The frame number is advanced by the body rather than by the loop, because
+   * a round that served the server and found no frame waiting has not used
+   * one and has to come back to the same number.
+   */
+
+  for (; i < frames;)
     {
       struct v4l2_buffer cbuf;
       struct v4l2_buffer obuf;
@@ -3060,13 +3164,14 @@ source_ready:
       uint64_t pts;
       uint64_t mark;
       uint32_t camidx;
+      bool camera_ready;
 
       /* A change of mode, asked for by the page and recorded by the server's
        * callback.
        *
        * Checked at the top of the frame rather than where the command arrives,
-       * for two reasons.  The callback runs inside camenc_ws_poll(), which the
-       * loop is blocked in, so a mode change cannot be done there; and doing
+       * for two reasons.  The callback runs inside camenc_ws_ready(), which is
+       * called from the wait, so a mode change cannot be done there; and doing
        * it here, before a frame is taken, is what keeps the last frames of the
        * old mode out of the new stream -- they would be a different size, and
        * the muxer has already been told what size to write.
@@ -3108,9 +3213,21 @@ source_ready:
             }
         }
 
+      /* Wait for something to do, which is a frame or a client, and serve
+       * whoever asked while waiting.  This is the loop's only sleep, and
+       * everything below runs because it returned.
+       */
+
+      camera_ready = camenc_wait(camfd);
+
       /* A frame: from the camera, from the file, or drawn here.  Either way
        * what comes out is `camidx` and a buffer in g_cam[] holding one NV12
        * picture, which is all the rest of the loop knows about any of them.
+       *
+       * The camera is the one source that may have nothing to give, since the
+       * wait is answered before the dequeue is asked and the two can
+       * disagree.  A dequeue with nothing there answers EAGAIN, which is not
+       * a failure.
        */
 
       mark = camenc_now_us();
@@ -3148,8 +3265,23 @@ source_ready:
         }
       else
         {
+          if (!camera_ready)
+            {
+              /* Nothing to take.  Serving the server was the whole of what
+               * this round had to do, and the frame number is not advanced,
+               * so the next round waits for the same frame.
+               */
+
+              continue;
+            }
+
           ret = camenc_dequeue(camfd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &cbuf,
                                "camera");
+          if (ret == -EAGAIN)
+            {
+              continue;
+            }
+
           if (ret < 0)
             {
               break;
@@ -3324,6 +3456,32 @@ source_ready:
                  obuf.index, i % (int)nbuf_out);
         }
 
+      /* The camera's buffer goes back here, as soon as this loop has finished
+       * reading it.
+       *
+       * The encode happens inside the queue operation above, so the frame has
+       * been read by the time the encoder hands its input container back.
+       * That matters more than it looks: while the frame is encoded where it
+       * lies -- which is what g_zerocopy makes the encoder do -- this buffer
+       * *is* the encoder's source, and the capture driver cannot write
+       * another frame into it until it comes back.  Holding it holds the
+       * camera off.
+       *
+       * It used to be returned at the end of the frame, which kept it across
+       * the encode, the mux and the emit: most of a frame period, with the
+       * capture driver a buffer short for all of it.  A frame that is copied
+       * rather than encoded in place is free even earlier than this, but one
+       * rule for both is worth more than the difference -- and the modes that
+       * copy are the ones with the longer frame period.
+       */
+
+      if (camfd >= 0 &&
+          camenc_queue(camfd, &g_cam[camidx], "camera", (int)camidx) < 0)
+        {
+          ret = -EIO;
+          break;
+        }
+
       /* The bitstream. */
 
       ret = camenc_dequeue(encfd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &ebuf,
@@ -3431,19 +3589,13 @@ source_ready:
           encoded++;
         }
 
-      /* Both buffers go back, the encoder's first: holding either one is what
-       * stops the next frame, and the encoder's is needed before the next
-       * queue operation can complete.
+      /* The encoder's output buffer goes back.  Holding it is what stops the
+       * next frame: the encoder will not start another job until this one has
+       * been dequeued.  The camera's buffer went back earlier, once the loop
+       * had finished reading it -- see above.
        */
 
       if (camenc_queue(encfd, cap, "encoder output", (int)ebuf.index) < 0)
-        {
-          ret = -EIO;
-          break;
-        }
-
-      if (camfd >= 0 &&
-          camenc_queue(camfd, &g_cam[camidx], "camera", (int)camidx) < 0)
         {
           ret = -EIO;
           break;
@@ -3673,19 +3825,15 @@ source_ready:
           camenc_stage_reset();
         }
 
-      /* Service the server between frames: take new connections, notice the
-       * ones that have gone, and write out what is queued for the rest.  It
-       * never blocks, because a stalled viewer must not stall the camera.
+      /* One whole frame was taken, encoded, muxed and handed over, so this is
+       * where the frame number advances -- see the loop above.
+       *
+       * The server used to be serviced here, once per frame whether or not it
+       * had anything to do.  It is serviced by the wait at the top of the
+       * loop now, when it has.
        */
 
-      if (serving)
-        {
-          mark = camenc_now_us();
-
-          camenc_ws_poll(&g_ws);
-
-          camenc_stage_account(CAMENC_STAGE_SERVE, mark);
-        }
+      i++;
     }
 
   /* A change of mode ends this stream rather than the run.
