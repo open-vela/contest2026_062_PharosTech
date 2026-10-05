@@ -395,6 +395,25 @@ static struct camenc_buf_s g_cam[CAMENC_BUFFERS];
 static struct camenc_buf_s g_out[CAMENC_BUFFERS];
 static struct camenc_buf_s g_cap[CAMENC_BUFFERS];
 
+/* Whether the encoder is given the camera's own buffer instead of one of
+ * g_out[] with the frame copied into it.
+ *
+ * The two devices have to agree on the frame's layout for that, and the
+ * question is asked once per stream rather than here -- see the comparison
+ * beside enc_vstride, which is where both layouts are finally known.  What
+ * this flag is for is that the loop has to do one of two quite different
+ * things with each frame, and the thing it does not do is the copy that
+ * dominates the loop.
+ *
+ * It is false for a source that is not the camera.  A file or the drawn
+ * pattern is a frame in this program's own memory, written by the same code
+ * that stores it, and the encoder will not take an address from the system
+ * heap at all -- the capture driver's buffers are in the DMA heap, which is
+ * the only memory on the part whose addresses are physical.
+ */
+
+static bool g_zerocopy;
+
 /* Where the frames come from, when they do not come from the camera.
  *
  * -i names a file of bare NV12 frames, one picture after another with nothing
@@ -1590,6 +1609,81 @@ static int camenc_setup_buffers(int fd, uint32_t type,
   return 0;
 }
 
+/* Ask the encoder to take its input frames from addresses this program names
+ * rather than from a heap of its own.
+ *
+ * The encoder allocates its buffers in the DMA heap and, until this, refused
+ * anything else -- correctly, because the MMU it programs is in pass-through
+ * and an address from the system heap is neither physical nor contiguous.
+ * The capture driver's frames are in that same heap, so they are addresses it
+ * can be given; this is what says it will accept one, and it is what makes the
+ * copy between the two devices unnecessary.
+ *
+ * The number of containers is still requested, and still bounds how many
+ * frames may be in flight.  What is not allocated is the backing store: the
+ * addresses arrive with each frame instead.
+ */
+
+static int camenc_setup_import(int fd, uint32_t type, int count,
+                               FAR uint32_t *granted, FAR const char *what)
+{
+  struct v4l2_requestbuffers req;
+
+  memset(&req, 0, sizeof(req));
+  req.count = (uint32_t)count;
+  req.type = type;
+  req.memory = V4L2_MEMORY_USERPTR;
+
+  if (ioctl(fd, VIDIOC_REQBUFS, (unsigned long)&req) < 0)
+    {
+      printf("camenc: %s VIDIOC_REQBUFS failed: %d\n", what, errno);
+      return -errno;
+    }
+
+  if (req.count < 1)
+    {
+      printf("camenc: %s granted %" PRIu32 " buffers\n", what, req.count);
+      return -EINVAL;
+    }
+
+  if (req.count < (uint32_t)count)
+    {
+      printf("camenc: %s granted %" PRIu32 " of %d buffers\n", what, req.count,
+             count);
+    }
+
+  *granted = req.count;
+  return 0;
+}
+
+/* Queue one frame the encoder is to read from an address given here.
+ *
+ * Built from scratch rather than kept, because there is nothing to keep: a
+ * QUERYBUF on this side reports the container's own address, which for an
+ * imported buffer is not where the frame is.  The address is the frame's and
+ * it is what the encoder reads -- see camenc_setup_import().
+ */
+
+static int camenc_queue_import(int fd, uint32_t type, FAR uint8_t *addr,
+                               int index, FAR const char *what)
+{
+  struct v4l2_buffer q;
+
+  memset(&q, 0, sizeof(q));
+  q.type = type;
+  q.memory = V4L2_MEMORY_USERPTR;
+  q.index = (uint32_t)index;
+  q.m.userptr = (unsigned long)(uintptr_t)addr;
+
+  if (ioctl(fd, VIDIOC_QBUF, (unsigned long)&q) < 0)
+    {
+      printf("camenc: %s VIDIOC_QBUF %d failed: %d\n", what, index, errno);
+      return -errno;
+    }
+
+  return 0;
+}
+
 static int camenc_queue(int fd, FAR struct camenc_buf_s *buf,
                         FAR const char *what, int index)
 {
@@ -2686,6 +2780,65 @@ source_ready:
         }
     }
 
+  /* Whether the frame the encoder reads may be the camera's own buffer.
+   *
+   * This is a comparison of two layouts rather than a switch.  The capture
+   * driver writes a frame at the picture's width and height -- its luma plane
+   * is one row of `width` bytes and its chroma plane begins after `height` of
+   * them -- and the encoder reads one at the width rounded up to its
+   * macroblock grid and the height rounded up to its own.  While the two
+   * agree the same bytes are a frame to both, so the encoder can be given the
+   * address the demosaic left the picture at and the copy between them is
+   * pure overhead.
+   *
+   * They agree for every mode whose geometry is already on the encoder's
+   * grid, which is all but one of the sensor's: 1296x960, 1280x720 and
+   * 640x480 all have a height that is a multiple of sixteen.  They do not
+   * agree for 1920x1080, where the encoder's luma plane is 1088 rows and the
+   * capture driver's is 1080 -- and there the frame has to be copied still,
+   * because the two sides would otherwise disagree about where the chroma
+   * plane begins.  That is the same disagreement that put a magenta band at
+   * the bottom of a 1080p picture; see camenc_copy_frame().
+   *
+   * A crop is the other way the two differ: given fewer columns than the mode
+   * has, the encoder reads rows the camera's rows are longer than, and a
+   * block copy would shear the picture rather than crop it.
+   *
+   * The camera's stride is its width, because the capture driver reports
+   * none -- see camenc_frame_size().
+   */
+
+  g_zerocopy = g_src_kind == CAMENC_SRC_CAMERA && enc_width == width &&
+               enc_stride == cam_stride && enc_vstride == height;
+
+  /* The encoder can only be given a buffer it can reach and maintain: 64-byte
+   * aligned, and wholly inside the low 4 GiB, because its address register is
+   * 32 bits wide and the cache maintenance around a job is done a line at a
+   * time.  Its driver enforces exactly that and will refuse a frame that
+   * breaks it -- but the refusal would arrive at the first queue operation,
+   * half-way into a stream.  Asking the same question here instead means such
+   * a frame is copied and the run goes on.
+   *
+   * This is a check on the arrangement rather than on a case that happens:
+   * the capture driver's frames are allocated for exactly this and satisfy
+   * both conditions by construction.  It is written out because the two
+   * mirrored rules have to stay the same rule.
+   */
+
+  if (g_zerocopy &&
+      (((uintptr_t)g_cam[0].start & 63u) != 0 ||
+       (uintptr_t)g_cam[0].start + g_cam[0].length - 1u > 0xffffffffu))
+    {
+      printf("camenc: the camera's buffers are at %p, %zu bytes, which the"
+             " encoder cannot be given; copying the frames instead\n",
+             (FAR void *)g_cam[0].start, g_cam[0].length);
+      g_zerocopy = false;
+    }
+
+  printf("input:    %s\n",
+         g_zerocopy ? "the camera's frames are encoded where they lie"
+                    : "copied into the encoder's own buffers");
+
   ret = camenc_set_format(encfd, V4L2_BUF_TYPE_VIDEO_CAPTURE,
                           V4L2_PIX_FMT_H264, 0, 0, "encoder output", &fmt);
   if (ret < 0)
@@ -2716,8 +2869,17 @@ source_ready:
       goto errout;
     }
 
-  ret = camenc_setup_buffers(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT, g_out,
-                             CAMENC_BUFFERS, &nbuf_out, "encoder input");
+  if (g_zerocopy)
+    {
+      ret = camenc_setup_import(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT,
+                                CAMENC_BUFFERS, &nbuf_out, "encoder input");
+    }
+  else
+    {
+      ret = camenc_setup_buffers(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT, g_out,
+                                 CAMENC_BUFFERS, &nbuf_out, "encoder input");
+    }
+
   if (ret < 0)
     {
       goto errout;
@@ -2740,7 +2902,27 @@ source_ready:
    * buffer's real length.
    */
 
-  if (g_out[0].length < (size_t)enc_stride * enc_vstride * 3u / 2u)
+  if (g_zerocopy)
+    {
+      /* The frame the encoder reads is the camera's buffer, so it is that
+       * buffer which has to be as large as the encoder's geometry asks.  The
+       * two are the same size whenever the layouts agree -- that is part of
+       * what agreeing means -- but the check is kept, because the failure it
+       * would catch is the one this whole arrangement rests on.
+       */
+
+      if (g_cam[0].length < (size_t)enc_stride * enc_vstride * 3u / 2u)
+        {
+          printf("camenc: the camera's buffers are %zu bytes, and a"
+                 " %" PRIu32 "x%" PRIu32 " frame with a %" PRIu32
+                 "-row luma plane needs %zu\n",
+                 g_cam[0].length, enc_width, height, enc_vstride,
+                 (size_t)enc_stride * enc_vstride * 3u / 2u);
+          ret = -EINVAL;
+          goto errout;
+        }
+    }
+  else if (g_out[0].length < (size_t)enc_stride * enc_vstride * 3u / 2u)
     {
       printf("camenc: the encoder's input buffers are %zu bytes, and a"
              " %" PRIu32 "x%" PRIu32 " frame with a %" PRIu32
@@ -2873,7 +3055,7 @@ source_ready:
       struct v4l2_buffer cbuf;
       struct v4l2_buffer obuf;
       struct v4l2_buffer ebuf;
-      struct camenc_buf_s *out;
+      struct camenc_buf_s *out = NULL;
       struct camenc_buf_s *cap;
       uint64_t pts;
       uint64_t mark;
@@ -3064,17 +3246,26 @@ source_ready:
       /* The encoder's input buffer for this frame, taken round-robin.  With
        * as many as the camera has, the one just freed is the one used next,
        * so a frame is never copied over one still being encoded.
+       *
+       * When the two devices agree on the layout there is nothing to copy
+       * and no buffer of ours to copy into: the frame is the camera's own
+       * buffer, which is still ours -- it is handed back to the camera at the
+       * end of this pass -- and the encoder is given its address instead.
+       * See g_zerocopy above the loop for what makes them agree.
        */
 
-      out = &g_out[i % (int)nbuf_out];
+      if (!g_zerocopy)
+        {
+          out = &g_out[i % (int)nbuf_out];
 
-      mark = camenc_now_us();
+          mark = camenc_now_us();
 
-      out->desc.bytesused = (uint32_t)camenc_copy_frame(
-          out->start, g_cam[camidx].start, enc_stride, enc_vstride, cam_stride,
-          enc_width, height);
+          out->desc.bytesused = (uint32_t)camenc_copy_frame(
+              out->start, g_cam[camidx].start, enc_stride, enc_vstride,
+              cam_stride, enc_width, height);
 
-      camenc_stage_account(CAMENC_STAGE_COPY, mark);
+          camenc_stage_account(CAMENC_STAGE_COPY, mark);
+        }
 
       /* Queueing this encodes it, and the encode is waited for inside the
        * queue operation -- which is why this is the stage that decides the
@@ -3083,7 +3274,18 @@ source_ready:
 
       mark = camenc_now_us();
 
-      if (camenc_queue(encfd, out, "encoder input", i % (int)nbuf_out) < 0)
+      if (g_zerocopy)
+        {
+          ret = camenc_queue_import(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT,
+                                    g_cam[camidx].start, i % (int)nbuf_out,
+                                    "encoder input");
+        }
+      else
+        {
+          ret = camenc_queue(encfd, out, "encoder input", i % (int)nbuf_out);
+        }
+
+      if (ret < 0)
         {
           ret = -EIO;
           break;

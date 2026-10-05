@@ -167,6 +167,15 @@
 
 #define RK3576_VICAP_STRIDE_ALIGN 64u
 
+/* What the DMA heap can promise for a buffer's start address, and therefore
+ * the largest alignment the framework's frame heap request may ask for.  The
+ * heap allocates on 64-byte granules because that is the AArch64 D-Cache
+ * line; a request for more is not refused by the heap, it is simply not
+ * honoured, so it is refused here instead -- see rk3576_vicap_alloc().
+ */
+
+#define RK3576_VICAP_DMA_HEAP_ALIGN 64u
+
 /* Two ping-pong frame buffers, as the hardware expects. */
 
 #define RK3576_VICAP_NBUF 2
@@ -492,6 +501,19 @@ static struct rk3576_vicap_s g_vicap = {
   .awb_active = true,
 };
 
+/* The one outstanding capture frame heap, and how large it was.
+ *
+ * The framework calls alloc() once when the application asks for buffers and
+ * free() once when it lets them go, and free() is handed the address and
+ * nothing else.  The granule allocator needs the length as well, so it is
+ * remembered here.  One slot is enough because there is one heap per device
+ * at a time, and having more than one outstanding would be a fault in the
+ * caller rather than a case to support -- see rk3576_vicap_alloc().
+ */
+
+static FAR void *g_vicap_frameheap;
+static size_t g_vicap_frameheap_size;
+
 /****************************************************************************
  * Private Function Prototypes
  ****************************************************************************/
@@ -512,6 +534,9 @@ static int rk3576_vicap_start_capture(FAR struct imgdata_s *data,
                                       FAR imgdata_capture_t callback,
                                       FAR void *arg);
 static int rk3576_vicap_stop_capture(FAR struct imgdata_s *data);
+static FAR void *rk3576_vicap_alloc(FAR struct imgdata_s *data,
+                                    uint32_t align_size, uint32_t size);
+static void rk3576_vicap_free(FAR struct imgdata_s *data, FAR void *addr);
 static void rk3576_vicap_wb_update(FAR struct rk3576_vicap_s *priv,
                                    uint64_t accr, uint64_t accg, uint64_t accb,
                                    uint64_t accn);
@@ -524,14 +549,132 @@ static const struct imgdata_ops_s g_rk3576_vicap_ops = {
   .start_capture = rk3576_vicap_start_capture,
   .stop_capture = rk3576_vicap_stop_capture,
 
-  /* alloc/free left NULL: the framework's buffer is written by the CPU
-   * only, so the system heap is exactly right for it.
+  /* The NV12 frames come from the DMA heap rather than the system heap.
+   *
+   * Everything about the demosaic is still the CPU's: it writes the picture
+   * in place and cleans the cache afterwards, exactly as before, and a
+   * reader of that memory through mmap sees the same bytes either way.  What
+   * changes is who can be *given* the memory.  The encoder's MMU is left in
+   * pass-through, so the addresses its registers carry have to be physical,
+   * and this is the only heap on the part that is identity-mapped -- it is
+   * how the encoder already gets its own working memory.  Putting the frames
+   * here is therefore what makes it possible to hand a finished frame
+   * straight to the encoder with no copy between them.
+   *
+   * The system heap could not be used for that even in principle: an address
+   * from it is neither contiguous nor low enough in physical memory to
+   * program into a DMA master.
    */
+
+  .alloc = rk3576_vicap_alloc,
+  .free = rk3576_vicap_free,
 };
 
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: rk3576_vicap_alloc
+ *
+ * Description:
+ *   Provide the framework's capture buffer heap from the DMA heap.
+ *
+ *   Called once per REQBUFS, before any buffer is mapped or used, and the
+ *   region it returns is what every capture buffer is carved from.  The
+ *   alignment the framework asks for is a cache-line one; the DMA heap
+ *   already promises 64 bytes and the AArch64 line is 64, so the request is
+ *   checked rather than acted on.
+ *
+ *   A second allocation without an intervening free is refused rather than
+ *   satisfied.  The framework does free first, so seeing one means the two
+ *   callers disagree about the shape of the protocol, and quietly leaking
+ *   the first heap -- or worse, handing back the same address twice -- would
+ *   hide that.
+ *
+ ****************************************************************************/
+
+static FAR void *rk3576_vicap_alloc(FAR struct imgdata_s *data,
+                                    uint32_t align_size, uint32_t size)
+{
+  FAR void *addr;
+
+  UNUSED(data);
+
+  if (size == 0)
+    {
+      return NULL;
+    }
+
+  if (align_size > RK3576_VICAP_DMA_HEAP_ALIGN)
+    {
+      _err("ERROR: VICAP: a %" PRIu32 "-byte frame heap alignment was asked"
+           " for, and the DMA heap can only promise %u\n",
+           align_size, (unsigned int)RK3576_VICAP_DMA_HEAP_ALIGN);
+      return NULL;
+    }
+
+  if (g_vicap_frameheap != NULL)
+    {
+      _err("ERROR: VICAP: a frame heap is already outstanding at %p (%zu"
+           " bytes); the framework frees before it allocates\n",
+           g_vicap_frameheap, g_vicap_frameheap_size);
+      return NULL;
+    }
+
+  addr = rk3576_dma_alloc((size_t)size);
+  if (addr == NULL)
+    {
+      _err("ERROR: VICAP: no %" PRIu32 "-byte run in the DMA heap for the"
+           " frame buffers\n",
+           size);
+      return NULL;
+    }
+
+  g_vicap_frameheap = addr;
+  g_vicap_frameheap_size = (size_t)size;
+
+  _info("VICAP: frame heap %p..%p (%" PRIu32 " bytes, DMA heap)\n", addr,
+        (FAR uint8_t *)addr + size, size);
+
+  return addr;
+}
+
+/****************************************************************************
+ * Name: rk3576_vicap_free
+ *
+ * Description:
+ *   Return the capture frame heap to the DMA heap.
+ *
+ *   Only the region this driver handed out is accepted.  A free of anything
+ *   else is a fault in the caller and not something to pass on to the
+ *   granule allocator, which would take the address at its word and corrupt
+ *   whatever allocation really owns it.
+ *
+ ****************************************************************************/
+
+static void rk3576_vicap_free(FAR struct imgdata_s *data, FAR void *addr)
+{
+  UNUSED(data);
+
+  if (addr == NULL)
+    {
+      return;
+    }
+
+  if (addr != g_vicap_frameheap)
+    {
+      _err("ERROR: VICAP: asked to free %p, which is not the frame heap"
+           " (%p)\n",
+           addr, g_vicap_frameheap);
+      return;
+    }
+
+  rk3576_dma_free(addr, g_vicap_frameheap_size);
+
+  g_vicap_frameheap = NULL;
+  g_vicap_frameheap_size = 0;
+}
 
 /****************************************************************************
  * Name: rk3576_vicap_getreg / putreg
