@@ -229,7 +229,7 @@
  * losing shadow detail rather than blowing out highlights.
  */
 
-#define OV5647_EXPOSURE_DEFAULT 0u
+#define OV5647_EXPOSURE_DEFAULT    0u
 #define OV5647_ANALOG_GAIN_DEFAULT 256u
 
 /* The gain's range, which is the part's rather than a mode's.

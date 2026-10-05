@@ -67,6 +67,7 @@
 
 #include <sys/videoio.h>
 
+#include <nuttx/arch.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/lib/lib.h>
 #include <nuttx/video/v4l2_m2m.h>
@@ -87,6 +88,14 @@
 
 #define RK3576_VEPU_ALIGN_W      16u
 #define RK3576_VEPU_ALIGN_STRIDE 16u
+
+/* The AArch64 D-Cache line, in bytes.  A buffer the encoder is given has to
+ * start and end on one, because the cache maintenance around a job is done a
+ * line at a time: a buffer that began or ended part-way through a line would
+ * have the rest of that line cleaned or invalidated along with it.
+ */
+
+#define RK3576_VEPU_CACHE_LINE 64u
 
 /* How many buffers each side offers.  Four is enough for an application to
  * keep the encoder fed while it drains the other side, which is all the
@@ -404,10 +413,58 @@ static int vepu_try_pix(FAR struct v4l2_pix_format *pix)
 }
 
 /****************************************************************************
- * Name: vepu_buffer_is_ours
+ * Name: vepu_buffer_reachable
  *
  * Description:
- *   Say whether an address is one this driver handed out.
+ *   Say whether the encoder's own hardware can be given a buffer: cache-line
+ *   aligned at both ends, and physically inside the low 4 GiB.
+ *
+ *   This is the requirement the DMA masters on this part share, and it is
+ *   stated here in terms of the address rather than in terms of which
+ *   allocator produced it, because that is what the hardware sees.  A buffer
+ *   from the DMA heap satisfies it; so would one from anywhere else that did,
+ *   which is the point -- the frame the capture driver demosaiced is one
+ *   such buffer, and a check that asked "is this mine" would refuse it.
+ *
+ *   The whole extent has to fit, not just its start: the address register is
+ *   32 bits wide, and a buffer that began below 4 GiB and crossed the
+ *   boundary would make the encoder wrap and write somewhere unrelated.
+ *
+ *   The same test is made on the other side, by the driver that allocates the
+ *   frame heap, and the two are the same rule -- changing one without the
+ *   other would let a buffer through one door and not the other.
+ *
+ ****************************************************************************/
+
+static bool vepu_buffer_reachable(FAR const void *addr, size_t size)
+{
+  uintptr_t phys;
+
+  if (addr == NULL || size == 0)
+    {
+      return false;
+    }
+
+  if (((uintptr_t)addr & (RK3576_VEPU_CACHE_LINE - 1u)) != 0 ||
+      (size & (RK3576_VEPU_CACHE_LINE - 1u)) != 0)
+    {
+      return false;
+    }
+
+  /* A page-table walk in a build with a kernel address space, the identity
+   * in a flat one; either way this is the number the hardware is given.
+   */
+
+  phys = up_addrenv_va_to_pa((FAR void *)addr);
+
+  return phys <= 0xffffffffu && phys + size - 1u <= 0xffffffffu;
+}
+
+/****************************************************************************
+ * Name: vepu_buffer_usable
+ *
+ * Description:
+ *   Say whether a buffer is one the encoder may be pointed at.
  *
  *   The framework makes a queued buffer's address out of the offset the
  *   application supplied, and accepts whatever that produces without
@@ -420,22 +477,38 @@ static int vepu_try_pix(FAR struct v4l2_pix_format *pix)
  *   to it, which is far away from the mistake and looks like a hardware
  *   fault.
  *
- *   So the address is checked against what was allocated here and a strange
- *   one is refused.  Only the address is checked, not an extent, so that the
- *   answer does not depend on the format being the one that was current when
- *   the buffers were requested.
+ *   So the address is checked, and what it is checked against is the
+ *   hardware's own requirement -- 64-byte alignment, and the whole buffer
+ *   physically inside the low 4 GiB -- rather than against a list of this
+ *   driver's allocations.  The two answer different questions, and the one
+ *   that matters here is the hardware's.  The reason is the input side: a
+ *   frame the capture driver demosaiced can be encoded where it lies, with
+ *   no copy between them, and the address the application then queues was
+ *   produced by another driver.  Asking "did I allocate this" would have
+ *   refused exactly that buffer by construction, while the hardware question
+ *   accepts it and still refuses the address the mistake above produces.
+ *
+ *   A buffer of this driver's own is still recognised as such first, because
+ *   the table of allocations knows each one's extent and the hardware test
+ *   cannot -- it is given a length and trusts it.
+ *
+ *   Alignment is not decoration either: the cache maintenance around a job
+ *   is done a line at a time, so a buffer that starts or ends part-way
+ *   through a line would have that line cleaned or invalidated along with
+ *   whatever shares it.
  *
  * Input Parameters:
- *   state - the per-open state, holding the table of allocations
+ *   state - the per-open state, holding the table of its own allocations
  *   addr  - the address to check
+ *   size  - how many bytes the encoder will read or write there
  *
  * Returned Value:
- *   true if the address lies inside one of the allocations
+ *   true if the encoder may be given that buffer
  *
  ****************************************************************************/
 
-static bool vepu_buffer_is_ours(FAR struct rk3576_vepu_codec_priv_s *state,
-                                FAR const void *addr)
+static bool vepu_buffer_usable(FAR struct rk3576_vepu_codec_priv_s *state,
+                               FAR const void *addr, size_t size)
 {
   uintptr_t a = (uintptr_t)addr;
   int i;
@@ -444,6 +517,11 @@ static bool vepu_buffer_is_ours(FAR struct rk3576_vepu_codec_priv_s *state,
     {
       return false;
     }
+
+  /* This driver's own allocations first, because the table records each
+   * one's extent and so can be checked exactly, where the hardware test
+   * below is only told the length it is given.
+   */
 
   for (i = 0; i < RK3576_VEPU_HEAP_MAX; i++)
     {
@@ -455,14 +533,15 @@ static bool vepu_buffer_is_ours(FAR struct rk3576_vepu_codec_priv_s *state,
         }
     }
 
-  return false;
+  return vepu_buffer_reachable(addr, size);
 }
 
 /****************************************************************************
  * Name: vepu_check_buf
  *
  * Description:
- *   Check a queued buffer and complain usefully if it is not one of ours.
+ *   Check a queued buffer and complain usefully if it is not one the
+ *   encoder can be pointed at.
  *
  *   The message names the one thing an application has to get right here:
  *   the offset a queue operation carries is not decoration, it is how the
@@ -476,7 +555,7 @@ static bool vepu_buffer_is_ours(FAR struct rk3576_vepu_codec_priv_s *state,
  *   state - the per-open state, holding the table of allocations
  *   side  - "output" or "capture", for the message
  *   buf   - the queued buffer
- *
+ *   size  - how many bytes the encoder will read or write there
  * Returned Value:
  *   true if the buffer may be used
  *
@@ -484,18 +563,20 @@ static bool vepu_buffer_is_ours(FAR struct rk3576_vepu_codec_priv_s *state,
 
 static bool vepu_check_buf(FAR struct rk3576_vepu_codec_priv_s *state,
                            FAR const char *side,
-                           FAR const struct v4l2_buffer *buf)
+                           FAR const struct v4l2_buffer *buf, size_t size)
 {
-  if (vepu_buffer_is_ours(state, buf->m.vaddr))
+  if (vepu_buffer_usable(state, buf->m.vaddr, size))
     {
       return true;
     }
 
-  _err("ERROR: VEPU0 codec %s buffer %" PRIu32 " resolved to %p, which this"
-       " driver did not allocate.  A queue operation must carry the m.offset"
-       " that VIDIOC_QUERYBUF reported for that buffer, not the index"
+  _err("ERROR: VEPU0 codec %s buffer %" PRIu32 " resolved to %p, which is"
+       " not memory the encoder can be given: %zu bytes at a 64-byte aligned"
+       " address, wholly below 4 GiB, is what it needs.  A queue operation"
+       " that names a buffer this driver allocated must also carry the"
+       " m.offset that VIDIOC_QUERYBUF reported for it, not the index"
        " alone.\n",
-       side, buf->index, buf->m.vaddr);
+       side, buf->index, buf->m.vaddr, size);
 
   return false;
 }
@@ -551,7 +632,7 @@ static int vepu_service(FAR struct rk3576_vepu_codec_priv_s *priv)
       return OK;
     }
 
-  if (!vepu_check_buf(priv, "capture", cbuf))
+  if (!vepu_check_buf(priv, "capture", cbuf, priv->dst_size))
     {
       return -EINVAL;
     }
@@ -564,7 +645,7 @@ static int vepu_service(FAR struct rk3576_vepu_codec_priv_s *priv)
           return OK;
         }
 
-      if (!vepu_check_buf(priv, "output", obuf))
+      if (!vepu_check_buf(priv, "output", obuf, priv->src_size))
         {
           return -EINVAL;
         }
@@ -1504,7 +1585,24 @@ static int vepu_try_memory(enum v4l2_memory mem)
 static int vepu_output_try_memory(FAR void *priv, enum v4l2_memory mem)
 {
   UNUSED(priv);
-  return vepu_try_memory(mem);
+
+  /* The input side accepts memory the application supplies as well as memory
+   * this driver allocates.
+   *
+   * That is what a frame handed over in place needs: the capture driver
+   * demosaiced into its own buffer, and there is nothing to copy into a
+   * buffer of ours, so the application names the address it already holds.
+   * The address still has to be one the encoder can reach -- see
+   * vepu_buffer_usable() and vepu_check_buf(), which stand between this and
+   * the registers -- so a plain malloc'd pointer is refused where it is used
+   * rather than here, where the format it has to fit is not yet known.
+   *
+   * The capture side stays MMAP-only: the bitstream is written by the encoder
+   * and the application has no address to name for it beforehand.
+   */
+
+  return (mem == V4L2_MEMORY_MMAP || mem == V4L2_MEMORY_USERPTR) ? OK
+                                                                 : -ENOTTY;
 }
 
 static int vepu_capture_try_memory(FAR void *priv, enum v4l2_memory mem)
