@@ -158,6 +158,19 @@ struct camenc_ws_client_s
   uint64_t sent;
   uint32_t skipped;
 
+  /* What `sent` was when it was last seen to change, and when that was.
+   *
+   * A socket that takes nothing for long enough has a peer that is not
+   * reading, and that is the one signal in this server that does not have to
+   * be asked of the stack: it is read from the server's own counter.  poll()
+   * may not report the descriptor at all, and a peer that has gone can leave
+   * nothing behind for recv() to find, so "nothing has moved" is what is
+   * left.  See camenc_ws_expire().
+   */
+
+  uint64_t sent_seen;
+  uint64_t sent_changed;
+
   uint8_t rx[CAMENC_WS_RX_SIZE];
   size_t rx_len;
 
@@ -181,6 +194,59 @@ struct camenc_ws_client_s
  */
 
 typedef void (*camenc_ws_cmd_t)(FAR const char *text, FAR void *arg);
+
+/* What the server did over one report window, and how long it took.
+ *
+ * Counted inside camenc_ws.c, where each event is known, and copied out by
+ * camenc_ws_take_phases() once per report, so that what the report says is a
+ * window rather than a total running since the server started.  The counters
+ * the report accumulates are these, added up.
+ *
+ * The read and write paths each keep their own view of the sockets:
+ * `read_eagain` beside `reads` says how often a client was asked and had
+ * nothing to give, and `send_eagain` beside `sends` says the same for the
+ * far more interesting case, a socket that would not take what was queued
+ * for it.
+ *
+ * `flushes` is deliberately only the flushes a POLLOUT produced, so that a
+ * zero beside a non-zero `pending` in the server's own line says the stack
+ * never reported the socket writable.  The retry that does not wait for an
+ * event is not counted here -- see camenc_ws_flush_all() -- because telling
+ * the two apart is the point of the distinction.
+ *
+ * `conn_err` counts POLLERR reports and `conn_lost` the connections actually
+ * let go of, so the two differ by the reports the socket did not confirm:
+ * see the note on SO_ERROR in camenc_ws_ready().  `replaced` and `expired`
+ * are the two ways a client is let go of without the client asking -- a new
+ * stream request taking the one seat, and a socket that stopped taking what
+ * was queued for it -- and `refused` is a connection the listening socket
+ * handed over while every slot was taken.
+ */
+
+struct camenc_ws_phases_s
+{
+  uint64_t accept_us;  /* time taking connections          */
+  uint64_t accept_max; /* the slowest of them              */
+  uint64_t read_us;    /* time reading from clients        */
+  uint64_t read_max;
+  uint64_t flush_us; /* time writing to clients          */
+  uint64_t flush_max;
+
+  uint32_t accepted;    /* connections taken                */
+  uint32_t refused;     /* ... and turned away, no slot     */
+  uint32_t reads;       /* reads from clients               */
+  uint32_t read_eagain; /* ... that had nothing to give     */
+  uint32_t read_closed; /* clients that closed, either way  */
+  uint64_t read_bytes;  /* bytes read from clients          */
+  uint32_t conn_err;    /* POLLERR reports                  */
+  uint32_t conn_lost;   /* ... that the socket confirmed    */
+  uint32_t replaced;    /* seats taken by a newer request   */
+  uint32_t expired;     /* clients that stopped taking      */
+  uint32_t flushes;     /* writes a POLLOUT produced        */
+  uint32_t sends;       /* send() calls from any flush      */
+  uint32_t send_eagain; /* ... that the socket refused      */
+  uint64_t sent;        /* bytes handed to the sockets      */
+};
 
 /* The whole of the server's state, and most of it is the receive buffer of
  * every client it may have: about eight kilobytes, which is more than the
@@ -225,6 +291,12 @@ struct camenc_ws_s
 
   uint32_t clients_served;
   uint32_t clients_dropped;
+
+  /* The server's account of the report window just ended, which
+   * camenc_ws_take_phases() empties as it reads it.  See the structure.
+   */
+
+  struct camenc_ws_phases_s phases;
 
   /* Where a text frame from a client goes.  Null until one is set, in which
    * case text frames are read and discarded.
@@ -332,5 +404,41 @@ void camenc_ws_status(FAR struct camenc_ws_s *ws, FAR const char *text,
  */
 
 void camenc_ws_report(FAR struct camenc_ws_s *ws);
+
+/* Hand over the report window's counts and begin a new one.  Called once per
+ * report by the loop, which accumulates what it is given into its own totals;
+ * what is left behind is a window and not a total.
+ */
+
+void camenc_ws_take_phases(FAR struct camenc_ws_s *ws,
+                           FAR struct camenc_ws_phases_s *phases);
+
+/* Write out whatever is still queued for anyone, once a round.
+ *
+ * Not an optimisation and not a workaround: with a send buffer that has a
+ * limit, a reply larger than that limit cannot be finished in one call, and
+ * something has to call again.  The events that could -- the socket becoming
+ * writable again -- are not a thing to rely on here, and the publish path
+ * only ever looks at upgraded clients, so a page reply has nothing else to
+ * drive it.  Costs a loop over the clients and a send() only when there is
+ * something to send.  Returns the number of clients it found with something
+ * queued.
+ */
+
+unsigned int camenc_ws_flush_all(FAR struct camenc_ws_s *ws);
+
+/* Let go of clients that have stopped taking what is queued for them.
+ *
+ * Called once a round, and the only mechanism here that does not depend on
+ * the stack reporting anything: a socket that has accepted no bytes for
+ * CAMENC_WS_STALL_US while bytes are waiting has a peer that is not reading,
+ * whether it has gone or is merely stuck, and a live stream has nothing to
+ * send such a client.  With one viewer that is not a loss -- the page
+ * reconnects -- and it is the difference between a slot and a share of the
+ * buffer pool being held indefinitely and being given back.  Returns the
+ * number of clients let go of.
+ */
+
+unsigned int camenc_ws_expire(FAR struct camenc_ws_s *ws);
 
 #endif /* __APP_CAMENC_CAMENC_WS_H */

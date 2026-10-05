@@ -60,7 +60,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -68,6 +70,103 @@
 
 #include "camenc_ws.h"
 
+/* ##########################################################################
+ * WHAT WENT WRONG HERE, KEPT BECAUSE IT IS NOT OBVIOUS.
+ * ##########################################################################
+ *
+ * This server spent a long time looking like three unrelated faults: a poll()
+ * that reported descriptors nobody could read, clients that could not be let
+ * go of when a page was refreshed, and -- once those were addressed -- a
+ * board that could not be connected to at all while its camera ran happily at
+ * full rate.  There were two causes, both in the board's defconfig rather
+ * than in any code here, and both the same shape: a pool of network
+ * structures given a hard ceiling where it wanted a starting size, whose
+ * exhaustion does not look like exhaustion.
+ *
+ * 1. CONFIG_NET_ALLOC_DEVIF_CALLBACKS was 0, so the pool of socket event
+ *    callbacks that CONFIG_NET_PREALLOC_DEVIF_CALLBACKS sizes -- sixteen --
+ *    could never grow.  A connected socket holds one for its lifetime (its
+ *    connection monitor) and another while it has data queued and
+ *    unacknowledged (its send callback), so a few viewers that had stopped
+ *    reading took the whole pool, after which tcp_pollsetup() answered -EBUSY
+ *    to every further registration.
+ *
+ *    What that did to this server is in poll_setup(), fs/vfs/fs_poll.c, where
+ *    one descriptor that cannot be registered takes the rest of the array
+ *    with it:
+ *
+ *        poll_teardown(fds, i, &count);
+ *        fds[i].revents |= POLLERR;
+ *        return count + 1;      <-- every descriptor after i is dropped
+ *
+ *    poll() therefore returned at once, on a POLLERR that had not occurred,
+ *    without ever waiting -- and waiting is the only time these callbacks are
+ *    registered, which is the only way a reset or a close is ever delivered
+ *    to the application.  So a client could not be seen to go away, so it was
+ *    never let go of, so it went on holding the callbacks that caused it.  A
+ *    ring of causes, and the counters for it are in the report: the listening
+ *    socket in error on every round of every window, accept() answering
+ *    EAGAIN every time, and the client descriptors behind it never examined.
+ *
+ * 2. CONFIG_NET_TCP_ALLOC_CONNS was 0, so CONFIG_NET_TCP_PREALLOC_CONNS --
+ *    eight -- was a maximum and not a starting point, which the Kconfig says
+ *    in as many words.  A connection structure is held for the life of its
+ *    connection and then, when this side closes first and closes gently, for
+ *    the whole of TIME_WAIT; the page reply is closed that way deliberately,
+ *    because its last bytes are still in the socket and a reset would throw
+ *    them away.  A few page loads took all eight, and then tcp_input() began
+ *    dropping SYNs and sending nothing at all in reply -- not even a reset --
+ *    which a browser reports as a connection timeout while the server reports
+ *    no clients, no accepts and no errors of any kind.
+ *
+ * Both are fixed in the defconfig, with the arithmetic there.  What matters
+ * for this file is what it was made to do about them, and what is left:
+ *
+ *   - camenc_ws_recheck() -- asking the sockets directly whenever a round
+ *     accomplished nothing -- is gone.  It was the answer to the first cause,
+ *     and it retired itself: a poll() that waits is never left empty by a
+ *     descriptor it failed to report, so it was reached zero times in the
+ *     runs that fixed this.
+ *   - The one-tick sleep that kept a lied-to loop from spinning went with it,
+ *     for the same reason and by the same evidence.
+ *   - The SO_ERROR check in camenc_ws_ready() stays.  It was written for the
+ *     same cause, but it is the right reading of POLLERR regardless: the bit
+ *     means an error occurred, and the socket's own error is where an error
+ *     is.  A POLLERR a socket does not confirm is not acted on, and the two
+ *     counters say which happened -- `conn_err` counts the reports,
+ *     `conn_lost` the connections.
+ *   - camenc_ws_expire() stays, and is a policy rather than a workaround: a
+ *     viewer whose socket has stopped taking what is queued for it is not
+ *     being served, and this is the one way of saying so that does not depend
+ *     on the stack reporting anything.  It is a backstop now rather than the
+ *     mechanism -- with poll() working, a browser that closes its page is
+ *     seen doing so, and that is what `read_closed` counts.
+ *   - camenc_ws_flush_all() stays and is not related to either cause: a reply
+ *     larger than a socket's send buffer cannot be finished by one flush,
+ *     whatever the stack does.
+ *
+ * Two faults in NuttX itself are left standing, and are worth reporting
+ * rather than working around:
+ *
+ *   - poll_setup() abandoning the descriptors after a failing one, above.
+ *     Anything that polls several descriptors is exposed to it; marking the
+ *     failing one and continuing in place of that return would fix it.
+ *   - net/tcp/tcp_recvfrom.c returns EAGAIN from a non-blocking recv() on a
+ *     connection whose peer has closed in an orderly way, where POSIX says it
+ *     must return 0 -- "the peer has performed an orderly shutdown".  The
+ *     blocking path returns 0 correctly, so only a non-blocking reader, and
+ *     this server has to be one, is blind to it.
+ *
+ * HOW TO TELL IF IT COMES BACK: the report's poll line.  `rounds` should be
+ * about the work done -- a hundred camera rounds and a hundred encoder rounds
+ * per hundred frames -- with `listen` and `client` showing readable
+ * descriptors and no errors.  A window with `rounds` in the thousands, or a
+ * `listen (... err)` that is not zero, means a registration is failing again,
+ * and `mem:` says whether the pools are short.  `accepted` staying at zero
+ * while a browser says it cannot connect, with no error anywhere in the
+ * report, means the connection pool.  Both are defconfig questions.
+ * ##########################################################################
+ */
 /* A connection is taken when the caller's poll() says one is waiting, and the
  * backlog is what makes that possible.  On NuttX a connection is handed to
  * accept() only if some task is blocked in accept() at that moment; the branch
@@ -120,9 +219,45 @@
     "camenc_ws needs non-blocking sends; enable CONFIG_NET_TCP_WRITE_BUFFERS"
 #endif
 
+/* And the other half of letting a client go.
+ *
+ * A client this server drops has queued data its peer will never acknowledge,
+ * and close() waits for that acknowledgement before it finishes with the
+ * connection: the connection is left retransmitting, holding the write
+ * buffers it was given, for as long as the retransmission limit takes.  With
+ * an RTO that starts at three seconds and eight attempts that is minutes, and
+ * the buffers it holds are the pool every other connection draws from.
+ *
+ * SO_LINGER with a zero time turns that into the abortive close it is defined
+ * to be -- data discarded, connection reset -- but the option does nothing
+ * unless NuttX was built with it, and a build without it fails in a way that
+ * is invisible here: the application prints its usual numbers, the client is
+ * gone from its own report, and the pool drains over the next few refreshes
+ * with nothing to say why.  So it is a build error, like the two above.
+ */
+
+#if defined(__NuttX__) && defined(CONFIG_NET_TCP) && \
+    !defined(CONFIG_NET_SOLINGER)
+#error "camenc_ws needs abortive closes; enable CONFIG_NET_SOLINGER"
+#endif
+
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
+
+/* How long a socket may take nothing, with something waiting to be sent,
+ * before the client is let go of.
+ *
+ * Five seconds is a hundred and sixty frames of a stream this server
+ * produces at thirty-odd a second, so nothing that is being watched can
+ * reach it: a client that is reading takes what the socket will hold every
+ * acknowledgement round, which is tens of milliseconds on this link, and a
+ * round in which it took nothing at all is already unusual.  It is also
+ * short enough that a page refresh is served again while the person doing it
+ * is still looking at the screen.  See camenc_ws_expire().
+ */
+
+#define CAMENC_WS_STALL_US (5 * 1000 * 1000)
 
 /* The magic string from RFC 6455 section 4.2.2.  The accept key is the
  * SHA-1 of the client's key followed by this, base64-encoded; it exists so
@@ -210,6 +345,44 @@ static size_t page_codec_slot(void)
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: ws_now_us
+ *
+ * Description:
+ *   The clock the phases are measured on.
+ *
+ *   Deliberately the same clock camenc_main.c keeps its stages on and
+ *   written the same way: a phase timed here is printed beside a stage timed
+ *   there, and two clocks would make the numbers disagree without either of
+ *   them being wrong.
+ *
+ ****************************************************************************/
+
+static uint64_t ws_now_us(void)
+{
+  struct timeval tv;
+
+  gettimeofday(&tv, NULL);
+  return (uint64_t)tv.tv_sec * 1000000u + (uint64_t)tv.tv_usec;
+}
+
+/****************************************************************************
+ * Name: ws_phase
+ *
+ * Description:
+ *   Fold one measured call into a phase's total and its worst case.
+ *
+ ****************************************************************************/
+
+static void ws_phase(FAR uint64_t *total, FAR uint64_t *max, uint64_t us)
+{
+  *total += us;
+  if (us > *max)
+    {
+      *max = us;
+    }
+}
 
 /****************************************************************************
  * Name: ws_base64
@@ -349,6 +522,8 @@ static FAR const char *ws_header(FAR const char *req, FAR const char *name)
 
 static void ws_close_client(FAR struct camenc_ws_s *ws,
                             FAR struct camenc_ws_client_s *c);
+static void ws_drop_client(FAR struct camenc_ws_s *ws,
+                           FAR struct camenc_ws_client_s *c);
 
 /****************************************************************************
  * Name: ws_queue
@@ -508,20 +683,24 @@ static void ws_flush(FAR struct camenc_ws_s *ws,
     {
       ssize_t n = send(c->fd, c->tx + c->tx_sent, c->tx_len - c->tx_sent, 0);
 
+      ws->phases.sends++;
+
       if (n > 0)
         {
           c->tx_sent += (size_t)n;
           c->sent += (uint64_t)n;
+          ws->phases.sent += (uint64_t)n;
           continue;
         }
 
       if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
         {
+          ws->phases.send_eagain++;
           return; /* the socket is full; the rest goes next time */
         }
 
       _warn("CAMENC WS: send failed: %d\n", errno);
-      ws_close_client(ws, c);
+      ws_drop_client(ws, c);
       ws->clients_dropped++;
       return;
     }
@@ -645,6 +824,26 @@ static void ws_serve_page(FAR struct camenc_ws_s *ws,
   ws_flush(ws, c);
 }
 
+static void ws_replace_stream_client(FAR struct camenc_ws_s *ws,
+                                     FAR struct camenc_ws_client_s *keep)
+{
+  int i;
+
+  for (i = 0; i < CAMENC_WS_MAX_CLIENTS; i++)
+    {
+      FAR struct camenc_ws_client_s *c = &ws->clients[i];
+
+      if (c == keep || c->fd < 0 || !c->upgraded)
+        {
+          continue;
+        }
+
+      _info("CAMENC WS: client replaced\n");
+      ws_drop_client(ws, c);
+      ws->phases.replaced++;
+    }
+}
+
 static void ws_serve_upgrade(FAR struct camenc_ws_s *ws,
                              FAR struct camenc_ws_client_s *c,
                              FAR const char *req)
@@ -730,6 +929,30 @@ static void ws_serve_upgrade(FAR struct camenc_ws_s *ws,
       ws->clients_dropped++;
       return;
     }
+
+  /* One viewer, so the new request takes the place of the old.
+   *
+   * This is a monitoring demo: a page watching a camera, one of them, and
+   * nothing in the requirement is served by streaming to several.  So the
+   * stream client is a single seat, and asking for it again -- which is
+   * exactly what a page refresh does -- is what vacates it.
+   *
+   * Deliberately not the same as waiting to notice that the old connection
+   * has gone, though that is noticed now: a request is a statement of intent
+   * and it arrives before the old connection is reaped, so the new page is
+   * served at once rather than a handshake later.  It is also the only
+   * signal that does not depend on the peer leaving a trace -- a browser
+   * killed with the machine it was running on, or a link that goes away
+   * underneath it, sends nothing at all for the server to notice.
+   *
+   * Two pages therefore fight over the one seat, last one wins.  That is the
+   * requirement rather than a limitation of it: a second viewer is not one
+   * of the things this server is for, and a viewer that is replaced is told
+   * so by having its connection closed, which is what its page already
+   * reconnects from.
+   */
+
+  ws_replace_stream_client(ws, c);
 
   c->upgraded = true;
   c->have_init = false;
@@ -838,6 +1061,12 @@ static void ws_close_client(FAR struct camenc_ws_s *ws,
 {
   if (c->fd >= 0)
     {
+      /* Closed gently, which is what its two callers want: a reply that has
+       * just been handed over is still in the socket's write buffer and
+       * close() waits for it to be acknowledged.  Everything that is being
+       * dropped rather than finished goes through ws_drop_client().
+       */
+
       close(c->fd);
       c->fd = -1;
     }
@@ -851,6 +1080,44 @@ static void ws_close_client(FAR struct camenc_ws_s *ws,
   c->tx_sent = 0;
 
   (void)ws;
+}
+
+/****************************************************************************
+ * Name: ws_drop_client
+ *
+ * Description:
+ *   Let a client go of without waiting for it.
+ *
+ *   A client being dropped -- a viewer replaced by a refreshed page, a
+ *   connection that has gone, a socket that will not take what is queued --
+ *   has data queued that its peer will never acknowledge, and a gentle
+ *   close() waits for that acknowledgement before it finishes with the
+ *   connection: the connection is left retransmitting, holding the write
+ *   buffers it was given, for as long as the retransmission limit takes.
+ *   With an RTO that starts at three seconds and eight attempts that is
+ *   minutes, and those buffers are the pool every connection draws from, so
+ *   a few dropped clients starve the ones that are still watching.
+ *
+ *   SO_LINGER with a zero time is the abortive close POSIX defines for this:
+ *   the data is discarded, the connection is reset, and the buffers are
+ *   released with it.  There is no build without the option -- see the
+ *   #error at the top of this file.
+ *
+ ****************************************************************************/
+
+static void ws_drop_client(FAR struct camenc_ws_s *ws,
+                           FAR struct camenc_ws_client_s *c)
+{
+  if (c->fd >= 0)
+    {
+      struct linger linger;
+
+      linger.l_onoff = 1;
+      linger.l_linger = 0;
+      (void)setsockopt(c->fd, SOL_SOCKET, SO_LINGER, &linger, sizeof(linger));
+    }
+
+  ws_close_client(ws, c);
 }
 
 /****************************************************************************
@@ -886,7 +1153,7 @@ static void ws_read_client(FAR struct camenc_ws_s *ws,
            */
 
           _warn("CAMENC WS: request too long, dropping the connection\n");
-          ws_close_client(ws, c);
+          ws_drop_client(ws, c);
           ws->clients_dropped++;
           return;
         }
@@ -897,6 +1164,7 @@ static void ws_read_client(FAR struct camenc_ws_s *ws,
         {
           c->rx_len += (size_t)n;
           c->rx[c->rx_len] = '\0';
+          ws->phases.read_bytes += (uint64_t)n;
 
           if (!c->upgraded)
             {
@@ -963,7 +1231,16 @@ static void ws_read_client(FAR struct camenc_ws_s *ws,
 
                 if (opcode == CAMENC_WS_OP_CLOSE)
                   {
+                    /* The other way a client says it has gone: at the
+                     * protocol level rather than at the socket's, which is
+                     * what a page being refreshed does when it can.  Counted
+                     * with the socket's own closes because from the server's
+                     * side it is the same event, and this is the path a
+                     * refresh takes.
+                     */
+
                     _info("CAMENC WS: client closed\n");
+                    ws->phases.read_closed++;
                     ws_close_client(ws, c);
                     return;
                   }
@@ -1035,17 +1312,20 @@ static void ws_read_client(FAR struct camenc_ws_s *ws,
       if (n == 0)
         {
           _info("CAMENC WS: client went away\n");
-          ws_close_client(ws, c);
+          ws->phases.read_closed++;
+          ws_drop_client(ws, c);
           return;
         }
 
       if (errno == EAGAIN || errno == EWOULDBLOCK)
         {
+          ws->phases.read_eagain++;
           return;
         }
 
       _warn("CAMENC WS: recv failed: %d\n", errno);
-      ws_close_client(ws, c);
+      ws->phases.read_closed++;
+      ws_drop_client(ws, c);
       ws->clients_dropped++;
       return;
     }
@@ -1262,6 +1542,8 @@ static void ws_accept(FAR struct camenc_ws_s *ws)
           break;
         }
 
+      ws->phases.accepted++;
+
       for (slot = 0; slot < CAMENC_WS_MAX_CLIENTS; slot++)
         {
           if (ws->clients[slot].fd < 0)
@@ -1273,6 +1555,7 @@ static void ws_accept(FAR struct camenc_ws_s *ws)
       if (slot == CAMENC_WS_MAX_CLIENTS)
         {
           _warn("CAMENC WS: no room for another client\n");
+          ws->phases.refused++;
           close(fd);
           continue;
         }
@@ -1303,6 +1586,8 @@ static void ws_accept(FAR struct camenc_ws_s *ws)
         c->waiting = false;
         c->sent = 0;
         c->skipped = 0;
+        c->sent_seen = 0;
+        c->sent_changed = ws_now_us();
         c->rx_len = 0;
         c->tx_len = 0;
         c->tx_sent = 0;
@@ -1353,14 +1638,12 @@ static FAR struct camenc_ws_client_s *ws_client_for(FAR struct camenc_ws_s *ws,
  * Name: camenc_ws_fds
  *
  * Description:
- *   Say which sockets the caller should wait on.
+ *   Add this server's descriptors to the caller's array.
  *
- *   The listening socket always is, and so is every client's: a client is
- *   read for because that is where its handshake and its controls arrive, and
- *   also because a client that has gone away is noticed there.  Writability
- *   is asked for only when there is something queued for that client, since a
- *   socket that is writable with nothing to write would wake the loop for
- *   nothing.
+ *   The listening socket first, then every client, and POLLOUT on a client
+ *   that has bytes waiting -- which is the only case in which this server
+ *   needs to be woken to write, the retry that does not wait for an event
+ *   being camenc_ws_flush_all()'s.
  *
  ****************************************************************************/
 
@@ -1409,12 +1692,15 @@ int camenc_ws_fds(FAR struct camenc_ws_s *ws, FAR struct pollfd *fds, int max)
  * Name: camenc_ws_ready
  *
  * Description:
- *   Act on the sockets that became ready.
+ *   Do the work the caller's poll() reported, and time it by the part of the
+ *   pass it was.
  *
- *   The array is the one camenc_ws_fds() filled, with poll()'s answer in it.
- *   Everything here is still non-blocking; what has changed is that the work
- *   is done because poll() said there was something to do, rather than once
- *   per frame whether or not there was.
+ *   Everything here is non-blocking, so a descriptor that is reported ready
+ *   and then has nothing to give costs one call and no more.  A descriptor
+ *   that is not reported is not visited at all, which is why the report
+ *   carries the ready set: a socket that was never in the array and a socket
+ *   that was asked and had nothing look the same from the application's side
+ *   otherwise.
  *
  ****************************************************************************/
 
@@ -1430,6 +1716,7 @@ void camenc_ws_ready(FAR struct camenc_ws_s *ws, FAR struct pollfd *fds, int n)
   for (i = 0; i < n; i++)
     {
       FAR struct camenc_ws_client_s *c;
+      uint64_t mark;
 
       if (fds[i].revents == 0)
         {
@@ -1438,7 +1725,10 @@ void camenc_ws_ready(FAR struct camenc_ws_s *ws, FAR struct pollfd *fds, int n)
 
       if (fds[i].fd == ws->listen_fd)
         {
+          mark = ws_now_us();
           ws_accept(ws);
+          ws_phase(&ws->phases.accept_us, &ws->phases.accept_max,
+                   ws_now_us() - mark);
           continue;
         }
 
@@ -1448,14 +1738,44 @@ void camenc_ws_ready(FAR struct camenc_ws_s *ws, FAR struct pollfd *fds, int n)
           continue;
         }
 
-      /* A hangup is read for rather than acted on directly: the read is what
-       * finds the end of the stream, and it is also where a client that has
-       * gone away is let go of -- see ws_read_client().
+      /* An error is checked against the socket before it is believed.
+       *
+       * POLLERR is also what poll_setup() in the VFS puts on a descriptor
+       * whose registration failed -- a condition that has not occurred -- and
+       * a server that drops a viewer that is watching perfectly well because
+       * the kernel could not register interest in it is worse than one that
+       * waits to be told something it can check.  The socket's own error is
+       * where an error is: the real loss path sets it, a synthesised bit does
+       * not.  POLLHUP is taken with it, which is how the loss path reports a
+       * connection that ended without being asked to.
        */
 
-      if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) != 0)
+      if ((fds[i].revents & (POLLERR | POLLHUP)) != 0)
         {
+          socklen_t elen = sizeof(int);
+          int err = 0;
+
+          ws->phases.conn_err++;
+
+          if (getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &err, &elen) < 0 ||
+              err == 0)
+            {
+              continue;
+            }
+
+          _info("CAMENC WS: client lost: %d\n", err);
+          ws_drop_client(ws, c);
+          ws->phases.conn_lost++;
+          continue;
+        }
+
+      if ((fds[i].revents & POLLIN) != 0)
+        {
+          mark = ws_now_us();
+          ws->phases.reads++;
           ws_read_client(ws, c);
+          ws_phase(&ws->phases.read_us, &ws->phases.read_max,
+                   ws_now_us() - mark);
 
           if (c->fd < 0)
             {
@@ -1465,7 +1785,11 @@ void camenc_ws_ready(FAR struct camenc_ws_s *ws, FAR struct pollfd *fds, int n)
 
       if ((fds[i].revents & POLLOUT) != 0)
         {
+          mark = ws_now_us();
+          ws->phases.flushes++;
           ws_flush(ws, c);
+          ws_phase(&ws->phases.flush_us, &ws->phases.flush_max,
+                   ws_now_us() - mark);
         }
     }
 }
@@ -1639,9 +1963,19 @@ void camenc_ws_report(FAR struct camenc_ws_s *ws)
       skipped += c->skipped;
     }
 
-  _info("CAMENC WS: %u client(s), pending %llu, sent %llu, skipped %llu, "
-        "served %" PRIu32 ", dropped %" PRIu32 "\n",
-        live, pending, sent, skipped, ws->clients_served, ws->clients_dropped);
+  /* printf rather than _info, which is what a line about the server would
+   * normally be.  This one is read beside the loop's own report, and the two
+   * have to be able to share the console: _info goes to syslog, which is
+   * written a character at a time with nothing held, so a syslog line and a
+   * printf line land inside each other and neither can be read afterwards.
+   * printf holds the stream's lock for the whole call, and the loop's report
+   * is a printf too, so these two lines now come out whole.
+   */
+
+  printf("CAMENC WS: %u client(s), pending %" PRIu64 ", sent %" PRIu64
+         ", skipped %" PRIu64 ", served %" PRIu32 ", dropped %" PRIu32 "\n",
+         live, pending, sent, skipped, ws->clients_served,
+         ws->clients_dropped);
 }
 
 /****************************************************************************
@@ -1714,4 +2048,131 @@ void camenc_ws_set_command(FAR struct camenc_ws_s *ws, camenc_ws_cmd_t fn,
       ws->on_command = fn;
       ws->command_arg = arg;
     }
+}
+
+/****************************************************************************
+ * Name: camenc_ws_take_phases
+ *
+ * Description:
+ *   Hand the report window's counts to the caller and begin a new one.
+ *
+ ****************************************************************************/
+
+void camenc_ws_take_phases(FAR struct camenc_ws_s *ws,
+                           FAR struct camenc_ws_phases_s *phases)
+{
+  if (ws == NULL || phases == NULL)
+    {
+      return;
+    }
+
+  *phases = ws->phases;
+  memset(&ws->phases, 0, sizeof(ws->phases));
+}
+
+/****************************************************************************
+ * Name: camenc_ws_flush_all
+ *
+ * Description:
+ *   Write out whatever is still queued for anyone, once a round.
+ *
+ *   A reply larger than a socket's send buffer cannot be finished by one
+ *   flush, and this server's replies are: the page alone is twice the buffer.
+ *   The event that could drive the rest of it is the socket becoming
+ *   writable, and the publish path only ever looks at upgraded clients, so a
+ *   page reply has nothing else.  Costs a loop over the clients and a send()
+ *   only when there is something to send.
+ *
+ *   `flushes` is deliberately not counted here: it is the ready path's count,
+ *   and a zero against a non-zero pending is how the report says that the
+ *   stack never reported a socket writable.  This call is the answer to that,
+ *   and it shows up as the pending going away.
+ *
+ ****************************************************************************/
+
+unsigned int camenc_ws_flush_all(FAR struct camenc_ws_s *ws)
+{
+  unsigned int queued = 0;
+  int i;
+
+  if (ws == NULL)
+    {
+      return 0;
+    }
+
+  for (i = 0; i < CAMENC_WS_MAX_CLIENTS; i++)
+    {
+      FAR struct camenc_ws_client_s *c = &ws->clients[i];
+
+      if (c->fd < 0 || c->tx_len <= c->tx_sent)
+        {
+          continue;
+        }
+
+      queued++;
+      ws_flush(ws, c);
+    }
+
+  return queued;
+}
+
+/****************************************************************************
+ * Name: camenc_ws_expire
+ *
+ * Description:
+ *   Let go of clients that have stopped taking what is queued for them.
+ *
+ *   See CAMENC_WS_STALL_US for the window and why it is the length it is.
+ *   This is the one mechanism here that does not ask the stack anything: it
+ *   reads the server's own count of what a socket has taken, which cannot be
+ *   missed, where poll() may never report the descriptor and a peer that has
+ *   gone may leave nothing behind for recv() to find.
+ *
+ ****************************************************************************/
+
+unsigned int camenc_ws_expire(FAR struct camenc_ws_s *ws)
+{
+  uint64_t now = ws_now_us();
+  unsigned int expired = 0;
+  int i;
+
+  if (ws == NULL)
+    {
+      return 0;
+    }
+
+  for (i = 0; i < CAMENC_WS_MAX_CLIENTS; i++)
+    {
+      FAR struct camenc_ws_client_s *c = &ws->clients[i];
+
+      if (c->fd < 0)
+        {
+          continue;
+        }
+
+      /* Anything the socket took since the last round is progress, and
+       * starts the clock again.
+       */
+
+      if (c->sent != c->sent_seen)
+        {
+          c->sent_seen = c->sent;
+          c->sent_changed = now;
+          continue;
+        }
+
+      /* Nothing taken, and something to take.  See CAMENC_WS_STALL_US. */
+
+      if (c->tx_len > c->tx_sent && now - c->sent_changed > CAMENC_WS_STALL_US)
+        {
+          _warn("CAMENC WS: client has taken nothing for %u s; dropping it\n",
+                (unsigned)(CAMENC_WS_STALL_US / 1000000u));
+
+          ws_drop_client(ws, c);
+          ws->phases.expired++;
+          expired++;
+        }
+    }
+
+  return expired;
 }
