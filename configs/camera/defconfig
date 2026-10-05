@@ -371,16 +371,5 @@ CONFIG_VIDEO_OV5647=y
 CONFIG_OV5647_I2C_ADDR=0x36
 CONFIG_OV5647_I2C_FREQUENCY=100000
 
-# Exposure and gain, in the absence of the sensor's own loops.
-#
-# These are only starting values.  Both are reachable at run time through
-# VIDIOC_S_CTRL, so the right setting for a scene can be found by sweeping
-# on the board instead of rebuilding.
-#
-# 2.0x was too dark to read the picture and 64x saturated it, so the default
-# sits between the two; roughly 5x below saturation is a deliberate bias
-# toward losing shadow detail rather than blowing out highlights.
-
-CONFIG_OV5647_ANALOG_GAIN=256
 
 CONFIG_KICKPI_K7_CAMERA=y

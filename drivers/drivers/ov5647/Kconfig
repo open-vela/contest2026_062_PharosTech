@@ -94,39 +94,7 @@ config VIDEO_OV5647
 		first entry, for the reason its comment gives.  Which mode a stream
 		runs at is the application's to choose, and it says so before it
 		opens the camera.
-
 if VIDEO_OV5647
-
-config OV5647_EXPOSURE_LINES
-	int "Manual exposure in lines (0 = the mode's maximum)"
-	default 0
-	range 0 4095
-	---help---
-		The sensor's own exposure loop is switched off in favour of manual
-		control, so the exposure has to be stated explicitly.  Zero keeps the
-		mode's maximum, which is the right default for a bring-up where the
-		lighting is unknown; a smaller value is what a bright scene or an
-		auto-exposure experiment wants.
-
-		Exposure is quoted in lines of the mode's line time, and the mode
-		timebase is set by the HTS and VTS registers in the driver.
-
-config OV5647_ANALOG_GAIN
-	int "Manual analog gain (16 = 1.0x, 32 = 2.0x, 1023 = 64x)"
-	default 32
-	range 16 1023
-	---help---
-		The gain applied before the ADC.  With the exposure loop disabled
-		this is the only other thing that decides how bright the picture
-		comes out, so it doubles as the test for whether the light reaching
-		the sensor is the limiting factor: raising it far above the default
-		should brighten the picture proportionally, and if it does not, the
-		gain setting is not reaching the sensor.
-
-		The scale is sixteen to one, so the default of 32 is 2.0x.  High
-		values amplify noise along with the signal, which is expected.
-
-endif # VIDEO_OV5647
 
 config OV5647_I2C_ADDR
 	hex "OV5647 I2C (SCCB) slave address"
@@ -146,3 +114,5 @@ config OV5647_I2C_FREQUENCY
 		modules, but the specification has no acknowledgement bit, so a
 		faster clock leaves less margin for the receiver to sample it
 		reliably.
+
+endif # VIDEO_OV5647
