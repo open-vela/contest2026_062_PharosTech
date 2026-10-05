@@ -66,6 +66,9 @@
 
 #include <nuttx/config.h>
 
+#include <malloc.h>
+#include <nuttx/mm/iob.h>
+
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -734,6 +737,20 @@ enum camenc_stage_e
   CAMENC_STAGE_ENCODE,
   CAMENC_STAGE_DRAIN,
 
+  /* The 3A pass, which reaches the sensor over I2C between the encode and the
+   * report -- see the note where it is timed.
+   */
+
+  CAMENC_STAGE_THREEA,
+
+  /* The readout the page gets: a frame and a flush per client, once a frame.
+   * It sits outside every other stage -- it is not the muxer's work and not
+   * the server's ready path -- so until it was timed here it was land in the
+   * difference between the sum of the stages and the frame period.
+   */
+
+  CAMENC_STAGE_STATUS,
+
   /* Muxing is the whole of handing a frame to the muxer, and it includes the
    * two stages after it: a muxer with nowhere to put its output would report
    * an empty mux stage, which is true of the muxer and useless as a diagnosis
@@ -744,25 +761,115 @@ enum camenc_stage_e
   CAMENC_STAGE_FILE,
   CAMENC_STAGE_CLIENTS,
   CAMENC_STAGE_SERVE,
+
+  /* The three parts of the pass above, timed by the server itself: a
+   * connection taken, a client read, and bytes written.  They are inside
+   * `serve` rather than beside it, so they are left out of the sum for the
+   * same reason the file and client stages are -- the sum is the frame
+   * period accounted for, and counting a part twice would show the loop
+   * spending more of the period than the period has.
+   */
+
+  CAMENC_STAGE_ACCEPT,
+  CAMENC_STAGE_READ,
+  CAMENC_STAGE_FLUSH,
+
   CAMENC_STAGE_MAX
 };
 
 static const char *const g_stage_name[CAMENC_STAGE_MAX] = {
-  "camera", "copy", "encode", "drain", "mux", "file", "clients", "serve"
+  "camera", "copy",    "encode", "drain",  "3a",   "status", "mux",
+  "file",   "clients", "serve",  "accept", "read", "flush"
 };
 
 static uint64_t g_stage_us[CAMENC_STAGE_MAX];
 static uint64_t g_stage_max[CAMENC_STAGE_MAX];
 
+/* How many times the encoder has handed an input container back in an order
+ * this loop did not queue it in.
+ *
+ * Counted rather than printed.  An encoder that does this does it on every
+ * frame, and a line per frame is thirty a second, which is enough to bury
+ * everything else the loop has to say -- including the report the count now
+ * appears on.  The first one is worth a line because it is not expected; the
+ * rest are worth a number.
+ */
+
+static uint32_t g_enc_out_of_order;
+
+/* What the loop's one wait was told, counted over the report window.
+ *
+ * The stage the wait is accounted as says how long it took and nothing about
+ * why it returned, and the difference matters: a wait that returned because
+ * the camera had a frame is the loop working, and one that returned because a
+ * client socket was readable is the loop being interrupted by the network.
+ * The counts tell those apart, and they are also the only place a descriptor
+ * that was never in the poll array at all would show up -- it would simply
+ * never be counted.
+ *
+ * `client_out` and `client_err` are the two answers the server's own poll
+ * interest can produce and the wait itself cannot: the server asks for
+ * POLLOUT for a client with bytes waiting, and NuttX only ever produces it
+ * from a connection being established, so a count of zero here against a
+ * non-zero pending is the gap in the stack rather than a fault in the loop.
+ */
+
+static uint32_t g_poll_rounds;
+static uint32_t g_poll_timeouts;
+static uint32_t g_poll_camera;
+static uint32_t g_poll_encoder;
+static uint32_t g_poll_listen;
+static uint32_t g_poll_listen_in;
+static uint32_t g_poll_listen_err;
+static uint32_t g_poll_client;
+static uint32_t g_poll_client_out;
+static uint32_t g_poll_client_err;
+static uint32_t g_poll_failed;
+static int g_poll_errno;
+
+/* The server's own counts for the window.
+ *
+ * Only the counting fields are used: the times it reports are accounted as
+ * stages, because they belong in the frame period with everything else, and
+ * a count is not a time.  The server hands over one round's worth at a time
+ * and forgets it, so what it hands over is added up here.
+ */
+
+static struct camenc_ws_phases_s g_ws_counts;
+
+static void camenc_ws_counts_add(FAR const struct camenc_ws_phases_s *ph)
+{
+  g_ws_counts.accepted += ph->accepted;
+  g_ws_counts.refused += ph->refused;
+  g_ws_counts.reads += ph->reads;
+  g_ws_counts.read_eagain += ph->read_eagain;
+  g_ws_counts.read_closed += ph->read_closed;
+  g_ws_counts.conn_err += ph->conn_err;
+  g_ws_counts.conn_lost += ph->conn_lost;
+  g_ws_counts.replaced += ph->replaced;
+  g_ws_counts.expired += ph->expired;
+  g_ws_counts.read_bytes += ph->read_bytes;
+  g_ws_counts.flushes += ph->flushes;
+  g_ws_counts.sends += ph->sends;
+  g_ws_counts.send_eagain += ph->send_eagain;
+  g_ws_counts.sent += ph->sent;
+}
+
+static void camenc_stage_add(enum camenc_stage_e stage, uint64_t us,
+                             uint64_t max)
+{
+  g_stage_us[stage] += us;
+  if (max > g_stage_max[stage])
+    {
+      g_stage_max[stage] = max;
+    }
+}
+
 static void camenc_stage_account(enum camenc_stage_e stage, uint64_t start)
 {
   uint64_t us = camenc_now_us() - start;
 
-  g_stage_us[stage] += us;
-  if (us > g_stage_max[stage])
-    {
-      g_stage_max[stage] = us;
-    }
+  camenc_stage_add(stage, us, us);
 }
 
 static void camenc_stage_reset(void)
@@ -774,6 +881,21 @@ static void camenc_stage_reset(void)
       g_stage_us[s] = 0;
       g_stage_max[s] = 0;
     }
+
+  g_poll_rounds = 0;
+  g_poll_timeouts = 0;
+  g_poll_camera = 0;
+  g_poll_encoder = 0;
+  g_poll_listen = 0;
+  g_poll_listen_in = 0;
+  g_poll_listen_err = 0;
+  g_poll_client = 0;
+  g_poll_client_out = 0;
+  g_poll_client_err = 0;
+  g_poll_failed = 0;
+  g_poll_errno = 0;
+
+  memset(&g_ws_counts, 0, sizeof(g_ws_counts));
 }
 
 static void camenc_usage(void)
@@ -1852,8 +1974,12 @@ static int camenc_emit(void *arg, enum camenc_seg_e seg, const uint8_t *data,
 static bool camenc_wait(int camfd, int encfd, bool inflight)
 {
   struct pollfd fds[CAMENC_WAIT_FDS];
+  struct camenc_ws_phases_s ph;
+  uint64_t serve_us;
   int nwait = 0;
+  int ret;
   int n;
+  int i;
   uint64_t mark;
 
   if (inflight)
@@ -1875,14 +2001,93 @@ static bool camenc_wait(int camfd, int encfd, bool inflight)
 
   mark = camenc_now_us();
 
-  if (poll(fds, (nfds_t)n, nwait != 0 ? CAMENC_WAIT_MS : 0) < 0 &&
-      errno != EINTR)
+  g_poll_rounds++;
+
+  ret = poll(fds, (nfds_t)n, nwait != 0 ? CAMENC_WAIT_MS : 0);
+
+  if (ret < 0 && errno != EINTR)
     {
       /* Nothing to say and nothing to do about it: the loop has no frame
        * either way, and the next round asks again.
+       *
+       * Counted and the errno kept, though, because this is a round that did
+       * nothing at all and used to leave no trace of it: a poll() that fails
+       * on every round is a loop that keeps taking frames and never serves a
+       * socket, which reads exactly like the sockets never becoming ready.
        */
 
+      g_poll_failed++;
+      if (g_poll_errno == 0)
+        {
+          g_poll_errno = errno;
+        }
+
       return false;
+    }
+
+  /* What the wait was told, which is nowhere else: the stage below says how
+   * long the wait took and the server's report says what it did with the
+   * sockets, and neither says which descriptors came back ready.
+   */
+
+  if (ret == 0)
+    {
+      g_poll_timeouts++;
+    }
+
+  for (i = 0; i < n; i++)
+    {
+      if (fds[i].revents == 0)
+        {
+          continue;
+        }
+
+      if (nwait != 0 && i == 0)
+        {
+          if (inflight)
+            {
+              g_poll_encoder++;
+            }
+          else
+            {
+              g_poll_camera++;
+            }
+        }
+      else if (fds[i].fd == g_ws.listen_fd)
+        {
+          /* Split, because for the listening socket it is the whole
+           * question.  A descriptor that a connection can be accepted from
+           * is NuttX's registration-time test of the backlog queue; one that
+           * arrives with POLLERR or POLLHUP is the same "connection lost"
+           * branch that a client socket gets, and the two could not be told
+           * apart while this was one number.
+           */
+
+          g_poll_listen++;
+
+          if ((fds[i].revents & POLLIN) != 0)
+            {
+              g_poll_listen_in++;
+            }
+
+          if ((fds[i].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+            {
+              g_poll_listen_err++;
+            }
+        }
+      else
+        {
+          g_poll_client++;
+          if ((fds[i].revents & POLLOUT) != 0)
+            {
+              g_poll_client_out++;
+            }
+
+          if ((fds[i].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+            {
+              g_poll_client_err++;
+            }
+        }
     }
 
   /* The wait is accounted as the camera stage, which is what that stage has
@@ -1898,7 +2103,42 @@ static bool camenc_wait(int camfd, int encfd, bool inflight)
 
   camenc_ws_ready(&g_ws, &fds[nwait], n - nwait);
 
-  camenc_stage_account(CAMENC_STAGE_SERVE, mark);
+  /* And whatever is still queued for anyone, whether or not an event asked
+   * for it.  A reply larger than a socket's send buffer cannot be finished by
+   * one flush, and this server's replies are: the page alone is twice the
+   * buffer.  Waiting for the socket to become writable is what left the page
+   * half-sent and the browser with nothing to render, which is a state no
+   * later round can tell apart from a client that is simply quiet.  It is
+   * timed as part of the same stage because it is the same pass over the
+   * sockets.
+   */
+
+  camenc_ws_flush_all(&g_ws);
+
+  /* And let go of anyone who has stopped taking what is queued, which is the
+   * one thing no event on this stack has been able to tell us.  See
+   * camenc_ws_expire().  Timed as part of the same pass over the sockets.
+   */
+
+  camenc_ws_expire(&g_ws);
+
+  serve_us = camenc_now_us() - mark;
+
+  camenc_stage_add(CAMENC_STAGE_SERVE, serve_us, serve_us);
+
+  /* And the pass's own account of itself, which is what says which of the
+   * three it was.  `serve` stays the whole of it, so the sum against the
+   * frame period does not change meaning; the parts are printed beside it and
+   * left out of that sum because they are inside it.
+   */
+
+  camenc_ws_take_phases(&g_ws, &ph);
+
+  camenc_ws_counts_add(&ph);
+
+  camenc_stage_add(CAMENC_STAGE_ACCEPT, ph.accept_us, ph.accept_max);
+  camenc_stage_add(CAMENC_STAGE_READ, ph.read_us, ph.read_max);
+  camenc_stage_add(CAMENC_STAGE_FLUSH, ph.flush_us, ph.flush_max);
 
   return !inflight && nwait != 0 && (fds[0].revents & POLLIN) != 0;
 }
@@ -3295,9 +3535,18 @@ source_ready:
             {
               if (obuf.index != (uint32_t)(i % (int)nbuf_out))
                 {
-                  printf("camenc: encoder returned input buffer %" PRIu32
-                         " where %d was queued\n",
-                         obuf.index, i % (int)nbuf_out);
+                  /* Said once, then counted onto the report line -- see
+                   * g_enc_out_of_order.
+                   */
+
+                  if (g_enc_out_of_order == 0)
+                    {
+                      printf("camenc: encoder returned input buffer %" PRIu32
+                             " where %d was queued\n",
+                             obuf.index, i % (int)nbuf_out);
+                    }
+
+                  g_enc_out_of_order++;
                 }
 
               if (camfd >= 0 && camenc_queue(camfd, &g_cam[camidx], "camera",
@@ -3703,6 +3952,18 @@ source_ready:
           struct cam3a_stats_s stats;
           uint32_t ch = 0;
 
+          /* Timed on its own, and until now not timed at all.
+           *
+           * It runs between the encode and the report and reaches the sensor
+           * over I2C, which is the one part of the frame path that can take
+           * milliseconds without anything in this loop saying so: the stages
+           * beside it account for the camera, the copy, the encode and the
+           * server, and everything this block spends was land in the
+           * difference between their sum and the frame period.
+           */
+
+          mark = camenc_now_us();
+
           /* The modes, then anything the page has asked for since the last
            * frame, and only then the measurement.
            *
@@ -3791,10 +4052,22 @@ source_ready:
           g_ui.exposure = threea_state.exposure;
           g_ui.gain = threea_state.gain;
 
+          camenc_stage_account(CAMENC_STAGE_THREEA, mark);
+
+          /* Timed on its own: it queues a text frame and flushes it, per
+           * client, once a frame, and it is outside every other stage -- the
+           * publish path it looks like is a different one, accounted as
+           * `clients`.
+           */
+
+          mark = camenc_now_us();
+
           if (serving)
             {
               camenc_status_publish(&g_ws, &threea_state, (uint32_t)i, mode);
             }
+
+          camenc_stage_account(CAMENC_STAGE_STATUS, mark);
         }
 
       /* Say something every so often rather than every frame.
@@ -3814,12 +4087,12 @@ source_ready:
           int s;
 
           printf("frame %6d: %6" PRIu32 " bytes, %5.1f fps, %" PRIu64
-                 " bytes out\n",
+                 " bytes out, %" PRIu32 " out of order\n",
                  i, ebuf.bytesused,
                  span != 0
                      ? 1000000.0 * (double)(i - last_report) / (double)span
                      : 0.0,
-                 sink.bytes);
+                 sink.bytes, g_enc_out_of_order);
 
           /* The breakdown, per frame, as mean and worst case.  Both, because
            * they answer different questions: the mean says which stage is
@@ -3829,25 +4102,61 @@ source_ready:
            * The sum of the stages is printed against the period for the same
            * reason the total is worth having at all: a stage nobody thought
            * to time is only visible as the difference between the two.
+           *
+           * Composed into one line and written once, which is not what it
+           * used to be -- ten writes, a prefix and a pair per stage -- and
+           * that is one line only while nothing else is printing.  The
+           * console here is shared and busy, so a line from another task
+           * lands in the middle of it often enough to matter, and what comes
+           * out can be neither read nor searched.  printf holds the stream's
+           * lock for the whole call, so a line written once cannot be split.
            */
 
-          printf("  us/frame:");
+          {
+            char line[512];
+            size_t used = 0;
 
-          for (s = 0; s < CAMENC_STAGE_MAX; s++)
-            {
-              uint64_t mean = g_stage_us[s] / window;
+            used += (size_t)snprintf(line, sizeof(line), "  us/frame:");
 
-              printf(" %s %" PRIu64 "/%" PRIu64, g_stage_name[s], mean,
-                     g_stage_max[s]);
+            for (s = 0; s < CAMENC_STAGE_MAX; s++)
+              {
+                uint64_t mean = g_stage_us[s] / window;
+                int n;
 
-              if (s != CAMENC_STAGE_FILE && s != CAMENC_STAGE_CLIENTS)
-                {
-                  total += mean;
-                }
-            }
+                if (used < sizeof(line))
+                  {
+                    n = snprintf(line + used, sizeof(line) - used,
+                                 " %s %" PRIu64 "/%" PRIu64, g_stage_name[s],
+                                 mean, g_stage_max[s]);
+                    if (n > 0)
+                      {
+                        used += (size_t)n;
+                      }
+                  }
 
-          printf(" sum %" PRIu64 " vs period %" PRIu64 "\n", total,
-                 (uint64_t)(window != 0 ? span / window : 0));
+                /* The file, client and server-pass stages are parts of the
+                 * stages before them rather than work beside them -- see the
+                 * enum -- so a sum that counted them would report the loop
+                 * spending more of the frame period than the period holds.
+                 */
+
+                if (s != CAMENC_STAGE_FILE && s != CAMENC_STAGE_CLIENTS &&
+                    s != CAMENC_STAGE_ACCEPT && s != CAMENC_STAGE_READ &&
+                    s != CAMENC_STAGE_FLUSH)
+                  {
+                    total += mean;
+                  }
+              }
+
+            if (used < sizeof(line))
+              {
+                snprintf(line + used, sizeof(line) - used,
+                         " sum %" PRIu64 " vs period %" PRIu64 "\n", total,
+                         (uint64_t)(window != 0 ? span / window : 0));
+              }
+
+            printf("%s", line);
+          }
 
           printf("  frames: %" PRIu32 " IDR, %" PRIu64 " B mean; %" PRIu32
                  " P, %" PRIu64 " B mean"
@@ -3896,6 +4205,57 @@ source_ready:
             {
               camenc_ws_report(&g_ws);
             }
+
+          /* What the loop's one wait was told over the window.  One line for
+           * the same reason the timings get one: this is the only place the
+           * ready set is visible at all, and a descriptor that was never in
+           * the array is a fault nothing else here can show.
+           */
+
+          printf("  poll: %" PRIu32 " rounds, %" PRIu32 " timeout, %" PRIu32
+                 " camera, %" PRIu32 " encoder, %" PRIu32 " listen (%" PRIu32
+                 " in, %" PRIu32 " err), %" PRIu32 " client (%" PRIu32
+                 " out, %" PRIu32 " err), %" PRIu32 " failed (errno %d)\n",
+                 g_poll_rounds, g_poll_timeouts, g_poll_camera, g_poll_encoder,
+                 g_poll_listen, g_poll_listen_in, g_poll_listen_err,
+                 g_poll_client, g_poll_client_out, g_poll_client_err,
+                 g_poll_failed, g_poll_errno);
+
+          /* And what the server did with them, over the same window.  The
+           * one line above says which descriptors came back; this says what
+           * the pass then spent its time on, and the two together are what
+           * tell "the socket was never asked about" from "the socket was
+           * asked about and took 37 ms to answer".
+           */
+
+          printf("  ws:   %" PRIu32 " accepted, %" PRIu32 " refused, %" PRIu32
+                 " reads (%" PRIu32 " eagain, %" PRIu32 " closed, %" PRIu64
+                 " bytes), %" PRIu32 " err, %" PRIu32 " lost, %" PRIu32
+                 " replaced, %" PRIu32 " expired, %" PRIu32
+                 " flushes, %" PRIu32 " sends (%" PRIu32 " eagain), %" PRIu64
+                 " sent\n",
+                 g_ws_counts.accepted, g_ws_counts.refused, g_ws_counts.reads,
+                 g_ws_counts.read_eagain, g_ws_counts.read_closed,
+                 g_ws_counts.read_bytes, g_ws_counts.conn_err,
+                 g_ws_counts.conn_lost, g_ws_counts.replaced,
+                 g_ws_counts.expired, g_ws_counts.flushes, g_ws_counts.sends,
+                 g_ws_counts.send_eagain, g_ws_counts.sent);
+
+          /* What the network stack has left to work with.  All three are
+           * what a client that is not draining spends: the second is the
+           * count a transmit allocation may use, and the third and fourth the
+           * heap the write-buffer containers and the connection structures
+           * come from.  They are here because a report that says every send()
+           * failed, or that nothing can connect, says nothing about why.
+           */
+
+          {
+            struct mallinfo mi = mallinfo();
+
+            printf("  mem:  iob %d free (%d for tx), heap %u free, %u held\n",
+                   iob_navail(false), iob_navail(true), mi.fordblks,
+                   mi.uordblks);
+          }
 
           last_report = i;
           reported_at = pts;
