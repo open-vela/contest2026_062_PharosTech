@@ -43,24 +43,43 @@ config VIDEO_OV5647
 		lanes.  Its control interface is SCCB, which is an I2C subset the
 		standard NuttX I2C driver drives directly.
 
-		Three modes are implemented: 640x480 (2x2 binned and subsampled,
-		60 fps) and 1296x960 (2x2 binned, full field of view, trimmed from
+		Five modes are implemented: 640x480 (2x2 binned and subsampled,
+		60 fps), 1296x960 (2x2 binned, full field of view, trimmed from
 		the sensor's 1296x972 output to land on the encoder's macroblock
-		grid) at 30 or 22 fps.  The application chooses one for each stream
-		it opens, and the board reconfigures its VICAP/CSI path to match;
-		see the board's KICKPI_K7 camera source.
+		grid) at 30 or 22 fps, 1920x1080 at 20 fps, and 1280x720 at
+		30 fps.  The application chooses one for each stream it opens, and
+		the board reconfigures its VICAP/CSI path to match; see the board's
+		KICKPI_K7 camera source.
+
+		The 1920x1080 mode is the one that reads the middle of the pixel
+		array at full resolution, with no binning.  It therefore collects
+		less light per pixel than the binned modes do -- roughly 1.3 stops
+		less than 1296x960, even after taking the longest exposure its
+		readout allows -- and it shows less of the scene, because it crops.
+		What it gives in exchange is 1.67 times the pixels in a 16:9 shape.
+		It is also the only mode that changes the capture geometry without
+		changing the MIPI link rate.
+
+		The 1280x720 mode changes the geometry without changing the link
+		rate either, but it gets there the other way: it keeps the binned
+		readout and crops it to 16:9.  That costs a quarter of the vertical
+		field of view and no light at all, and it cuts the pixels every
+		stage behind the sensor has to move to 74 per cent -- which is what
+		it is for, since the 1296x960 modes were measured running slightly
+		over their own frame period.  It is also the geometry the encoder
+		needs no padding or cropping for.
 
 if VIDEO_OV5647
 
 config OV5647_DEFAULT_MODE
-	int "OV5647 capture mode at boot (0 = 1296x960@30, 1 = 1296x960@22, 2 = 640x480@60)"
+	int "OV5647 capture mode at boot (0 = 1296x960@30, 1 = 1296x960@22, 2 = 640x480@60, 3 = 1920x1080@20, 4 = 1280x720@30)"
 	default 0
 	---help---
 		Which of the driver's capture modes the sensor is left in when the
 		driver is bound.
 
 		This is not a build-time restriction on what the sensor can be
-		asked to do: the driver implements all three modes, and the
+		asked to do: the driver implements all five modes, and the
 		application selects one for each stream it opens.  What this
 		decides is what a caller that asks for nothing gets, and what the
 		sensor is left in between streams.
@@ -69,10 +88,12 @@ config OV5647_DEFAULT_MODE
 		ov5647.c).  A value that names no mode is a build error there
 		rather than a failure at run time.
 
-		The third mode changes the frame size, which the board's D-PHY
-		link rate has to follow; the first two differ only in frame rate
-		and share everything else, so moving between those two costs
-		nothing outside the sensor.
+		The first two differ only in frame rate and share everything else,
+		so moving between those two costs nothing outside the sensor.  The
+		last two change the frame size: 1280x720 and 1920x1080 both share
+		the binned mode's link rate, so the D-PHY has nothing to settle and
+		only the capture buffers move, but 640x480 runs its own, so a change
+		to or from that one has to move the board's D-PHY as well.
 
 config OV5647_EXPOSURE_LINES
 	int "Manual exposure in lines (0 = the mode's maximum)"

@@ -84,8 +84,16 @@ CONFIG_RK3576_DMA_ALLOC=y
 # and the encoder adds its two reconstruction sets (4.0 MiB), the staging
 # buffer (1.8 MiB) and its input/output buffer pools (5.3 MiB each) on top.
 # With 16 MiB the encoder's second REQBUFS fails with ENOMEM and camenc
-# aborts before the camera ever starts; 32 MiB leaves room to run.
-CONFIG_RK3576_DMA_HEAP_SIZE_MB=32
+# aborts before the camera ever starts.
+#
+# The largest mode is 1920x1080, and every term above grows with the picture:
+# VICAP's pair becomes 8.4 MiB, the reconstruction pair 6.4 MiB, the staging
+# buffer 3.0 MiB and the two pools 9.0 MiB each, for about 36 MiB in total.
+# A mode change needs more still: VICAP takes the new geometry's buffers
+# before releasing the old ones, so the peak is the sum of the two sets.
+# Thirty-two MiB would fail the way sixteen did, so this is sized for the
+# largest mode with room to spare.
+CONFIG_RK3576_DMA_HEAP_SIZE_MB=48
 CONFIG_RK3576_EMMC=y
 CONFIG_RK3576_SDMMC=y
 CONFIG_RK3576_SDIO=y

@@ -292,6 +292,11 @@
  * KiB covers that with room for a much lower quantiser; a segment beyond it
  * drops the client, which is the designed degradation rather than a fault.
  *
+ * The largest mode is now 1920x1080, whose pictures are about 1.67 times the
+ * area of 1296x960's and so larger by roughly that factor at the same
+ * quantiser -- still well inside 512 KiB, and the margin is why the figure
+ * does not have to be recomputed when a mode is added.
+ *
  * Sizing for the largest mode is paid whichever mode is running, and it is
  * the price of not having to know, when the server starts, which mode it will
  * end up serving.  It is also why a mode change does not have to restart the
@@ -769,7 +774,8 @@ static void camenc_usage(void)
   printf("  -m  sensor mode, by its index in the sensor driver's mode"
          " table\n");
   printf("      (default %d: 0 = 1296x960 at 30 fps, 1 = 1296x960 at"
-         " 22 fps,\n      2 = 640x480 at 60 fps)\n",
+         " 22 fps,\n      2 = 640x480 at 60 fps, 3 = 1920x1080 at 20 fps,"
+         " 4 = 1280x720 at 30 fps)\n",
          CAMENC_DEFAULT_MODE);
   printf("  -q  quantiser, 0..51 (default %d)\n", CAMENC_DEFAULT_QP);
   printf("  -G  pictures per group, 1..1000 (default %d; 1 makes every"
@@ -1040,26 +1046,40 @@ static size_t camenc_frame_size(FAR const struct v4l2_format *fmt)
 
 /* Move one NV12 frame from the camera's buffer to the encoder's.
  *
- * When the two sides agree on geometry this is one block copy of the whole
- * frame.  A crop -- the encoder given fewer columns than the mode has -- makes
- * their strides differ, and a block copy would then shear the picture instead
- * of cropping it, so the rows are copied one at a time.  The chroma plane is
- * the same byte width as the luma's and half as many rows, which is what 4:2:0
- * sampling is.
+ * The two sides describe a frame the same way and lay it out differently.  The
+ * camera packs its rows and puts the chroma plane directly after the picture's
+ * own height; the encoder puts it after its *allocated* height, which is the
+ * picture rounded up to its macroblock grid.  Those are the same number for
+ * every mode whose height is already on that grid, and not for all of them:
+ * 1080 rows is not a multiple of sixteen, so the encoder allocates 1088.  A
+ * chroma plane written at the picture height in that case sits eight rows
+ * above the one the encoder reads, which leaves the last eight rows of the
+ * encoder's chroma holding whatever the buffer last had -- and the picture
+ * comes out with a band of that at the bottom.  dst_vstride is the allocated
+ * height, and it is what the destination's plane offset is computed from.
  *
- * The return value is what the caller reports as the frame's length, so the
- * two cannot disagree about how much of the buffer is a picture.
+ * When the strides agree and there is no padding this is one block copy of the
+ * whole frame.  A crop -- the encoder given fewer columns than the mode has --
+ * makes the strides differ, and a block copy would then shear the picture
+ * instead of cropping it, so the rows are copied one at a time.  The chroma
+ * plane is the same byte width as the luma's and half as many rows, which is
+ * what 4:2:0 sampling is.
+ *
+ * The return value is what the caller reports as the frame's length: all of
+ * the destination, padding included, because that is what the encoder reads --
+ * its luma plane is dst_vstride rows tall and its chroma follows it.
  */
 
 static size_t camenc_copy_frame(FAR uint8_t *dst, FAR const uint8_t *src,
-                                uint32_t dst_stride, uint32_t src_stride,
-                                uint32_t width, uint32_t height)
+                                uint32_t dst_stride, uint32_t dst_vstride,
+                                uint32_t src_stride, uint32_t width,
+                                uint32_t height)
 {
-  size_t total = (size_t)dst_stride * height * 3u / 2u;
+  size_t total = (size_t)dst_stride * dst_vstride * 3u / 2u;
   uint32_t rows = height / 2u;
   uint32_t r;
 
-  if (dst_stride == src_stride && width == src_stride)
+  if (dst_stride == src_stride && dst_vstride == height && width == src_stride)
     {
       memcpy(dst, src, total);
       return total;
@@ -1071,7 +1091,7 @@ static size_t camenc_copy_frame(FAR uint8_t *dst, FAR const uint8_t *src,
              width);
     }
 
-  dst += (size_t)height * dst_stride;
+  dst += (size_t)dst_vstride * dst_stride;
   src += (size_t)height * src_stride;
 
   for (r = 0; r < rows; r++)
@@ -1689,9 +1709,9 @@ int main(int argc, FAR char *argv[])
   uint32_t enc_width_req = 0;
   uint32_t enc_width = 0;
   uint32_t enc_stride = 0;
+  uint32_t enc_vstride = 0;
   uint32_t cam_stride = 0;
   size_t src_size;
-  size_t copy_size;
   size_t max_au;
   int frames = CAMENC_DEFAULT_FRAMES;
   int qp = CAMENC_DEFAULT_QP;
@@ -2050,7 +2070,7 @@ stream_start:
   height = cur->height;
 
   /* The encode width, clamped to this mode.  A change of mode can make it too
-   * wide -- the page's menu moves between a 1296-column mode and a 640-column
+   * wide -- the page's menu moves between a 1920-column mode and a 640-column
    * one -- and the right answer then is the whole picture rather than a
    * refusal, because the mode is the thing that was asked for and the crop is
    * only ever a way of comparing two ways of sizing the encoder's working set.
@@ -2546,6 +2566,38 @@ source_ready:
   enc_stride = fmt.fmt.pix.bytesperline != 0 ? fmt.fmt.pix.bytesperline
                                              : (enc_width + 15u) & ~15u;
 
+  /* And it lays its luma plane out over its *allocated* height rather than the
+   * picture's: the height rounded up to its macroblock grid, with the chroma
+   * plane after that many rows.  For every mode whose height is already on the
+   * grid the two are the same number; for 1920x1080 they are not, and a chroma
+   * plane written at the picture height would sit eight rows above the one the
+   * encoder reads.  See camenc_copy_frame().
+   *
+   * Its sizeimage is the whole allocation, so dividing the row size out of it
+   * recovers that height from the driver's own answer rather than from a
+   * second copy of its rounding rule -- and that matters, because this is the
+   * one figure in the copy the two sides do not agree on, so guessing it is
+   * the only way to get it wrong without noticing.  The rounding is kept as
+   * the fallback for a driver that reports no size; a value that does not
+   * divide into whole rows, or that is shorter than the picture, is refused
+   * rather than used, since either would put the chroma plane where nothing
+   * reads it.
+   */
+
+  enc_vstride = (height + 15u) & ~15u;
+
+  if (fmt.fmt.pix.sizeimage != 0 &&
+      fmt.fmt.pix.sizeimage % ((size_t)enc_stride * 3u / 2u) == 0)
+    {
+      uint32_t rows =
+          (uint32_t)(fmt.fmt.pix.sizeimage / ((size_t)enc_stride * 3u / 2u));
+
+      if (rows >= height)
+        {
+          enc_vstride = rows;
+        }
+    }
+
   ret = camenc_set_format(encfd, V4L2_BUF_TYPE_VIDEO_CAPTURE,
                           V4L2_PIX_FMT_H264, 0, 0, "encoder output", &fmt);
   if (ret < 0)
@@ -2590,21 +2642,25 @@ source_ready:
       goto errout;
     }
 
-  /* The two devices have to agree on how big a frame is, because the loop
-   * copies one into the other.  They derive it separately -- the camera from
-   * its own stride, the encoder from its geometry rounded up to macroblocks
-   * -- so a geometry they disagree about would be a buffer overrun rather
-   * than a wrong picture.  Both are multiples of sixteen here, which is what
-   * makes them agree; the copy is bounded by the smaller of the two anyway.
+  /* The destination has to be able to hold what the copy writes into it.  The
+   * two sides no longer have to agree on a size, and must not be made to: the
+   * encoder's frame is its own geometry's, enc_stride by enc_vstride, and the
+   * camera's is the picture's, and for a height that is not on the encoder's
+   * grid those differ by the padding -- which is the ordinary case for this
+   * mode rather than a mistake.  What is required is that the destination is
+   * at least the size the copy addresses, and QUERYBUF's length is that
+   * buffer's real length.
    */
 
-  copy_size = g_out[0].length < src_size ? g_out[0].length : src_size;
-
-  if (g_out[0].length != src_size)
+  if (g_out[0].length < (size_t)enc_stride * enc_vstride * 3u / 2u)
     {
-      printf("camenc: camera frames are %zu bytes, the encoder's input is"
-             " %zu; copying %zu\n",
-             src_size, g_out[0].length, copy_size);
+      printf("camenc: the encoder's input buffers are %zu bytes, and a"
+             " %" PRIu32 "x%" PRIu32 " frame with a %" PRIu32
+             "-row luma plane needs %zu\n",
+             g_out[0].length, enc_width, height, enc_vstride,
+             (size_t)enc_stride * enc_vstride * 3u / 2u);
+      ret = -EINVAL;
+      goto errout;
     }
 
   /* A crop reads columns the camera's rows have, which is the one thing the
@@ -2927,8 +2983,8 @@ source_ready:
       mark = camenc_now_us();
 
       out->desc.bytesused = (uint32_t)camenc_copy_frame(
-          out->start, g_cam[camidx].start, enc_stride, cam_stride, enc_width,
-          height);
+          out->start, g_cam[camidx].start, enc_stride, enc_vstride, cam_stride,
+          enc_width, height);
 
       camenc_stage_account(CAMENC_STAGE_COPY, mark);
 
