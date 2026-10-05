@@ -228,7 +228,8 @@ int rk3576_vepu_reset(void);
  *
  *   One job at a time.  The hardware has a single encoder, so concurrent
  *   callers are serialised on a mutex rather than left to interleave their
- *   register writes.
+ *   register writes.  A caller that wants the wait to happen somewhere else
+ *   uses the two halves below instead, which share that mutex.
  *
  * Input Parameters:
  *   frm    - source picture, source buffer and destination buffer
@@ -245,6 +246,72 @@ int rk3576_vepu_reset(void);
 
 int rk3576_vepu_encode(FAR const struct rk3576_vepu510_frame_s *frm,
                        FAR const struct rk3576_h264_cfg_s *cfg,
+                       FAR const struct rk3576_vepu510_slice_s *slice,
+                       FAR struct rk3576_vepu_result_s *result);
+
+/****************************************************************************
+ * Name: rk3576_vepu_start
+ *
+ * Description:
+ *   The first half of rk3576_vepu_encode(): validate the description and hand
+ *   the picture to the hardware, returning as soon as the encoder is running.
+ *
+ *   This exists for a caller that has something better to do than wait for
+ *   the interrupt -- the codec driver's queue operation, which has to return
+ *   to an application that is servicing more than the encoder.  Such a caller
+ *   completes the job with rk3576_vepu_finish() when it learns the job is
+ *   over, wherever that turns out to be.
+ *
+ *   **The mutex is held on return.**  The hardware runs one job at a time and
+ *   the mutex is what says whose it is, so a successful start and its finish
+ *   are one critical section: the lock is not released in between, and only
+ *   rk3576_vepu_finish() may release it.  A caller that starts a job must
+ *   therefore reach its finish, and must not block in between on anything
+ *   that itself waits for the encoder.
+ *
+ * Input Parameters:
+ *   frm    - source picture, source buffer and destination buffer
+ *   cfg    - H.264 syntax parameters
+ *   slice  - slice-level values for this picture
+ *
+ * Returned Value:
+ *   OK with the mutex held and the job running.  A negated errno on failure,
+ *   with no job started and the mutex released: -EINVAL for an unusable
+ *   description, -ENODEV if the encoder is not up.
+ *
+ ****************************************************************************/
+
+int rk3576_vepu_start(FAR const struct rk3576_vepu510_frame_s *frm,
+                      FAR const struct rk3576_h264_cfg_s *cfg,
+                      FAR const struct rk3576_vepu510_slice_s *slice);
+
+/****************************************************************************
+ * Name: rk3576_vepu_finish
+ *
+ * Description:
+ *   The second half of rk3576_vepu_encode(): wait for the job
+ *   rk3576_vepu_start() started, read what it reported, and release the mutex
+ *   the start took.
+ *
+ *   frm and slice must be the same descriptions the start was given, because
+ *   what the completion needs -- the destination to invalidate in the cache
+ *   and the picture type to report feedback for -- is in them.
+ *
+ * Input Parameters:
+ *   frm    - the same source picture and destination the start was given
+ *   slice  - the same slice-level values the start was given
+ *   result - receives what the encoder reported; may be NULL
+ *
+ * Returned Value:
+ *   OK on success.  A negated errno on failure: -ETIMEDOUT if the encoder
+ *   never signalled completion, -EIO if it completed with an error bit set or
+ *   produced no bitstream.  Either way the mutex is released, and a failure
+ *   also drops the reconstruction reference so that the next picture has to
+ *   re-establish it.
+ *
+ ****************************************************************************/
+
+int rk3576_vepu_finish(FAR const struct rk3576_vepu510_frame_s *frm,
                        FAR const struct rk3576_vepu510_slice_s *slice,
                        FAR struct rk3576_vepu_result_s *result);
 

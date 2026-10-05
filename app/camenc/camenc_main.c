@@ -30,11 +30,13 @@
  *                 returns an annex-B H.264 access unit on its capture side
  *   camenc_stream turns those access units into fragmented MP4
  *
- * Each frame goes round a loop: take one from the camera, copy it into the
- * encoder's output buffer, queue that -- which encodes it, because the
- * encoder does its work inside the ioctl and not on a work queue -- then take
- * the bitstream from the encoder's capture side, mux it, and hand both
- * buffers back.
+ * Each frame goes round the loop twice.  One round takes a frame from the
+ * camera, copies it into the encoder's output buffer and queues it, which
+ * starts the hardware and returns; the next round waits for the encoder, takes
+ * the bitstream from its capture side, muxes it, and hands both containers
+ * back.  The wait is the loop's single poll(), so the sockets the server owns
+ * are serviced for as long as the encoder takes -- which is the point of the
+ * encode no longer happening inside the queue operation.
  *
  * Two things about this loop are not obvious and are the reason for most of
  * the comments below.
@@ -1816,47 +1818,64 @@ static int camenc_emit(void *arg, enum camenc_seg_e seg, const uint8_t *data,
 
 #define CAMENC_WAIT_MS 500
 
-/* The descriptors one wait can cover: the camera, plus whatever the server
- * adds to it.  See camenc_ws_fds().
+/* The descriptors one wait can cover: the camera or the encoder, the
+ * listening socket, and one per client.  See camenc_ws_fds().
+ *
+ * One short of this does not fail: it silently stops asking about the last
+ * client, which is a viewer that never receives anything and never goes away.
  */
 
-#define CAMENC_WAIT_FDS (CAMENC_WS_MAX_CLIENTS + 1)
+#define CAMENC_WAIT_FDS (CAMENC_WS_MAX_CLIENTS + 2)
 
 /* Wait for the next thing to do, and do the part of it the server owns.
  *
- * This is the only place the loop sleeps, and it sleeps on everything at
- * once: the camera's next frame and every socket the server has.  poll()
- * answers as soon as any of them is ready, so a connection or a command waits
- * for the frame in progress no longer than it takes to finish -- and, because
- * the camera is what usually wakes it, waiting costs nothing when nothing is
- * happening.
+ * This is the only place the loop sleeps, and it sleeps on everything that can
+ * wake it at once: whatever the frame in progress is waiting for, and every
+ * socket the server has.  What the frame is waiting for depends on where it
+ * is.  With no frame in flight that is the camera's next frame; with one it is
+ * the encoder, which is where the job that was started when the frame was
+ * queued reports back -- POLLIN when the bitstream is ready to be taken and
+ * POLLOUT when the input container has been returned.
  *
- * Returns true when the camera has a frame waiting to be taken.  A source
- * that is not the camera has its own pacing and is never waited for; for
- * those this only serves the sockets and returns false, which that path
- * ignores.
+ * The camera is deliberately not waited for while a frame is in flight.  The
+ * next frame cannot be taken until this one is out of the way, and in the
+ * modes that encode where the frame lies the buffer the camera would hand over
+ * is the one the encoder is reading.
+ *
+ * Returns true when the camera has a frame waiting to be taken, which is only
+ * ever true in the first of the two states.  A source that is not the camera
+ * has its own pacing and is never waited for; for those, and for a frame in
+ * flight, this only serves the sockets and returns false, which the paths that
+ * do not need a camera frame ignore.
  */
 
-static bool camenc_wait(int camfd)
+static bool camenc_wait(int camfd, int encfd, bool inflight)
 {
   struct pollfd fds[CAMENC_WAIT_FDS];
-  int ncam = 0;
+  int nwait = 0;
   int n;
   uint64_t mark;
 
-  if (camfd >= 0)
+  if (inflight)
+    {
+      fds[0].fd = encfd;
+      fds[0].events = POLLIN | POLLOUT;
+      fds[0].revents = 0;
+      nwait = 1;
+    }
+  else if (camfd >= 0)
     {
       fds[0].fd = camfd;
       fds[0].events = POLLIN;
       fds[0].revents = 0;
-      ncam = 1;
+      nwait = 1;
     }
 
-  n = ncam + camenc_ws_fds(&g_ws, &fds[ncam], CAMENC_WAIT_FDS - ncam);
+  n = nwait + camenc_ws_fds(&g_ws, &fds[nwait], CAMENC_WAIT_FDS - nwait);
 
   mark = camenc_now_us();
 
-  if (poll(fds, (nfds_t)n, ncam != 0 ? CAMENC_WAIT_MS : 0) < 0 &&
+  if (poll(fds, (nfds_t)n, nwait != 0 ? CAMENC_WAIT_MS : 0) < 0 &&
       errno != EINTR)
     {
       /* Nothing to say and nothing to do about it: the loop has no frame
@@ -1867,20 +1886,21 @@ static bool camenc_wait(int camfd)
     }
 
   /* The wait is accounted as the camera stage, which is what that stage has
-   * always measured -- the time the loop spends with nothing to do.  The
-   * dequeue that follows no longer waits, so the figure stays comparable
-   * with runs that measured a blocking one.
+   * always measured -- the time the loop spends with nothing to do.  It now
+   * covers the encode as well, because that wait is made here rather than
+   * inside the queue operation; the dequeue that follows no longer waits, so
+   * the figure stays comparable with runs that measured a blocking one.
    */
 
   camenc_stage_account(CAMENC_STAGE_CAMERA, mark);
 
   mark = camenc_now_us();
 
-  camenc_ws_ready(&g_ws, &fds[ncam], n - ncam);
+  camenc_ws_ready(&g_ws, &fds[nwait], n - nwait);
 
   camenc_stage_account(CAMENC_STAGE_SERVE, mark);
 
-  return ncam != 0 && (fds[0].revents & POLLIN) != 0;
+  return !inflight && nwait != 0 && (fds[0].revents & POLLIN) != 0;
 }
 
 /****************************************************************************
@@ -2818,6 +2838,14 @@ source_ready:
   /* The encoder                                                       */
   /* ---------------------------------------------------------------- */
 
+  /* Left blocking, which makes no difference and is worth a word.  This
+   * framework's dequeue does not wait whether the descriptor says it may or
+   * not: it answers EAGAIN when the queue is empty, so what makes the loop
+   * non-blocking is that it waits in poll() before asking, not the flag.  The
+   * camera's framework is the other way round, which is why that descriptor
+   * does need O_NONBLOCK.
+   */
+
   encfd = open(encdev, O_RDWR);
   if (encfd < 0)
     {
@@ -3082,10 +3110,14 @@ source_ready:
   /* Streams                                                           */
   /* ---------------------------------------------------------------- */
 
-  /* The encoder's capture side is started before its output side.  A frame
-   * queued on the output with nowhere for the bitstream to go would have to
-   * be held, and this driver encodes inside the queue operation, so there
-   * would be nothing to hold it with.
+  /* The encoder's capture side is started before its output side.  This is no
+   * longer forced by the driver -- a frame queued with nowhere for the
+   * bitstream to go is simply left queued until a capture buffer is offered,
+   * and starting the output first would work -- but it is the order the
+   * buffers are arranged in here: every capture buffer is offered before any
+   * picture is, so that the first frame has somewhere to go the moment it is
+   * taken.  The output side is started only after those buffers are in the
+   * queue, which is what this order puts it after.
    */
 
   ret = camenc_stream_on(encfd, &cap_type, "encoder output");
@@ -3150,9 +3182,23 @@ source_ready:
   /* ---------------------------------------------------------------- */
 
   /* The frame number is advanced by the body rather than by the loop, because
-   * a round that served the server and found no frame waiting has not used
-   * one and has to come back to the same number.
+   * a round that served the server and found nothing else to do has not used
+   * one.  It is advanced when a frame has been muxed and handed over, which is
+   * the only point at which the loop has consumed a frame number.
+   *
+   * The frame the loop is carrying lives out here for the same reason.  The
+   * encoder is given a picture and answers later, so a frame spans two rounds
+   * -- the one that queues it and the one that collects the bitstream -- and
+   * what has to survive between them is which camera buffer is out, so that it
+   * can be handed back as soon as the encoder has finished reading it, and the
+   * timestamp the frame arrived with, which is what its place in the stream's
+   * timeline is built from.  Everything else about a frame, the containers and
+   * the copy included, is born and dies within the round that uses it.
    */
+
+  bool inflight = false; /* a frame is with the encoder, not yet collected */
+  uint32_t camidx = 0;   /* the camera buffer that frame came from          */
+  uint64_t pts = 0;      /* when that frame arrived                         */
 
   for (; i < frames;)
     {
@@ -3161,9 +3207,7 @@ source_ready:
       struct v4l2_buffer ebuf;
       struct camenc_buf_s *out = NULL;
       struct camenc_buf_s *cap;
-      uint64_t pts;
       uint64_t mark;
-      uint32_t camidx;
       bool camera_ready;
 
       /* A change of mode, asked for by the page and recorded by the server's
@@ -3176,11 +3220,16 @@ source_ready:
        * old mode out of the new stream -- they would be a different size, and
        * the muxer has already been told what size to write.
        *
+       * It is also only done with no frame in flight.  A frame that is with
+       * the encoder belongs to the stream being replaced, and the request can
+       * wait the few milliseconds for it to come back rather than abandoning
+       * it; the flag is left set until then, so nothing is lost.
+       *
        * A request for the mode already in force is not a change and does not
        * interrupt anything; the menu sends one whenever it is redrawn.
        */
 
-      if (g_ui.mode_pending)
+      if (!inflight && g_ui.mode_pending)
         {
           int32_t want = g_ui.want_mode;
 
@@ -3213,72 +3262,71 @@ source_ready:
             }
         }
 
-      /* Wait for something to do, which is a frame or a client, and serve
-       * whoever asked while waiting.  This is the loop's only sleep, and
-       * everything below runs because it returned.
+      /* Wait for something to do, which is a frame, a bitstream or a client,
+       * and serve whoever asked while waiting.  This is the loop's only sleep,
+       * and everything below runs because it returned.
        */
 
-      camera_ready = camenc_wait(camfd);
+      camera_ready = camenc_wait(camfd, encfd, inflight);
 
-      /* A frame: from the camera, from the file, or drawn here.  Either way
-       * what comes out is `camidx` and a buffer in g_cam[] holding one NV12
-       * picture, which is all the rest of the loop knows about any of them.
-       *
-       * The camera is the one source that may have nothing to give, since the
-       * wait is answered before the dequeue is asked and the two can
-       * disagree.  A dequeue with nothing there answers EAGAIN, which is not
-       * a failure.
-       */
-
-      mark = camenc_now_us();
-
-      if (g_src_kind == CAMENC_SRC_PROBE)
+      if (inflight)
         {
-          camidx = (uint32_t)(i % (int)nbuf_cam);
-          camenc_probe_fill(&g_probe, g_cam[camidx].start, enc_width, height);
-        }
-      else if (g_src_kind == CAMENC_SRC_FILE)
-        {
-          camidx = (uint32_t)(i % (int)nbuf_cam);
+          /* The finishing half of the frame the previous round started.
+           *
+           * Nothing here blocks on the encoder: the wait above is what slept,
+           * and what woke the loop when one of these containers was ready.
+           * -EAGAIN still means "not yet", as it does for the camera, because
+           * a wake-up can be for one container and not the other -- the
+           * driver hands the input container back before the bitstream, and
+           * those are two separate wake-ups.
+           *
+           * The input container is taken first and the camera's buffer goes
+           * back with it.  That is the earliest moment the loop has finished
+           * reading the frame, and in the modes that encode where the frame
+           * lies that buffer is the encoder's source, so the capture driver
+           * cannot be given it back a moment sooner than this.
+           */
 
-          if (fread(g_cam[camidx].start, 1, g_src_frame, g_src_file) !=
-              g_src_frame)
+          mark = camenc_now_us();
+
+          ret = camenc_dequeue(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT, &obuf,
+                               "encoder input");
+          if (ret == 0)
             {
-              /* Running out of file ends the run, unless -l asked for the
-               * file to be started again.  The defect being looked for is
-               * intermittent, so how many frames it is given is the whole of
-               * how likely it is to appear at all, and repeating a short
-               * file is the cheapest way to give it a long run.
-               */
-
-              if (!loop_source || fseek(g_src_file, 0, SEEK_SET) != 0 ||
-                  fread(g_cam[camidx].start, 1, g_src_frame, g_src_file) !=
-                      g_src_frame)
+              if (obuf.index != (uint32_t)(i % (int)nbuf_out))
                 {
-                  printf("camenc: the source file ended after %d frames\n", i);
+                  printf("camenc: encoder returned input buffer %" PRIu32
+                         " where %d was queued\n",
+                         obuf.index, i % (int)nbuf_out);
+                }
+
+              if (camfd >= 0 && camenc_queue(camfd, &g_cam[camidx], "camera",
+                                             (int)camidx) < 0)
+                {
                   ret = -EIO;
                   break;
                 }
-
-              printf("camenc: the source file started again at frame %d\n", i);
             }
-        }
-      else
-        {
-          if (!camera_ready)
+          else if (ret != -EAGAIN)
             {
-              /* Nothing to take.  Serving the server was the whole of what
-               * this round had to do, and the frame number is not advanced,
-               * so the next round waits for the same frame.
-               */
-
-              continue;
+              break;
             }
 
-          ret = camenc_dequeue(camfd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &cbuf,
-                               "camera");
+          /* The bitstream. */
+
+          ret = camenc_dequeue(encfd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &ebuf,
+                               "encoder output");
+
+          camenc_stage_account(CAMENC_STAGE_DRAIN, mark);
+
           if (ret == -EAGAIN)
             {
+              /* The input container came back before the frame did, which is
+               * the order the driver hands them over in.  The round ends with
+               * the camera's buffer already returned and the frame still to
+               * collect.
+               */
+
               continue;
             }
 
@@ -3287,318 +3335,351 @@ source_ready:
               break;
             }
 
-          camidx = cbuf.index;
-        }
+          if (ebuf.index >= nbuf_cap)
+            {
+              printf("camenc: encoder returned buffer %" PRIu32 "\n",
+                     ebuf.index);
+              ret = -EINVAL;
+              break;
+            }
 
-      camenc_stage_account(CAMENC_STAGE_CAMERA, mark);
+          cap = &g_cap[ebuf.index];
 
-      if (camidx >= nbuf_cam || g_cam[camidx].start == NULL)
-        {
-          printf("camenc: camera returned unusable buffer %" PRIu32 "\n",
-                 camidx);
-          ret = -EINVAL;
-          break;
-        }
-
-      /* The frame's timestamp: the camera's clock when it arrived, or a made
-       * one when the frames come from a file.
-       */
-
-      if (g_src_kind != CAMENC_SRC_CAMERA)
-        {
-          /* The camera's frames arrive on a clock and the muxer wants the
-           * spacing that came with them.  A file has no clock, so one is
-           * made from the rate the frames are handed over at, and the frame
-           * is held back until its moment: a loop that ran the encoder back
-           * to back would be a different timing environment from the one
-           * being investigated, and timing is not a thing this source can
-           * afford to change quietly.  -r 0 asks for that anyway, and for a
-           * much shorter run.
-           *
-           * The timestamp is also what the stream's timeline is built from,
-           * so it is taken from the frame's place in the file and not from
-           * when it was read -- the second would put the encoder's own
-           * timing into the file's duration.
+          /* A buffer with nothing in it is the marker the flush leaves behind,
+           * not a frame; there is nothing to mux.  It is also what a job that
+           * failed comes back as, there being no error return left for the
+           * queue operation to carry, and it is counted as a drop like any
+           * other buffer with no frame in it.
            */
 
-          if (file_rate > 0)
+          if ((ebuf.flags & V4L2_BUF_FLAG_LAST) != 0 && ebuf.bytesused == 0)
             {
-              uint64_t at = camenc_now_us();
-
-              if (file_frame == 0)
+              if (camenc_queue(encfd, cap, "encoder output", (int)ebuf.index) <
+                  0)
                 {
-                  file_t0 = at;
+                  ret = -EIO;
+                  break;
+                }
+
+              break;
+            }
+
+          if (ebuf.bytesused == 0 || ebuf.bytesused > max_au)
+            {
+              printf("camenc: encoder returned %" PRIu32 " bytes\n",
+                     ebuf.bytesused);
+              dropped++;
+            }
+          else
+            {
+              /* Whether the encoder may be started at this frame, which is
+               * the encoder's answer to give rather than something read out
+               * of the bytes: a picture does not say whether anything after
+               * it predicts from it.  It arrives as a buffer flag for exactly
+               * this reason.
+               *
+               * The distinction decides where a fragment may begin, so
+               * getting it wrong is not cosmetic.  A fragment a player cannot
+               * start on is a fragment it decodes to noise, and the muxer
+               * cannot tell after the fact -- hence taking it from the
+               * source.
+               */
+
+              bool key = (ebuf.flags & V4L2_BUF_FLAG_KEYFRAME) != 0;
+
+              mark = camenc_now_us();
+
+              ret = camenc_stream_write(&st, cap->start, ebuf.bytesused, pts,
+                                        key);
+              if (ret < 0)
+                {
+                  printf("camenc: muxing frame %d failed: %d\n", i, ret);
+                  break;
+                }
+
+              camenc_stage_account(CAMENC_STAGE_MUX, mark);
+
+              /* What the group length is buying on this content.
+               *
+               * Counted here rather than assumed from the configuration: the
+               * claim a P picture makes is that it costs a fraction of an
+               * IDR, and the only place that can be checked is a stream that
+               * was encoded from something that moved.  A P as large as its
+               * IDR means prediction is not being used, whatever the
+               * registers say.
+               */
+
+              if (key)
+                {
+                  win_idr++;
+                  win_idr_bytes += ebuf.bytesused;
                 }
               else
                 {
-                  uint64_t due = file_t0 + (uint64_t)file_frame * 1000000u /
-                                               (uint32_t)file_rate;
+                  win_p++;
+                  win_p_bytes += ebuf.bytesused;
+                }
 
-                  if (due > at)
+              /* The page has to name the stream's codec before a browser will
+               * accept the data, and the codec is only known once a parameter
+               * set has been seen -- which is the first frame.
+               */
+
+              if (serving && !codec_set)
+                {
+                  char codec[16];
+
+                  if (camenc_stream_codec_string(&st, codec, sizeof(codec)) >
+                      0)
                     {
-                      usleep((useconds_t)(due - at));
+                      camenc_ws_set_codec(&g_ws, codec);
+                      codec_set = true;
+                      printf("camenc: stream codec is %s\n", codec);
                     }
                 }
+
+              encoded++;
             }
 
-          pts = (uint64_t)file_frame * 1000000u /
-                (uint32_t)(file_rate > 0 ? file_rate : (int)cur->fps);
-          file_frame++;
-        }
-      else
-        {
-          /* The time the frame arrived, measured from the first frame rather
-           * than from the epoch or from the start of the loop.
-           *
-           * It is taken here rather than derived from the frame number, so
-           * that the stream's timeline is the one the frames actually
-           * arrived on: a camera that stutters produces a stream that
-           * stutters in the same places instead of one that runs at the
-           * wrong speed throughout.
-           *
-           * The origin matters as much as the spacing.  gettimeofday()
-           * returns seconds since 1970 here, so an absolute timestamp puts
-           * the stream's first sample a hundred and fifty years in, and a
-           * player then reports a start time and a duration to match.
-           * Measuring from the first frame makes the stream begin at zero,
-           * which is what a live stream should look like and what a player
-           * can seek within.
+          /* The capture container goes back, so the pool the encoder draws
+           * from stays as deep as the application keeps it.  This is not what
+           * gates the next frame -- the encoder runs one job at a time by
+           * itself -- but a container it is not given is one it cannot fill.
            */
 
-          now = camenc_now_us();
-
-          if (!have_prev)
-            {
-              media_t0 = now;
-            }
-
-          pts = now - media_t0;
-        }
-
-      /* The encoder's input buffer for this frame, taken round-robin.  With
-       * as many as the camera has, the one just freed is the one used next,
-       * so a frame is never copied over one still being encoded.
-       *
-       * When the two devices agree on the layout there is nothing to copy
-       * and no buffer of ours to copy into: the frame is the camera's own
-       * buffer, which is still ours -- it is handed back to the camera at the
-       * end of this pass -- and the encoder is given its address instead.
-       * See g_zerocopy above the loop for what makes them agree.
-       */
-
-      if (!g_zerocopy)
-        {
-          out = &g_out[i % (int)nbuf_out];
-
-          mark = camenc_now_us();
-
-          out->desc.bytesused = (uint32_t)camenc_copy_frame(
-              out->start, g_cam[camidx].start, enc_stride, enc_vstride,
-              cam_stride, enc_width, height);
-
-          camenc_stage_account(CAMENC_STAGE_COPY, mark);
-        }
-
-      /* Queueing this encodes it, and the encode is waited for inside the
-       * queue operation -- which is why this is the stage that decides the
-       * frame rate rather than the one after it.
-       */
-
-      mark = camenc_now_us();
-
-      if (g_zerocopy)
-        {
-          ret = camenc_queue_import(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT,
-                                    g_cam[camidx].start, i % (int)nbuf_out,
-                                    "encoder input");
-        }
-      else
-        {
-          ret = camenc_queue(encfd, out, "encoder input", i % (int)nbuf_out);
-        }
-
-      if (ret < 0)
-        {
-          ret = -EIO;
-          break;
-        }
-
-      camenc_stage_account(CAMENC_STAGE_ENCODE, mark);
-
-      /* Take the input buffer back.
-       *
-       * This is not bookkeeping.  A buffer the encoder has finished with is
-       * marked done and left for the application to dequeue, and only the
-       * dequeue returns it to the pool -- so a loop that queues input
-       * buffers and never takes them back runs out of them after as many
-       * frames as it queued, and the next queue operation fails with
-       * EAGAIN.  Every buffer this loop takes out is put back, on both
-       * sides; this is the one that is easy to leave out, because the
-       * encoder never hands it to the application as a result.
-       *
-       * The encode happens inside the queue operation above, so the buffer
-       * is already done by the time this runs and comes straight back.
-       */
-
-      mark = camenc_now_us();
-
-      ret = camenc_dequeue(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT, &obuf,
-                           "encoder input");
-      if (ret < 0)
-        {
-          break;
-        }
-
-      if (obuf.index != (uint32_t)(i % (int)nbuf_out))
-        {
-          printf("camenc: encoder returned input buffer %" PRIu32
-                 " where %d was queued\n",
-                 obuf.index, i % (int)nbuf_out);
-        }
-
-      /* The camera's buffer goes back here, as soon as this loop has finished
-       * reading it.
-       *
-       * The encode happens inside the queue operation above, so the frame has
-       * been read by the time the encoder hands its input container back.
-       * That matters more than it looks: while the frame is encoded where it
-       * lies -- which is what g_zerocopy makes the encoder do -- this buffer
-       * *is* the encoder's source, and the capture driver cannot write
-       * another frame into it until it comes back.  Holding it holds the
-       * camera off.
-       *
-       * It used to be returned at the end of the frame, which kept it across
-       * the encode, the mux and the emit: most of a frame period, with the
-       * capture driver a buffer short for all of it.  A frame that is copied
-       * rather than encoded in place is free even earlier than this, but one
-       * rule for both is worth more than the difference -- and the modes that
-       * copy are the ones with the longer frame period.
-       */
-
-      if (camfd >= 0 &&
-          camenc_queue(camfd, &g_cam[camidx], "camera", (int)camidx) < 0)
-        {
-          ret = -EIO;
-          break;
-        }
-
-      /* The bitstream. */
-
-      ret = camenc_dequeue(encfd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &ebuf,
-                           "encoder output");
-      if (ret < 0)
-        {
-          break;
-        }
-
-      if (ebuf.index >= nbuf_cap)
-        {
-          printf("camenc: encoder returned buffer %" PRIu32 "\n", ebuf.index);
-          ret = -EINVAL;
-          break;
-        }
-
-      camenc_stage_account(CAMENC_STAGE_DRAIN, mark);
-
-      cap = &g_cap[ebuf.index];
-
-      /* A buffer with nothing in it is the marker the flush leaves behind,
-       * not a frame; there is nothing to mux.
-       */
-
-      if ((ebuf.flags & V4L2_BUF_FLAG_LAST) != 0 && ebuf.bytesused == 0)
-        {
           if (camenc_queue(encfd, cap, "encoder output", (int)ebuf.index) < 0)
             {
               ret = -EIO;
               break;
             }
 
-          break;
-        }
-
-      if (ebuf.bytesused == 0 || ebuf.bytesused > max_au)
-        {
-          printf("camenc: encoder returned %" PRIu32 " bytes\n",
-                 ebuf.bytesused);
-          dropped++;
+          inflight = false;
         }
       else
         {
-          /* Whether the encoder may be started at this frame, which is the
-           * encoder's answer to give rather than something read out of the
-           * bytes: a picture does not say whether anything after it predicts
-           * from it.  It arrives as a buffer flag for exactly this reason.
+          /* A frame: from the camera, from the file, or drawn here.  Either
+           * way what comes out is `camidx` and a buffer in g_cam[] holding one
+           * NV12 picture, which is all the rest of the loop knows about any of
+           * them.
            *
-           * The distinction decides where a fragment may begin, so getting it
-           * wrong is not cosmetic.  A fragment a player cannot start on is a
-           * fragment it decodes to noise, and the muxer cannot tell after the
-           * fact -- hence taking it from the source.
+           * The camera is the one source that may have nothing to give, since
+           * the wait is answered before the dequeue is asked and the two can
+           * disagree.  A dequeue with nothing there answers EAGAIN, which is
+           * not a failure.
            */
-
-          bool key = (ebuf.flags & V4L2_BUF_FLAG_KEYFRAME) != 0;
 
           mark = camenc_now_us();
 
-          ret = camenc_stream_write(&st, cap->start, ebuf.bytesused, pts, key);
-          if (ret < 0)
+          if (g_src_kind == CAMENC_SRC_PROBE)
             {
-              printf("camenc: muxing frame %d failed: %d\n", i, ret);
-              break;
+              camidx = (uint32_t)(i % (int)nbuf_cam);
+              camenc_probe_fill(&g_probe, g_cam[camidx].start, enc_width,
+                                height);
             }
-
-          camenc_stage_account(CAMENC_STAGE_MUX, mark);
-
-          /* What the group length is buying on this content.
-           *
-           * Counted here rather than assumed from the configuration: the
-           * claim a P picture makes is that it costs a fraction of an IDR,
-           * and the only place that can be checked is a stream that was
-           * encoded from something that moved.  A P as large as its IDR
-           * means prediction is not being used, whatever the registers say.
-           */
-
-          if (key)
+          else if (g_src_kind == CAMENC_SRC_FILE)
             {
-              win_idr++;
-              win_idr_bytes += ebuf.bytesused;
+              camidx = (uint32_t)(i % (int)nbuf_cam);
+
+              if (fread(g_cam[camidx].start, 1, g_src_frame, g_src_file) !=
+                  g_src_frame)
+                {
+                  /* Running out of file ends the run, unless -l asked for the
+                   * file to be started again.  The defect being looked for is
+                   * intermittent, so how many frames it is given is the whole
+                   * of how likely it is to appear at all, and repeating a
+                   * short file is the cheapest way to give it a long run.
+                   */
+
+                  if (!loop_source || fseek(g_src_file, 0, SEEK_SET) != 0 ||
+                      fread(g_cam[camidx].start, 1, g_src_frame, g_src_file) !=
+                          g_src_frame)
+                    {
+                      printf("camenc: the source file ended after %d frames\n",
+                             i);
+                      ret = -EIO;
+                      break;
+                    }
+
+                  printf("camenc: the source file started again at frame %d\n",
+                         i);
+                }
             }
           else
             {
-              win_p++;
-              win_p_bytes += ebuf.bytesused;
+              if (!camera_ready)
+                {
+                  /* Nothing to take.  Serving the server was the whole of what
+                   * this round had to do, and the frame number is not
+                   * advanced, so the next round waits for the same frame.
+                   */
+
+                  continue;
+                }
+
+              ret = camenc_dequeue(camfd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &cbuf,
+                                   "camera");
+              if (ret == -EAGAIN)
+                {
+                  continue;
+                }
+
+              if (ret < 0)
+                {
+                  break;
+                }
+
+              camidx = cbuf.index;
             }
 
-          /* The page has to name the stream's codec before a browser will
-           * accept the data, and the codec is only known once a parameter
-           * set has been seen -- which is the first frame.
+          camenc_stage_account(CAMENC_STAGE_CAMERA, mark);
+
+          if (camidx >= nbuf_cam || g_cam[camidx].start == NULL)
+            {
+              printf("camenc: camera returned unusable buffer %" PRIu32 "\n",
+                     camidx);
+              ret = -EINVAL;
+              break;
+            }
+
+          /* The frame's timestamp: the camera's clock when it arrived, or a
+           * made one when the frames come from a file.
            */
 
-          if (serving && !codec_set)
+          if (g_src_kind != CAMENC_SRC_CAMERA)
             {
-              char codec[16];
+              /* The camera's frames arrive on a clock and the muxer wants the
+               * spacing that came with them.  A file has no clock, so one is
+               * made from the rate the frames are handed over at, and the
+               * frame is held back until its moment: a loop that ran the
+               * encoder back to back would be a different timing environment
+               * from the one being investigated, and timing is not a thing
+               * this source can afford to change quietly.  -r 0 asks for that
+               * anyway, and for a much shorter run.
+               *
+               * The timestamp is also what the stream's timeline is built
+               * from, so it is taken from the frame's place in the file and
+               * not from when it was read -- the second would put the
+               * encoder's own timing into the file's duration.
+               */
 
-              if (camenc_stream_codec_string(&st, codec, sizeof(codec)) > 0)
+              if (file_rate > 0)
                 {
-                  camenc_ws_set_codec(&g_ws, codec);
-                  codec_set = true;
-                  printf("camenc: stream codec is %s\n", codec);
+                  uint64_t at = camenc_now_us();
+
+                  if (file_frame == 0)
+                    {
+                      file_t0 = at;
+                    }
+                  else
+                    {
+                      uint64_t due = file_t0 + (uint64_t)file_frame *
+                                                   1000000u /
+                                                   (uint32_t)file_rate;
+
+                      if (due > at)
+                        {
+                          usleep((useconds_t)(due - at));
+                        }
+                    }
                 }
+
+              pts = (uint64_t)file_frame * 1000000u /
+                    (uint32_t)(file_rate > 0 ? file_rate : (int)cur->fps);
+              file_frame++;
+            }
+          else
+            {
+              /* The time the frame arrived, measured from the first frame
+               * rather than from the epoch or from the start of the loop.
+               *
+               * It is taken here rather than derived from the frame number, so
+               * that the stream's timeline is the one the frames actually
+               * arrived on: a camera that stutters produces a stream that
+               * stutters in the same places instead of one that runs at the
+               * wrong speed throughout.
+               *
+               * The origin matters as much as the spacing.  gettimeofday()
+               * returns seconds since 1970 here, so an absolute timestamp puts
+               * the stream's first sample a hundred and fifty years in, and a
+               * player then reports a start time and a duration to match.
+               * Measuring from the first frame makes the stream begin at zero,
+               * which is what a live stream should look like and what a player
+               * can seek within.
+               */
+
+              now = camenc_now_us();
+
+              if (!have_prev)
+                {
+                  media_t0 = now;
+                }
+
+              pts = now - media_t0;
             }
 
-          encoded++;
-        }
+          /* The encoder's input buffer for this frame, taken round-robin. With
+           * as many as the camera has, the one just freed is the one used
+           * next, so a frame is never copied over one still being encoded.
+           *
+           * When the two devices agree on the layout there is nothing to copy
+           * and no buffer of ours to copy into: the frame is the camera's own
+           * buffer, which is still ours -- it is handed back to the camera at
+           * the end of this pass -- and the encoder is given its address
+           * instead. See g_zerocopy above the loop for what makes them agree.
+           */
 
-      /* The encoder's output buffer goes back.  Holding it is what stops the
-       * next frame: the encoder will not start another job until this one has
-       * been dequeued.  The camera's buffer went back earlier, once the loop
-       * had finished reading it -- see above.
-       */
+          if (!g_zerocopy)
+            {
+              out = &g_out[i % (int)nbuf_out];
 
-      if (camenc_queue(encfd, cap, "encoder output", (int)ebuf.index) < 0)
-        {
-          ret = -EIO;
-          break;
+              mark = camenc_now_us();
+
+              out->desc.bytesused = (uint32_t)camenc_copy_frame(
+                  out->start, g_cam[camidx].start, enc_stride, enc_vstride,
+                  cam_stride, enc_width, height);
+
+              camenc_stage_account(CAMENC_STAGE_COPY, mark);
+            }
+
+          /* Queueing this starts the job.  It returns as soon as the hardware
+           * has the picture, so this stage measures the submission and no
+           * longer the encode: the encoder's time is now the wait at the top
+           * of the loop, which is where the loop is asleep for it.
+           */
+
+          mark = camenc_now_us();
+
+          if (g_zerocopy)
+            {
+              ret = camenc_queue_import(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT,
+                                        g_cam[camidx].start, i % (int)nbuf_out,
+                                        "encoder input");
+            }
+          else
+            {
+              ret =
+                  camenc_queue(encfd, out, "encoder input", i % (int)nbuf_out);
+            }
+
+          if (ret < 0)
+            {
+              ret = -EIO;
+              break;
+            }
+
+          camenc_stage_account(CAMENC_STAGE_ENCODE, mark);
+
+          /* The frame is with the encoder now, and this round is over.  The
+           * next one waits for the job to report back, which is the round
+           * after this one or later still, and takes the bitstream from there.
+           * Not taking the camera's next frame until then is what keeps one
+           * frame in the encoder rather than a queue of them, and in the modes
+           * that encode in place it is what keeps the camera from writing over
+           * the source.
+           */
+
+          inflight = true;
+          continue;
         }
 
       have_prev = true;
@@ -3862,8 +3943,11 @@ source_ready:
   /* Flush                                                             */
   /* ---------------------------------------------------------------- */
 
-  /* Nothing is buffered, so this ends the stream on the next buffer handed
-   * back -- which is the one already in flight.
+  /* No frame is in flight and none is queued: the loop only leaves one behind
+   * when it is ending for some other reason, and those paths have already gone
+   * their own way.  So the flush ends the stream on a buffer of its own -- an
+   * empty one carrying the marker -- published by the flush itself and
+   * collected by the dequeue below.
    */
 
   {

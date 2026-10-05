@@ -23,13 +23,26 @@
 /****************************************************************************
  * RK3576 VEPU510 as a V4L2 memory-to-memory video encoder.
  *
- * A job is encoded synchronously, inside the ioctl that queued it.  Nothing
- * needs a work queue: rk3576_vepu_encode() already waits for the hardware's
- * interrupt, and the framework calls output_available() from codec_qbuf(),
- * which runs in task context.  Waiting there for the few milliseconds a
- * frame takes is simpler than handing the work to a worker and having to
- * track a job across two contexts, and the hardware can only run one job at
- * a time in any case.
+ * A job is started by the ioctl that queued it and finished by a work queue
+ * item when the interrupt arrives.  It used to be encoded synchronously,
+ * inside that ioctl, and the reason it is not any more is the application:
+ * the wait is about 24 ms on a 1296x960 picture, and a program that is also
+ * serving its sockets cannot spend that inside a queue operation.  The queue
+ * operation now returns as soon as the encoder is running, and the frame is
+ * published -- codec_capture_put_buf(), which is what moves the container
+ * past vbuf_next and wakes a poller -- from the completion instead.
+ *
+ * That moves the job across two contexts, which is the whole of the cost: the
+ * containers and the picture description have to live in the per-open state
+ * between the halves, and the two contexts have to be kept out of each
+ * other's way (priv->lock).  The split in rk3576_vepu.c between
+ * rk3576_vepu_start() and rk3576_vepu_finish() is what makes the halves
+ * possible; the hardware's own lock is held between them, so one job is in
+ * the encoder at a time and the completion is what lets the next one in.
+ *
+ * Waiting for the bitstream is therefore the application's, and the device's
+ * poll() is how it waits -- it is not a queue operation that blocks until a
+ * frame is ready.
  *
  * Two container states are worth being precise about, because the framework
  * and this driver have to agree on them:
@@ -57,6 +70,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -70,7 +84,9 @@
 #include <nuttx/arch.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/lib/lib.h>
+#include <nuttx/mutex.h>
 #include <nuttx/video/v4l2_m2m.h>
+#include <nuttx/wqueue.h>
 
 #include "rk3576_dma_alloc.h"
 #include "rk3576_vepu.h"
@@ -98,8 +114,9 @@
 #define RK3576_VEPU_CACHE_LINE 64u
 
 /* How many buffers each side offers.  Four is enough for an application to
- * keep the encoder fed while it drains the other side, which is all the
- * queue depth is for when the encoder runs synchronously.
+ * keep the encoder fed while it drains the other side, and a queue this deep
+ * is now what lets frames be queued ahead of the one being encoded rather
+ * than one at a time.
  */
 
 #define RK3576_VEPU_BUF_CNT 4
@@ -208,8 +225,38 @@ struct rk3576_vepu_codec_priv_s
 
   uint32_t frame_index; /* counts frames for idr_pic_id          */
   bool header_sent;     /* has SPS+PPS gone out this stream      */
-  bool output_pending;  /* a frame is queued and not yet encoded */
   bool eos_pending;     /* flush was asked for                   */
+
+  /* The job that is with the hardware, while it is there.
+   *
+   * An encode is now started by the queue operation that feeds it and
+   * finished later, when the interrupt has been taken, so everything the
+   * second half needs has to survive the first half's stack frame.  That is
+   * the two containers the job was given -- they must not be looked up twice,
+   * and the frame must not be published before the encoder has finished
+   * writing it -- and the picture and slice descriptions the finish call
+   * takes, which are copied here rather than kept alive on a caller's stack.
+   *
+   * job_eos is the flush decision as it stood when the job was started.  A
+   * flush ends the stream on the last frame that was queued when it arrived,
+   * so which frame that is has to be recorded at the start; asking at
+   * completion time would answer for whatever was queued by then instead.
+   *
+   * lock is what keeps two contexts out of this state at once.  The queue
+   * operation that starts a job and the work item that finishes it are
+   * different threads, and both have to look at the pending counters and
+   * take containers from the framework's queues.
+   */
+
+  struct work_s work; /* the completion, queued when the job starts */
+  mutex_t lock;
+  bool job_running; /* the hardware has this job and has not finished it */
+  bool job_eos;     /* this job carries the end of the stream */
+  FAR struct v4l2_buffer *job_cbuf;
+  FAR struct v4l2_buffer *job_obuf;
+  struct rk3576_vepu510_frame_s job_frm;
+  struct rk3576_vepu510_slice_s job_slice;
+  struct rk3576_vepu_result_s job_result;
 };
 
 /****************************************************************************
@@ -250,6 +297,12 @@ static int vepu_s_ext_ctrls(FAR void *priv,
 static int vepu_encoder_cmd(FAR void *priv, FAR struct v4l2_encoder_cmd *cmd);
 static int vepu_output_try_memory(FAR void *priv, enum v4l2_memory mem);
 static int vepu_capture_try_memory(FAR void *priv, enum v4l2_memory mem);
+
+/* The completion of a job, which the start half queues as work -- see
+ * vepu_service_locked() for why it is separate.
+ */
+
+static void vepu_job_work(FAR void *arg);
 
 /****************************************************************************
  * Private Data
@@ -582,32 +635,81 @@ static bool vepu_check_buf(FAR struct rk3576_vepu_codec_priv_s *state,
 }
 
 /****************************************************************************
- * Name: vepu_service
+ * Name: vepu_flag_eos
  *
  * Description:
- *   Encode one queued frame, if there is one and somewhere to put it.
+ *   Mark a capture buffer as the end of the stream, and announce it.
+ *
+ *   A flush is a protocol marker rather than a picture, so a buffer that
+ *   carries the marker and nothing else has to say it carries nothing: its
+ *   length is cleared, because leaving the field alone would leave whatever
+ *   the container's last use wrote there, and the application would take it
+ *   for a frame of that length.  A buffer that also holds the stream's last
+ *   frame keeps its length and takes the marker on top of the frame's own
+ *   flag.
+ *
+ *   Both the flag and the event are needed.  The flag is what tells a
+ *   consumer that reads buffers that this is the end of them, and the event
+ *   is what tells one that is waiting on the descriptor rather than counting.
+ *
+ ****************************************************************************/
+
+static void vepu_flag_eos(FAR struct rk3576_vepu_codec_priv_s *priv,
+                          FAR struct v4l2_buffer *cbuf, bool encoded)
+{
+  struct v4l2_event evt;
+
+  if (encoded)
+    {
+      cbuf->flags |= V4L2_BUF_FLAG_LAST;
+    }
+  else
+    {
+      cbuf->bytesused = 0;
+      cbuf->flags = V4L2_BUF_FLAG_LAST;
+    }
+
+  priv->eos_pending = false;
+
+  memset(&evt, 0, sizeof(evt));
+  evt.type = V4L2_EVENT_EOS;
+  codec_queue_event(priv->cookie, &evt);
+}
+
+/****************************************************************************
+ * Name: vepu_service_locked
+ *
+ * Description:
+ *   Start one queued frame, if there is one and somewhere to put it.
  *
  *   Called from whichever of the two sides has just been given a buffer,
  *   because either can be the last thing the application does before the
  *   encoder can proceed: frames without capture buffers would otherwise sit
  *   pending forever, and so would capture buffers behind a missing frame.
  *
- *   Nothing is dequeued or published until the frame has been encoded, so a
- *   failure here leaves both queues as they were and the application's next
+ *   This is the starting half of a job and returns as soon as the hardware
+ *   has been given one.  The wait, and everything that publishes or discards
+ *   the result, belongs to vepu_job_work(), which is queued here as work and
+ *   runs once the interrupt has been taken.  The reason for the split is the
+ *   caller: this runs inside the queue operation the application is blocked
+ *   on, and the ~24 ms a picture takes is precisely the time that
+ *   application needed for everything else it does.
+ *
+ *   Nothing is dequeued or published by this half, so a failure before the
+ *   job starts leaves both queues as they were and the application's next
  *   queue operation retries the same frame.
+ *
+ *   Called with priv->lock held -- see vepu_service().
  *
  ****************************************************************************/
 
-static int vepu_service(FAR struct rk3576_vepu_codec_priv_s *priv)
+static int vepu_service_locked(FAR struct rk3576_vepu_codec_priv_s *priv)
 {
   FAR struct v4l2_buffer *obuf;
   FAR struct v4l2_buffer *cbuf;
   struct rk3576_vepu510_frame_s frm;
   struct rk3576_vepu510_slice_s slice;
-  struct rk3576_vepu_result_s result;
-  uint32_t total = 0;
   bool idr;
-  bool encoded = false;
   int ret;
 
   if (!priv->output_streaming || !priv->capture_streaming)
@@ -615,7 +717,15 @@ static int vepu_service(FAR struct rk3576_vepu_codec_priv_s *priv)
       return OK;
     }
 
-  if (!priv->output_pending && !priv->eos_pending)
+  /* One job at a time, which is the hardware's rule rather than this
+   * driver's.  A frame that arrives while one is running is left where it
+   * is, in the framework's queue, and the completion starts it when the
+   * encoder is free again -- so a refusal here is the same back pressure a
+   * capture buffer that has not been returned yet applies, and not a lost
+   * frame.
+   */
+
+  if (priv->job_running)
     {
       return OK;
     }
@@ -637,194 +747,394 @@ static int vepu_service(FAR struct rk3576_vepu_codec_priv_s *priv)
       return -EINVAL;
     }
 
-  if (priv->output_pending)
+  /* A queued frame is what there is to encode, and the framework's output
+   * queue is what says whether there is one.  A flag of this driver's own
+   * kept in step with that queue is not the same question: it can say "one
+   * more" and no more than that, so two frames queued before the first has
+   * been started read as no frame at all, and the second is left behind.
+   */
+
+  obuf = codec_output_get_buf(priv->cookie);
+
+  if (obuf == NULL)
     {
-      obuf = codec_output_get_buf(priv->cookie);
-      if (obuf == NULL)
-        {
-          return OK;
-        }
-
-      if (!vepu_check_buf(priv, "output", obuf, priv->src_size))
-        {
-          return -EINVAL;
-        }
-
-      memset(&frm, 0, sizeof(frm));
-      frm.src_fmt = RK3576_VEPU510_FMT_YUV420SP;
-      frm.rbuv_swap =
-          0; /* NV12: the chroma pairs are already in Cb,Cr order */
-      frm.width = priv->width;
-      frm.height = priv->height;
-      frm.y_stride = priv->y_stride;
-      frm.v_stride = priv->v_stride;
-      frm.src_phys = (uint32_t)(uintptr_t)obuf->m.vaddr;
-      frm.src_size = priv->src_size;
-      frm.dst_phys = (uint32_t)(uintptr_t)priv->staging;
-      frm.dst_size = priv->dst_size;
-      frm.dst_offset = 0;
-
-      /* Where this picture sits in its group of pictures.
+      /* Nothing to encode.  A flush that has nothing left in front of it ends
+       * the stream here, on an empty buffer: there is no frame to carry the
+       * marker, so the buffer itself becomes it.
        *
-       * An IDR is asked for at the start of every group, after a failure
-       * that broke the reference chain (force_idr), and whenever the group
-       * is a single picture.  The three conditions are the same decision, so
-       * they are made once here rather than re-derived at each use below.
+       * With no flush pending there is nothing to do at all, and the capture
+       * buffer must be left where it is.  Handing it back would count as
+       * publishing it -- video_framebuff_capture_done() moves the queue's
+       * cursor past it -- and the frame the driver is waiting for would find
+       * the container it was going to fill had already been passed over.
        */
 
-      idr = priv->force_idr || priv->gop_index == 0;
-      priv->force_idr = false;
-
-      memset(&slice, 0, sizeof(slice));
-      slice.idr = idr;
-
-      if (idr)
+      if (priv->eos_pending)
         {
-          /* frame_num and the picture order count both restart, and the
-           * picture id has to differ from the previous IDR's -- consecutively
-           * so, which is why it is the last one's that is remembered rather
-           * than a counter that could be reset by anything else. */
-
-          priv->frame_num = 0;
-          priv->poc_lsb = 0;
-          priv->idr_pic_id = (priv->idr_pic_id + 1u) & 1u;
+          vepu_flag_eos(priv, cbuf, false);
+          codec_capture_put_buf(priv->cookie, cbuf);
         }
 
-      slice.frame_num = priv->frame_num;
-      slice.poc_lsb = priv->poc_lsb;
-      slice.idr_pic_id = priv->idr_pic_id;
+      return OK;
+    }
 
-      ret = rk3576_vepu_encode(&frm, &priv->cfg, &slice, &result);
-      if (ret < 0)
-        {
-          /* The reference chain is only as good as the last picture in it,
-           * and this picture did not become one -- possibly after writing
-           * part of itself into a reconstruction buffer.  Whatever is in
-           * there now cannot be predicted from, so the stream has to restart
-           * with an IDR rather than build P pictures on it.  Nothing is
-           * published: the frame stays queued and the application's next
-           * queue operation retries it.
-           */
+  if (!vepu_check_buf(priv, "output", obuf, priv->src_size))
+    {
+      return -EINVAL;
+    }
 
-          priv->force_idr = true;
-          priv->gop_index = 0;
-          return ret;
-        }
+  memset(&frm, 0, sizeof(frm));
+  frm.src_fmt = RK3576_VEPU510_FMT_YUV420SP;
+  frm.rbuv_swap = 0; /* NV12: the chroma pairs are already in Cb,Cr order */
+  frm.width = priv->width;
+  frm.height = priv->height;
+  frm.y_stride = priv->y_stride;
+  frm.v_stride = priv->v_stride;
+  frm.src_phys = (uint32_t)(uintptr_t)obuf->m.vaddr;
+  frm.src_size = priv->src_size;
+  frm.dst_phys = (uint32_t)(uintptr_t)priv->staging;
+  frm.dst_size = priv->dst_size;
+  frm.dst_offset = 0;
 
+  /* Where this picture sits in its group of pictures.
+   *
+   * An IDR is asked for at the start of every group, after a failure that
+   * broke the reference chain (force_idr), and whenever the group is a
+   * single picture.  The three conditions are the same decision, so they are
+   * made once here rather than re-derived at each use below.
+   */
+
+  idr = priv->force_idr || priv->gop_index == 0;
+  priv->force_idr = false;
+
+  memset(&slice, 0, sizeof(slice));
+  slice.idr = idr;
+
+  if (idr)
+    {
+      /* frame_num and the picture order count both restart, and the picture
+       * id has to differ from the previous IDR's -- consecutively so, which
+       * is why it is the last one's that is remembered rather than a counter
+       * that could be reset by anything else. */
+
+      priv->frame_num = 0;
+      priv->poc_lsb = 0;
+      priv->idr_pic_id = (priv->idr_pic_id + 1u) & 1u;
+    }
+
+  slice.frame_num = priv->frame_num;
+  slice.poc_lsb = priv->poc_lsb;
+  slice.idr_pic_id = priv->idr_pic_id;
+
+  ret = rk3576_vepu_start(&frm, &priv->cfg, &slice);
+  if (ret < 0)
+    {
+      /* The reference chain is only as good as the last picture in it, and
+       * this picture did not become one -- possibly after writing part of
+       * itself into a reconstruction buffer.  Whatever is in there now cannot
+       * be predicted from, so the stream has to restart with an IDR rather
+       * than build P pictures on it.  Nothing is published: the frame stays
+       * queued and the application's next queue operation retries it, which
+       * is also how it learns that the queue operation itself failed.
+       */
+
+      priv->force_idr = true;
+      priv->gop_index = 0;
+      return ret;
+    }
+
+  /* The job is with the hardware, and the mutex inside rk3576_vepu_start()
+   * is held for it until the finish half lets it go.  Everything that half
+   * needs is kept here, because the stack it would have been on is about to
+   * be gone.  job_eos is the flush decision as it stands now rather than as
+   * it will stand when the job ends: a flush ends the stream on the last
+   * frame that was queued when it arrived, and a frame queued after it is
+   * not that frame.  Taking the pending flag with it is what lets a second
+   * flush, arriving while this job runs, be answered on its own.
+   */
+
+  priv->job_cbuf = cbuf;
+  priv->job_obuf = obuf;
+  priv->job_frm = frm;
+  priv->job_slice = slice;
+  priv->job_eos = priv->eos_pending;
+  priv->eos_pending = false;
+  priv->job_running = true;
+
+  /* HPWORK rather than LPWORK, deliberately.  The completion is what lets go
+   * of the lock the encoder is held by, so the next frame cannot start until
+   * it has run; LPWORK belongs to the camera driver's demosaic job of about
+   * 15 ms, and queueing behind that would add it to every frame period.  What
+   * the completion does is one cache invalidation, one copy of the bitstream
+   * and a few list operations, so the high-priority queue delays nothing for
+   * long.
+   */
+
+  work_queue(HPWORK, &priv->work, vepu_job_work, priv, 0);
+  return OK;
+}
+
+/****************************************************************************
+ * Name: vepu_service
+ *
+ * Description:
+ *   Start the next frame, if the encoder is free for one.
+ *
+ *   The lock is taken here because the callers are different threads: the
+ *   queue operations that run in the application's context, and the
+ *   completion that runs in the work queue's.  Both look at the pending
+ *   counters and draw containers from the framework's queues, so they have
+ *   to be one at a time.
+ *
+ ****************************************************************************/
+
+static int vepu_service(FAR struct rk3576_vepu_codec_priv_s *priv)
+{
+  int ret;
+
+  nxmutex_lock(&priv->lock);
+  ret = vepu_service_locked(priv);
+  nxmutex_unlock(&priv->lock);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: vepu_job_complete
+ *
+ * Description:
+ *   The finishing half of a job: everything vepu_service() used to do after
+ *   the encoder returned.
+ *
+ *   The order is what makes the result visible at the right moment.  The
+ *   frame is copied into the capture buffer first, so that the buffer is
+ *   whole before anything can find it; the output container goes back next,
+ *   because the source picture has been read and the application is waiting
+ *   for it; and the capture container goes back last, because that call is
+ *   what publishes the frame and wakes whoever is waiting for it.
+ *
+ *   A job that failed has no error return left to make: the queue operation
+ *   that submitted it returned to the application before the hardware had
+ *   finished.  What the application gets instead is a buffer with nothing in
+ *   it, which is the same "nothing came of this one" a flush's marker uses
+ *   and something an application already has to handle; what it cannot learn
+ *   from that buffer is why, which is why the failure is logged where it is
+ *   found and the consequence is logged here.
+ *
+ *   Called with priv->lock held, from vepu_job_work().
+ *
+ ****************************************************************************/
+
+static void vepu_job_complete(FAR struct rk3576_vepu_codec_priv_s *priv,
+                              int ret)
+{
+  FAR struct v4l2_buffer *cbuf = priv->job_cbuf;
+  uint32_t total;
+  bool encoded = false;
+
+  if (ret >= 0)
+    {
       /* The parameter sets go in front of the stream's first frame, so that
        * what comes out of the device is something a decoder can be pointed
        * at directly instead of needing them supplied separately.  Only the
-       * first: an application that wants them repeated can ask for that
-       * when it needs it, and repeating them per frame would put them inside
+       * first: an application that wants them repeated can ask for that when
+       * it needs it, and repeating them per frame would put them inside
        * anything that later tries to mux the stream into a container.
        *
        * The order matters.  The encoded frame is already at the start of the
        * staging buffer, because that is where the encoder was told to write
        * it, so the header cannot simply be put there -- doing that would
        * overwrite the first bytes of the frame with a start code and a
-       * sequence parameter set, and the result would still begin with a
-       * start code and still parse far enough to look plausible.  The frame
-       * is moved up to make room and the header goes in front of it.
+       * sequence parameter set, and the result would still begin with a start
+       * code and still parse far enough to look plausible.  The frame is
+       * moved up to make room and the header goes in front of it.
        */
 
-      total = result.bs_length;
+      total = priv->job_result.bs_length;
 
       if (!priv->header_sent)
         {
           total += priv->header_len;
 
-          if (total > priv->dst_size)
+          if (total <= priv->dst_size)
             {
-              return -ENOSPC;
+              memmove(priv->staging + priv->header_len, priv->staging,
+                      priv->job_result.bs_length);
+              memcpy(priv->staging, priv->header, priv->header_len);
+              priv->header_sent = true;
             }
-
-          memmove(priv->staging + priv->header_len, priv->staging,
-                  result.bs_length);
-          memcpy(priv->staging, priv->header, priv->header_len);
-          priv->header_sent = true;
-        }
-      else if (total > priv->dst_size)
-        {
-          return -ENOSPC;
         }
 
-      memcpy(cbuf->m.vaddr, priv->staging, total);
-
-      cbuf->bytesused = total;
-      cbuf->sequence = priv->frame_index;
-
-      /* Whether a consumer may start here.  It is the one thing about this
-       * frame that cannot be discovered by reading it -- a picture's own
-       * bytes do not say whether anything after it predicts from it -- and
-       * it is what an application needs in order to put fragment boundaries
-       * or container key-frame markers in the right places.  Reported from
-       * the same flag that chose the slice type, so the two cannot disagree.
-       */
-
-      cbuf->flags = idr ? V4L2_BUF_FLAG_KEYFRAME : V4L2_BUF_FLAG_PFRAME;
-
-      /* This picture is now the reference the next one predicts from, so the
-       * group advances.  The order matters: the counters are moved on only
-       * after the encode succeeded, because a picture that was never
-       * reconstructed is not a place in the sequence.
-       */
-
-      priv->gop_index++;
-      if (priv->gop_index >= priv->gop)
+      if (total > priv->dst_size)
         {
-          priv->gop_index = 0;
-        }
+          /* The frame is whole and the encoder did its job, but it cannot be
+           * handed over: the parameter sets have to go in front of it and
+           * there is nowhere for them to go.  This is the one failure that is
+           * not the hardware's, and the one thing that must not happen is
+           * publishing half of it. */
 
-      priv->frame_num =
-          (priv->frame_num + 1u) & rk3576_vepu510_frame_num_mask(&priv->cfg);
-      priv->poc_lsb =
-          (priv->poc_lsb + 2u) & rk3576_vepu510_poc_lsb_mask(&priv->cfg);
-
-      priv->frame_index++;
-      priv->output_pending = false;
-      encoded = true;
-
-      codec_output_put_buf(priv->cookie, obuf);
-    }
-
-  /* A flush asks for the stream to end after everything queued has been
-   * encoded.  There is nothing else buffered here, so it ends on this
-   * buffer: flagged so the application can tell the last one from the rest,
-   * and announced as an event so a poller does not have to notice by
-   * counting.
-   */
-
-  if (priv->eos_pending)
-    {
-      /* If nothing was encoded into this buffer then it is a marker rather
-       * than a frame, and its length has to say so: leaving the field alone
-       * would leave whatever the container's last use wrote there, which the
-       * application would take for a frame of that length.
-       */
-
-      if (encoded)
-        {
-          cbuf->flags |= V4L2_BUF_FLAG_LAST;
+          _err("ERROR: VEPU0 codec %" PRIu32 "-byte frame and a %" PRIu32
+               "-byte header do not fit a %" PRIu32 "-byte capture buffer\n",
+               priv->job_result.bs_length, priv->header_len, priv->dst_size);
         }
       else
         {
-          cbuf->bytesused = 0;
-          cbuf->flags = V4L2_BUF_FLAG_LAST;
+          memcpy(cbuf->m.vaddr, priv->staging, total);
+
+          cbuf->bytesused = total;
+
+          /* Whether a consumer may start here.  It is the one thing about
+           * this frame that cannot be discovered by reading it -- a picture's
+           * own bytes do not say whether anything after it predicts from it
+           * -- and it is what an application needs in order to put fragment
+           * boundaries or container key-frame markers in the right places.
+           * Reported from the same flag that chose the slice type, so the two
+           * cannot disagree.
+           */
+
+          cbuf->flags = priv->job_slice.idr ? V4L2_BUF_FLAG_KEYFRAME
+                                            : V4L2_BUF_FLAG_PFRAME;
+
+          /* This picture is now the reference the next one predicts from, so
+           * the group advances.  The order matters: the counters are moved on
+           * only after the encode succeeded, because a picture that was never
+           * reconstructed is not a place in the sequence.
+           */
+
+          priv->gop_index++;
+          if (priv->gop_index >= priv->gop)
+            {
+              priv->gop_index = 0;
+            }
+
+          priv->frame_num = (priv->frame_num + 1u) &
+                            rk3576_vepu510_frame_num_mask(&priv->cfg);
+          priv->poc_lsb =
+              (priv->poc_lsb + 2u) & rk3576_vepu510_poc_lsb_mask(&priv->cfg);
+
+          encoded = true;
         }
+    }
 
-      priv->eos_pending = false;
+  if (!encoded)
+    {
+      _err("ERROR: VEPU0 codec job %" PRIu32
+           " produced no frame; an empty buffer goes back in its place and"
+           " the stream restarts with an IDR\n",
+           priv->frame_index);
 
-      {
-        struct v4l2_event evt;
+      priv->force_idr = true;
+      priv->gop_index = 0;
 
-        memset(&evt, 0, sizeof(evt));
-        evt.type = V4L2_EVENT_EOS;
-        codec_queue_event(priv->cookie, &evt);
-      }
+      /* Nothing valid to publish, so the buffer is made to say so.  Clearing
+       * the flags as well as the length matters: whatever flag the container
+       * carried from its last use would otherwise be read as a property of
+       * this frame. */
+
+      cbuf->bytesused = 0;
+      cbuf->flags = 0;
+    }
+
+  /* The buffer's place in the sequence of buffers handed over, which advances
+   * for a failed job as well: the application is given that buffer whether or
+   * not there is a frame in it, and two buffers arriving with the same number
+   * would be a thing a consumer could reasonably read something into.
+   */
+
+  cbuf->sequence = priv->frame_index;
+  priv->frame_index++;
+
+  codec_output_put_buf(priv->cookie, priv->job_obuf);
+
+  if (priv->job_eos)
+    {
+      vepu_flag_eos(priv, cbuf, encoded);
     }
 
   codec_capture_put_buf(priv->cookie, cbuf);
-  return OK;
+}
+
+/****************************************************************************
+ * Name: vepu_job_work
+ *
+ * Description:
+ *   Finish the job vepu_service_locked() started, on the work queue.
+ *
+ *   Neither half of this can be done in the interrupt handler.  The wait has
+ *   to be somewhere that is allowed to sleep, and the tail does cache
+ *   maintenance over the staging buffer and touches the framework's buffer
+ *   lists, which an interrupt handler may not do either.  The interrupt only
+ *   posts the semaphore the wait is on; the work is what collects it.
+ *
+ *   See vepu_service_locked() for why this is on HPWORK rather than LPWORK.
+ *
+ ****************************************************************************/
+
+static void vepu_job_work(FAR void *arg)
+{
+  FAR struct rk3576_vepu_codec_priv_s *priv = arg;
+  int ret;
+
+  ret =
+      rk3576_vepu_finish(&priv->job_frm, &priv->job_slice, &priv->job_result);
+
+  nxmutex_lock(&priv->lock);
+  vepu_job_complete(priv, ret);
+  priv->job_running = false;
+  nxmutex_unlock(&priv->lock);
+
+  /* The hardware is free again, and a frame that arrived while this job was
+   * running has been waiting for exactly this.  Nothing else is going to
+   * look at the queues now, so the next job is started from here.
+   */
+
+  ret = vepu_service(priv);
+  if (ret < 0)
+    {
+      _err("ERROR: VEPU0 codec could not start the next frame: %d\n", ret);
+    }
+}
+
+/****************************************************************************
+ * Name: vepu_job_settle
+ *
+ * Description:
+ *   Wait for the job in flight, if there is one, and drop what it produced.
+ *
+ *   Called where the device is being wound down -- a stream stop, or the last
+ *   open being closed.  The two containers the job holds are about to stop
+ *   meaning anything: the framework frees them when the last file is closed,
+ *   and an application that stopped the stream may ask for its buffers back
+ *   and free the pool before a completion left in the work queue would have
+ *   reached it.  So the completion is taken off the queue here, or waited for
+ *   if it is already running, and whatever is still with the hardware is
+ *   waited for; the frame it produces is not published, because the stream it
+ *   would have belonged to is over.
+ *
+ *   A job cannot be stopped once started -- there is no abort that leaves the
+ *   encoder usable -- so the wait is the job's own, tens of milliseconds at
+ *   worst.
+ *
+ ****************************************************************************/
+
+static void vepu_job_settle(FAR struct rk3576_vepu_codec_priv_s *priv)
+{
+  /* A queued completion is removed and a running one is waited for, which is
+   * also what covers a completion that started the next job before it
+   * noticed the stream was stopping: that job is then still running and is
+   * waited for below.  The call has nothing to report -- no completion queued
+   * is the ordinary case and not a fault.
+   */
+
+  work_cancel_sync(HPWORK, &priv->work);
+
+  nxmutex_lock(&priv->lock);
+  if (priv->job_running)
+    {
+      rk3576_vepu_finish(&priv->job_frm, &priv->job_slice, &priv->job_result);
+      priv->job_running = false;
+    }
+
+  nxmutex_unlock(&priv->lock);
 }
 
 static int vepu_open(FAR void *cookie, FAR void **priv)
@@ -909,6 +1219,13 @@ static int vepu_open(FAR void *cookie, FAR void **priv)
 
   vepu_apply_geometry(state, 640, 480);
 
+  /* The lock the application's context and the work queue share.  A zeroed
+   * mutex is not an unlocked one, so this is not something the allocation
+   * could have left to do.
+   */
+
+  nxmutex_init(&state->lock);
+
   *priv = state;
   return OK;
 }
@@ -922,11 +1239,21 @@ static int vepu_close(FAR void *priv)
       return OK;
     }
 
+  /* A frame may still be with the hardware, and its completion may still be
+   * in the work queue.  Both have to be over before the state they use is
+   * freed: the completion would otherwise run against freed memory, and the
+   * hardware's lock would stay held for a stream that no longer exists.  The
+   * frame the job was producing is dropped -- nobody is left to read it.
+   */
+
+  vepu_job_settle(state);
+
   if (state->staging != NULL)
     {
       rk3576_dma_free(state->staging, state->dst_size);
     }
 
+  nxmutex_destroy(&state->lock);
   kmm_free(state);
   return OK;
 }
@@ -1286,11 +1613,18 @@ static int vepu_output_streamoff(FAR void *priv)
   /* Dropping a queued frame rather than finishing it is deliberate: the
    * application has said it no longer wants what it queued, and the next
    * stream starts with its own parameter sets.
+   *
+   * The frame that is already with the hardware cannot be dropped the same
+   * way -- there is no stopping one once it has started -- so it is waited
+   * for and its result discarded.  Clearing the stream flag first is what
+   * keeps the completion, if it is still to run, from starting another job
+   * behind this one.
    */
 
   state->output_streaming = false;
-  state->output_pending = false;
   state->eos_pending = false;
+
+  vepu_job_settle(state);
 
   return OK;
 }
@@ -1301,8 +1635,12 @@ static int vepu_capture_streamoff(FAR void *priv)
 
   state->capture_streaming = false;
 
-  /* A stream that is restarted gets its parameter sets again, because a
-   * consumer of the new stream was not necessarily watching the old one. */
+  /* Either side stopping is enough to stop encoding, so this is also a place
+   * a job can still be in flight -- see vepu_output_streamoff().  A stream
+   * that is restarted gets its parameter sets again, because a consumer of
+   * the new stream was not necessarily watching the old one. */
+
+  vepu_job_settle(state);
 
   state->header_sent = false;
 
@@ -1313,7 +1651,6 @@ static int vepu_output_available(FAR void *priv)
 {
   FAR struct rk3576_vepu_codec_priv_s *state = priv;
 
-  state->output_pending = true;
   return vepu_service(state);
 }
 
@@ -1536,9 +1873,13 @@ static int vepu_encoder_cmd(FAR void *priv, FAR struct v4l2_encoder_cmd *cmd)
   switch (cmd->cmd)
     {
       case V4L2_ENC_CMD_STOP:
-        /* Everything queued is encoded before this returns, because a job is
-         * encoded inside the ioctl that queued it.  So all that is left to
-         * do is mark where the stream ends. */
+        /* Where the stream ends is marked here, but when it ends is not: a
+         * frame already with the hardware is the last one, and this call
+         * returns before it has been encoded.  The flag is therefore taken
+         * up by that job's completion -- or by this call, if there is no
+         * frame in flight to carry it -- and the application waits for the
+         * marked buffer the same way it waits for any other.
+         */
 
         state->eos_pending = true;
         return vepu_service(state);
@@ -1684,6 +2025,42 @@ static int rk3576_vepu_st_mmap(int fd, FAR struct v4l2_buffer *buf,
     }
 
   return OK;
+}
+
+/****************************************************************************
+ * Wait for the encoder to have something on one of its queues.
+ *
+ * A frame is not ready when the queue operation that submitted it returns any
+ * more: the job is started there and finished by the interrupt, so the
+ * bitstream has to be waited for, and this is the wait an application makes --
+ * poll() on the same descriptor.  The test drives it that way rather than
+ * retrying the dequeue, because the wake-up is half of what the asynchronous
+ * driver has to get right, and a test that never waits for it would not notice
+ * it regressing.
+ *
+ * The wait is bounded, generously above the driver's own job timeout, so that
+ * a job which never completes fails the test where it says why rather than
+ * sitting in the boot for ever.
+ ****************************************************************************/
+
+#define RK3576_VEPU_ST_WAIT_MS 5000
+
+static bool rk3576_vepu_st_wait(int fd, short events)
+{
+  struct pollfd pfd;
+  int ret;
+
+  pfd.fd = fd;
+  pfd.events = events;
+  pfd.revents = 0;
+
+  do
+    {
+      ret = poll(&pfd, 1, RK3576_VEPU_ST_WAIT_MS);
+    }
+  while (ret < 0 && errno == EINTR);
+
+  return ret > 0 && (pfd.revents & events) != 0;
 }
 
 int rk3576_vepu_codec_selftest(FAR const char *devpath)
@@ -1912,9 +2289,10 @@ int rk3576_vepu_codec_selftest(FAR const char *devpath)
     {
       struct v4l2_buffer buf;
 
-      /* A picture and a queue operation.  The frame is handed over and the
-       * bitstream comes back before the ioctl returns, because that is how
-       * this driver works. */
+      /* A picture and a queue operation.  The frame is handed over there and
+       * the bitstream follows from the interrupt, so the wait is between the
+       * two: the queue operation has returned long before the encoder has
+       * finished with the picture. */
 
       rk3576_vepu_st_fill(obuf[i], width, height, i, width);
       memset(obuf[i] + y_size, 128, y_size / 2);
@@ -1926,6 +2304,13 @@ int rk3576_vepu_codec_selftest(FAR const char *devpath)
         {
           _err("ERROR: VEPU0 codec output QBUF %" PRIu32 " failed: %d\n", i,
                errno);
+          goto errout;
+        }
+
+      if (!rk3576_vepu_st_wait(fd, POLLIN))
+        {
+          _err("ERROR: VEPU0 codec frame %" PRIu32 " did not arrive\n", i);
+          ret = -ETIMEDOUT;
           goto errout;
         }
 
