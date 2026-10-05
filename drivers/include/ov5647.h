@@ -118,15 +118,35 @@ struct ov5647_mode_s
  * the only way this sensor can be given more exposure time than one frame's
  * worth of lines, which is what the second entry is for.
  *
+ * The 1920x1080 entry is the one that changes the geometry without changing
+ * the link rate: it runs the same PLL multiplier as the binned mode, so the
+ * D-PHY has nothing to settle and only the capture engine's buffers move.
+ * It is also the only mode here that does not bin, which is a trade the
+ * mode table in ov5647.c works out in full.
+ *
+ * The 1280x720 entry changes the geometry, and not the link rate either, for
+ * the same reason and by the same route as 1920x1080 -- but it keeps the
+ * binned readout and crops it instead of reading the array out in full, so it
+ * trades field of view for the pipeline's margin rather than trading light.
+ * The mode table works that out as well; what matters here is that it is the
+ * only entry whose reason for existing is what runs after the sensor.
+ *
  * The order here is the order the modes are enumerated to the application
  * in, and the first entry is the framework's own default -- see
  * CONFIG_OV5647_DEFAULT_MODE for how a different boot mode is selected.
+ *
+ * The numbers are also what the application and the board pass to each other
+ * when a stream changes modes, so a mode that is added goes at the end of
+ * this list.  Renumbering an existing one would silently repoint requests
+ * that name it by number rather than by name.
  */
 
-#define OV5647_MODE_1296x960_30 0u
-#define OV5647_MODE_1296x960_22 1u
-#define OV5647_MODE_640x480_60  2u
-#define OV5647_NUM_MODES        3u
+#define OV5647_MODE_1296x960_30  0u
+#define OV5647_MODE_1296x960_22  1u
+#define OV5647_MODE_640x480_60   2u
+#define OV5647_MODE_1920x1080_20 3u
+#define OV5647_MODE_1280x720_30  4u
+#define OV5647_NUM_MODES         5u
 
 /* The shortest exposure the sensor can be asked for, in lines.  Four is the
  * sensor's own minimum, and it is also the margin the maximum leaves: a
