@@ -98,13 +98,29 @@ FAR sem_t *g_te_sem[KICKPI_K7_TE_SEM_COUNT];
  *   board_ioctl() when CONFIG_BOARDCTL_IOCTL=y).
  *
  *   camenc uses BOARDIOC_CAMERA_SET_MODE, with the new mode's index as the
- *   argument, to change which sensor mode the capture path is configured for.
- *   It is handled here rather than by the application driving the drivers
- *   itself because the mode is not one driver's business: a mode brings its
- *   geometry, its link rate and its Bayer order with it, and those belong to
- *   the D-PHY, the CSI HOST and the capture engine respectively.  The board
- *   is the only place that can move all of them together and in the right
- *   order; see kickpi_k7_camera_set_mode().
+ *   argument, to say which sensor mode the capture path should be configured
+ *   for.  It is handled here rather than by the application driving the
+ *   drivers itself because the mode is not one driver's business: a mode
+ *   brings its geometry, its link rate and its Bayer order with it, and those
+ *   belong to the D-PHY, the CSI HOST and the capture engine respectively.
+ *   The board is the only place that can move all of them together and in the
+ *   right order; see kickpi_k7_camera_set_mode().
+ *
+ *   That it is a board command at all is a consequence of this framework
+ *   rather than a preference.  A V4L2 application selects a mode by setting a
+ *   format and a frame rate, and the receiver follows the sensor; here,
+ *   nothing in either interface carries a link rate -- neither struct
+ *   imgsensor_s nor struct imgdata_s has a field for one -- so the single
+ *   figure that ties a sensor mode to the D-PHY has no channel to travel
+ *   down, and the board has to be told out of band.  Everything else about
+ *   the arrangement is the ordinary one: the format and the frame rate are
+ *   still what selects the mode inside the sensor, the device is registered
+ *   before any of this happens, and streams are started and stopped with
+ *   VIDIOC_STREAMON and VIDIOC_STREAMOFF, which is what makes the device's
+ *   close put the sensor back into software standby.  What the command adds
+ *   is the one thing the framework cannot express, and it is used before the
+ *   camera is opened, so that the geometry the capture engine is programmed
+ *   with is the one the stream will deliver.
  *
  ****************************************************************************/
 
