@@ -2410,13 +2410,13 @@ stream_start:
       /* The loop is seeded from what the sensor is *actually* holding, read
        * back rather than assumed.
        *
-       * This is not tidiness.  The board's sensor default gain comes from
-       * CONFIG_OV5647_ANALOG_GAIN, which is 256 here while the loop's own
-       * minimum is 16 -- so a loop that guessed would start believing the
-       * picture was sixteen times darker than it is, ask for sixteen times
-       * too much light in its first correction, and visibly darken the
-       * picture before climbing back.  Starting from a wrong belief about
-       * the hardware is the one thing a loop cannot compute its way out of.
+       * This is not tidiness.  The sensor's own default gain is
+       * OV5647_ANALOG_GAIN_DEFAULT, 256, while the loop's own minimum is
+       * 16 -- so a loop that guessed would start believing the picture was
+       * sixteen times darker than it is, ask for sixteen times too much
+       * light in its first correction, and visibly darken the picture
+       * before climbing back.  Starting from a wrong belief about the
+       * hardware is the one thing a loop cannot compute its way out of.
        *
        * Where the readback is not available the seed values are written to
        * the sensor instead, so that the belief is made true rather than

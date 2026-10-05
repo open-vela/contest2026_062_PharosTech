@@ -198,41 +198,41 @@
  * exposure the AEC may choose is bounded by the frame it sits in.
  */
 
-/* The exposure and gain are the only controls over how bright the picture
- * comes out, because the sensor's own loops are switched off.  Both are
- * board-level decisions rather than fixed properties of the part: how much
- * light reaches the sensor depends on the lens and the scene, so they are
- * configurable and default to values that are merely reasonable.
+/* The exposure and gain a stream starts with.
+ *
+ * They are the only controls over how bright the picture comes out, because
+ * the sensor's own loops are switched off, and they are needed: a sensor
+ * given neither integrates for whatever the reset value happens to be, and a
+ * reset exposure of zero streams a stable, nearly black frame -- which looks
+ * like a frozen picture rather than an unprogrammed sensor.
+ *
+ * What is here is a default and nothing more.  A scene decides what is
+ * right, so both are reachable at run time through the sensor control
+ * interface -- VIDIOC_S_CTRL from an application; see ov5647_set_value().
+ * That is what makes them usable for tuning: finding the right gain for a
+ * given scene means trying a few, and a setting that can only be changed by
+ * rebuilding costs a flash cycle each time.  Neither is a board decision,
+ * which is why neither is a Kconfig setting.
  *
  * Exposure is in lines; the mode's maximum leaves the frame just long enough
- * to read out.  Gain runs sixteen to one, so a default of 32 is 2.0x.
- *
- * Both are only the starting point.  They are also reachable at run time
- * through the sensor control interface, which is what makes them usable for
- * tuning: finding the right gain for a given scene means trying several, and
- * a setting that can only be changed by rebuilding costs a flash cycle each
- * time.
- */
-
-#if defined(CONFIG_OV5647_EXPOSURE_LINES) && CONFIG_OV5647_EXPOSURE_LINES > 0
-#define OV5647_EXPOSURE_INIT ((uint32_t)CONFIG_OV5647_EXPOSURE_LINES)
-#else
-/* Zero is not an exposure the sensor can be given -- see
+ * to read out.  Zero is not an exposure the sensor can be given -- see
  * OV5647_EXPOSURE_MIN -- so it serves as "the mode's own maximum", which is
- * what ov5647_initialize() resolves it to once a mode is in force.
+ * what ov5647_initialize() resolves it to once a mode is in force.  That is
+ * the right default for a bring-up where the light is unknown, and it is the
+ * one value here that does not have to name a number, because a line count
+ * that is legal in one mode is not necessarily legal in another.
+ *
+ * Gain is not a number the part fixes either: on its scale sixteen is 1.0x
+ * and 1023 is 64x, so 256 is 16x.  That is what this board found rather than
+ * what the sensor requires -- 2.0x was too dark to read the picture and 64x
+ * saturated it -- and sitting roughly 5x below saturation biases toward
+ * losing shadow detail rather than blowing out highlights.
  */
 
-#define OV5647_EXPOSURE_INIT 0u
-#endif
+#define OV5647_EXPOSURE_DEFAULT 0u
+#define OV5647_ANALOG_GAIN_DEFAULT 256u
 
-#ifdef CONFIG_OV5647_ANALOG_GAIN
-#define OV5647_ANALOG_GAIN_INIT ((uint32_t)CONFIG_OV5647_ANALOG_GAIN)
-#else
-#define OV5647_ANALOG_GAIN_INIT 32u
-#endif
-
-/* Gain is a ten-bit value covering sixteen to one, per the sensor's own
- * scale; the whole range is reachable.
+/* The gain's range, which is the part's rather than a mode's.
  */
 
 #define OV5647_ANALOG_GAIN_MIN 16u
@@ -937,8 +937,8 @@ static struct ov5647_s g_ov5647 = {
    */
 
   .mode = &g_ov5647_modes[OV5647_MODE_DEFAULT],
-  .exposure_lines = OV5647_EXPOSURE_INIT,
-  .analog_gain = OV5647_ANALOG_GAIN_INIT,
+  .exposure_lines = OV5647_EXPOSURE_DEFAULT,
+  .analog_gain = OV5647_ANALOG_GAIN_DEFAULT,
 };
 
 /****************************************************************************
@@ -2355,18 +2355,18 @@ int ov5647_initialize(FAR struct i2c_master_s *i2c)
 
   /* The exposure the driver starts from.
    *
-   * Zero is what CONFIG_OV5647_EXPOSURE_LINES means by "unset", and resolves
-   * to the mode's own maximum -- which is the right default for a bring-up
-   * where the light is unknown.  A configured value is clamped to the same
-   * ceiling rather than trusted, because a line count that is legal in one
-   * mode is not necessarily legal in another, and this setting is stated
+   * Zero is what OV5647_EXPOSURE_DEFAULT means by "unset", and resolves to
+   * the mode's own maximum -- which is the right default for a bring-up
+   * where the light is unknown.  A non-zero default would be clamped to the
+   * same ceiling rather than trusted, because a line count that is legal in
+   * one mode is not necessarily legal in another, and the default is stated
    * without reference to any particular mode.
    *
    * The gain needs no resolving: its range is the part's rather than a
    * mode's.
    */
 
-  priv->exposure_lines = OV5647_EXPOSURE_INIT;
+  priv->exposure_lines = OV5647_EXPOSURE_DEFAULT;
   if (priv->exposure_lines == 0u)
     {
       priv->exposure_lines = OV5647_MODE_EXPOSURE_MAX(priv->mode);
