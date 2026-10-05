@@ -267,6 +267,116 @@ CONFIG_NET_TCP_WRITE_BUFFERS=y
 CONFIG_IOB_BUFSIZE=1516
 CONFIG_IOB_NBUFFERS=64
 
+# How much of that pool one connection may hold.
+#
+# The pool is shared, and until this was set nothing bounded a share of it:
+# CONFIG_NET_SEND_BUFSIZE defaults to zero, which the stack reads as no limit,
+# so a single connection could queue every buffer there was.  A viewer whose
+# browser tab had been refreshed and whose socket had stopped draining did
+# exactly that, and the arithmetic above says how little it takes -- the whole
+# pool is 97 KB, and the frames are what they are.
+#
+# What made it fatal rather than merely unfair is that the receive path draws
+# from the same pool.  With every buffer queued as unacknowledged transmit
+# data, the stack could not receive the FIN that the peer had already sent,
+# so the application never learned the connection was over: it went on
+# queueing frames for a client that was gone, the buffers stayed queued, and
+# every other client's send() returned EAGAIN for want of a free one.  A
+# refresh was served, then another, and the third hung -- the page received
+# nothing at all, because the way out of that state was a packet the stack had
+# nowhere to put.
+#
+# 16 KB is one of today's frames, so a connection can queue what it is being
+# given without waiting, and four of them can hold at most 43 of the 64
+# buffers between them.  That leaves the receive path its share -- the
+# throttle below keeps eight of them for it regardless -- and with that, a
+# client that stops reading costs its own frames and nothing else, which is
+# what the application's own drop-rather-than-wait policy already assumed.
+CONFIG_NET_SEND_BUFSIZE=16384
+
+# Letting go of a client without waiting for it.
+#
+# A client this server drops -- a viewer replaced by a refreshed page, a
+# connection that has gone, a socket that will not take what is queued -- has
+# nothing left to be delivered to it, but the data already in its socket has
+# not been acknowledged and close() waits for that before finishing with the
+# connection.  Nothing ever acknowledges it, so the connection is left
+# retransmitting until the retransmission limit is reached, and it holds the
+# write buffers it was given for the whole of that time: eight attempts with
+# an RTO that starts at three seconds is minutes, not seconds.  Ten refreshes
+# would put the pool back where this section started.
+#
+# SO_LINGER with a zero time is the abortive close POSIX defines for this: the
+# queued data is discarded, the connection is reset, and its buffers are
+# released when the reset is sent rather than when an acknowledgement that
+# will never come fails to arrive.  camenc_ws.c refuses to build without it,
+# because a client that is dropped gently leaves no mark on any number this
+# application prints -- see the note there.
+CONFIG_NET_SOLINGER=y
+
+# And why a descriptor can fail to register in the first place.
+#
+# CONFIG_NET_PREALLOC_DEVIF_CALLBACKS is a fixed pool of socket event
+# callbacks -- sixteen of them -- and with dynamic allocation off it is a hard
+# ceiling rather than a starting point: devif_callback_alloc() draws from it
+# with a zero timeout and has nowhere else to go, so once they are all held,
+# every further registration fails and tcp_pollsetup() answers -EBUSY.
+#
+# That failure is not local to the descriptor that suffers it, because of how
+# poll() is built here.  A caller that polls several descriptors loses the
+# ones after the first failure: fs/vfs/fs_poll.c abandons them, marks the
+# failing one POLLERR and returns immediately, so poll() never waits -- and
+# the wait is the only time these callbacks are registered, which is the only
+# way a reset or a peer's close is ever delivered to the application.  So an
+# exhausted callback pool does not look like a shortage; it looks like a
+# server that cannot tell when a viewer has gone, which is what it did look
+# like for several days of this.
+#
+# A connected socket holds more than one: a connection monitor for as long as
+# it is connected (tcp_monitor.c), and a send callback for as long as it has
+# data queued and unacknowledged (tcp_send_buffered.c).  A viewer that has
+# stopped reading holds both indefinitely, and a server that cannot see a
+# reset never lets it go -- so four clients reach sixteen, the listening
+# socket can no longer register either, and from then on every round reports
+# it in error.  The pool has to be a function of the work rather than a
+# ceiling.
+#
+# With 1, a callback is allocated when it is needed and returned when it is
+# not.  (2 or more would allocate in batches and keep them; the board has the
+# memory either way, but nothing here wants to hold it.)
+CONFIG_NET_ALLOC_DEVIF_CALLBACKS=1
+
+# And the same question once more, for the connections themselves.
+#
+# CONFIG_NET_TCP_PREALLOC_CONNS is eight, and with CONFIG_NET_TCP_ALLOC_CONNS
+# at zero the Kconfig is explicit that eight is not a starting point: it is
+# "the maximum number of connections available to the system at all times".
+# A connection structure is held for the life of the connection and then,
+# when this side closes first and closes gently, for the whole of TIME_WAIT.
+# The page reply is closed that way deliberately -- its last bytes are still
+# in the socket and a reset would throw them away -- so every page load
+# spends one, and a browser brings connections of its own besides.
+#
+# It is worth being exact about what running out looks like, because it is
+# not a refusal.  tcp_input() drops the SYN and sends nothing at all, not
+# even a reset (nuttx/net/tcp/tcp_input.c, "No free TCP connections"); the
+# peer retransmits and eventually gives up, which the browser reports as a
+# connection timeout.  The server meanwhile reports no clients, no accepts
+# and no errors of any kind, and its camera keeps running at full rate -- an
+# application that is perfectly healthy while nothing can reach it.  That is
+# a much harder thing to read than a server that is visibly in trouble, and
+# it is the second time in this file that a pool with a fixed ceiling has
+# produced it.
+#
+# So this pool has to be a function of the work as well.  Not a larger
+# ceiling: TIME_WAIT is measured in tens of seconds and a browser opens
+# several connections per page load, so any fixed number is merely further
+# away, and the failure would come back looking the same.
+# CONFIG_NET_TCP_MAX_CONNS is there if a limit is wanted, but it comes with
+# that arithmetic.  (The UDP and ICMP pools are still ceilings -- eight and
+# four -- which nothing in camenc uses; they are left alone.)
+CONFIG_NET_TCP_ALLOC_CONNS=1
+
 CONFIG_NET_UDP=y
 CONFIG_TLS_TASK_NELEM=4
 CONFIG_PTHREAD_MUTEX_TYPES=y
