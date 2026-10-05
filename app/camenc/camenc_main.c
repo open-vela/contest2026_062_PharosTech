@@ -196,17 +196,41 @@
 
 #define CAMENC_3A_AWB_MIN_MEAN 12u
 
-/* The sensor mode the program starts in, as an index into the sensor
+/* The sensor mode this program starts in, as an index into the sensor
  * driver's mode table.
  *
- * A mode is a geometry, a frame rate and a link rate together, and the board
- * has to be told which one to configure its receive chain for before the
- * camera is opened -- so the same index is what selects the geometry here,
- * what is handed to ov5647_mode() to get it, and what the boardctl command
- * below carries.  The three modes and what each is for are in ov5647.h.
+ * This is the application's choice and not the driver's.  The board brings its
+ * receive chain up on the mode the sensor driver publishes as its placeholder
+ * -- a device node needs a geometry before an application can ask for
+ * anything -- but that is not a decision about this run.  A mode is a
+ * geometry, a frame rate and a link rate together, and this program names the
+ * one it wants to the board before it opens the camera; so the mode a run
+ * films in is the one below and nothing else, and the two are deliberately
+ * separate settings that need not agree.  When they do not, the cost is one
+ * reconfiguration at start-up, which is the same thing a change of mode later
+ * costs.
+ *
+ * Which one it is set to is a compromise between the picture and the pipeline
+ * behind it, and is the application's to make.  The seven, and what each is
+ * for, are listed in ov5647.h and repeated by -m's line in the usage text;
+ * what the entry here is set to is in the line below it and nowhere else.
+ *
+ * It is the 16:9 geometry at thirty frames a second, and it is the default
+ * because of what runs behind the sensor rather than in front of it.  It is
+ * the only geometry the encoder needs no compromise for -- 1280 is a multiple
+ * of the 64 pixels its reconstruction working set is sized in, where 1296 is
+ * not, and 720 is a whole number of 16-row macroblocks, where 1080 is not --
+ * so nothing is padded sideways or cropped back, and it is the lightest of the
+ * seven on every stage the picture passes through.  A run that is watched
+ * live is the one that notices; a page that would rather have a different
+ * trade asks for it, and any of the seven can be had that way.
+ *
+ * It is named by the header's constant rather than by its number so that the
+ * two cannot drift apart -- a mode inserted into the table would otherwise
+ * silently repoint this at another one.
  */
 
-#define CAMENC_DEFAULT_MODE CONFIG_OV5647_DEFAULT_MODE
+#define CAMENC_DEFAULT_MODE OV5647_MODE_1280x720_30
 
 /* The board's request to point the capture path at another sensor mode; the
  * argument is a mode index.
@@ -773,9 +797,10 @@ static void camenc_usage(void)
   printf("  -n  frames to encode (default %d)\n", CAMENC_DEFAULT_FRAMES);
   printf("  -m  sensor mode, by its index in the sensor driver's mode"
          " table\n");
-  printf("      (default %d: 0 = 1296x960 at 30 fps, 1 = 1296x960 at"
-         " 22 fps,\n      2 = 640x480 at 60 fps, 3 = 1920x1080 at 20 fps,"
-         " 4 = 1280x720 at 30 fps)\n",
+  printf("      (default %d: 0 = 1920x1080 at 15 fps, 1 = 1296x960 at"
+         " 30 fps,\n      2 = 1296x960 at 15 fps, 3 = 1280x720 at 30 fps,"
+         " 4 = 1280x720 at\n      15 fps, 5 = 640x480 at 60 fps,"
+         " 6 = 640x480 at 30 fps)\n",
          CAMENC_DEFAULT_MODE);
   printf("  -q  quantiser, 0..51 (default %d)\n", CAMENC_DEFAULT_QP);
   printf("  -G  pictures per group, 1..1000 (default %d; 1 makes every"
@@ -1779,6 +1804,16 @@ int main(int argc, FAR char *argv[])
 
   bool switching = false;
 
+  /* Whether the board has been told which mode this run wants the receive
+   * chain to be configured for.  It is told once, before the first stream
+   * opens the camera; a later change of mode goes through the same board
+   * command but from the other end of the stream loop, where a refusal is
+   * recoverable rather than fatal -- which is why the two are not one call
+   * site.
+   */
+
+  bool board_told = false;
+
   while ((opt = getopt(argc, argv, "d:e:i:lS:o:n:m:q:x:g:p:G:A:t:W:r:R:N:")) !=
          -1)
     {
@@ -1926,13 +1961,26 @@ int main(int argc, FAR char *argv[])
   height = cur->height;
 
   /* The encoder works on whole macroblocks, so a geometry that is not a
-   * multiple of sixteen would be rounded and the picture would not be the one
-   * that was asked for.  Refusing is clearer than rounding quietly.  Every
-   * mode the sensor offers satisfies this; the check is here so that one added
-   * later which does not is caught here rather than in a buffer size.
+   * multiple of sixteen is not refused but padded: the driver rounds both
+   * dimensions up to its grid and tells a decoder to crop the padding back
+   * off again, in the sequence parameter set.  What is left for this program
+   * is to size its own buffers for the padded height, which it does from the
+   * encoder's own reported stride and sizeimage further down -- see
+   * enc_vstride.  The 1920x1080 mode is the one that needs it: 1080 rows is
+   * eight short of its 1088-row grid, and the mode's own register table says
+   * why the remainder is left for the rest of the path rather than trimmed
+   * in the sensor.
+   *
+   * A width off the grid is still refused, and the difference is not an
+   * oversight.  A padded height is rows the encoder reads out of memory it
+   * allocated; a padded width would be columns of a row the camera hands
+   * over, and the copy between the two is where the two sides have to agree
+   * byte for byte.  Every mode the sensor offers has a width that is a
+   * multiple of sixteen -- 1920, 1296, 1280 and 640 -- so this costs nothing
+   * today and is the check that would catch a mode that broke it.
    */
 
-  if (frames <= 0 || (width & 15u) != 0 || (height & 15u) != 0)
+  if (frames <= 0 || (width & 15u) != 0)
     {
       camenc_usage();
       return EXIT_FAILURE;
@@ -2242,6 +2290,46 @@ stream_start:
       nbuf_cam = CAMENC_BUFFERS;
 
       goto source_ready;
+    }
+
+  /* Tell the board which mode this run wants, before the camera is opened.
+   *
+   * A mode is not only the sensor's business.  It brings a link rate and a
+   * frame size with it, and the D-PHY, the CSI HOST and the capture engine
+   * all have to be moved to match -- which the board is the only place able
+   * to do together and in the right order.  Nothing in the framework carries
+   * the link rate that goes with a sensor mode, and the capture engine has no
+   * scaler, so it refuses a frame size it was not programmed for: a mode
+   * chosen here and set on the sensor alone is therefore a mode the capture
+   * engine will reject on the very next call.
+   *
+   * This is what makes the mode the application's choice at all.  The board
+   * brings its chain up on the mode its own configuration names, and that is
+   * where a run that never asks for anything would stay -- so a caller that
+   * does ask has to say so before the device is opened, which is here.
+   *
+   * A refusal is fatal, unlike the one on the switch path below.  There the
+   * stream that was already running is still configured and can carry on;
+   * here nothing has been opened yet, and a mode this program cannot select
+   * is a mode it cannot film in.
+   */
+
+  if (!board_told)
+    {
+      uint64_t t_board = camenc_now_us();
+
+      if (boardctl(CAMENC_BOARDIOC_SET_MODE, (uintptr_t)mode) < 0)
+        {
+          printf("camenc: the board will not take mode %" PRIu32 ": %d\n",
+                 mode, errno);
+          ret = -EINVAL;
+          goto errout;
+        }
+
+      board_told = true;
+
+      printf("camenc: board took %" PRIu64 " ms to select mode %" PRIu32 "\n",
+             (camenc_now_us() - t_board) / 1000u, mode);
     }
 
   printf("camera:   %s, mode %" PRIu32 " (%" PRIu32 "x%" PRIu32

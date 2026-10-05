@@ -30,13 +30,15 @@
  * over two MIPI CSI-2 data lanes and is never seen here: the SoC side
  * (VICAP) owns the frame buffers.
  *
- * Five modes are implemented: 640x480 (2x2 binned and subsampled), 1296x960
- * (2x2 binned, full field of view) at two frame rates, and two that crop a
- * smaller picture out of the array -- 1280x720, read binned, and 1920x1080,
- * read at full resolution.  Which one a stream runs at is asked for by the
- * application rather than fixed at build time, so the sensor follows the
- * caller; see ov5647_start_capture().  What each mode is for, and what it
- * gives up, is in the mode table below.
+ * Seven modes are implemented, in four geometries: 640x480 (2x2 binned and
+ * subsampled), 1296x960 (2x2 binned, full field of view), 1280x720 (that
+ * binned readout cropped to 16:9) and 1920x1080 (the middle of the array read
+ * at full resolution).  Each geometry runs at two frame rates, a change that
+ * lengthens a line and a frame inside the sensor and moves nothing outside
+ * it.  Which mode a stream runs at is asked for by the application rather
+ * than fixed at build time, so the sensor follows the caller; see
+ * ov5647_start_capture().  What each mode is for, and what it gives up, is in
+ * the mode table below.
  *
  * Format reporting
  * ----------------
@@ -172,20 +174,6 @@
  */
 
 #define OV5647_RESET_DELAY_US 5000
-
-/* The mode the driver leaves the sensor in when it is bound.
- *
- * The application chooses a mode for the stream it wants, so this only
- * decides what a caller that never asks for anything gets, and what the
- * sensor is left in between streams.  The check below turns a Kconfig index
- * that names no mode into a build error, rather than into a null pointer
- * dereference in the middle of the driver.
- */
-
-#if CONFIG_OV5647_DEFAULT_MODE >= OV5647_NUM_MODES
-#error \
-    "CONFIG_OV5647_DEFAULT_MODE names no mode; see OV5647_MODE_* in ov5647.h"
-#endif
 
 /* AEC and AGC are switched off by the common register table, so the exposure
  * time and the gain have to be set explicitly: there is no auto loop to fall
@@ -564,56 +552,71 @@ static const struct ov5647_reg_s g_ov5647_1080p_regs[] = {
  * is what the pack can be relied on to carry -- and 640x480's 1852 * 504 at
  * 58.333 MHz is 62.5 fps, advertised as 60.
  *
- * The 1920x1080 entry is the third kind of change again, and the only one
- * that is not a difference of frame rate.  It runs the same pixel clock as
- * the binned mode but reads a different part of the array, so its HTS is its
- * own -- 2416 -- and everything it reads is cropped out of the middle rather
- * than merged from the whole.
+ * Four geometries, and each runs at two rates.  VTS is the exposure ceiling
+ * as well as the frame length, because an exposure cannot outlast the frame
+ * it is part of, so the slower entry of a pair is the one for a scene that
+ * the faster entry would have to underexpose.  That is the whole difference
+ * between the two entries of a pair: they share a link frequency, a Bayer
+ * order and a register set, so moving between them changes nothing outside
+ * the sensor -- no D-PHY rate to settle, no capture buffers to resize.
+ * Whether the trade is worth making is the application's to judge, which is
+ * why both are offered rather than one being chosen here.
  *
- * VTS is also the exposure ceiling, because an exposure cannot outlast the
- * frame it is part of.  That is the whole difference between the two
- * 1296x960 entries: the second lengthens VTS and so lengthens the exposure
- * the sensor can be given, at the cost of frame rate.  They share a link
- * frequency, a Bayer order and a register set, so moving between them
- * changes nothing outside the sensor -- no D-PHY rate to settle, no capture
- * buffers to resize.  A scene that pins the gain at its ceiling in the
- * 30 fps entry has somewhere to go in the 22 fps one; whether that trade is
- * worth making is the application's to judge, which is why both are offered
- * rather than one being chosen here.
+ * The 1920x1080 geometry is a difference of readout rather than of rate, and
+ * it is the only one of the four that is.  It runs the same pixel clock as
+ * the binned geometries but reads a different part of the array, so what it
+ * reads is cropped out of the middle rather than merged from the whole.
  *
- * ★ How far that second entry can go is bounded by the width of the VTS
- * field, and the bound is not obvious from the datasheet.
+ * ★ How far a frame can be stretched at a fixed HTS is bounded by the width
+ * of the VTS field, the bound is not obvious from the datasheet, and it is
+ * what decides whether a 15 fps entry can be had for VTS alone.
  *
  * 0x380e is described as "Bit[1:0]: Total vertical size[9:8]", which would
  * make VTS ten bits and cap a frame at 1023 lines.  Its own reset value says
  * otherwise: 0x07b0 is 1968, which does not fit in ten bits.  The
  * description is a slip and the field is [2:0], so VTS is eleven bits and
- * the longest frame these timings can describe is 2047 lines -- 1896 * 2047
- * at 87.5 MHz, or 44.4 ms, which is 22.5 frames a second.  Twenty-two is
- * what the pack can be relied on to carry, rounded down the same way 32.2 is
- * advertised as 30.
+ * the longest frame a fixed HTS can describe is 2047 lines.
  *
- * A longer frame is not refused by the sensor, which is what makes this
- * worth writing down.  The part above 2047 is silently discarded: 2870
- * reaches the sensor as 822, a frame shorter than the 960 active lines it
- * has to hold.  The picture that comes out has broken colour and artifacts,
- * because a frame that cannot contain its own readout is not a frame.  This
- * entry was first written that way, to reach 15 fps, and that symptom is why
- * ov5647_start_capture() now reads the timing registers back and complains.
+ * For the three geometries that run the 87.5 MHz pixel clock the ceiling is
+ * not far enough.  They share the binned geometry's HTS of 1896, and
+ * 1896 * 2047 there is 44.4 ms -- 22.5 frames a second, which is faster than
+ * the fifteen wanted, so VTS alone cannot reach it.  (That ceiling is where
+ * the 1296x960 geometry's 22 fps entry came from, before the entry was asked
+ * to be 15 instead.)  Reaching 15 needs a longer line as well as a longer
+ * frame, and HTS is thirteen bits wide with 8191 to give, so those three
+ * geometries take it to 2844 -- the value the upstream driver programs for
+ * the sensor's own full-resolution mode, and so a figure that is in use
+ * rather than one invented here.  A frame is then 2844 * 2047 at 87.5 MHz, or
+ * 66.5 ms: fifteen frames a second, quoted to the same tolerance as the other
+ * rates.
  *
- * So 22 fps is the floor at this HTS, and the exposure ceiling that comes
- * with it is 2043 lines -- 1.43 times the 30 fps entry's.  Anything slower
- * needs a slower pixel clock, which is a different link rate and therefore
- * no longer a change that stays inside the sensor.
+ * The VGA geometry does not need any of that, because both of the rates it is
+ * offered at are inside what its own HTS can express.  Its pixel clock is
+ * 58.333 MHz, so at its own HTS of 1852 the eleven-bit ceiling is 2047 lines
+ * -- 65.0 ms, or 15.4 frames a second, slower than either of the two rates --
+ * and its second rate is reached by lengthening VTS alone: 1008 lines, or
+ * 32.0 ms, which is thirty frames a second.
+ *
+ * A frame longer than 2047 lines is not refused by the sensor, which is what
+ * makes the limit worth writing down.  The part above 2047 is silently
+ * discarded: 2870 reaches the sensor as 822, a frame shorter than the 960
+ * active lines it has to hold.  The picture that comes out has broken colour
+ * and artifacts, because a frame that cannot contain its own readout is not
+ * a frame.  The 1296x960 geometry was first given a 15 fps entry that way,
+ * and that symptom is why ov5647_start_capture() now reads the timing
+ * registers back and complains.  The 2844 above is what replaced it.
  *
  * A D-PHY link is double data rate, so the rate the receiver is configured
- * for per lane is twice the link frequency.  The two 1296x960 entries and the
- * 1920x1080 one all leave it at 218.75 MHz, because all three run the same
- * PLL multiplier; 640x480 runs its link at 145.833 MHz, which is the one
- * figure a mode change cannot make cheap.
+ * for per lane is twice the link frequency.  Three of the four geometries
+ * leave it at 218.75 MHz, because all three run the same PLL multiplier, so
+ * a change between any of them costs the capture engine's buffers and
+ * nothing else -- and within a pair it costs nothing at all, since the two
+ * entries of a pair also share the geometry.  640x480 runs its link at
+ * 145.833 MHz, which is the one figure a change involving it cannot make
+ * cheap: the D-PHY has to be brought up again at the new rate.
  *
- * ★ The 1920x1080 entry is the one mode that does not trade resolution for
- * light.
+ * ★ The 1920x1080 geometry is the one that does not trade resolution for
+ * light -- it is the only one of the four that does not bin.
  *
  * It reads the middle of the array at full resolution -- no binning and no
  * subsampling -- and crops that to shape.  Both halves of that cost light.  A
@@ -621,46 +624,47 @@ static const struct ov5647_reg_s g_ov5647_1080p_regs[] = {
  * four times as much per pixel and reads out one pixel where this one reads
  * four; and cropping keeps only the middle 1928x1088 of the 2592x1944 array.
  *
- * What this entry does about it is take the longest exposure the readout
- * allows.  A frame is 1811 lines of the mode's 2416-pixel HTS, and an exposure
- * may fill a frame, so the ceiling is 1807 lines -- 49.9 ms at the mode's 27.6
- * us line time.  Against the 30 fps 1296x960 entry's 1431 lines, or 31.0 ms,
- * that is a factor of 1.61, or about 0.7 of a stop.  So the mode buys back
- * roughly a third of the two stops that the missing binning costs, and lands
- * about 1.3 stops darker per pixel than 1296x960 at the same scene
- * brightness.  A warmer reading of the trade is that this entry exists for
- * the resolution -- 1.67 times the pixels, in 16:9 rather than 4:3 -- and not
- * for sensitivity.
+ * What this entry does about it is take the longest exposure its readout
+ * allows.  A frame is 2047 of the mode's 2844-pixel lines, and an exposure may
+ * fill a frame, so the ceiling is 2043 lines -- 66.4 ms at the mode's 32.5 us
+ * line time.  Against the 30 fps 1296x960 entry's 1431 lines, or 31.0 ms,
+ * that is a factor of 2.14, or a little over a stop.  So the mode buys back
+ * more than half of the two stops the missing binning costs, and lands about
+ * 0.9 of a stop darker per pixel than 1296x960 at the same scene brightness.
+ * A warmer reading of the trade is that this entry exists for the resolution
+ * -- 1.67 times the pixels, in 16:9 rather than 4:3 -- and not for
+ * sensitivity.
  *
- * Twenty frames a second rather than the thirty upstream offers is therefore
- * the whole point of the entry, and it is also as far as it should go.  A
- * frame rate is only worth advertising if the capture and encode stages
- * behind it can retire the frames, and at this geometry they are close to
- * their limit; a faster entry would promise headroom the pipeline cannot
- * spend.  So there is one entry here and it is the slow one.  Twenty is well
- * inside what the timings can express: 1811 lines is 236 below the eleven-bit
- * ceiling, so this is a choice and not a limit.
+ * Fifteen frames a second, then, and it is the only rate this geometry is
+ * offered at.  A frame rate is only worth advertising if the capture and
+ * encode stages behind it can retire the frames, and at 1.67 times the pixels
+ * of 1296x960 they are close to their limit; a faster entry would promise
+ * headroom the pipeline cannot spend.  An earlier version of this entry ran
+ * at twenty, and the reason it does not any more is the same one: twenty is
+ * well inside what the timings can express, and so is fifteen, and between
+ * two rates the pipeline can just keep up with, the slower one exposes
+ * better.
  *
  * Its height, 1080, is not a multiple of sixteen.  Nothing downstream of the
  * sensor needs it to be -- the capture engine's stride is a byte count and
  * the encoder pads to its macroblock grid and crops back -- and the mode's own
  * register table says where that is handled.
  *
- * ★ The 1280x720 entry is the one that is there for the pipeline rather than
- * for the picture.
+ * ★ The 1280x720 geometry is the one that is there for the pipeline rather
+ * than for the picture.
  *
  * It reads the same binned array as 1296x960 and crops it to 16:9.  What that
  * costs is field of view: 240 of the 960 rows are gone, a quarter of the
  * vertical extent.  What it does not cost is light, and that is what separates
  * it from 1920x1080 above -- the bin is untouched, so every output pixel still
- * stands for four photodiodes, the line time is unchanged, and the exposure
- * ceiling is the same 1431 lines.  A scene that is bright enough for 1296x960
- * is bright enough for this.
+ * stands for four photodiodes, the line time is unchanged, and each of its two
+ * rates carries exactly the exposure ceiling 1296x960's carries at that rate.
+ * A scene that is bright enough for 1296x960 is bright enough for this.
  *
  * What it buys is 74 per cent of the work everywhere behind the sensor.  Every
  * stage after the readout -- the link, the capture engine's DMA, the demosaic,
  * the frame copy and the encoder -- costs what the picture costs, and the
- * picture is 921,600 pixels where it was 1,244,160.  Against a stream that was
+ * picture is 921,600 pixels where it is 1,244,160.  Against a stream that was
  * measured running 1.9 per cent over its own frame period, that margin is the
  * difference between keeping up and dropping frames whenever the picture
  * moves.  A mode is not only a thing the sensor can be asked for; it is also a
@@ -674,24 +678,49 @@ static const struct ov5647_reg_s g_ov5647_1080p_regs[] = {
  * 1920x1080 entry above is what that costs when it does not hold; this is the
  * case where there is nothing to pay.
  *
- * Its timings are the binned mode's, because its register table is: HTS and
- * VTS are unchanged, so a frame is still 32.2 ms of sensor timing, and the
- * rows the window gives up become blanking rather than frame rate.  Sharing
- * the timings is what lets the two share a link rate and a line time, so
- * moving between them moves no clock and changes no exposure.  It is also why
- * there is one entry here and not a second, slower one: with the frame already
- * at the binned mode's length, there is nothing a longer one could buy that
- * the binned entry does not already offer.
+ * Its timings are the binned mode's, because its register table is, and it is
+ * offered at the same two rates for the same reason.  What 1296x960 spends on
+ * 960 rows this one spends on 720 and the rest becomes blanking, so the two
+ * share a link rate and a line time and differ only in what is read: moving
+ * between them moves no clock and changes no exposure.  The application's `-W`
+ * option -- which gives the encoder the leftmost W columns of a picture whose
+ * width is not a multiple of the 64-pixel unit its working set is sized in --
+ * has nothing to do for this geometry, since 1280 is what it would trim 1296
+ * to.
  *
  * The Bayer order is per mode because a mode's readout can mirror or flip
- * the sensor's native tile -- both of these do, see the register tables --
- * and the order in the delivered buffer is what the capture engine has to be
- * told.  It is stated here rather than derived at the point of use so that
+ * the sensor's native tile -- all four of these do, see the register tables
+ * -- and the order in the delivered buffer is what the capture engine has to
+ * be told.  It is stated here rather than derived at the point of use so that
  * the one place that knows about mirroring is the place that also knows the
  * answer.
  */
 
 static const struct ov5647_mode_s g_ov5647_modes[OV5647_NUM_MODES] = {
+  /* 1920x1080, the middle of the array read at full resolution.  Its HTS is
+   * the 2844 the geometry needs to reach 15 fps, which is also what the
+   * upstream driver programs for the sensor's full-resolution mode; the
+   * binned geometries borrow it for their own 15 fps entries.  The link runs
+   * at the binned modes' rate, so a change to or from this one moves no
+   * clock.
+   */
+
+  {
+      .width = 1920,
+      .height = 1080,
+      .fps = 15,
+      .hts = 2844u,
+      .vts = 2047u,
+      .pll = 0x69,
+      .link_freq = 218750000u,
+      .bayer = OV5647_BAYER_GBRG,
+  },
+
+  /* 1296x960: the 2x2 bin of the whole array, trimmed to the encoder's
+   * macroblock grid.  1896 * 1435 at 87.5 MHz is 32.2 fps, advertised as 30;
+   * the 22 fps entry that used to sit here is the 15 fps one below.
+   */
+
   {
       .width = 1296,
       .height = 960,
@@ -705,13 +734,47 @@ static const struct ov5647_mode_s g_ov5647_modes[OV5647_NUM_MODES] = {
   {
       .width = 1296,
       .height = 960,
-      .fps = 22,
-      .hts = 1896u,
+      .fps = 15,
+      .hts = 2844u,
       .vts = 2047u,
       .pll = 0x69,
       .link_freq = 218750000u,
       .bayer = OV5647_BAYER_GBRG,
   },
+
+  /* 1280x720: the same binned readout cropped to 16:9, at the same two
+   * rates, and with the same timings as the pair above -- see the comment on
+   * the register table.
+   */
+
+  {
+      .width = 1280,
+      .height = 720,
+      .fps = 30,
+      .hts = 1896u,
+      .vts = 1435u,
+      .pll = 0x69,
+      .link_freq = 218750000u,
+      .bayer = OV5647_BAYER_GBRG,
+  },
+  {
+      .width = 1280,
+      .height = 720,
+      .fps = 15,
+      .hts = 2844u,
+      .vts = 2047u,
+      .pll = 0x69,
+      .link_freq = 218750000u,
+      .bayer = OV5647_BAYER_GBRG,
+  },
+
+  /* 640x480: the binned array subsampled to VGA.  Its pixel clock is slower
+   * than the others', so it is the one pair that reaches its second rate on
+   * VTS alone -- 1852 * 1008 at 58.333 MHz is 32.0 ms.  It is also the only
+   * pair whose link rate differs from the rest, and so the only change of
+   * geometry that has to move the D-PHY.
+   */
+
   {
       .width = 640,
       .height = 480,
@@ -723,23 +786,13 @@ static const struct ov5647_mode_s g_ov5647_modes[OV5647_NUM_MODES] = {
       .bayer = OV5647_BAYER_GBRG,
   },
   {
-      .width = 1920,
-      .height = 1080,
-      .fps = 20,
-      .hts = 2416u,
-      .vts = 1811u,
-      .pll = 0x69,
-      .link_freq = 218750000u,
-      .bayer = OV5647_BAYER_GBRG,
-  },
-  {
-      .width = 1280,
-      .height = 720,
+      .width = 640,
+      .height = 480,
       .fps = 30,
-      .hts = 1896u,
-      .vts = 1435u,
-      .pll = 0x69,
-      .link_freq = 218750000u,
+      .hts = 1852u,
+      .vts = 1008u,
+      .pll = 0x46,
+      .link_freq = 145833300u,
       .bayer = OV5647_BAYER_GBRG,
   },
 };
@@ -769,11 +822,12 @@ static struct v4l2_fmtdesc g_ov5647_fmtdescs[] = {
   },
 };
 
-/* The geometries, each listed once.  The two 1296x960 modes share one, so
- * they share an entry: this is a frame size the sensor can produce, and a
- * frame rate is not part of it.  The list is the three shapes the mode table
- * above can be read as, and it is what the application enumerates to find out
- * what it may ask for.
+/* The geometries, each listed once and in the order the mode table first
+ * reaches it.  A pair of modes shares one geometry, so they share an entry:
+ * this is a frame size the sensor can produce, and a frame rate is not part
+ * of it.  The list is the four shapes the mode table above can be read as,
+ * and it is what the application enumerates to find out what it may ask
+ * for.
  */
 
 static struct v4l2_frmsizeenum g_ov5647_frmsizes[] =
@@ -783,8 +837,8 @@ static struct v4l2_frmsizeenum g_ov5647_frmsizes[] =
     .type   = V4L2_FRMSIZE_TYPE_DISCRETE,
     .discrete =
       {
-        .width  = 1296,
-        .height = 960,
+        .width  = 1920,
+        .height = 1080,
       },
   },
   {
@@ -792,8 +846,8 @@ static struct v4l2_frmsizeenum g_ov5647_frmsizes[] =
     .type   = V4L2_FRMSIZE_TYPE_DISCRETE,
     .discrete =
       {
-        .width  = 640,
-        .height = 480,
+        .width  = 1296,
+        .height = 960,
       },
   },
   {
@@ -801,8 +855,8 @@ static struct v4l2_frmsizeenum g_ov5647_frmsizes[] =
     .type   = V4L2_FRMSIZE_TYPE_DISCRETE,
     .discrete =
       {
-        .width  = 1920,
-        .height = 1080,
+        .width  = 1280,
+        .height = 720,
       },
   },
   {
@@ -810,13 +864,14 @@ static struct v4l2_frmsizeenum g_ov5647_frmsizes[] =
     .type   = V4L2_FRMSIZE_TYPE_DISCRETE,
     .discrete =
       {
-        .width  = 1280,
-        .height = 720,
+        .width  = 640,
+        .height = 480,
       },
   },
 };
 
-/* The frame rates, one per entry in the mode table and in the same order.
+/* The frame rates, deduplicated and in the order the mode table first reaches
+ * them.
  *
  * The framework hands these out as a flat list without filtering by frame
  * size -- its VIDIOC_ENUM_FRAMEINTERVALS ignores the width and height that
@@ -825,9 +880,20 @@ static struct v4l2_frmsizeenum g_ov5647_frmsizes[] =
  * settled by the frame size and this rate together, in
  * ov5647_start_capture().
  *
- * The first entry is the rate the framework starts a capture stream at, so
- * it has to be one the driver accepts; that is why this list is written in
- * the mode table's order rather than sorted.
+ * The first entry is not just the head of a list.  The framework reads the
+ * first entry here together with the first entry of the frame sizes above as
+ * the format a device is opened with, before the application has asked for
+ * anything (see initialize_frame_setting() in v4l2_cap.c).  The two are
+ * therefore written so that they name a mode that exists -- they are the
+ * first mode's own geometry and rate -- and a mode inserted at the front of
+ * the table is a change to this entry as well.
+ *
+ * That they have to agree is a requirement of this driver rather than of the
+ * framework: the framework would accept a pair naming no mode at all, and
+ * this driver would too, because it validates the size and the rate
+ * separately and deliberately so (a change of mode arrives as two calls,
+ * each carrying the other's previous value).  What the agreement buys is that
+ * a client which sets neither gets a stream rather than a fault.
  */
 
 static struct v4l2_frmivalenum g_ov5647_frmintervals[] =
@@ -838,7 +904,7 @@ static struct v4l2_frmivalenum g_ov5647_frmintervals[] =
     .discrete =
       {
         .numerator   = 1,
-        .denominator = 30,
+        .denominator = 15,
       },
   },
   {
@@ -847,7 +913,7 @@ static struct v4l2_frmivalenum g_ov5647_frmintervals[] =
     .discrete =
       {
         .numerator   = 1,
-        .denominator = 22,
+        .denominator = 30,
       },
   },
   {
@@ -859,21 +925,18 @@ static struct v4l2_frmivalenum g_ov5647_frmintervals[] =
         .denominator = 60,
       },
   },
-  {
-    .index     = 3,
-    .type      = V4L2_FRMIVAL_TYPE_DISCRETE,
-    .discrete =
-      {
-        .numerator   = 1,
-        .denominator = 20,
-      },
-  },
 };
 
 static struct ov5647_s g_ov5647 = {
   .lock = NXMUTEX_INITIALIZER,
   .addr = CONFIG_OV5647_I2C_ADDR,
-  .mode = &g_ov5647_modes[CONFIG_OV5647_DEFAULT_MODE],
+
+  /* What the sensor is left in until an application names a mode.  See
+   * OV5647_MODE_DEFAULT: the driver does not choose a mode for a stream, and
+   * this is only what exists before anyone has asked for one.
+   */
+
+  .mode = &g_ov5647_modes[OV5647_MODE_DEFAULT],
   .exposure_lines = OV5647_EXPOSURE_INIT,
   .analog_gain = OV5647_ANALOG_GAIN_INIT,
 };

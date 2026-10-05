@@ -41,6 +41,16 @@
  *
  * The PHY, the CSI HOST and VICAP are configured by their own drivers; the
  * board never touches their registers.
+ *
+ * What the board does not do is choose a mode.  It brings the chain up on
+ * one -- the capture engine has no scaler and a device node needs a buffer
+ * layout, so there is no way to bring it up without a geometry -- but that is
+ * a placeholder rather than a decision, and every mode a stream actually runs
+ * at is named by the application, before it opens the camera.  Closing the
+ * device is the application's half of the same arrangement, and it needs no
+ * help from the board: the framework puts the sensor into software standby
+ * when the last user lets go, and the chain is left as it was, so the next
+ * stream costs only the sensor its own start-up.
  ****************************************************************************/
 
 /****************************************************************************
@@ -108,8 +118,8 @@
 
 static FAR struct gpio_dev_s *g_kickpi_k7_cam_pdn;
 
-/* The capture mode the receive chain is configured for, as an index into the
- * sensor driver's mode table.
+/* The capture mode the receive chain is currently configured for, as an index
+ * into the sensor driver's mode table.
  *
  * Everything the two SoC-side drivers have to be told -- the link rate the
  * D-PHY runs at, the geometry and Bayer order the capture engine is
@@ -121,9 +131,17 @@ static FAR struct gpio_dev_s *g_kickpi_k7_cam_pdn;
  * together by the application telling the board before it opens the device,
  * which is what kickpi_k7_camera_set_mode() is for; there is no shared state
  * between them to get out of step, only this one direction of travel.
+ *
+ * The value it starts at is the placeholder the sensor driver publishes for
+ * this, and not a choice -- see the note on this at the top of the file.  A
+ * device node has to exist before an application can ask for anything, and
+ * the capture engine it exposes has no scaler, so the chain cannot be brought
+ * up without a geometry; this is the one it is brought up with.  The first
+ * application to name a mode replaces it, which is what makes it a
+ * placeholder rather than a decision.
  */
 
-static unsigned int g_kickpi_k7_cam_mode = CONFIG_OV5647_DEFAULT_MODE;
+static unsigned int g_kickpi_k7_cam_mode = OV5647_MODE_DEFAULT;
 
 /* The sensor names its Bayer orders, and the capture engine names the same
  * four in its own enum, because they are separate interfaces.
@@ -394,18 +412,19 @@ int kickpi_k7_camera_initialize(void)
       return ret;
     }
 
-  /* 3. The receive chain, configured for the mode the board starts in.  The
-   *    PHY comes up first inside the CSI HOST driver, because the host's
-   *    lane count may only be changed while the D-PHY lanes are in the stop
-   *    state -- which is exactly the state they are in while the sensor is
-   *    not yet streaming.
+  /* 3. The receive chain, configured for the placeholder mode the board
+   *    starts in -- see the note on g_kickpi_k7_cam_mode for why it has to
+   *    name some mode rather than none.  The PHY comes up first inside the
+   *    CSI HOST driver, because the host's lane count may only be changed
+   *    while the D-PHY lanes are in the stop state -- which is exactly the
+   *    state they are in while the sensor is not yet streaming.
    *
    *    The DCPHY is shared with the DSI output.  Neither side resets or
    *    reconfigures the other's, so a running display is not disturbed by
    *    bringing the camera up (and vice versa).
    */
 
-  g_kickpi_k7_cam_mode = CONFIG_OV5647_DEFAULT_MODE;
+  g_kickpi_k7_cam_mode = OV5647_MODE_DEFAULT;
   kickpi_k7_camera_csi_config(g_kickpi_k7_cam_mode, &csi);
 
   ret = rk3576_csi_host_initialize(&csi);
@@ -481,8 +500,16 @@ int kickpi_k7_camera_initialize(void)
  *   The caller has to have closed the capture device first.  Not because the
  *   drivers would be left inconsistent -- the 3A device now outlives a mode
  *   change -- but because the sensor has to be stopped for the D-PHY to
- *   accept new timing parameters at all.  The intended caller is the
- *   application, between closing the camera and opening it again.
+ *   accept new timing parameters at all.
+ *
+ *   It is used at two moments, and cannot tell them apart or need to.  One is
+ *   the application's first request, before it opens the camera for the first
+ *   time: the chain is on the placeholder mode then, and the stream is about
+ *   to be the mode the application asked for rather than the one the board
+ *   was brought up with.  The other is a change while the program runs, when
+ *   the page has asked for a different mode and the application closes the
+ *   camera, asks for the new one, and opens it again.  What the two share is
+ *   the only precondition there is: that no capture device is open.
  *
  * Input Parameters:
  *   index - The mode to switch to, one of the sensor's OV5647_MODE_*.

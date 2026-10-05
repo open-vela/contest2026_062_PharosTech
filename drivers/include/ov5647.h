@@ -110,30 +110,47 @@ struct ov5647_mode_s
 
 /* The modes this driver implements, as indices into ov5647_mode().
  *
- * Two of them share a geometry and differ only in frame rate.  That is a
- * cheaper kind of change than it looks: a frame lasts HTS * VTS pixel
- * clocks, so holding everything else still and lengthening VTS is the whole
- * of it, and the receiver's link rate, the capture engine's buffer geometry
- * and the encoder all stay exactly as they were.  Lengthening VTS is also
- * the only way this sensor can be given more exposure time than one frame's
- * worth of lines, which is what the second entry is for.
+ * There are seven, in four geometries, and each geometry runs at two frame
+ * rates.  That is a cheaper kind of change than it looks: a frame lasts
+ * HTS * VTS pixel clocks, so holding everything else still and lengthening
+ * VTS is the whole of it, and the receiver's link rate, the capture engine's
+ * geometry and the encoder all stay exactly as they were.  Lengthening VTS
+ * is also the only way this sensor can be given more exposure time than one
+ * frame's worth of lines, which is what the second entry of each pair is
+ * for.
  *
- * The 1920x1080 entry is the one that changes the geometry without changing
- * the link rate: it runs the same PLL multiplier as the binned mode, so the
+ * How far that can go is bounded by the width of the VTS field, and how far
+ * it has to go is set by the frame rates wanted.  VTS is eleven bits, so a
+ * frame is at most 2047 lines.  At the three geometries that run the same
+ * 87.5 MHz pixel clock that is 22.5 fps, which is too fast for a 15 fps
+ * entry; those three therefore lengthen HTS as well, to 2844 -- the figure
+ * the upstream driver programs for the sensor's full-resolution mode, and
+ * so a value that is known to work rather than a value derived here.  The
+ * VGA geometry has a slower pixel clock and reaches 30 fps on VTS alone.
+ * The mode table in ov5647.c works each of these out in full.
+ *
+ * The 1920x1080 entry is the one geometry that changes without changing the
+ * link rate: it runs the same PLL multiplier as the binned modes, so the
  * D-PHY has nothing to settle and only the capture engine's buffers move.
- * It is also the only mode here that does not bin, which is a trade the
- * mode table in ov5647.c works out in full.
+ * It is also the only mode here that does not bin, which costs it light.
  *
- * The 1280x720 entry changes the geometry, and not the link rate either, for
- * the same reason and by the same route as 1920x1080 -- but it keeps the
- * binned readout and crops it instead of reading the array out in full, so it
- * trades field of view for the pipeline's margin rather than trading light.
- * The mode table works that out as well; what matters here is that it is the
- * only entry whose reason for existing is what runs after the sensor.
+ * The 1280x720 geometry changes the frame size, and not the link rate
+ * either, for the same reason and by the same route as 1920x1080 -- but it
+ * keeps the binned readout and crops it instead of reading the array out in
+ * full, so it trades field of view for the pipeline's margin rather than
+ * trading light.  The mode table works that out as well; what matters here
+ * is that it is the one geometry whose reason for existing is what runs
+ * after the sensor.
  *
  * The order here is the order the modes are enumerated to the application
- * in, and the first entry is the framework's own default -- see
- * CONFIG_OV5647_DEFAULT_MODE for how a different boot mode is selected.
+ * in.  It is also what the framework's own initial format and frame rate are
+ * read from, since it takes the first entry of each of the two lists the
+ * sensor publishes (see initialize_frame_setting() in v4l2_cap.c), and the
+ * first entry of each of those is this entry's geometry and this entry's
+ * rate.  That is what OV5647_MODE_DEFAULT below names, and why it is the
+ * first entry rather than a choice.  It is not a constraint on what can be
+ * asked for -- every mode here is reachable at run time -- and an application
+ * may name a different one before it opens the camera.
  *
  * The numbers are also what the application and the board pass to each other
  * when a stream changes modes, so a mode that is added goes at the end of
@@ -141,12 +158,36 @@ struct ov5647_mode_s
  * that name it by number rather than by name.
  */
 
-#define OV5647_MODE_1296x960_30  0u
-#define OV5647_MODE_1296x960_22  1u
-#define OV5647_MODE_640x480_60   2u
-#define OV5647_MODE_1920x1080_20 3u
-#define OV5647_MODE_1280x720_30  4u
-#define OV5647_NUM_MODES         5u
+#define OV5647_MODE_1920x1080_15 0u
+#define OV5647_MODE_1296x960_30  1u
+#define OV5647_MODE_1296x960_15  2u
+#define OV5647_MODE_1280x720_30  3u
+#define OV5647_MODE_1280x720_15  4u
+#define OV5647_MODE_640x480_60   5u
+#define OV5647_MODE_640x480_30   6u
+#define OV5647_NUM_MODES         7u
+
+/* The mode the sensor is left in when nothing has been asked for, and the one
+ * a capture device is opened with.
+ *
+ * This is not a setting, and it is not a choice about what a stream will
+ * look like.  A capture device has to exist before an application can ask it
+ * for anything, and the engine behind this sensor has no scaler -- so a device
+ * node implies a geometry, and something has to name one before the node can
+ * be registered.  This names it.  It is the last decision the driver makes:
+ * from the moment an application names its own mode, which it does before it
+ * opens the camera, nothing here has any bearing on the stream.
+ *
+ * Being the table's first entry is the whole of the requirement on it.  The
+ * framework reads the first entry of the frame sizes and of the frame rates as
+ * the format a device is opened with, and those two entries are this mode's
+ * own geometry and rate -- so a client that sets neither of the two is still
+ * given a pair the capture engine was programmed for.  This, the two lists and
+ * the mode table's order therefore move together: a mode inserted at the front
+ * of the table is a change to all four.
+ */
+
+#define OV5647_MODE_DEFAULT OV5647_MODE_1920x1080_15
 
 /* The shortest exposure the sensor can be asked for, in lines.  Four is the
  * sensor's own minimum, and it is also the margin the maximum leaves: a

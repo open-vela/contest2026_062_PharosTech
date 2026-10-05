@@ -209,7 +209,13 @@ config KICKPI_K7_CAMERA
 		The sensor's control bus is I2C4 in its M3 pin multiplexing
 		(SCL GPIO3_C0, SDA GPIO3_B7, both at alternate function 11).
 
-		Only the 640x480 RAW10 mode is wired up so far.
+		All seven of the sensor's capture modes are reachable.  The board
+		is told which one a stream wants before the camera is opened, and
+		moves the D-PHY, the CSI HOST and its capture engine to match; see
+		kickpi_k7_camera_set_mode().  Boot brings the chain up on
+		OV5647_MODE_DEFAULT, and that is only a placeholder -- the capture
+		engine has no scaler, so a device node needs some geometry, and the
+		first request replaces it.
 
 choice
 	prompt "kickpi-k7 primary display output"
