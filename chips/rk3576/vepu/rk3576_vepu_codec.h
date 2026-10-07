@@ -122,13 +122,8 @@
  * default because the driver does not know how its stream is consumed.  A
  * group is also how long a decoder that arrived late has to wait before it can
  * start, so its length is a property of how a stream is watched rather than of
- * the encoding, and the caller is the one that can answer it.
- *
- * What the choice is worth is measured on this silicon in
- * chips/rk3576/vepu/README.md: two pictures per group is half the rate of one,
- * a longer group keeps paying, and a P picture is under one per cent of an
- * IDR.  The streaming application asks for fifteen, which is half a second at
- * its frame rate.
+ * the encoding, and the caller is the one that can answer it.  The streaming
+ * application asks for fifteen, which is half a second at its frame rate.
  */
 
 #define RK3576_VEPU_DEFAULT_GOP 2

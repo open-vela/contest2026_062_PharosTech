@@ -27,7 +27,7 @@
  *   - Rockchip RK3576 TRM Part 1: CRU (ch. 5), PMU (ch. 6), storage map.
  *   - Rockchip RK3576 TRM Part 2: encoder.
  *   - Register *field* layout: the Apache-2.0 licensed Rockchip MPP
- *     userspace library, vendored at <workspace>/rk3576-mpp-ref/:
+ *     userspace library, which is what drives this IP on Linux:
  *       mpp/hal/rkenc/common/vepu510_common.h
  *       mpp/hal/rkenc/h264e/hal_h264e_vepu510_reg.h
  *

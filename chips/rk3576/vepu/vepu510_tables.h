@@ -27,9 +27,8 @@
  *
  * Every table here is transcribed from Rockchip MPP
  * (mpp/hal/rkenc/common/vepu51x_common.c, Apache-2.0) and is compared
- * element by element against MPP's own definition by
- * rk3576-mpp-ref/verify_regs.py.  That comparison is the point of keeping
- * them in one file:
+ * element by element against MPP's own definition on the host.  That
+ * comparison is the point of keeping them in one file:
  *
  *   - Transcribing is unavoidable.  Linking MPP's object would make the
  *     firmware depend on a file outside its own tree, and the dependency
@@ -46,6 +45,21 @@
  * Nothing else may be added here.  A table that is not directly comparable
  * against an upstream definition belongs with the code that uses it, because
  * the comparison above is the only reason this file exists.
+ *
+ * ---------------------------------------------------------------------------
+ * Transcribed from Rockchip MPP (Rockchip Media Process Platform),
+ * https://github.com/rockchip-linux/mpp, branch develop, commit
+ * 14729dd578e570e5f00fd1dd2113f5429012d64b, Apache-2.0:
+ *
+ *   mpp/hal/rkenc/common/vepu51x_common.c
+ *
+ * Copyright (c) 2026 Rockchip Electronics Co., Ltd.
+ *
+ * This is a modified derivative: the tables are reproduced here, renamed to
+ * this driver's namespace and reduced to the entries the H.264 fixed-QP path
+ * uses.
+ * ---------------------------------------------------------------------------
+ *
  ****************************************************************************/
 
 #ifndef __CHIPS_RK3576_VEPU_VEPU510_TABLES_H

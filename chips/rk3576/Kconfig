@@ -492,7 +492,7 @@ config RK3576_VEPU_SEQ_DUMP
         ---help---
                 Log the whole of the sequence test's output as hex, one line per 64
                 bytes, so it can be read back on a host with a decoder rather than
-                from a terminal. rk3576-mpp-ref/verify_decode.py consumes it.
+                from a terminal.
 
                 Off by default: it is a few hundred lines of log for one picture,
                 and what it is for is comparing the encoder's own picture against a

@@ -57,7 +57,7 @@
  * How this is verified
  * --------------------------------------------------------------------------
  *
- * rk3576-mpp-ref/verify_sps_pps.py extracts MPP's h264e_sps_to_packet() and
+ * A host-side harness extracts MPP's h264e_sps_to_packet() and
  * h264e_pps_to_packet() verbatim, calls them, and compares the resulting
  * bytes against these functions over a matrix of geometries, levels and VUI
  * settings.  A single wrong bit anywhere (including in the emulation
@@ -69,6 +69,24 @@
  * here from that function's rules.  They are not byte-compared, because
  * h264e_sps_update() needs MPP's reference-configuration objects to run; the
  * rules are commented at each site instead.
+ *
+ * ---------------------------------------------------------------------------
+ * Derived from Rockchip MPP (Rockchip Media Process Platform),
+ * https://github.com/rockchip-linux/mpp, branch develop, commit
+ * 14729dd578e570e5f00fd1dd2113f5429012d64b, Apache-2.0:
+ *
+ *   mpp/base/mpp_bitwrite.c
+ *   mpp/codec/enc/h264/h264e_sps.c
+ *   mpp/codec/enc/h264/h264e_pps.c
+ *   mpp/codec/enc/h264/h264e_slice.c
+ *
+ * Copyright (c) 2015-2026 Rockchip Electronics Co., Ltd.
+ *
+ * This is a modified derivative, not a copy: the upstream code was reduced,
+ * rewritten and reorganised for the NuttX kernel build, and the interfaces
+ * here are this driver's rather than MPP's.
+ * ---------------------------------------------------------------------------
+ *
  ****************************************************************************/
 
 #ifndef __CHIPS_RK3576_VEPU_H264_SYNTAX_H

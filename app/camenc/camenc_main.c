@@ -234,9 +234,9 @@
 
 /* The group length this program streams at.
  *
- * Fifteen pictures, which is half a second at the mode's rate.  The
- * measurement behind it is in chips/rk3576/vepu/README.md; what matters here
- * is the two sides of the trade.
+ * Fifteen pictures, which is half a second at the mode's rate.  What matters
+ * here is the two sides of the trade, because this program is what decides
+ * which side it is on.
  *
  * The saving is nearly all of what a group can give.  Halving the rate needs
  * only that the group be long compared with how many pictures an IDR is worth,
