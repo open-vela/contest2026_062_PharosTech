@@ -2218,8 +2218,7 @@ static void rk3576_vepu_selftest_dump(FAR const char *what,
  *   The group length is two, which is the driver's default.  That makes
  *   every P picture here predict from an IDR's reconstruction rather than
  *   from another P picture, which is the case the default is chosen for --
- *   see RK3576_VEPU_DEFAULT_GOP, and chips/rk3576/vepu/README.md for what a
- *   longer group does.
+ *   see RK3576_VEPU_DEFAULT_GOP.
  *
  *   The source moves, which is what makes the prediction check mean
  *   something.  On a still source the encoder is free to spend almost

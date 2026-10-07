@@ -25,13 +25,30 @@
  *
  * Mirrors the Rockchip MPP HAL (mpp/hal/rkenc/h264e/hal_h264e_vepu510.c,
  * Apache-2.0).  The parts implemented here are the ones that can be checked
- * exactly on the host against MPP's own code -- see rk3576-mpp-ref/
- * verify_regs.py, which extracts MPP's setup_vepu510_normal() and
- * setup_vepu510_prep() verbatim, calls them, and compares the resulting
- * register words against these functions for a range of geometries.
+ * exactly on the host against MPP's own code: a host-side harness extracts
+ * MPP's setup_vepu510_normal() and setup_vepu510_prep() verbatim, calls them,
+ * and compares the resulting register words against these functions for a
+ * range of geometries.
  *
  * Field names below are the upstream ones, so the correspondence with MPP
  * stays checkable.
+ *
+ * ---------------------------------------------------------------------------
+ * Derived from Rockchip MPP (Rockchip Media Process Platform),
+ * https://github.com/rockchip-linux/mpp, branch develop, commit
+ * 14729dd578e570e5f00fd1dd2113f5429012d64b, Apache-2.0:
+ *
+ *   mpp/hal/rkenc/h264e/hal_h264e_vepu510.c
+ *   mpp/hal/rkenc/common/vepu510_common.h
+ *
+ * Copyright (c) 2024-2026 Rockchip Electronics Co., Ltd.
+ *
+ * This is a modified derivative, not a copy: the upstream code was reduced,
+ * rewritten and reorganised for the NuttX kernel build, and the interfaces
+ * here are this driver's rather than MPP's.  The register words it produces
+ * have been byte-compared against the upstream functions on the host.
+ * ---------------------------------------------------------------------------
+ *
  ****************************************************************************/
 
 /****************************************************************************

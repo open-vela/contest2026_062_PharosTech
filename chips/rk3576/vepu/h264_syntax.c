@@ -26,8 +26,7 @@
  * The bit writer below is a reimplementation of the one Rockchip MPP uses
  * (mpp/base/mpp_bitwrite.c, Apache-2.0).  It is reproduced rather than
  * linked so that the driver does not drag an MPP internal into the kernel
- * build, and it is verified against MPP by byte comparison -- see
- * rk3576-mpp-ref/verify_sps_pps.py.
+ * build, and it is verified against MPP by byte comparison on the host.
  *
  * Two behaviours in there are worth calling out because they are easy to get
  * wrong and impossible to notice by reading the output:
@@ -40,6 +39,23 @@
  *
  *   2. mpp_writer_bytes() returns byte_cnt plus a pending partial byte, so a
  *      writer that has just emitted trailing bits reports a whole number.
+ *
+ * ---------------------------------------------------------------------------
+ * Derived from Rockchip MPP (Rockchip Media Process Platform),
+ * https://github.com/rockchip-linux/mpp, branch develop, commit
+ * 14729dd578e570e5f00fd1dd2113f5429012d64b, Apache-2.0:
+ *
+ *   mpp/base/mpp_bitwrite.c
+ *   mpp/codec/enc/h264/h264e_sps.c
+ *   mpp/codec/enc/h264/h264e_pps.c
+ *   mpp/codec/enc/h264/h264e_slice.c
+ *
+ * Copyright (c) 2015-2026 Rockchip Electronics Co., Ltd.
+ *
+ * This is a modified derivative, not a copy: the upstream code was reduced,
+ * rewritten and reorganised for the NuttX kernel build, and the interfaces
+ * here are this driver's rather than MPP's.
+ * ---------------------------------------------------------------------------
  *
  ****************************************************************************/
 

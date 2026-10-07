@@ -27,12 +27,12 @@
  * This module decides what to put in it for one frame.
  *
  * Reference: Rockchip MPP, mpp/hal/rkenc/h264e/hal_h264e_vepu510.c
- * (Apache-2.0, vendored in <workspace>/rk3576-mpp-ref/).  The functions here
+ * (Apache-2.0).  The functions here
  * mirror MPP's setup_vepu510_* chain, restricted to what this tree needs:
  * H.264, all-intra, fixed QP, no B frames, no ROI/OSD/SVC/dual-core.
  *
  * Scope note: this file covers the parts that can be checked exactly
- * against MPP's own code on the host (see rk3576-mpp-ref/verify_regs.py):
+ * against MPP's own code on the host:
  * the control block, the source-format block, the buffer addressing, the
  * codec (syntax) block and the fixed-QP rate-control block.  The remaining
  * blocks -- AQ, anti-artefact, scaling list, split, motion estimation -- are
@@ -44,6 +44,23 @@
  * They only assign the fields they own, so the order in
  * rk3576_vepu510_regs_build() does not matter and later blocks can add to
  * the same register set.
+ *
+ * ---------------------------------------------------------------------------
+ * Derived from Rockchip MPP (Rockchip Media Process Platform),
+ * https://github.com/rockchip-linux/mpp, branch develop, commit
+ * 14729dd578e570e5f00fd1dd2113f5429012d64b, Apache-2.0:
+ *
+ *   mpp/hal/rkenc/h264e/hal_h264e_vepu510.c
+ *   mpp/hal/rkenc/common/vepu510_common.h
+ *
+ * Copyright (c) 2024-2026 Rockchip Electronics Co., Ltd.
+ *
+ * This is a modified derivative, not a copy: the upstream code was reduced,
+ * rewritten and reorganised for the NuttX kernel build, and the interfaces
+ * here are this driver's rather than MPP's.  The register words it produces
+ * have been byte-compared against the upstream functions on the host.
+ * ---------------------------------------------------------------------------
+ *
  ****************************************************************************/
 
 #ifndef __CHIPS_RK3576_VEPU_VEPU510_REGS_H

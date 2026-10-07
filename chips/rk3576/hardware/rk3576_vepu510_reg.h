@@ -24,8 +24,6 @@
  * RK3576 VEPU510 register layout (the register model the encoder writes).
  *
  * GENERATED FILE -- do not edit by hand.
- *   Regenerate with:  rk3576-mpp-ref/port_regmodel.py
- *   Verify with:      rk3576-mpp-ref/port_regmodel.py --check
  *
  * These structs are ported from the Rockchip MPP userspace library, which is
  * what actually drives this IP on Linux:
@@ -38,14 +36,16 @@
  *            mpp/hal/rkenc/common/vepu510_common.h
  *            mpp/hal/rkenc/h264e/hal_h264e_vepu510_reg.h
  *   Licence: Apache-2.0 (the same licence as this file)
+ *   Copyright: (c) 2015-2026 Rockchip Electronics Co., Ltd.
  *
- * A local copy of the unmodified upstream sources is kept in
- * <workspace>/rk3576-mpp-ref/ for reference and for the generated-file check.
+ * This header is a modified derivative, not a copy: the structs were
+ * mechanically reduced to the register layout, renamed to this tree's
+ * conventions and reformatted, and the file carries compile-time layout
+ * assertions of its own (at the end).
  *
  * The register-address comments of the form "0x00000270 reg156" are the
  * upstream ones and are kept on purpose: they tie every struct to a register
- * address, which is what makes the layout checkable (see the --check and
- * --compare modes of the port script).
+ * address, which is what makes the layout checkable.
  *
  * The structs are written to the device as whole register blocks, so the
  * member order and the total size matter more than the names.

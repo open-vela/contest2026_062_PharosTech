@@ -27,9 +27,24 @@
  *
  * These are transcribed, not linked, so that the firmware builds from its
  * own tree.  A mistyped entry would degrade the picture with no error, so
- * every table is diffed element by element against MPP's definition by
- * rk3576-mpp-ref/verify_regs.py.  Values are reproduced verbatim, including
- * one that looks like an upstream typo -- see the note at the end.
+ * every table is diffed element by element against MPP's definition on the
+ * host.  Values are reproduced verbatim, including one that looks like an
+ * upstream typo -- see the note at the end.
+ *
+ * ---------------------------------------------------------------------------
+ * Transcribed from Rockchip MPP (Rockchip Media Process Platform),
+ * https://github.com/rockchip-linux/mpp, branch develop, commit
+ * 14729dd578e570e5f00fd1dd2113f5429012d64b, Apache-2.0:
+ *
+ *   mpp/hal/rkenc/common/vepu51x_common.c
+ *
+ * Copyright (c) 2026 Rockchip Electronics Co., Ltd.
+ *
+ * This is a modified derivative: the tables are reproduced here, renamed to
+ * this driver's namespace and reduced to the entries the H.264 fixed-QP path
+ * uses.
+ * ---------------------------------------------------------------------------
+ *
  ****************************************************************************/
 
 /****************************************************************************
