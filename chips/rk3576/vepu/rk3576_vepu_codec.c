@@ -223,7 +223,7 @@ struct rk3576_vepu_codec_priv_s
   uint32_t idr_pic_id;
   bool force_idr; /* the reference chain is broken */
 
-  uint32_t frame_index; /* counts frames for idr_pic_id          */
+  uint32_t frame_index; /* numbers the buffers handed to the app */
   bool header_sent;     /* has SPS+PPS gone out this stream      */
   bool eos_pending;     /* flush was asked for                   */
 
