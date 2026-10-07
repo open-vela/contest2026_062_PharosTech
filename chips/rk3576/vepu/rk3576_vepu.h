@@ -23,9 +23,10 @@
 /****************************************************************************
  * RK3576 VEPU510 video encoder -- public interface.
  *
- * Current scope: power domain, resets, clocks and a version probe.  The
- * encoder proper (VEPU510 register programming, H.264 bitstream syntax and
- * registration as a V4L2 M2M codec device) is layered on top of this.
+ * Current scope: power domain, resets, clocks, the VEPU510 register
+ * programming and H.264 bitstream syntax, and the boot self-test.  The device
+ * node an application talks to (registration as a V4L2 M2M codec device) is
+ * layered on top of this in rk3576_vepu_codec.c.
  *
  * Bring-up order, mirroring rk3576_vicap.c:
  *

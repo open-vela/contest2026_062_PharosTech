@@ -102,7 +102,7 @@ void rk3576_vepu510_regs_ctl(FAR HalVepu510RegSet *regs)
    *
    * Writing this register is what starts the encoder, so the driver writes
    * it last rather than with the rest of the block -- see
-   * rk3576_vepu_encode().  It is the image that carries the command, not
+   * rk3576_vepu_start().  It is the image that carries the command, not
    * the write order, which is why the value is set here.
    */
 
