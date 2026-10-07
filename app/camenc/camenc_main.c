@@ -31,12 +31,12 @@
  *   camenc_stream turns those access units into fragmented MP4
  *
  * Each frame goes round the loop twice.  One round takes a frame from the
- * camera, copies it into the encoder's output buffer and queues it, which
- * starts the hardware and returns; the next round waits for the encoder, takes
- * the bitstream from its capture side, muxes it, and hands both containers
- * back.  The wait is the loop's single poll(), so the sockets the server owns
- * are serviced for as long as the encoder takes -- which is the point of the
- * encode no longer happening inside the queue operation.
+ * camera, hands it to the encoder and queues it, which starts the hardware and
+ * returns; the next round waits for the encoder, takes the bitstream from its
+ * capture side, muxes it, and hands both containers back.  The wait is the
+ * loop's single poll(), so the sockets the server owns are serviced while the
+ * encoder works -- which is the point of the encode no longer happening inside
+ * the queue operation.
  *
  * Two things about this loop are not obvious and are the reason for most of
  * the comments below.
@@ -49,11 +49,13 @@
  * zero.  The file keeps the queried descriptor and queues that, which is what
  * ffmpeg's v4l2m2m backend does and what the encoder expects.
  *
- * The frame is copied rather than passed through.  The encoder's buffers
- * belong to the encoder, and it validates that what it is given is one of
- * them, so a camera buffer cannot be handed to it directly; the copy costs a
- * few hundred microseconds a frame, which at this size is not worth trading
- * the check away for.
+ * The frame is handed to the encoder where it lies when the two devices agree
+ * on the layout of one, and copied into a buffer of the encoder's when they do
+ * not.  The two disagree for 1920x1080 alone, where the encoder's luma plane
+ * is padded to 1088 rows and the capture driver's is not; what decides it is
+ * the comparison beside g_zerocopy further down.  The copy costs a few hundred
+ * microseconds a frame, which at this size is not worth trading a check away
+ * for.
  *
  * Nothing here is specific to a file: the muxer calls a write callback, and
  * where that writes is the only thing to change to have it feed a socket
@@ -98,29 +100,6 @@
 
 #define CAMENC_CAM_DEVPATH "/dev/video0"
 #define CAMENC_ENC_DEVPATH "/dev/video1"
-
-/* The synthetic source's fixed parameters -- see camenc_probe_s for what the
- * pattern is and why it is the way it is.  Here rather than beside the code
- * that uses them because the usage text is above that.
- */
-
-#define CAMENC_PROBE_SIDE     64
-#define CAMENC_PROBE_SIDE_Y   32
-#define CAMENC_PROBE_RADIUS   120
-#define CAMENC_PROBE_REV      60
-#define CAMENC_PROBE_REV_SLOW 120
-#define CAMENC_PROBE_AMP      5
-
-/* The orbit the pattern was originally specified with: the square travels a
- * radius of half its own side, so it never leaves the middle, over twice as
- * many frames.  It is here as a comparison rather than as a default, because
- * at two pixels a frame the square barely moves between one frame and the one
- * two before it -- and if the reference being read is stale by a frame, that
- * is exactly the difference the artifact would consist of, so it would be
- * measured as nothing.  See the note on the structure itself.
- */
-
-#define CAMENC_PROBE_RADIUS_SLOW 32
 
 /* The sensor's limits, which the exposure loop needs in order to know where
  * one of the two ways of getting more light runs out and the other has to
@@ -410,66 +389,9 @@ static struct camenc_buf_s g_cap[CAMENC_BUFFERS];
  * this flag is for is that the loop has to do one of two quite different
  * things with each frame, and the thing it does not do is the copy that
  * dominates the loop.
- *
- * It is false for a source that is not the camera.  A file or the drawn
- * pattern is a frame in this program's own memory, written by the same code
- * that stores it, and the encoder will not take an address from the system
- * heap at all -- the capture driver's buffers are in the DMA heap, which is
- * the only memory on the part whose addresses are physical.
  */
 
 static bool g_zerocopy;
-
-/* Where the frames come from, when they do not come from the camera.
- *
- * -i names a file of bare NV12 frames, one picture after another with nothing
- * in front of them, and the run then behaves as if the capture device had
- * handed those frames over.  Non-NULL is the whole of the test: it is what
- * decides whether the loop reads a file or dequeues the camera, whether the
- * camera's buffers are mapped or allocated, and whether there is a camera to
- * start at all.
- *
- * What it is for is measurement rather than convenience.  A camera can only
- * show that a picture is wrong; a file can say how wrong and where, because
- * its contents are known in advance -- so what the bitstream shows that the
- * input does not is the encoder's own doing.  It is also the only way to put
- * the same pixels through two encoders, and a comparison between encoders
- * means nothing on two different pictures.
- */
-
-static FILE *g_src_file;
-static size_t g_src_frame;
-
-/* Whether g_cam[]'s buffers are this program's own allocation rather than the
- * capture driver's mapping.
- *
- * It is set as soon as the first one is allocated, which is what makes it
- * safe to use on the failure path as well: a source that could not be opened,
- * or could only be half-allocated, still leaves the teardown with a correct
- * answer about how to release whatever is there.
- */
-
-static bool g_src_owned;
-
-/* Where a frame comes from.
- *
- * There are three answers and they are not variations on each other: a camera
- * that is running, a file that is not, and a picture this program draws
- * itself.  The last one exists because the first two cannot both be had at
- * once -- the camera cannot be asked for a picture whose contents are known
- * in advance, and a file of such a picture is as large as the picture, which
- * is 28 MB for four seconds of VGA.  A generator is the same frames with
- * nothing to carry.
- */
-
-enum camenc_source_e
-{
-  CAMENC_SRC_CAMERA,
-  CAMENC_SRC_FILE,
-  CAMENC_SRC_PROBE
-};
-
-static enum camenc_source_e g_src_kind = CAMENC_SRC_CAMERA;
 
 /* The server keeps a receive buffer for each client it may have, which makes
  * it 8464 bytes -- more than the whole of this task's stack, which is
@@ -906,35 +828,6 @@ static void camenc_usage(void)
   printf("  -d  capture device (default %s)\n", CAMENC_CAM_DEVPATH);
   printf("  -e  encoder device (default %s)\n", CAMENC_ENC_DEVPATH);
   printf("  -o  write fragmented MP4 here (default none, encode only)\n");
-  printf("  -i  read the frames from this file of bare NV12 frames instead\n");
-  printf("      of from the camera, which is how a picture whose contents\n");
-  printf(
-      "      are known exactly is put through the encoder with no sensor,\n");
-  printf("      lens, focus or scene in the way\n");
-  printf(
-      "  -S  encode a picture this program draws itself instead of one it\n");
-  printf("      is given: a flat background with one 64x64 dark square\n");
-  printf("      moving slowly round it, and +-5 of noise over both.  Same\n");
-  printf("      purpose as -i, with nothing to carry and a known answer\n");
-  printf("      in every 16x16 block.  The name picks the background:\n");
-  printf("      probe (green, %d frames/rev), literal (green, the original\n",
-         CAMENC_PROBE_REV);
-  printf("      slower orbit), gray, red, blue, magenta.  See the source\n");
-  printf("      for why green and why the orbit is the speed it is\n");
-  printf("  -R  orbit radius for -S, in pixels (default %d)\n",
-         CAMENC_PROBE_RADIUS);
-  printf("  -N  noise amplitude for -S, 0..64 (default %d); 0 leaves the\n",
-         CAMENC_PROBE_AMP);
-  printf("      background perfectly flat\n");
-  printf("  -r  rate to hand the frames over at, in fps, for -i and -S\n");
-  printf(
-      "      (default the mode's own, to keep the encoder's timing as it\n");
-  printf("      would be; 0 runs it back to back, which is faster and is a\n");
-  printf("      different timing environment)\n");
-  printf("  -l  start the source again when it runs out, for a run longer\n");
-  printf("      than it is.  A defect that is intermittent needs chances\n");
-  printf("      rather than length, and this is how a short source stands\n");
-  printf("      for a long run -- see -n\n");
   printf("  -p  also serve the stream on this port as WebSocket"
          " (default %d, 0 for none)\n",
          CAMENC_DEFAULT_PORT);
@@ -956,12 +849,6 @@ static void camenc_usage(void)
          " how\n      long a client that joins late waits for a picture it"
          " can start on)\n",
          CAMENC_DEFAULT_GOP);
-  printf(
-      "  -W  give the encoder the leftmost W columns of the mode's picture\n"
-      "      rather than all of them (W a multiple of 16).  The encoder's\n"
-      "      reconstruction working set is sized in units of 64 pixels, so\n"
-      "      a mode whose width is not a multiple of 64 hands it a padded\n"
-      "      picture; this is how the two are told apart\n");
   printf("  -x  sensor exposure in lines, overrides the driver default\n");
   printf("  -g  sensor analog gain, 16 = 1.0x and 1023 = 64x\n");
   printf("  -A  automatic exposure, gain and white balance, 0 or 1"
@@ -1228,9 +1115,9 @@ static size_t camenc_frame_size(FAR const struct v4l2_format *fmt)
  * height, and it is what the destination's plane offset is computed from.
  *
  * When the strides agree and there is no padding this is one block copy of the
- * whole frame.  A crop -- the encoder given fewer columns than the mode has --
- * makes the strides differ, and a block copy would then shear the picture
- * instead of cropping it, so the rows are copied one at a time.  The chroma
+ * whole frame.  When the destination's plane is taller than the picture -- the
+ * 1080-row mode, where the encoder allocates 1088 -- the rows are copied one
+ * at a time so that each plane lands where the encoder reads it.  The chroma
  * plane is the same byte width as the luma's and half as many rows, which is
  * what 4:2:0 sampling is.
  *
@@ -1270,386 +1157,6 @@ static size_t camenc_copy_frame(FAR uint8_t *dst, FAR const uint8_t *src,
     }
 
   return total;
-}
-
-/* Open the file that stands in for the camera, and give the loop the buffers
- * the capture driver would otherwise have handed it.
- *
- * A frame in the file is the same bytes the camera's buffers hold, so the only
- * thing that can be checked about the file is that it is a whole number of
- * them: its length is what says whether the geometry is the one that was
- * asked for, and a length that is not a whole number of frames means it is
- * not.
- */
-
-static int camenc_source_open(FAR const char *path, size_t frame_size,
-                              FAR size_t *frames_in_file)
-{
-  long long size;
-  size_t n;
-  int k;
-
-  g_src_file = fopen(path, "rb");
-  if (g_src_file == NULL)
-    {
-      printf("camenc: cannot open %s: %d\n", path, errno);
-      return -errno;
-    }
-
-  if (fseek(g_src_file, 0, SEEK_END) != 0 ||
-      (size = (long long)ftell(g_src_file)) < 0 ||
-      fseek(g_src_file, 0, SEEK_SET) != 0)
-    {
-      printf("camenc: cannot measure %s: %d\n", path, errno);
-      goto bad;
-    }
-
-  if ((size_t)size < frame_size || (size_t)size % frame_size != 0)
-    {
-      printf("camenc: %s is %lld bytes, which is not a whole number of"
-             " %zu-byte NV12 frames for this mode\n",
-             path, size, frame_size);
-      goto bad;
-    }
-
-  n = (size_t)size / frame_size;
-  *frames_in_file = n;
-
-  /* One buffer per slot the camera would have offered, so that the rotation
-   * through them, the copy into the encoder, and everything after that are
-   * the code they already were.
-   */
-
-  g_src_owned = true;
-
-  for (k = 0; k < CAMENC_BUFFERS; k++)
-    {
-      g_cam[k].start = malloc(frame_size);
-      if (g_cam[k].start == NULL)
-        {
-          printf("camenc: no room for a %zu-byte source frame\n", frame_size);
-          goto bad;
-        }
-
-      g_cam[k].length = frame_size;
-    }
-
-  g_src_frame = frame_size;
-  return OK;
-
-bad:
-  fclose(g_src_file);
-  g_src_file = NULL;
-  return -EINVAL;
-}
-
-/* A picture this program draws itself.
- *
- * What it is for
- * --------------
- * A camera can show that a picture is wrong; it cannot say how wrong, because
- * there is nothing to compare it against.  This pattern can, because its
- * contents are known exactly: a flat background with one dark square on it,
- * so every 16x16 block's correct value is known before the encoder sees it
- * and any block that comes back different is a number rather than an
- * impression.
- *
- * The three decisions in it that are not free choices
- * ---------------------------------------------------
- * 1. The background is a flat colour and it is green.  Flat, because a defect
- *    that shifts a region's level is otherwise indistinguishable from the
- *    picture; green, because the offset a colour defect usually amounts to
- *    (+Cb, +Cr) is the direction green is furthest from -- in YCbCr the
- *    inverse transform is R = Y + 1.402 (Cr-128) and B = Y + 1.772 (Cb-128),
- *    so a green background has the most to lose in both.  The square is dark
- *    for the same reason: it is where those differences are largest relative
- *    to its own luma, and a small chroma error on a dark, saturated region
- *    reads as a saturated magenta block.
- *
- * 2. The square moves far between one frame and the frame before it.  A
- *    two-slot reference pair -- which is what this encoder is given -- means
- *    the slot read for frame N last held frame N-2, so if the reference being
- *    read is stale by one frame, what appears on screen is the difference
- *    between the two pictures.  A square that barely moves makes that
- *    difference vanish, and the defect with it.
- *
- * 3. The noise is why the background is not free to code.  A perfectly flat
- *    picture can be predicted perfectly by copying one block, so a defect
- *    that only appears when the encoder has real work to do would not appear
- *    at all.  +-5 is small enough that a block's mean barely moves and large
- *    enough that nothing is exactly flat.
- *
- * The circle is walked by rotating a vector rather than by calling a sine,
- * which is one multiply per frame instead of a linkage to a maths library,
- * and is exact enough that the orbit does not spiral: the step is rounded to
- * twenty fractional bits, so the radius is short by about one part in a
- * million over a whole revolution.
- */
-
-struct camenc_probe_s
-{
-  uint32_t y; /* background luma */
-  uint32_t u; /* background chroma, both planes  */
-  uint32_t v;
-  int cx; /* orbit centre */
-  int cy;
-  int radius;   /* orbit radius, pixels */
-  int side;     /* square side, pixels */
-  int side_y;   /* square luma */
-  int amp;      /* noise amplitude, +- this */
-  int32_t c;    /* cosine of the angle, Q20 */
-  int32_t s;    /* sine of the angle, Q20 */
-  int32_t dc;   /* cosine of one step, Q20 */
-  int32_t ds;   /* sine of one step, Q20 */
-  uint32_t rng; /* the noise's own state */
-  uint32_t frame;
-};
-
-/* The named backgrounds, as RGB.  Green is the default and the reason is in
- * the structure's comment; the others are there to be compared against it,
- * because a defect that is really an offset in one chroma plane shows up on
- * one of these and not on the others.
- */
-
-static const char *const g_probe_bg_name[] = { "probe", "literal", "gray",
-                                               "red",   "blue",    "magenta" };
-
-static const int g_probe_bg_rgb[][3] = {
-  { 0, 255, 0 },     /* probe: green */
-  { 0, 255, 0 },     /* literal: green, the slower orbit */
-  { 128, 128, 128 }, /* gray: no chroma to shift */
-  { 255, 0, 0 },     { 0, 0, 255 }, { 255, 0, 255 }
-};
-
-#define CAMENC_PROBE_NB (sizeof(g_probe_bg_name) / sizeof(g_probe_bg_name[0]))
-
-/* The orbit and the square.  The square is 64 pixels because a 16-pixel block
- * is what a defect is measured in and four of them are wide enough to tell a
- * region from an edge block; its luma is 32 rather than the 16 that would be
- * black, because a +-5 noise added to 16 is clipped on the way up and that
- * would put a bias of its own on the very quantity being measured.  The
- * numbers themselves are at the top of this file.
- */
-
-static struct camenc_probe_s g_probe;
-
-/* BT.601 studio swing, in integers.
- *
- * The coefficients are the standard ones -- for luma 0.299/0.587/0.114 scaled
- * by 219/255, for chroma the usual -0.168736/-0.331264/0.5 and its pair --
- * taken to twelve fractional bits.  Eight bits, which is the usual choice, is
- * not enough here: at 66/129/25 a green background comes out at luma 144
- * where the arithmetic it stands for says 145, and the host side is given
- * these numbers rather than a picture.  At twelve bits every background this
- * program offers agrees with the float form to the count, which is what makes
- * the board's frames and the host's comparable at all.
- */
-
-static void camenc_probe_rgb(int r, int g, int b, uint32_t *y, uint32_t *u,
-                             uint32_t *v)
-{
-  *y = (uint32_t)(16 + ((1052 * r + 2065 * g + 401 * b + 2048) >> 12));
-  *u = (uint32_t)(128 + ((-607 * r - 1192 * g + 1799 * b + 2048) >> 12));
-  *v = (uint32_t)(128 + ((1799 * r - 1506 * g - 293 * b + 2048) >> 12));
-}
-
-/* Round to the nearest even coordinate.
- *
- * The square is 64 pixels and even, and its centre is even, so no 2x2 chroma
- * sample ever straddles its edge and the chroma of an edge block is exactly
- * one colour rather than a mixture.  Without it every edge block's expected
- * value would depend on the square's position within the pixel grid, which is
- * the one thing the measurement cannot afford.
- */
-
-static int camenc_probe_even(int v)
-{
-  return v >= 0 ? (v + 1) & ~1 : -((-v + 1) & ~1);
-}
-
-static uint32_t camenc_probe_rand(struct camenc_probe_s *p)
-{
-  uint32_t x = p->rng;
-
-  x ^= x << 13;
-  x ^= x >> 17;
-  x ^= x << 5;
-  p->rng = x;
-  return x;
-}
-
-static uint8_t camenc_probe_clamp(int v)
-{
-  return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
-}
-
-static void camenc_probe_open(struct camenc_probe_s *p, int which, int radius,
-                              int amp, uint32_t width, uint32_t height)
-{
-  int r = g_probe_bg_rgb[which][0];
-  int g = g_probe_bg_rgb[which][1];
-  int b = g_probe_bg_rgb[which][2];
-  int rev = which == 1 ? CAMENC_PROBE_REV_SLOW : CAMENC_PROBE_REV;
-  int rad = which == 1 ? CAMENC_PROBE_RADIUS_SLOW : CAMENC_PROBE_RADIUS;
-
-  memset(p, 0, sizeof(*p));
-
-  camenc_probe_rgb(r, g, b, &p->y, &p->u, &p->v);
-
-  p->cx = (int)width / 2;
-  p->cy = (int)height / 2;
-  p->radius = radius > 0 ? radius : rad;
-  p->side = CAMENC_PROBE_SIDE;
-  p->side_y = CAMENC_PROBE_SIDE_Y;
-  p->amp = amp;
-
-  /* The angle starts at zero and the step is a constant, so the orbit is
-   * walked by rotating a vector: one multiply and one add per frame, no
-   * library call, and no angle to reduce.  The step is cos and sin of a whole
-   * revolution divided by the frames it takes, rounded to twenty fractional
-   * bits -- 6 degrees for the short way round and 3 for the long one, which
-   * are the only two rates this is used at.
-   */
-
-  {
-    static const int32_t step[][2] = {
-      { 1042766, 109596 }, /* 6 degrees, Q20 */
-      { 1047154, 54841 }   /* 3 degrees, Q20 */
-    };
-
-    int k = rev == CAMENC_PROBE_REV ? 0 : 1;
-
-    p->c = 1 << 20;
-    p->s = 0;
-    p->dc = step[k][0];
-    p->ds = step[k][1];
-  }
-
-  p->rng = 0x5eed1234u * (uint32_t)(which + 1);
-}
-
-/* Fill one NV12 frame of the pattern.
- *
- * The background is one constant and the square is another, so most of this
- * is two fills; the noise is the only per-byte work, and it is applied to the
- * whole picture rather than to the background alone so that the square's own
- * edges are not the only thing the encoder has to code.
- */
-
-static void camenc_probe_fill(struct camenc_probe_s *p, uint8_t *buf,
-                              uint32_t width, uint32_t height)
-{
-  uint32_t ysize = width * height;
-  uint32_t uvsize = ysize / 2;
-  int half = p->side / 2;
-  int64_t oc = (int64_t)p->c * p->radius >> 20;
-  int64_t os = (int64_t)p->s * p->radius >> 20;
-  int x0 = camenc_probe_even(p->cx + (int)oc - half);
-  int y0 = camenc_probe_even(p->cy + (int)os - half);
-  int x1 = x0 + p->side;
-  int y1 = y0 + p->side;
-  uint32_t r;
-  uint32_t i;
-
-  /* Clipped rather than refused: the orbit is inside the picture for both of
-   * the rates this is used with, and a square that ran off the edge would
-   * change its own uncovered area from frame to frame, which is exactly the
-   * kind of unmodelled movement this pattern exists to avoid.  The clamp
-   * keeps the arithmetic honest if the radius is asked to be larger.
-   */
-
-  if (x0 < 0)
-    {
-      x0 = 0;
-    }
-
-  if (y0 < 0)
-    {
-      y0 = 0;
-    }
-
-  if (x1 > (int)width)
-    {
-      x1 = (int)width;
-    }
-
-  if (y1 > (int)height)
-    {
-      y1 = (int)height;
-    }
-
-  /* Luma: the background, then the square's rows over it. */
-
-  memset(buf, (int)p->y, ysize);
-
-  for (r = (uint32_t)y0; r < (uint32_t)y1; r++)
-    {
-      memset(buf + (size_t)r * width + (uint32_t)x0, p->side_y,
-             (size_t)(x1 - x0));
-    }
-
-  /* Chroma: one sample covers two rows, so a chroma row is the square's
-   * colour only when both of its rows are inside it -- which is what halving
-   * the bounds does, and why the square's sides are even.
-   */
-
-  {
-    uint8_t *uv = buf + ysize;
-
-    for (i = 0; i < uvsize; i += 2)
-      {
-        uv[i] = (uint8_t)p->u;
-        uv[i + 1] = (uint8_t)p->v;
-      }
-
-    for (r = (uint32_t)(y0 / 2); r < (uint32_t)(y1 / 2); r++)
-      {
-        uint8_t *row = uv + (size_t)r * width;
-
-        for (i = (uint32_t)x0; i < (uint32_t)x1; i += 2)
-          {
-            row[i] = 128;
-            row[i + 1] = 128;
-          }
-      }
-  }
-
-  if (p->amp > 0)
-    {
-      /* Noise on both planes.  Four samples come out of each state step, so
-       * this is a quarter of the work it would otherwise be, and nothing
-       * about the sequence matters -- only that no two frames are given the
-       * same one, which a longer run cannot repeat.
-       */
-
-      int amp = p->amp;
-      size_t n = (size_t)ysize + uvsize;
-
-      for (i = 0; i < n; i += 4)
-        {
-          uint32_t v = camenc_probe_rand(p);
-          size_t k;
-
-          for (k = 0; k < 4 && i + k < n; k++)
-            {
-              buf[i + k] = camenc_probe_clamp(
-                  (int)buf[i + k] + (int)(v & 0xffu) % (2 * amp + 1) - amp);
-              v >>= 8;
-            }
-        }
-    }
-
-  /* One step round the circle, and the same rotation for the next frame. */
-
-  {
-    int64_t c = ((int64_t)p->c * p->dc - (int64_t)p->s * p->ds) >> 20;
-    int64_t s = ((int64_t)p->s * p->dc + (int64_t)p->c * p->ds) >> 20;
-
-    p->c = (int32_t)c;
-    p->s = (int32_t)s;
-  }
-
-  p->frame++;
 }
 
 /* Request buffers and map them.
@@ -1965,10 +1472,9 @@ static int camenc_emit(void *arg, enum camenc_seg_e seg, const uint8_t *data,
  * is the one the encoder is reading.
  *
  * Returns true when the camera has a frame waiting to be taken, which is only
- * ever true in the first of the two states.  A source that is not the camera
- * has its own pacing and is never waited for; for those, and for a frame in
- * flight, this only serves the sockets and returns false, which the paths that
- * do not need a camera frame ignore.
+ * ever true in the first of the two states.  With a frame in flight this only
+ * serves the sockets and returns false, which the finishing half of the frame
+ * ignores.
  */
 
 static bool camenc_wait(int camfd, int encfd, bool inflight)
@@ -1989,7 +1495,7 @@ static bool camenc_wait(int camfd, int encfd, bool inflight)
       fds[0].revents = 0;
       nwait = 1;
     }
-  else if (camfd >= 0)
+  else
     {
       fds[0].fd = camfd;
       fds[0].events = POLLIN;
@@ -2151,7 +1657,6 @@ int main(int argc, FAR char *argv[])
 {
   FAR const char *camdev = CAMENC_CAM_DEVPATH;
   FAR const char *encdev = CAMENC_ENC_DEVPATH;
-  FAR const char *infile = NULL;
   FAR const char *outfile = NULL;
   FAR const struct ov5647_mode_s *cur = NULL;
   struct camenc_stream_s st;
@@ -2170,15 +1675,11 @@ int main(int argc, FAR char *argv[])
   uint32_t nbuf_out = 0;
   uint32_t nbuf_cap = 0;
 
-  /* How much of the picture the encoder is given.  Zero asks for all of it,
-   * which is the ordinary case; anything else is the leftmost that many
-   * columns, and exists so that a mode whose width is not the multiple of 64
-   * the encoder's working set is sized in can be compared against one that is
-   * without a sensor mode to match.
+  /* The encoder's working geometry, over the camera's picture.  The width is
+   * the mode's; what the encoder does with it is rounded to its own grid, and
+   * both strides are what the copy between the two sides is laid out at.
    */
 
-  uint32_t enc_width_req = 0;
-  uint32_t enc_width = 0;
   uint32_t enc_stride = 0;
   uint32_t enc_vstride = 0;
   uint32_t cam_stride = 0;
@@ -2187,14 +1688,6 @@ int main(int argc, FAR char *argv[])
   int frames = CAMENC_DEFAULT_FRAMES;
   int qp = CAMENC_DEFAULT_QP;
   int gop = CAMENC_DEFAULT_GOP;
-  int file_rate = -1;
-  int file_frame = 0;
-  uint64_t file_t0 = 0;
-  bool loop_source = false;
-  bool synthetic = false;
-  int probe_bg = 0;
-  int probe_radius = 0;
-  int probe_amp = CAMENC_PROBE_AMP;
   int port = 0;
   int exposure = -1;
   int gain = -1;
@@ -2209,7 +1702,6 @@ int main(int argc, FAR char *argv[])
   int opt;
   int ret;
   int i;
-  int k;
   int encoded = 0;
   int dropped = 0;
   uint64_t t0;
@@ -2260,8 +1752,7 @@ int main(int argc, FAR char *argv[])
 
   bool board_told = false;
 
-  while ((opt = getopt(argc, argv, "d:e:i:lS:o:n:m:q:x:g:p:G:A:t:W:r:R:N:")) !=
-         -1)
+  while ((opt = getopt(argc, argv, "d:e:o:n:m:q:x:g:p:G:A:t:")) != -1)
     {
       switch (opt)
         {
@@ -2271,66 +1762,6 @@ int main(int argc, FAR char *argv[])
 
           case 'e':
             encdev = optarg;
-            break;
-
-          case 'i':
-            infile = optarg;
-            break;
-
-          case 'S':
-            for (probe_bg = 0; probe_bg < (int)CAMENC_PROBE_NB; probe_bg++)
-              {
-                if (strcmp(optarg, g_probe_bg_name[probe_bg]) == 0)
-                  {
-                    break;
-                  }
-              }
-
-            if (probe_bg >= (int)CAMENC_PROBE_NB)
-              {
-                printf("camenc: -S %s is not one of the backgrounds:", optarg);
-
-                for (probe_bg = 0; probe_bg < (int)CAMENC_PROBE_NB; probe_bg++)
-                  {
-                    printf(" %s", g_probe_bg_name[probe_bg]);
-                  }
-
-                printf("\n");
-                return EXIT_FAILURE;
-              }
-
-            synthetic = true;
-            break;
-
-          case 'R':
-            probe_radius = atoi(optarg);
-            if (probe_radius <= 0)
-              {
-                printf("camenc: the orbit radius must be positive\n");
-                return EXIT_FAILURE;
-              }
-            break;
-
-          case 'N':
-            probe_amp = atoi(optarg);
-            if (probe_amp < 0 || probe_amp > 64)
-              {
-                printf("camenc: the noise amplitude must be 0..64\n");
-                return EXIT_FAILURE;
-              }
-            break;
-
-          case 'l':
-            loop_source = true;
-            break;
-
-          case 'r':
-            file_rate = atoi(optarg);
-            if (file_rate < 0)
-              {
-                printf("camenc: the source rate cannot be negative\n");
-                return EXIT_FAILURE;
-              }
             break;
 
           case 'o':
@@ -2355,10 +1786,6 @@ int main(int argc, FAR char *argv[])
 
           case 'G':
             gop = atoi(optarg);
-            break;
-
-          case 'W':
-            enc_width_req = (uint32_t)atoi(optarg);
             break;
 
           case 'x':
@@ -2563,27 +1990,6 @@ stream_start:
   width = cur->width;
   height = cur->height;
 
-  /* The encode width, clamped to this mode.  A change of mode can make it too
-   * wide -- the page's menu moves between a 1920-column mode and a 640-column
-   * one -- and the right answer then is the whole picture rather than a
-   * refusal, because the mode is the thing that was asked for and the crop is
-   * only ever a way of comparing two ways of sizing the encoder's working set.
-   */
-
-  enc_width = enc_width_req;
-
-  if (enc_width == 0u || enc_width > width)
-    {
-      if (enc_width_req != 0u && enc_width_req > width)
-        {
-          printf("camenc: cannot encode %" PRIu32 " columns of a %" PRIu32
-                 "-column mode; using all of them\n",
-                 enc_width_req, width);
-        }
-
-      enc_width = width;
-    }
-
   /* ---------------------------------------------------------------- */
   /* The camera                                                        */
   /* ---------------------------------------------------------------- */
@@ -2594,148 +2000,6 @@ stream_start:
              " ms\n",
              (camenc_now_us() - switch_t0) / 1000u);
       switch_t0 = 0;
-    }
-
-  /* A file of frames instead of a camera.
-   *
-   * Everything the camera section below does -- opening the device, choosing
-   * the frame size and the rate, setting the exposure and the gain, and
-   * running the 3A loop -- is about producing a picture, and a file already
-   * holds one.  So the whole of it is skipped, the buffers the copy reads
-   * from are allocated here instead of mapped, and the run joins the camera
-   * path again at the encoder.
-   *
-   * The jump is a goto rather than an else so that the camera's own path is
-   * not indented a level deeper for the benefit of the case that does not use
-   * it; below this point the two share the encoder, the muxer and the server
-   * and nothing else.
-   */
-
-  if (infile != NULL || synthetic)
-    {
-      size_t in_file = 0;
-
-      if (infile != NULL && synthetic)
-        {
-          printf("camenc: -i and -S cannot both be the source\n");
-          return EXIT_FAILURE;
-        }
-
-      if (threea_wanted)
-        {
-          printf("camenc: -A has no effect on a source that is not a camera:"
-                 " nothing is exposing these frames\n");
-        }
-
-      threea = false;
-
-      /* The frames are handed over at the mode's own rate unless something
-       * else was asked for, so that the encoder is given the spacing it would
-       * have been given with the sensor running.  See the pacing in the loop:
-       * a source that quietly changed the timing would change the thing being
-       * investigated along with it.
-       */
-
-      if (file_rate < 0)
-        {
-          file_rate = (int)cur->fps;
-        }
-
-      printf("source:   %s (file), mode %" PRIu32 " (%" PRIu32 "x%" PRIu32
-             ")\n",
-             infile, mode, width, height);
-
-      if (enc_width != width)
-        {
-          printf("encoder:  encoding the leftmost %" PRIu32
-                 " columns, %" PRIu32 " fewer than the mode has\n",
-                 enc_width, width - enc_width);
-        }
-
-      /* What the camera's buffers would have been: its stride is its width,
-       * because it reports none, and a frame is an NV12 picture.  Both of
-       * these sources are the same size, which is what lets everything after
-       * this point not care which of them it is.
-       */
-
-      src_size = (size_t)width * height * 3u / 2u;
-      cam_stride = width;
-
-      if (synthetic)
-        {
-          g_src_kind = CAMENC_SRC_PROBE;
-          g_src_frame = src_size;
-
-          camenc_probe_open(&g_probe, probe_bg, probe_radius, probe_amp, width,
-                            height);
-
-          printf("source:   probe %s, mode %" PRIu32 " (%" PRIu32 "x%" PRIu32
-                 ")\n",
-                 g_probe_bg_name[probe_bg], mode, width, height);
-          printf("          background Y%" PRIu32 " Cb%" PRIu32 " Cr%" PRIu32
-                 ", square %dx%d at Y%d, centre (%d,%d)\n",
-                 g_probe.y, g_probe.u, g_probe.v, g_probe.side, g_probe.side,
-                 g_probe.side_y, g_probe.cx, g_probe.cy);
-          printf(
-              "          orbit radius %d, %d pixels per frame,"
-              " noise +-%d\n",
-              g_probe.radius,
-              (int)(((int64_t)g_probe.radius * g_probe.ds + (1 << 19)) >> 20),
-              g_probe.amp);
-
-          g_src_owned = true;
-
-          for (k = 0; k < CAMENC_BUFFERS; k++)
-            {
-              g_cam[k].start = malloc(src_size);
-              if (g_cam[k].start == NULL)
-                {
-                  printf("camenc: no room for a %zu-byte frame\n", src_size);
-                  ret = -ENOMEM;
-                  goto errout;
-                }
-
-              g_cam[k].length = src_size;
-            }
-        }
-      else
-        {
-          g_src_kind = CAMENC_SRC_FILE;
-
-          ret = camenc_source_open(infile, src_size, &in_file);
-          if (ret < 0)
-            {
-              goto errout;
-            }
-
-          /* A run longer than the file would read past its end, so the file
-           * sets the length when it is the shorter of the two -- unless the
-           * loop was asked for, in which case the file is started again and
-           * the length is whatever -n said.  A stream that quietly stopped
-           * short of what was asked for would read as a failure to keep up.
-           */
-
-          if ((int)in_file < frames)
-            {
-              if (loop_source)
-                {
-                  printf("camenc: %s holds %zu frames and will be repeated;"
-                         " encoding %d\n",
-                         infile, in_file, frames);
-                }
-              else
-                {
-                  printf("camenc: %s holds %zu frames; encoding those rather"
-                         " than the %d asked for\n",
-                         infile, in_file, frames);
-                  frames = (int)in_file;
-                }
-            }
-        }
-
-      nbuf_cam = CAMENC_BUFFERS;
-
-      goto source_ready;
     }
 
   /* Tell the board which mode this run wants, before the camera is opened.
@@ -2781,13 +2045,6 @@ stream_start:
   printf("camera:   %s, mode %" PRIu32 " (%" PRIu32 "x%" PRIu32
          " at %u fps)\n",
          camdev, mode, width, height, (unsigned int)cur->fps);
-
-  if (enc_width != width)
-    {
-      printf("encoder:  encoding the leftmost %" PRIu32 " columns, %" PRIu32
-             " fewer than the mode has\n",
-             enc_width, width - enc_width);
-    }
 
   /* Non-blocking, because the loop waits in poll() rather than in the
    * dequeue.  The wait has to cover the server's sockets as well, and a call
@@ -3067,13 +2324,6 @@ stream_start:
              src_size);
     }
 
-  /* Both sources arrive here: one with its buffers mapped from the capture
-   * driver, the other with its own.  The test for which is the source
-   * itself, and it is made everywhere the two differ.
-   */
-
-source_ready:
-
   /* ---------------------------------------------------------------- */
   /* The encoder                                                       */
   /* ---------------------------------------------------------------- */
@@ -3099,7 +2349,7 @@ source_ready:
   /* Output side first: it is what the capture side's geometry follows. */
 
   ret = camenc_set_format(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT, V4L2_PIX_FMT_NV12,
-                          enc_width, height, "encoder input", &fmt);
+                          width, height, "encoder input", &fmt);
   if (ret < 0)
     {
       goto errout;
@@ -3113,7 +2363,7 @@ source_ready:
    */
 
   enc_stride = fmt.fmt.pix.bytesperline != 0 ? fmt.fmt.pix.bytesperline
-                                             : (enc_width + 15u) & ~15u;
+                                             : (width + 15u) & ~15u;
 
   /* And it lays its luma plane out over its *allocated* height rather than the
    * picture's: the height rounded up to its macroblock grid, with the chroma
@@ -3167,16 +2417,11 @@ source_ready:
    * plane begins.  That is the same disagreement that put a magenta band at
    * the bottom of a 1080p picture; see camenc_copy_frame().
    *
-   * A crop is the other way the two differ: given fewer columns than the mode
-   * has, the encoder reads rows the camera's rows are longer than, and a
-   * block copy would shear the picture rather than crop it.
-   *
    * The camera's stride is its width, because the capture driver reports
    * none -- see camenc_frame_size().
    */
 
-  g_zerocopy = g_src_kind == CAMENC_SRC_CAMERA && enc_width == width &&
-               enc_stride == cam_stride && enc_vstride == height;
+  g_zerocopy = enc_stride == cam_stride && enc_vstride == height;
 
   /* The encoder can only be given a buffer it can reach and maintain: 64-byte
    * aligned, and wholly inside the low 4 GiB, because its address register is
@@ -3283,7 +2528,7 @@ source_ready:
           printf("camenc: the camera's buffers are %zu bytes, and a"
                  " %" PRIu32 "x%" PRIu32 " frame with a %" PRIu32
                  "-row luma plane needs %zu\n",
-                 g_cam[0].length, enc_width, height, enc_vstride,
+                 g_cam[0].length, width, height, enc_vstride,
                  (size_t)enc_stride * enc_vstride * 3u / 2u);
           ret = -EINVAL;
           goto errout;
@@ -3294,22 +2539,21 @@ source_ready:
       printf("camenc: the encoder's input buffers are %zu bytes, and a"
              " %" PRIu32 "x%" PRIu32 " frame with a %" PRIu32
              "-row luma plane needs %zu\n",
-             g_out[0].length, enc_width, height, enc_vstride,
+             g_out[0].length, width, height, enc_vstride,
              (size_t)enc_stride * enc_vstride * 3u / 2u);
       ret = -EINVAL;
       goto errout;
     }
 
-  /* A crop reads columns the camera's rows have, which is the one thing the
-   * copy below cannot check for itself.
+  /* The copy below reads a whole picture row from each of the camera's rows,
+   * which is the one thing it cannot check for itself.
    */
 
-  if (cam_stride < enc_width)
+  if (cam_stride < width)
     {
-      printf("camenc: the camera's rows are %" PRIu32 " bytes and the"
-             " encoder was asked for %" PRIu32
-             "; it cannot be given a picture that wide\n",
-             cam_stride, enc_width);
+      printf("camenc: the camera's rows are %" PRIu32 " bytes, shorter than"
+             " the %" PRIu32 "-column picture\n",
+             cam_stride, width);
       ret = -EINVAL;
       goto errout;
     }
@@ -3330,7 +2574,7 @@ source_ready:
       goto errout;
     }
 
-  ret = camenc_stream_init(&st, enc_width, height, (uint32_t)max_au, scratch,
+  ret = camenc_stream_init(&st, width, height, (uint32_t)max_au, scratch,
                            (size_t)max_au + CAMENC_STREAM_SLACK, camenc_emit,
                            &sink);
   if (ret < 0)
@@ -3388,28 +2632,20 @@ source_ready:
   /* The camera's buffers are offered too, but only after the stream starts:
    * the capture framework stops a stream it has no vacant buffers for, so
    * filling the queue before STREAMON would give it nothing to start with.
-   *
-   * A file source has neither half of that.  There is nothing to start, and
-   * nothing to offer: its buffers are filled by the loop and never leave it,
-   * which is also why they are not released with munmap at the end -- see the
-   * teardown.
    */
 
-  if (camfd >= 0)
+  ret = camenc_stream_on(camfd, &cam_type, "camera");
+  if (ret < 0)
     {
-      ret = camenc_stream_on(camfd, &cam_type, "camera");
-      if (ret < 0)
-        {
-          goto errout_streamoff;
-        }
+      goto errout_streamoff;
+    }
 
-      for (i = 0; i < (int)nbuf_cam; i++)
+  for (i = 0; i < (int)nbuf_cam; i++)
+    {
+      if (camenc_queue(camfd, &g_cam[i], "camera", i) < 0)
         {
-          if (camenc_queue(camfd, &g_cam[i], "camera", i) < 0)
-            {
-              ret = -EIO;
-              goto errout_camoff;
-            }
+          ret = -EIO;
+          goto errout_camoff;
         }
     }
 
@@ -3477,28 +2713,12 @@ source_ready:
 
           if (want != (int32_t)mode)
             {
-              if (g_src_kind != CAMENC_SRC_CAMERA)
-                {
-                  /* The frames are of this mode's geometry and no board is
-                   * being asked for another one, so a change of mode cannot
-                   * be honoured.  Refusing it here leaves the stream running
-                   * on the mode it is on, which is the mode the page will be
-                   * shown.
-                   */
-
-                  printf("camenc: mode %" PRId32 " was asked for, but the"
-                         " source is not a camera\n",
-                         want);
-                }
-              else
-                {
-                  printf("camenc: mode %" PRId32 " requested; ending this"
-                         " stream\n",
-                         want);
-                  switch_t0 = camenc_now_us();
-                  switching = true;
-                  break;
-                }
+              printf("camenc: mode %" PRId32 " requested; ending this"
+                     " stream\n",
+                     want);
+              switch_t0 = camenc_now_us();
+              switching = true;
+              break;
             }
         }
 
@@ -3549,8 +2769,8 @@ source_ready:
                   g_enc_out_of_order++;
                 }
 
-              if (camfd >= 0 && camenc_queue(camfd, &g_cam[camidx], "camera",
-                                             (int)camidx) < 0)
+              if (camenc_queue(camfd, &g_cam[camidx], "camera", (int)camidx) <
+                  0)
                 {
                   ret = -EIO;
                   break;
@@ -3706,79 +2926,40 @@ source_ready:
         }
       else
         {
-          /* A frame: from the camera, from the file, or drawn here.  Either
-           * way what comes out is `camidx` and a buffer in g_cam[] holding one
-           * NV12 picture, which is all the rest of the loop knows about any of
-           * them.
+          /* A frame: what comes out is `camidx` and a buffer in g_cam[]
+           * holding one NV12 picture, which is all the rest of the loop knows
+           * about.
            *
-           * The camera is the one source that may have nothing to give, since
-           * the wait is answered before the dequeue is asked and the two can
-           * disagree.  A dequeue with nothing there answers EAGAIN, which is
-           * not a failure.
+           * The camera may have nothing to give, since the wait is answered
+           * before the dequeue is asked and the two can disagree.  A dequeue
+           * with nothing there answers EAGAIN, which is not a failure.
            */
 
           mark = camenc_now_us();
 
-          if (g_src_kind == CAMENC_SRC_PROBE)
+          if (!camera_ready)
             {
-              camidx = (uint32_t)(i % (int)nbuf_cam);
-              camenc_probe_fill(&g_probe, g_cam[camidx].start, enc_width,
-                                height);
+              /* Nothing to take.  Serving the server was the whole of what
+               * this round had to do, and the frame number is not advanced,
+               * so the next round waits for the same frame.
+               */
+
+              continue;
             }
-          else if (g_src_kind == CAMENC_SRC_FILE)
+
+          ret = camenc_dequeue(camfd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &cbuf,
+                               "camera");
+          if (ret == -EAGAIN)
             {
-              camidx = (uint32_t)(i % (int)nbuf_cam);
-
-              if (fread(g_cam[camidx].start, 1, g_src_frame, g_src_file) !=
-                  g_src_frame)
-                {
-                  /* Running out of file ends the run, unless -l asked for the
-                   * file to be started again.  The defect being looked for is
-                   * intermittent, so how many frames it is given is the whole
-                   * of how likely it is to appear at all, and repeating a
-                   * short file is the cheapest way to give it a long run.
-                   */
-
-                  if (!loop_source || fseek(g_src_file, 0, SEEK_SET) != 0 ||
-                      fread(g_cam[camidx].start, 1, g_src_frame, g_src_file) !=
-                          g_src_frame)
-                    {
-                      printf("camenc: the source file ended after %d frames\n",
-                             i);
-                      ret = -EIO;
-                      break;
-                    }
-
-                  printf("camenc: the source file started again at frame %d\n",
-                         i);
-                }
+              continue;
             }
-          else
+
+          if (ret < 0)
             {
-              if (!camera_ready)
-                {
-                  /* Nothing to take.  Serving the server was the whole of what
-                   * this round had to do, and the frame number is not
-                   * advanced, so the next round waits for the same frame.
-                   */
-
-                  continue;
-                }
-
-              ret = camenc_dequeue(camfd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &cbuf,
-                                   "camera");
-              if (ret == -EAGAIN)
-                {
-                  continue;
-                }
-
-              if (ret < 0)
-                {
-                  break;
-                }
-
-              camidx = cbuf.index;
+              break;
             }
+
+          camidx = cbuf.index;
 
           camenc_stage_account(CAMENC_STAGE_CAMERA, mark);
 
@@ -3790,81 +2971,32 @@ source_ready:
               break;
             }
 
-          /* The frame's timestamp: the camera's clock when it arrived, or a
-           * made one when the frames come from a file.
+          /* The frame's timestamp, which is the time the frame arrived,
+           * measured from the first frame rather than from the epoch or from
+           * the start of the loop.
+           *
+           * It is taken here rather than derived from the frame number, so
+           * that the stream's timeline is the one the frames actually arrived
+           * on: a camera that stutters produces a stream that stutters in the
+           * same places instead of one that runs at the wrong speed
+           * throughout.
+           *
+           * The origin matters as much as the spacing.  gettimeofday() returns
+           * seconds since 1970 here, so an absolute timestamp puts the
+           * stream's first sample a hundred and fifty years in, and a player
+           * then reports a start time and a duration to match.  Measuring from
+           * the first frame makes the stream begin at zero, which is what a
+           * live stream should look like and what a player can seek within.
            */
 
-          if (g_src_kind != CAMENC_SRC_CAMERA)
+          now = camenc_now_us();
+
+          if (!have_prev)
             {
-              /* The camera's frames arrive on a clock and the muxer wants the
-               * spacing that came with them.  A file has no clock, so one is
-               * made from the rate the frames are handed over at, and the
-               * frame is held back until its moment: a loop that ran the
-               * encoder back to back would be a different timing environment
-               * from the one being investigated, and timing is not a thing
-               * this source can afford to change quietly.  -r 0 asks for that
-               * anyway, and for a much shorter run.
-               *
-               * The timestamp is also what the stream's timeline is built
-               * from, so it is taken from the frame's place in the file and
-               * not from when it was read -- the second would put the
-               * encoder's own timing into the file's duration.
-               */
-
-              if (file_rate > 0)
-                {
-                  uint64_t at = camenc_now_us();
-
-                  if (file_frame == 0)
-                    {
-                      file_t0 = at;
-                    }
-                  else
-                    {
-                      uint64_t due = file_t0 + (uint64_t)file_frame *
-                                                   1000000u /
-                                                   (uint32_t)file_rate;
-
-                      if (due > at)
-                        {
-                          usleep((useconds_t)(due - at));
-                        }
-                    }
-                }
-
-              pts = (uint64_t)file_frame * 1000000u /
-                    (uint32_t)(file_rate > 0 ? file_rate : (int)cur->fps);
-              file_frame++;
+              media_t0 = now;
             }
-          else
-            {
-              /* The time the frame arrived, measured from the first frame
-               * rather than from the epoch or from the start of the loop.
-               *
-               * It is taken here rather than derived from the frame number, so
-               * that the stream's timeline is the one the frames actually
-               * arrived on: a camera that stutters produces a stream that
-               * stutters in the same places instead of one that runs at the
-               * wrong speed throughout.
-               *
-               * The origin matters as much as the spacing.  gettimeofday()
-               * returns seconds since 1970 here, so an absolute timestamp puts
-               * the stream's first sample a hundred and fifty years in, and a
-               * player then reports a start time and a duration to match.
-               * Measuring from the first frame makes the stream begin at zero,
-               * which is what a live stream should look like and what a player
-               * can seek within.
-               */
 
-              now = camenc_now_us();
-
-              if (!have_prev)
-                {
-                  media_t0 = now;
-                }
-
-              pts = now - media_t0;
-            }
+          pts = now - media_t0;
 
           /* The encoder's input buffer for this frame, taken round-robin. With
            * as many as the camera has, the one just freed is the one used
@@ -3885,7 +3017,7 @@ source_ready:
 
               out->desc.bytesused = (uint32_t)camenc_copy_frame(
                   out->start, g_cam[camidx].start, enc_stride, enc_vstride,
-                  cam_stride, enc_width, height);
+                  cam_stride, width, height);
 
               camenc_stage_account(CAMENC_STAGE_COPY, mark);
             }
@@ -4388,20 +3520,7 @@ errout:
     {
       if (g_cam[i].start != NULL)
         {
-          /* The camera's buffers were mapped from the driver and the file
-           * source's are its own allocation, so which release they need is
-           * decided by which way they were obtained -- not by the buffer.
-           */
-
-          if (g_src_owned)
-            {
-              free(g_cam[i].start);
-            }
-          else
-            {
-              munmap(g_cam[i].start, g_cam[i].length);
-            }
-
+          munmap(g_cam[i].start, g_cam[i].length);
           g_cam[i].start = NULL;
         }
 
@@ -4417,13 +3536,6 @@ errout:
           g_cap[i].start = NULL;
         }
     }
-
-  /* Whichever way the buffers above were obtained, the next pass starts with
-   * none of them: a file source allocates its own again when it is re-opened,
-   * and a camera's are mapped again by the capture setup.
-   */
-
-  g_src_owned = false;
 
   if (encfd >= 0)
     {
@@ -4540,12 +3652,6 @@ errout:
     {
       fclose(sink.file);
       sink.file = NULL;
-    }
-
-  if (g_src_file != NULL)
-    {
-      fclose(g_src_file);
-      g_src_file = NULL;
     }
 
   return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
