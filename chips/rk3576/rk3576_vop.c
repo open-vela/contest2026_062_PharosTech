@@ -111,6 +111,14 @@
 
 #define RK3576_VOP_ESMART_SCL_NUM ((uint32_t)RK3576_VOP_ESMART_IDX << 12)
 
+/* Framebuffer pixel format: RGB888, three bytes per pixel.
+ *
+ * The whole layout follows from this and the active width -- see
+ * rk3576_vop_pitch(), the single place a row pitch is derived from a mode.
+ */
+
+#define RK3576_VOP_RGB888_BPP 3u
+
 /****************************************************************************
  * RK3576 gives each ESMART its own AXI read IDs and its own AXI channel:
  *
@@ -249,7 +257,7 @@ struct rk3576_vop_s
   struct rk3576_vop_config cfg; /* Routing/geometry configuration */
   void *fbmem;                  /* Framebuffer (DMA heap) */
   size_t fblen;                 /* Framebuffer length in bytes */
-  uint32_t stride;              /* Line stride in bytes */
+  uint32_t stride;              /* Line pitch in bytes; REGION0_VIR = / 4 */
 };
 
 /****************************************************************************
@@ -321,6 +329,70 @@ static const struct fb_vtable_s g_rk3576_vop_vtable = {
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: rk3576_vop_pitch
+ *
+ * Description:
+ *   Derive the framebuffer's line pitch, in bytes, from the active width.
+ *
+ *   This is the ONLY place in the driver where a pitch is derived from a mode.
+ *   The pitch is the layout the CPU writes and that any application drawing
+ *   through mmap() walks, so it is what priv->stride carries, and the window's
+ *   stride register must describe it rather than be computed a second time.
+ *
+ *   The pitch is rounded up to a whole 32-bit word because REGION0_VIR counts
+ *   words: a pitch that is not a multiple of four cannot be expressed to the
+ *   hardware at all.  The ESMART fetches one pitch per line, so the padding
+ *   bytes at the end of a line are stepped over and never displayed.
+ *
+ * Input Parameters:
+ *   xres - Active width in pixels.
+ *
+ * Returned Value:
+ *   Line pitch in bytes, always a multiple of 4.
+ *
+ ****************************************************************************/
+
+static uint32_t rk3576_vop_pitch(uint16_t xres)
+{
+  return (((uint32_t)xres * RK3576_VOP_RGB888_BPP) + 3u) & ~3u;
+}
+
+/****************************************************************************
+ * Name: rk3576_vop_pitch_words
+ *
+ * Description:
+ *   The same pitch in the unit the window's stride register counts: 32-bit
+ *   words.  Derived from priv->stride, never recomputed from xres, because a
+ *   second derivation of one constraint is free to disagree with the first.
+ *
+ *   The TRM's RGB888 entry, (Win_vir_width * 3 / 4) + (Win_vir_width % 3), is
+ *   NOT the value to write here.  It equals stride / 4 only when 12 divides
+ *   the width -- true for the 720x1280 MIPI panel and the 1920x1080 HDMI mode
+ *   this driver was brought up on, false for 1280/1024/800/1366 -- and where
+ *   it disagrees, the ESMART steps 4 or 8 bytes further along on every line
+ *   than the CPU wrote: the picture shears, and the last lines fetch past the
+ *   end of the framebuffer.  Upstream Linux writes this register the same way
+ *   this does (DIV_ROUND_UP(fb->pitches[0], 4)), in the very commit whose
+ *   message quotes that TRM line.
+ *
+ * Input Parameters:
+ *   priv - Driver instance, after priv->stride has been set.
+ *
+ * Returned Value:
+ *   Line pitch in 32-bit words, i.e. the REGION0_VIR value.
+ *
+ ****************************************************************************/
+
+static uint32_t rk3576_vop_pitch_words(FAR const struct rk3576_vop_s *priv)
+{
+  /* rk3576_vop_pitch() rounds up, so this is exact. */
+
+  DEBUGASSERT((priv->stride & 3u) == 0u);
+
+  return priv->stride >> 2;
+}
 
 /****************************************************************************
  * Name: rk3576_vop_getreg / putreg / modifyreg
@@ -616,7 +688,6 @@ static void rk3576_vop_configure_layer(FAR struct rk3576_vop_s *priv)
   uint32_t sys_base = RK3576_VOP_SYS_CTRL(priv->base);
   uint16_t xres = priv->cfg.xres;
   uint16_t yres = priv->cfg.yres;
-  uint32_t vir_stride; /* stride in words (4 bytes) */
   uint32_t ctrl;
 
   /* Disable the VOP's automatic clock gating.  The reset value has gating ON,
@@ -693,11 +764,13 @@ static void rk3576_vop_configure_layer(FAR struct rk3576_vop_s *priv)
   rk3576_vop_putreg(priv, esmart_base + RK3576_VOP_ESMART_REGION0_YRGB_MST,
                     (uint32_t)up_addrenv_va_to_pa(priv->fbmem));
 
-  /* Virtual stride in words: RGB888 -> (w*3/4) + (w%3). */
+  /* REGION0_VIR: the line pitch in 32-bit words, i.e. the pitch this driver
+   * wrote the framebuffer with.  Derived from priv->stride, never from xres --
+   * the two must not be free to disagree.
+   */
 
-  vir_stride = ((uint32_t)xres * 3 / 4) + ((uint32_t)xres % 3);
   rk3576_vop_putreg(priv, esmart_base + RK3576_VOP_ESMART_REGION0_VIR,
-                    vir_stride);
+                    rk3576_vop_pitch_words(priv));
 
   /* Active region (w-1, h-1) and display region (same, no scaling),
    * display offset (0,0), scaling engine off.
@@ -1748,9 +1821,12 @@ int rk3576_vop_initialize(FAR const struct rk3576_vop_config *config)
   memcpy(&priv->cfg, config, sizeof(struct rk3576_vop_config));
   priv->base = RK3576_VOP_ADDR;
 
-  /* Framebuffer geometry (RGB888, 3 bytes/pixel). */
+  /* Framebuffer geometry: one derivation.  The allocation, pinfo->stride, the
+   * dirty-area clean, the test patterns and the window's stride register all
+   * read priv->stride instead of each computing a pitch of their own.
+   */
 
-  priv->stride = (uint32_t)config->xres * 3;
+  priv->stride = rk3576_vop_pitch(config->xres);
   priv->fblen = (size_t)priv->stride * config->yres;
 
   /* Allocate the framebuffer from the DMA heap (<4GB, physically
@@ -1868,7 +1944,14 @@ int rk3576_vop_fill(uint32_t rgb)
 
   fb = (uint8_t *)priv->fbmem;
 
-  for (n = 0; n < priv->fblen; n += 3)
+  /* Stop short of a partial trailing group: the pitch is word-aligned, so
+   * fblen is not necessarily a multiple of three and the last group would
+   * write past the allocation.  Only line padding is left unwritten, and the
+   * window never displays it.
+   */
+
+  for (n = 0; n + RK3576_VOP_RGB888_BPP <= priv->fblen;
+       n += RK3576_VOP_RGB888_BPP)
     {
       fb[n + 0] = r;
       fb[n + 1] = g;
@@ -1936,7 +2019,8 @@ int rk3576_vop_fill_bands(FAR const uint32_t *colors, uint32_t nbands)
 
       for (x = 0; x < xres; x++)
         {
-          uint8_t *px = fb + ((size_t)y * priv->stride) + ((size_t)x * 3u);
+          uint8_t *px = fb + ((size_t)y * priv->stride) +
+                        ((size_t)x * RK3576_VOP_RGB888_BPP);
 
           px[0] = (uint8_t)(rgb >> 16);
           px[1] = (uint8_t)(rgb >> 8);
