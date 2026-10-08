@@ -540,6 +540,7 @@ static void rk3576_vicap_free(FAR struct imgdata_s *data, FAR void *addr);
 static void rk3576_vicap_wb_update(FAR struct rk3576_vicap_s *priv,
                                    uint64_t accr, uint64_t accg, uint64_t accb,
                                    uint64_t accn);
+static void rk3576_vicap_worker_quiesce(FAR struct rk3576_vicap_s *priv);
 
 static const struct imgdata_ops_s g_rk3576_vicap_ops = {
   .init = rk3576_vicap_init,
@@ -655,7 +656,9 @@ static FAR void *rk3576_vicap_alloc(FAR struct imgdata_s *data,
 
 static void rk3576_vicap_free(FAR struct imgdata_s *data, FAR void *addr)
 {
-  UNUSED(data);
+  FAR struct rk3576_vicap_s *priv =
+      (FAR struct rk3576_vicap_s *)((uintptr_t)data -
+                                    offsetof(struct rk3576_vicap_s, data));
 
   if (addr == NULL)
     {
@@ -669,6 +672,17 @@ static void rk3576_vicap_free(FAR struct imgdata_s *data, FAR void *addr)
            addr, g_vicap_frameheap);
       return;
     }
+
+  /* The demosaicer writes into this heap and holds its buffer for the whole
+   * of a frame, so the heap may not go back to the DMA allocator while a
+   * worker is still writing into it.  The framework reaches here from its
+   * close and REQBUFS paths, both in task context and free to block, which is
+   * what makes the wait possible at all -- and necessary here rather than in
+   * the driver's own take-down, because the framework lets the frames go
+   * before it asks the capture engine to change mode.
+   */
+
+  rk3576_vicap_worker_quiesce(priv);
 
   rk3576_dma_free(addr, g_vicap_frameheap_size);
 
@@ -2198,6 +2212,52 @@ static void rk3576_vicap_worker(FAR void *arg)
 }
 
 /****************************************************************************
+ * Name: rk3576_vicap_worker_quiesce
+ *
+ * Description:
+ *   Wait until no frame worker is queued and none is running, so that the
+ *   caller may release or replace the buffers a worker reads and writes.
+ *
+ *   The worker latches the RAW buffer it reads and the framework's buffer it
+ *   writes at the top and keeps both for the whole demosaic.  The epoch check
+ *   at its end stops a frame from an old stream being *delivered*, but it
+ *   says nothing about the reads and writes that came before it, against
+ *   memory that may already have gone back to a heap.  Every path that lets
+ *   go of, or re-points, one of those buffers therefore has to be ordered
+ *   after the worker has finished, and this is that ordering.
+ *
+ *   work_cancel_sync() is the handshake: it drops a worker that is queued but
+ *   has not started, and waits for one that is already running to return.
+ *   Only the second case sleeps, and then only for as long as this driver's
+ *   own frame takes -- a worker queued behind another user of the low-priority
+ *   queue is removed, not waited for.  It is also safe on the worker's own
+ *   thread: the work queue waits only on work being processed by a different
+ *   thread, so a stop that arrives through the completion callback cannot
+ *   deadlock on itself.  This function is deliberately not called from there
+ *   all the same.
+ *
+ *   It sleeps, so it belongs only on paths that may block: the framework's
+ *   close and REQBUFS through the free() hook, and this driver's own
+ *   reconfiguration and take-down.  It must never be reached from
+ *   stop_capture(), which the framework calls from complete_capture() with a
+ *   spinlock held and preemption disabled.  A cancelled worker leaves
+ *   frame_scheduled set; start_capture() clears it, and the interrupt queues
+ *   no further worker while capturing is false, so nothing has to be undone
+ *   here.
+ *
+ ****************************************************************************/
+
+static void rk3576_vicap_worker_quiesce(FAR struct rk3576_vicap_s *priv)
+{
+  /* -ENOENT is the ordinary answer -- nothing was queued and nothing was
+   * running -- and the rest are not failures of interest here, so the result
+   * is deliberately not reported.
+   */
+
+  (void)work_cancel_sync(LPWORK, &priv->work);
+}
+
+/****************************************************************************
  * Name: rk3576_vicap_isr
  *
  * Description:
@@ -2209,13 +2269,40 @@ static void rk3576_vicap_worker(FAR void *arg)
 static int rk3576_vicap_isr(int irq, FAR void *context, FAR void *arg)
 {
   FAR struct rk3576_vicap_s *priv = &g_vicap;
+  irqstate_t flags;
   uint32_t status;
-  uint8_t input = priv->cfg.input;
+  uint8_t input;
+
+  /* Every field below is shared with the frame worker and with the paths that
+   * start and stop a stream.  Interrupts being disabled on this CPU is not
+   * enough to exclude them: the worker runs on whichever CPU the work queue
+   * picks, and it enters through this same lock, so the interrupt takes it
+   * too.
+   *
+   * That matters against the stop paths as well as against the worker.
+   * up_disable_irq() stops the interrupt being *delivered*; it says nothing
+   * about one already executing on another CPU, and this lock is what orders
+   * that one's writes against the stop that disabled it.
+   *
+   * Taken before the status is read rather than after it: INTSTAT is
+   * write-one-to-clear, and two CPUs that read the same pending bits before
+   * either has cleared them would both act on the same frame boundary.
+   *
+   * The work queue's own lock is taken inside this one, at the queue call
+   * below.  Nothing on the work queue's side takes this lock -- the worker
+   * runs with the queue's lock already released -- so the two are not
+   * inverted.
+   */
+
+  flags = spin_lock_irqsave(&priv->irqlock);
+
+  input = priv->cfg.input;
 
   status = rk3576_vicap_getreg(priv->base, RK3576_VICAP_MIPI_INTSTAT(input));
 
   if (status == 0)
     {
+      spin_unlock_irqrestore(&priv->irqlock, flags);
       return OK;
     }
 
@@ -2294,9 +2381,24 @@ static int rk3576_vicap_isr(int irq, FAR void *context, FAR void *arg)
 
       priv->raw_pending = idx;
 
-      if (!priv->frame_scheduled)
+      /* A worker is scheduled only while a stream is there to receive a
+       * frame.  The stop paths clear `capturing` under this lock before they
+       * release anything, so a boundary that arrives late -- from an
+       * interrupt already running on another CPU when the stream was stopped
+       * -- cannot queue a worker behind the stop's back.  That worker would
+       * find no destination buffer anyway; this is what keeps it from being
+       * asked for at all, which is what a release path depends on.
+       */
+
+      if (priv->capturing && !priv->frame_scheduled)
         {
           priv->frame_scheduled = true;
+
+          /* Queued from inside the frame-state lock, which is what keeps two
+           * CPUs that see the same boundary from both scheduling a worker.
+           * The queue's own lock nests inside this one; see the note at the
+           * top of the handler.
+           */
 
           if (work_queue(LPWORK, &priv->work, rk3576_vicap_worker, priv, 0) <
               0)
@@ -2340,6 +2442,7 @@ static int rk3576_vicap_isr(int irq, FAR void *context, FAR void *arg)
       priv->fe_count++;
     }
 
+  spin_unlock_irqrestore(&priv->irqlock, flags);
   return OK;
 }
 
@@ -3605,6 +3708,14 @@ int rk3576_vicap_uninitialize(void)
   up_disable_irq(RK3576_IRQ_VICAP);
   irq_detach(RK3576_IRQ_VICAP);
 
+  /* No further frame can be scheduled now, but one may still be being
+   * demosaiced, and that worker reads the RAW buffers and writes the
+   * framework's buffer.  Wait for it before the take-down below, for the
+   * same reason the DMA is stopped first.
+   */
+
+  rk3576_vicap_worker_quiesce(priv);
+
   /* Take the frame buffers away only once the DMA has stopped, so no
    * in-flight write can land in freed memory.
    */
@@ -3726,12 +3837,26 @@ int rk3576_vicap_reconfigure(FAR const struct rk3576_vicap_config *config)
       return -EBUSY;
     }
 
-  /* Stop the path and drop anything it may have latched, so that nothing is
-   * still writing to the buffers that are about to go away.  Idempotent, and
-   * cheap next to what follows.
+  /* Stop the path and drop anything it may have latched, so that the DMA is
+   * not still writing to the buffers that are about to go away, and so that
+   * no further frame can be scheduled while the wait below runs.  Idempotent,
+   * and cheap next to what follows.
    */
 
   rk3576_vicap_input_disable(priv);
+
+  /* Stopping the input keeps the *next* frame out; it does nothing about the
+   * frame a worker may be holding right now.  The worker keeps the RAW buffer
+   * it reads and the framework's buffer it writes from the moment it starts
+   * until the demosaic ends, so it has to be gone before anything below
+   * replaces or releases those buffers, and before the geometry it reads per
+   * frame changes under it.  The wait belongs here, with the input already
+   * off and before the first buffer is touched, and not in stop_capture():
+   * the framework also reaches stop_capture() from the completion callback,
+   * with a spinlock held and preemption disabled.
+   */
+
+  rk3576_vicap_worker_quiesce(priv);
 
   /* Obtain the new buffers before releasing the old ones.
    *
