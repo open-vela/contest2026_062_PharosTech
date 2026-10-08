@@ -1,5 +1,5 @@
 /****************************************************************************
- * drivers/include/cam3a.h
+ * chips/rk3576/include/cam3a.h
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -61,10 +61,31 @@
  *
  * The ordinary V4L2 controls on /dev/videoN still work and are unaffected:
  * exposure and gain remain settable there, because they are the sensor's.
+ *
+ * WHERE THIS INTERFACE LIVES
+ *
+ * The control plane is implemented inside the VICAP driver and appears as a
+ * second device node beside /dev/videoN, so its interface lives with that
+ * driver rather than with the platform drivers: this directory is the chip's
+ * public include directory, which the build exposes as <arch/chip/cam3a.h>
+ * (include/arch/chip is a symlink to chips/rk3576/include).  That is what
+ * lets the VICAP driver and the application share one definition without
+ * either side reaching into the other's tree -- the driver does not include
+ * a drivers/ header, and the application does not need a private copy of the
+ * numbers or of the structures.
+ *
+ * The alternative -- a second copy on the application side -- would put the
+ * ioctl numbers, the two structures and the gain bounds in two places that
+ * have to move together, which is the kind of mirror that drifts.
+ *
+ * In mainline NuttX this file belongs at arch/arm64/include/rk3576/cam3a.h
+ * (the custom-chip and mainline-chip builds both expose the chip's include
+ * directory under the same <arch/chip/...> name), so the include lines below
+ * would not change -- only this path and the file's location.
  ****************************************************************************/
 
-#ifndef __DRIVERS_INCLUDE_CAM3A_H
-#define __DRIVERS_INCLUDE_CAM3A_H
+#ifndef __ARCH_ARM64_INCLUDE_RK3576_CAM3A_H
+#define __ARCH_ARM64_INCLUDE_RK3576_CAM3A_H
 
 /****************************************************************************
  * Included Files
@@ -217,4 +238,4 @@ struct cam3a_wb_s
 
 #define CAM3A_SET_AWB _CAM3AIOC(2)
 
-#endif /* __DRIVERS_INCLUDE_CAM3A_H */
+#endif /* __ARCH_ARM64_INCLUDE_RK3576_CAM3A_H */

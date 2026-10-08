@@ -12,11 +12,12 @@
 # that gets weakened by whoever is trying to merge one, and this loop is
 # easier to reason about by running it than by watching it fail in CI.
 #
-# The module includes <nuttx/config.h> like the rest of the firmware, and the
-# loop reads nothing out of it: it is arithmetic over a measurement and
-# nothing else.  So the test supplies an empty one rather than needing a
-# configured build tree, which is what lets it run on any machine with a
-# compiler.
+# The module includes <nuttx/config.h> and <arch/chip/cam3a.h> like the rest
+# of the firmware, and the loop reads nothing out of either: it is arithmetic
+# over a measurement and nothing else.  So the test supplies an empty config.h
+# and points <arch/chip> at the chip's real public include directory, rather
+# than needing a configured build tree -- which is what lets it run on any
+# machine with a compiler.
 #
 # Pass -v to print the trajectory of the first case.
 
@@ -37,10 +38,16 @@ trap 'rm -rf "$out"' EXIT
 mkdir -p "$out/stub/nuttx"
 : > "$out/stub/nuttx/config.h"
 
+# cam3a.h is the chip's public header.  On the target it is reached as
+# <arch/chip/cam3a.h> (include/arch/chip is a symlink to chips/rk3576/include);
+# stand the same name up here so the module compiles as it does in the
+# firmware, without a configured build tree.
+mkdir -p "$out/stub/arch"
+ln -s "$root/chips/rk3576/include" "$out/stub/arch/chip"
+
 gcc -std=gnu11 -O1 -Wall -Wextra -DFAR= \
     -I"$out/stub" \
     -I"$src" \
-    -I"$root/drivers/include" \
     -o "$out/test_camenc_3a" \
     "$here/test_camenc_3a.c" \
     "$src/camenc_3a.c" || exit 1

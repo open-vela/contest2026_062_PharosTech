@@ -45,7 +45,7 @@
  * up and defers the real work.
  *
  * The demosaic pass is also where the 3A measurement is taken, and this
- * driver is where the 3A control plane lives -- see drivers/include/cam3a.h
+ * driver is where the 3A control plane lives -- see <arch/chip/cam3a.h>
  * for why the two ends are split the way they are.  Briefly: the channel sums
  * come out of the loop that is already reading every RAW sample, so measuring
  * costs nothing, and they have to be taken before the white balance gains are
@@ -79,6 +79,7 @@
 #include <arm_neon.h>
 #endif
 
+#include <arch/chip/cam3a.h>
 #include <nuttx/arch.h>
 #include <nuttx/clk/clk.h>
 #include <nuttx/clock.h>
@@ -92,7 +93,6 @@
 #include <nuttx/wqueue.h>
 
 #include "arm64_arch.h"
-#include "cam3a.h"
 #include "hardware/rk3576_cru.h"
 #include "hardware/rk3576_memorymap.h"
 #include "hardware/rk3576_vicap.h"
@@ -231,7 +231,7 @@
  * a property of the control plane, and the application needs the same bound
  * to size a slider with; two copies of it would be one copy too many, and
  * the copy that drifts is always the one nobody is looking at.  See
- * CAM3A_WB_MAX in cam3a.h.
+ * CAM3A_WB_MAX in <arch/chip/cam3a.h>.
  */
 
 #define RK3576_VICAP_WB_HARD_MAX CAM3A_WB_MAX
@@ -3104,7 +3104,7 @@ static int rk3576_vicap_stop_capture(FAR struct imgdata_s *data)
  *
  * Description:
  *   The 3A control plane: the measurement the demosaicer took out, and the
- *   white balance in.  See drivers/include/cam3a.h for why measurement and
+ *   white balance in.  See <arch/chip/cam3a.h> for why measurement and
  *   application are split the way they are; exposure and gain are not here
  *   at all, because they are the sensor's and reachable through the ordinary
  *   V4L2 controls on the capture device.
