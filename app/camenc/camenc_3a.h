@@ -189,9 +189,10 @@ struct camenc_3a_cfg_s
   uint32_t gain_min;
   uint32_t gain_max;
 
-  /* What the sensor's gain registers call unity.  Sixteen for the OV5647,
-   * where the exposure is in lines and the gain is a fixed-point multiplier;
-   * the two have to be brought to a common scale before they can be added.
+  /* What the gain control counts as unity: the value at which it multiplies
+   * by one.  The exposure is a count of lines and the gain is a fixed-point
+   * multiplier, so the two have to be brought to a common scale before they
+   * can be added, and this is that scale.
    */
 
   uint32_t gain_one;

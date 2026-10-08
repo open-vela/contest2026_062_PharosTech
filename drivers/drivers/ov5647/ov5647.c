@@ -272,6 +272,19 @@ struct ov5647_s
 
   FAR const struct ov5647_mode_s *mode;
 
+  /* The mode the most recent frame-setting request named, or NULL before any
+   * request has been made.
+   *
+   * A range query has to answer for the frame the stream is about to run at,
+   * and that is settled as soon as the format and the frame rate have both
+   * been stated -- which is before the stream starts, and so before `mode`
+   * above moves.  So the pair is resolved here as it is validated.  A
+   * request and the stream that follows it name the same mode: both resolve
+   * the pair the caller stated.
+   */
+
+  FAR const struct ov5647_mode_s *requested;
+
   /* Current manual settings.  Held here rather than only in the registers so
    * that a change made through the control interface survives a stop and
    * start of the stream.
@@ -1517,6 +1530,7 @@ static int ov5647_validate_frame_setting(FAR struct imgsensor_s *sensor,
                                          FAR imgsensor_format_t *datafmts,
                                          FAR imgsensor_interval_t *interval)
 {
+  FAR struct ov5647_s *priv = (FAR struct ov5647_s *)sensor;
   uint32_t fps = ov5647_interval_fps(interval);
   int i;
 
@@ -1560,6 +1574,14 @@ static int ov5647_validate_frame_setting(FAR struct imgsensor_s *sensor,
     {
       return -EINVAL;
     }
+
+  /* Remember the frame this request names, so that a range query arriving
+   * before the stream does can answer for the frame the stream will run at;
+   * see struct ov5647_s.requested.
+   */
+
+  priv->requested =
+      ov5647_resolve_mode(datafmts[0].width, datafmts[0].height, fps);
 
   return OK;
 }
@@ -2139,7 +2161,64 @@ static int ov5647_get_supported_value(FAR struct imgsensor_s *sensor,
                                       uint32_t id,
                                       FAR imgsensor_supported_value_t *value)
 {
-  return -ENOTSUP;
+  FAR struct ov5647_s *priv = (FAR struct ov5647_s *)sensor;
+  FAR imgsensor_capability_range_t *range;
+  FAR const struct ov5647_mode_s *mode;
+
+  if (value == NULL)
+    {
+      return -EINVAL;
+    }
+
+  range = &value->u.range;
+
+  switch (id)
+    {
+      case IMGSENSOR_ID_EXPOSURE_ABSOLUTE:
+
+        /* Exposure is a count of lines, and those lines have to fit inside
+         * the frame the mode produces, so the ceiling follows the mode: a
+         * count that is legal in one is not necessarily legal in another.
+         *
+         * The answer is for the mode the last request named, because that is
+         * the one the next stream will run at and the query arrives before
+         * the stream does.  With no request to go on it is for the mode the
+         * sensor is programmed for now.
+         */
+
+        mode = priv->requested != NULL ? priv->requested : priv->mode;
+
+        value->type = IMGSENSOR_CTRL_TYPE_INTEGER;
+        range->minimum = (int64_t)OV5647_EXPOSURE_MIN;
+        range->maximum = (int64_t)OV5647_MODE_EXPOSURE_MAX(mode);
+        range->step = 1;
+
+        /* The ceiling is also what a stream that was given no exposure runs
+         * at: ov5647_initialize() resolves the driver's own default to it.
+         */
+
+        range->default_value = (int64_t)OV5647_MODE_EXPOSURE_MAX(mode);
+        break;
+
+      case IMGSENSOR_ID_ISO_SENSITIVITY:
+
+        /* The gain range, unlike the exposure ceiling, is the part's rather
+         * than a mode's.  Its default is where the driver starts and not the
+         * smallest value it accepts; the two are not the same number.
+         */
+
+        value->type = IMGSENSOR_CTRL_TYPE_INTEGER;
+        range->minimum = (int64_t)OV5647_ANALOG_GAIN_MIN;
+        range->maximum = (int64_t)OV5647_ANALOG_GAIN_MAX;
+        range->step = 1;
+        range->default_value = (int64_t)OV5647_ANALOG_GAIN_DEFAULT;
+        break;
+
+      default:
+        return -ENOTSUP;
+    }
+
+  return OK;
 }
 
 static int ov5647_get_value(FAR struct imgsensor_s *sensor, uint32_t id,
