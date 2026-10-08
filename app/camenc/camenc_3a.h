@@ -24,7 +24,7 @@
  * The exposure, gain and white balance loop.
  *
  * This is the decision half of the split described in
- * drivers/include/cam3a.h: the driver measures a frame and applies whatever
+ * <arch/chip/cam3a.h>: the driver measures a frame and applies whatever
  * it is told, and everything about *how much* lives here.
  *
  * There is nothing here that touches a device.  Measurement goes in as a
@@ -96,10 +96,9 @@
  * Included Files
  ****************************************************************************/
 
+#include <arch/chip/cam3a.h>
 #include <stdbool.h>
 #include <stdint.h>
-
-#include "cam3a.h"
 
 /****************************************************************************
  * Public Types
@@ -161,9 +160,10 @@ enum camenc_3a_change_e
  * the product and not to reference code, and the honest note here is that it
  * has not been done rather than a plausible-looking number in its place.
  *
- * The range is the hardware's, from cam3a.h.  It is deliberately not the
- * narrower range the automatic loop keeps to -- that bound is a policy about
- * what a plausible correction looks like, and a policy is not a capability.
+ * The range is the hardware's, from <arch/chip/cam3a.h>.  It is deliberately
+ * not the narrower range the automatic loop keeps to -- that bound is a
+ * policy about what a plausible correction looks like, and a policy is not a
+ * capability.
  */
 
 struct camenc_3a_cfg_s

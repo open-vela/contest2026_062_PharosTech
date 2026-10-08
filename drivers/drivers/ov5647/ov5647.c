@@ -2120,7 +2120,7 @@ static int ov5647_get_frame_interval(FAR struct imgsensor_s *sensor,
  *   loop belongs to the application, which is the only party that knows what
  *   the picture is for.  What the driver contributes is the mechanism --
  *   write these registers, and here is what the capture side measured the
- *   frame to be (see drivers/include/cam3a.h).  The one exception is the
+ *   frame to be (see <arch/chip/cam3a.h>).  The one exception is the
  *   sensor's own AEC, which is offered because it exists and can be selected,
  *   but is off by default: the application's loop is the one that can be
  *   reasoned about, and two loops steering the same registers cannot.

@@ -86,9 +86,9 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <arch/chip/cam3a.h>
 #include <sys/videoio.h>
 
-#include "cam3a.h"
 #include "camenc_3a.h"
 #include "camenc_stream.h"
 #include "camenc_ws.h"

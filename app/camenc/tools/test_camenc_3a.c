@@ -42,13 +42,17 @@
  *
  * Build and run with app/camenc/tools/run_camenc_3a_test.sh, or by hand:
  *
+ *   mkdir -p /tmp/t3a_stub/nuttx /tmp/t3a_stub/arch
+ *   : > /tmp/t3a_stub/nuttx/config.h
+ *   ln -s "$PWD/chips/rk3576/include" /tmp/t3a_stub/arch/chip
  *   gcc -std=gnu11 -O1 -Wall -DFAR= \
- *       -Iapp/camenc -Idrivers/include \
+ *       -I/tmp/t3a_stub -Iapp/camenc \
  *       -o /tmp/t3a app/camenc/tools/test_camenc_3a.c app/camenc/camenc_3a.c
  *
- * The module includes <nuttx/config.h>, so a build tree's include directory
- * has to be on the path as well -- or an empty file in place of it, which is
- * what the script does, because the loop reads nothing out of it.
+ * The module includes <nuttx/config.h> and <arch/chip/cam3a.h>, so a build
+ * tree's include directory has to be on the path as well -- or those two
+ * names stood up by hand, which is what the script does, because the loop
+ * reads nothing out of config.h and cam3a.h is the chip's own public header.
  *
  * Pass -v to print the trajectory of the first case.
  ****************************************************************************/
