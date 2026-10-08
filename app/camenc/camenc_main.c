@@ -92,7 +92,6 @@
 #include "camenc_3a.h"
 #include "camenc_stream.h"
 #include "camenc_ws.h"
-#include "ov5647.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -103,23 +102,27 @@
 
 /* The sensor's limits, which the exposure loop needs in order to know where
  * one of the two ways of getting more light runs out and the other has to
- * take over.  These are the OV5647's: exposure in lines, bounded by the
- * mode's frame length; gain a ten-bit fixed-point multiplier whose unity is
- * sixteen.
+ * take over.
  *
- * Named here rather than asked for, because the sensor reports neither.  The
- * exposure ceiling is a mode's own frame length less room to read out, which
- * is OV5647_MODE_EXPOSURE_MAX() in the sensor's header -- it moves with the
- * mode, so it is read from the mode in force rather than written down here.
- * The driver clamps to the same figure, so a loop that asks for more is
- * corrected rather than believed.
+ * The exposure ceiling is bounded by the mode's frame length, so it moves
+ * with the mode and cannot be a constant here.  It, and the rest of the
+ * range, are asked for at start-up with camenc_query_ctrl(), which is also
+ * where a device that will not answer is refused.  The driver clamps to the
+ * same figures, so a loop that asks for more is corrected rather than
+ * believed.
  */
 
-#define CAMENC_3A_EXPOSURE_MIN 4u
+/* What the gain control's numbers are measured in, which is the one thing a
+ * range cannot say.
+ *
+ * A range publishes how small and how large a value may be, not what value
+ * means "no gain at all".  The loop needs that one to put a change in
+ * exposure and a change in gain on a single scale, so it is named here:
+ * sixteen is 1.0x on this sensor, whose gain is a fixed-point multiplier and
+ * whose exposure is a count of lines.
+ */
 
-#define CAMENC_3A_GAIN_MIN     16u
-#define CAMENC_3A_GAIN_MAX     1023u
-#define CAMENC_3A_GAIN_ONE     16u
+#define CAMENC_3A_GAIN_ONE 16u
 
 /* The brightness the loop steers to, on the 0..255 scale the capture driver
  * measures in -- a scale that counts light and not what the eye makes of it.
@@ -181,41 +184,91 @@
 
 #define CAMENC_3A_AWB_MIN_MEAN 12u
 
-/* The sensor mode this program starts in, as an index into the sensor
- * driver's mode table.
+/* The sensor modes this program offers, and the one it starts in.
  *
- * This is the application's choice and not the driver's.  The board brings its
- * receive chain up on the mode the sensor driver publishes as its placeholder
- * -- a device node needs a geometry before an application can ask for
- * anything -- but that is not a decision about this run.  A mode is a
- * geometry, a frame rate and a link rate together, and this program names the
- * one it wants to the board before it opens the camera; so the mode a run
- * films in is the one below and nothing else, and the two are deliberately
- * separate settings that need not agree.  When they do not, the cost is one
- * reconfiguration at start-up, which is the same thing a change of mode later
- * costs.
+ * The list is this program's own: a mode is a geometry, a frame rate and a
+ * link rate together, and which of them a run is worth is a decision about
+ * the picture rather than a fact about the sensor.  What does have to agree
+ * with the hardware is the numbering, because the same number is what the
+ * board is asked to point the receive chain at (see CAMENC_BOARDIOC_SET_MODE
+ * below) and what the page and -m name a mode by.
  *
- * Which one it is set to is a compromise between the picture and the pipeline
- * behind it, and is the application's to make.  The seven, and what each is
- * for, are listed in ov5647.h and repeated by -m's line in the usage text;
- * what the entry here is set to is in the line below it and nowhere else.
+ * So this is a mirror of the sensor driver's own table, in its order: an
+ * entry added or removed there has to be added or removed here in the same
+ * position, because renumbering an existing one would silently repoint a
+ * number that is already in use.  The names and the positions are tied
+ * together by the designated initialisers below, so a mismatch is a compile
+ * error rather than a mode that quietly became another one.
  *
- * It is the 16:9 geometry at thirty frames a second, and it is the default
- * because of what runs behind the sensor rather than in front of it.  It is
- * the only geometry the encoder needs no compromise for -- 1280 is a multiple
- * of the 64 pixels its reconstruction working set is sized in, where 1296 is
- * not, and 720 is a whole number of 16-row macroblocks, where 1080 is not --
- * so nothing is padded sideways or cropped back, and it is the lightest of the
- * seven on every stage the picture passes through.  A run that is watched
- * live is the one that notices; a page that would rather have a different
- * trade asks for it, and any of the seven can be had that way.
- *
- * It is named by the header's constant rather than by its number so that the
- * two cannot drift apart -- a mode inserted into the table would otherwise
- * silently repoint this at another one.
+ * The exposure ceiling is deliberately not in this table.  It moves with the
+ * mode and is the sensor's to state, so it is asked for at start-up instead;
+ * see camenc_query_ctrl().
  */
 
-#define CAMENC_DEFAULT_MODE OV5647_MODE_1280x720_30
+enum camenc_mode_e
+{
+  CAMENC_MODE_1920x1080_15 = 0,
+  CAMENC_MODE_1296x960_30,
+  CAMENC_MODE_1296x960_15,
+  CAMENC_MODE_1280x720_30,
+  CAMENC_MODE_1280x720_15,
+  CAMENC_MODE_640x480_60,
+  CAMENC_MODE_640x480_30
+};
+
+struct camenc_mode_s
+{
+  uint16_t width;
+  uint16_t height;
+  uint16_t fps;
+};
+
+static const struct camenc_mode_s g_camenc_modes[] = {
+  [CAMENC_MODE_1920x1080_15] = { 1920, 1080, 15 },
+  [CAMENC_MODE_1296x960_30] = { 1296, 960, 30 },
+  [CAMENC_MODE_1296x960_15] = { 1296, 960, 15 },
+  [CAMENC_MODE_1280x720_30] = { 1280, 720, 30 },
+  [CAMENC_MODE_1280x720_15] = { 1280, 720, 15 },
+  [CAMENC_MODE_640x480_60] = { 640, 480, 60 },
+  [CAMENC_MODE_640x480_30] = { 640, 480, 30 }
+};
+
+#define CAMENC_NUM_MODES (sizeof(g_camenc_modes) / sizeof(g_camenc_modes[0]))
+
+/* The default is the 16:9 geometry at thirty frames a second, and it is the
+ * default because of what runs behind the sensor rather than in front of it.
+ * It is the only geometry the encoder needs no compromise for -- 1280 is a
+ * multiple of the 64 pixels its reconstruction working set is sized in, where
+ * 1296 is not, and 720 is a whole number of 16-row macroblocks, where 1080 is
+ * not -- so nothing is padded sideways or cropped back, and it is the
+ * lightest of them on every stage the picture passes through.  A run that is
+ * watched live is the one that notices; a page that would rather have a
+ * different trade asks for it, and any of them can be had that way.
+ *
+ * The board brings its receive chain up on the mode the sensor driver
+ * publishes as its placeholder -- a device node needs a geometry before an
+ * application can ask for anything -- but that is not a decision about this
+ * run.  This program names the mode it wants to the board before it opens the
+ * camera, so the mode a run films in is the one named here and nothing else.
+ * When the two differ, the cost is one reconfiguration at start-up, which is
+ * the same thing a change of mode later costs.
+ */
+
+#define CAMENC_DEFAULT_MODE CAMENC_MODE_1280x720_30
+
+/* The mode an index names, or NULL if it names none.  The bounds live in one
+ * place so that a lookup cannot read past the table.
+ */
+
+static FAR const struct camenc_mode_s *camenc_mode_at(uint32_t index)
+{
+  if (index >= CAMENC_NUM_MODES)
+    {
+      return NULL;
+    }
+
+  return &g_camenc_modes[index];
+}
 
 /* The board's request to point the capture path at another sensor mode; the
  * argument is a mode index.
@@ -508,8 +561,8 @@ static bool camenc_ui_arg(FAR const char *text, FAR const char *name,
  *   kr <gain>     the red white balance gain by hand, which turns that loop
  *   kg <gain>     off -- as are the other two.  256 is unity, and the names
  *   kb <gain>     are the ones the status line reports them under
- *   mo <index>    the sensor mode to switch to, by its index in the sensor
- *                 driver's mode table
+ *   mo <index>    the sensor mode to switch to, by its index in the mode
+ *                 table this program offers
  *
  * Setting a value by hand stops the loop for it rather than moving a slider
  * that the loop will pull back on the next frame.  That is what a user means
@@ -822,6 +875,8 @@ static void camenc_stage_reset(void)
 
 static void camenc_usage(void)
 {
+  unsigned int i;
+
   printf("Usage: camenc [-d camdev] [-e encdev] [-o outfile] [-n frames]\n");
   printf("              [-m mode] [-q qp] [-x exposure]"
          " [-g gain]\n");
@@ -832,13 +887,16 @@ static void camenc_usage(void)
          " (default %d, 0 for none)\n",
          CAMENC_DEFAULT_PORT);
   printf("  -n  frames to encode (default %d)\n", CAMENC_DEFAULT_FRAMES);
-  printf("  -m  sensor mode, by its index in the sensor driver's mode"
-         " table\n");
-  printf("      (default %d: 0 = 1920x1080 at 15 fps, 1 = 1296x960 at"
-         " 30 fps,\n      2 = 1296x960 at 15 fps, 3 = 1280x720 at 30 fps,"
-         " 4 = 1280x720 at\n      15 fps, 5 = 640x480 at 60 fps,"
-         " 6 = 640x480 at 30 fps)\n",
-         CAMENC_DEFAULT_MODE);
+  printf("  -m  sensor mode, by its index in this program's mode table\n");
+  printf("      (default %u)\n", (unsigned int)CAMENC_DEFAULT_MODE);
+
+  for (i = 0; i < CAMENC_NUM_MODES; i++)
+    {
+      printf("        %u = %ux%u at %u fps\n", (unsigned int)i,
+             (unsigned int)g_camenc_modes[i].width,
+             (unsigned int)g_camenc_modes[i].height,
+             (unsigned int)g_camenc_modes[i].fps);
+    }
   printf("  -q  quantiser, 0..51 (default %d)\n", CAMENC_DEFAULT_QP);
   printf("  -G  pictures per group, 1..1000 (default %d; 1 makes every"
          " frame an\n      IDR, a larger value makes the first frame of"
@@ -989,6 +1047,43 @@ static int camenc_get_ctrl(int fd, uint32_t id, FAR int *value)
     }
 
   *value = ctrl.value;
+  return OK;
+}
+
+/* Ask the device what range one of its controls has.
+ *
+ * The exposure and gain limits are the sensor's, and the driver clamps what
+ * it is handed to the same figures.  A loop told different ones would ask for
+ * values that are silently corrected and would report a convergence that is
+ * not there, so it is built from what the device says rather than from
+ * numbers written down here.
+ *
+ * Returns OK, or a negated errno.  There is nothing to fall back on: a range
+ * guessed here would be a range that disagrees with the one the hardware
+ * enforces, which is the failure this exists to avoid.
+ */
+
+static int camenc_query_ctrl(int fd, uint32_t id, FAR uint32_t *minimum,
+                             FAR uint32_t *maximum)
+{
+  struct v4l2_query_ext_ctrl q;
+
+  memset(&q, 0, sizeof(q));
+  q.id = (uint16_t)id;
+
+  if (ioctl(fd, VIDIOC_QUERY_EXT_CTRL, (unsigned long)&q) < 0)
+    {
+      return -errno;
+    }
+
+  if (q.minimum < 0 || q.maximum < q.minimum)
+    {
+      return -EINVAL;
+    }
+
+  *minimum = (uint32_t)q.minimum;
+  *maximum = (uint32_t)q.maximum;
+
   return OK;
 }
 
@@ -1658,7 +1753,7 @@ int main(int argc, FAR char *argv[])
   FAR const char *camdev = CAMENC_CAM_DEVPATH;
   FAR const char *encdev = CAMENC_ENC_DEVPATH;
   FAR const char *outfile = NULL;
-  FAR const struct ov5647_mode_s *cur = NULL;
+  FAR const struct camenc_mode_s *cur = NULL;
   struct camenc_stream_s st;
   struct camenc_sink_s sink;
   bool serving = false;
@@ -1816,16 +1911,19 @@ int main(int argc, FAR char *argv[])
         }
     }
 
-  /* The mode has to be one the sensor has, because it is what the board is
-   * asked to configure the receive chain for and what the geometry of every
-   * buffer follows from.  Checking it here rather than leaving it to the board
-   * keeps a typo from getting as far as taking a running stream down.
+  /* The mode has to be one this program offers, because it is what the board
+   * is asked to configure the receive chain for and what the geometry of
+   * every buffer follows from.  Checking it here rather than leaving it to
+   * the board keeps a typo from getting as far as taking a running stream
+   * down.
    */
 
-  cur = ov5647_mode(mode);
+  cur = camenc_mode_at(mode);
   if (cur == NULL)
     {
-      printf("camenc: mode %" PRIu32 " is not one of the sensor's\n", mode);
+      printf("camenc: mode %" PRIu32
+             " is not one of the %u this program offers\n",
+             mode, (unsigned int)CAMENC_NUM_MODES);
       camenc_usage();
       return EXIT_FAILURE;
     }
@@ -1986,7 +2084,7 @@ stream_start:
   win_p_bytes = 0;
   camenc_stage_reset();
 
-  cur = ov5647_mode(mode);
+  cur = camenc_mode_at(mode);
   width = cur->width;
   height = cur->height;
 
@@ -2117,29 +2215,71 @@ stream_start:
       struct cam3a_stats_s probe;
       struct camenc_3a_cfg_s cfg3a;
 
+      /* The limits the loop has to work within, asked for before it is built
+       * rather than written down here.
+       *
+       * A wrong ceiling is not a small error.  The driver clamps what it is
+       * handed to these same figures, so a loop told a ceiling the hardware
+       * does not have would keep asking, keep being corrected, and never
+       * report the target reached -- which looks exactly like a scene there
+       * is not enough light for.  There is no safe number to put in place of
+       * an answer, so a device that will not give one ends the run.
+       *
+       * The ceiling follows the mode, and the mode is asked for above; this
+       * therefore comes after the format and the frame rate and not before.
+       */
+
+      int read_exp = 0;
+      int read_gain = 0;
+      uint32_t exposure_min;
+      uint32_t exposure_max;
+      uint32_t gain_min;
+      uint32_t gain_max;
+      uint32_t seed_exp;
+      uint32_t seed_gain;
+      uint32_t keep_wb[3];
+      bool seeded_from_hw;
+
+      ret = camenc_query_ctrl(camfd, V4L2_CID_EXPOSURE_ABSOLUTE, &exposure_min,
+                              &exposure_max);
+      if (ret == OK)
+        {
+          ret = camenc_query_ctrl(camfd, V4L2_CID_ISO_SENSITIVITY, &gain_min,
+                                  &gain_max);
+        }
+
+      if (ret < 0)
+        {
+          printf(
+              "camenc: the capture device reports no exposure or gain range "
+              "(%d); the 3A loop has no limits to work within\n",
+              -ret);
+
+          /* Out of the run rather than on to the next stream: a device that
+           * would not answer once will not answer on the retry either.
+           */
+
+          switching = false;
+          goto errout;
+        }
+
       /* The loop is seeded from what the sensor is *actually* holding, read
        * back rather than assumed.
        *
-       * This is not tidiness.  The sensor's own default gain is
-       * OV5647_ANALOG_GAIN_DEFAULT, 256, while the loop's own minimum is
-       * 16 -- so a loop that guessed would start believing the picture was
-       * sixteen times darker than it is, ask for sixteen times too much
-       * light in its first correction, and visibly darken the picture
-       * before climbing back.  Starting from a wrong belief about the
-       * hardware is the one thing a loop cannot compute its way out of.
+       * This is not tidiness.  The driver's own starting gain is not the
+       * smallest one it accepts -- on this sensor it is sixteen times the
+       * minimum -- so a loop that guessed from the range would begin
+       * believing the picture was sixteen times darker than it is, ask for
+       * sixteen times too much light in its first correction, and visibly
+       * darken the picture before climbing back.  Starting from a wrong
+       * belief about the hardware is the one thing a loop cannot compute its
+       * way out of.
        *
        * Where the readback is not available the seed values are written to
        * the sensor instead, so that the belief is made true rather than
        * hoped to be.  Either way the two agree before the first frame is
        * measured.
        */
-
-      int read_exp = 0;
-      int read_gain = 0;
-      uint32_t seed_exp;
-      uint32_t seed_gain;
-      uint32_t keep_wb[3];
-      bool seeded_from_hw;
 
       seeded_from_hw =
           camenc_get_ctrl(camfd, V4L2_CID_EXPOSURE_ABSOLUTE, &read_exp) ==
@@ -2149,10 +2289,10 @@ stream_start:
 
       seed_exp = seeded_from_hw  ? (uint32_t)read_exp
                  : exposure >= 0 ? (uint32_t)exposure
-                                 : OV5647_MODE_EXPOSURE_MAX(cur);
+                                 : exposure_max;
       seed_gain = seeded_from_hw ? (uint32_t)read_gain
                   : gain >= 0    ? (uint32_t)gain
-                                 : CAMENC_3A_GAIN_MIN;
+                                 : gain_min;
 
       fd3a = open(CAM3A_DEVPATH, O_RDWR);
       if (fd3a < 0)
@@ -2198,18 +2338,10 @@ stream_start:
 
           memset(&cfg3a, 0, sizeof(cfg3a));
           cfg3a.target = target;
-          cfg3a.exposure_min = CAMENC_3A_EXPOSURE_MIN;
-
-          /* The ceiling is the mode's own frame length less room to read out,
-           * so it moves when the mode does.  Read from the same expression
-           * the sensor driver clamps with, in the sensor's header, rather than
-           * written down again here -- the two have to agree for the loop to
-           * be able to trust what it reads back.
-           */
-
-          cfg3a.exposure_max = OV5647_MODE_EXPOSURE_MAX(cur);
-          cfg3a.gain_min = CAMENC_3A_GAIN_MIN;
-          cfg3a.gain_max = CAMENC_3A_GAIN_MAX;
+          cfg3a.exposure_min = exposure_min;
+          cfg3a.exposure_max = exposure_max;
+          cfg3a.gain_min = gain_min;
+          cfg3a.gain_max = gain_max;
           cfg3a.gain_one = CAMENC_3A_GAIN_ONE;
           cfg3a.ae_shift = CAMENC_3A_AE_SHIFT;
           cfg3a.awb_shift = CAMENC_3A_AWB_SHIFT;

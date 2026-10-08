@@ -213,10 +213,13 @@ struct ov5647_mode_s
  *
  * Description:
  *   Describe one of the driver's capture modes.  The figures are sensor
- *   facts, and they are what the board's D-PHY rate, the capture engine's
- *   geometry and the application's exposure ceiling have to be derived
- *   from; reading them from here rather than repeating them is what keeps
- *   the three in step.
+ *   facts, and they are what the board's D-PHY rate and the capture engine's
+ *   geometry have to be derived from; reading them from here rather than
+ *   repeating them is what keeps the three in step.
+ *
+ *   A mode's exposure ceiling is worked out from the same table, but callers
+ *   do not read it from here: it moves when the mode does, so it is
+ *   published through the control interface along with the other ranges.
  *
  * Input Parameters:
  *   index - Which mode, one of OV5647_MODE_*.
