@@ -395,6 +395,27 @@ static uint32_t rk3576_vop_pitch_words(FAR const struct rk3576_vop_s *priv)
 }
 
 /****************************************************************************
+ * Name: rk3576_vop_store_pixel
+ *
+ * Description:
+ *   Write one RGB888 pixel, 0xRRGGBB, at a byte address in the framebuffer.
+ *
+ *   Every pixel of the framebuffer is addressed the same way: a row starts at
+ *   y * priv->stride, never at y * xres * 3, because a row is padded up to a
+ *   whole 32-bit word.  Something that walks the buffer three bytes at a time
+ *   across a row boundary writes the padding the ESMART steps over and lands
+ *   on the wrong byte of the colour at the head of the next row.
+ *
+ ****************************************************************************/
+
+static void rk3576_vop_store_pixel(FAR uint8_t *px, uint32_t rgb)
+{
+  px[0] = (uint8_t)(rgb >> 16);
+  px[1] = (uint8_t)(rgb >> 8);
+  px[2] = (uint8_t)rgb;
+}
+
+/****************************************************************************
  * Name: rk3576_vop_getreg / putreg / modifyreg
  *
  * Description:
@@ -1931,31 +1952,39 @@ errout_with_priv:
 int rk3576_vop_fill(uint32_t rgb)
 {
   FAR struct rk3576_vop_s *priv = g_rk3576_vop_priv;
-  uint8_t r = (uint8_t)(rgb >> 16);
-  uint8_t g = (uint8_t)(rgb >> 8);
-  uint8_t b = (uint8_t)(rgb);
+  uint32_t yres;
+  uint32_t xres;
   uint8_t *fb;
-  size_t n;
+  uint32_t y;
+  uint32_t x;
 
   if (priv == NULL || priv->fbmem == NULL)
     {
       return -ENODEV;
     }
 
+  xres = priv->cfg.xres;
+  yres = priv->cfg.yres;
   fb = (uint8_t *)priv->fbmem;
 
-  /* Stop short of a partial trailing group: the pitch is word-aligned, so
-   * fblen is not necessarily a multiple of three and the last group would
-   * write past the allocation.  Only line padding is left unwritten, and the
-   * window never displays it.
+  /* One row at a time, each starting at y * priv->stride: the pitch is
+   * rounded up to a whole word, so the padding at the end of a row is not
+   * necessarily a whole pixel, and sweeping the buffer three bytes at a time
+   * from head to tail would write it as if it were -- every row after the
+   * first then begins on the wrong byte of the colour.  Only the xres real
+   * pixels of a row are written; the padding is stepped over by the ESMART
+   * and never displayed.  rk3576_vop_fill_bands() walks rows the same way.
    */
 
-  for (n = 0; n + RK3576_VOP_RGB888_BPP <= priv->fblen;
-       n += RK3576_VOP_RGB888_BPP)
+  for (y = 0; y < yres; y++)
     {
-      fb[n + 0] = r;
-      fb[n + 1] = g;
-      fb[n + 2] = b;
+      FAR uint8_t *row = fb + ((size_t)y * priv->stride);
+
+      for (x = 0; x < xres; x++)
+        {
+          rk3576_vop_store_pixel(row + ((size_t)x * RK3576_VOP_RGB888_BPP),
+                                 rgb);
+        }
     }
 
   /* The ESMART layer DMAs this memory with the MMU bypassed, so the cache
@@ -2013,18 +2042,19 @@ int rk3576_vop_fill_bands(FAR const uint32_t *colors, uint32_t nbands)
   yres = priv->cfg.yres;
   fb = (uint8_t *)priv->fbmem;
 
+  /* Row by row, each at y * priv->stride, so the row padding the ESMART steps
+   * over is never written.  rk3576_vop_fill() walks rows the same way.
+   */
+
   for (y = 0; y < yres; y++)
     {
+      FAR uint8_t *row = fb + ((size_t)y * priv->stride);
       uint32_t rgb = colors[(y * nbands) / yres];
 
       for (x = 0; x < xres; x++)
         {
-          uint8_t *px = fb + ((size_t)y * priv->stride) +
-                        ((size_t)x * RK3576_VOP_RGB888_BPP);
-
-          px[0] = (uint8_t)(rgb >> 16);
-          px[1] = (uint8_t)(rgb >> 8);
-          px[2] = (uint8_t)rgb;
+          rk3576_vop_store_pixel(row + ((size_t)x * RK3576_VOP_RGB888_BPP),
+                                 rgb);
         }
     }
 
