@@ -2590,15 +2590,27 @@ static int rk3576_vicap_validate_frame_setting(
       return -EINVAL;
     }
 
-  /* This driver delivers demodisaiced frames only, and only at the geometry
-   * the sensor was configured for: VICAP is programmed once, with the
-   * sensor's frame size, and there is no scaler in the path.
+  /* This driver delivers demodisaiced frames only, in the one format it can
+   * write, and only at the geometry the sensor was configured for: VICAP is
+   * programmed once, with the sensor's frame size, and there is no scaler in
+   * the path.
+   *
+   * NV12 is that format, and it is the only one: both demosaicers put the
+   * chroma of each 2x2 block into the half-resolution plane that follows the
+   * luma, interleaved.  IMGDATA_PIX_FMT_YUV420P differs from it in nothing
+   * but that layout -- U and V in planes of their own -- and nothing between
+   * this driver and the application rearranges one into the other, so
+   * accepting it would answer the request and then hand the application
+   * interleaved bytes to read as planar chroma.  Refusing says the same
+   * thing without the wrong frame in between.
+   *
+   * The OV5647 driver states the same rule from the sensor's side; the two
+   * are changed together.
    */
 
   for (i = 0; i < nr_datafmts; i++)
     {
-      if (datafmts[i].pixelformat != IMGDATA_PIX_FMT_NV12 &&
-          datafmts[i].pixelformat != IMGDATA_PIX_FMT_YUV420P)
+      if (datafmts[i].pixelformat != IMGDATA_PIX_FMT_NV12)
         {
           return -EINVAL;
         }

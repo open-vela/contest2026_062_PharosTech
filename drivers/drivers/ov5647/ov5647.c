@@ -1544,6 +1544,13 @@ static int ov5647_validate_frame_setting(FAR struct imgsensor_s *sensor,
    * Everything the framework can ask for is therefore either something one of
    * the modes produces or impossible.
    *
+   * That format is NV12, and it is the only one on offer: the capture driver
+   * writes the chroma interleaved and has no second layout, and nothing
+   * between the two drivers rearranges it.  A request for a planar YUV420P
+   * is therefore refused instead of being answered with data the application
+   * would read as a different layout.  The image data driver states the same
+   * rule from its own side; the two are changed together.
+   *
    * That the two are checked against the modes separately, rather than as a
    * pair, is the point of this function rather than an oversight in it.  It
    * is reached from VIDIOC_S_FMT with whatever frame rate is in force and
@@ -1557,8 +1564,7 @@ static int ov5647_validate_frame_setting(FAR struct imgsensor_s *sensor,
 
   for (i = 0; i < nr_datafmts; i++)
     {
-      if (datafmts[i].pixelformat != IMGSENSOR_PIX_FMT_NV12 &&
-          datafmts[i].pixelformat != IMGSENSOR_PIX_FMT_YUV420P)
+      if (datafmts[i].pixelformat != IMGSENSOR_PIX_FMT_NV12)
         {
           return -EINVAL;
         }
