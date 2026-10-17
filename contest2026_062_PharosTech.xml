@@ -28,5 +28,6 @@
     <linkfile src="app/nyabula_display" dest="apps/graphics/nyabula_display"/>
     <linkfile src="app/nyabula_core" dest="packages/demos/contest2026_062_nyabula_core"/>
     <linkfile src="app/nyabula" dest="apps/graphics/nyabula_eye"/>
+    <linkfile src="app/nyabula_eyeprobe" dest="apps/examples/eyeprobe"/>
   </project>
 </manifest>
