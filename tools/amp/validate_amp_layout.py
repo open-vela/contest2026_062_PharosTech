@@ -110,7 +110,7 @@ def overlaps(left: tuple[int, int], right: tuple[int, int]) -> bool:
     return left[0] < right[0] + right[1] and right[0] < left[0] + left[1]
 
 
-def validate_config(path: Path) -> None:
+def validate_config(path: Path, profile: str = "minimal") -> None:
     """Check expanded Kconfig output, not just the requested defconfig."""
     values = dict(re.findall(r"^(CONFIG_\w+)=(.*)$", path.read_text(), re.MULTILINE))
     expected = {
@@ -124,15 +124,27 @@ def validate_config(path: Path) -> None:
         "CONFIG_ARM64_GICV2_STATIC_SPI": "y",
         "CONFIG_UART0_SERIAL_CONSOLE": "y",
     }
+    if profile == "product":
+        expected.update({"CONFIG_MM_REGIONS": "2", "CONFIG_RK3576_DMA_ALLOC": "y",
+                         "CONFIG_RK3576_SHMEM": "y"})
+    if values.get("CONFIG_PM") == "y" and int(values.get("CONFIG_PM_NDOMAINS", "0"), 0) < 5:
+        raise ValueError("SMP4 power management needs the system domain plus four CPU domains")
     for key, value in expected.items():
         if values.get(key) != value:
             raise ValueError(f"{path}: {key} must be {value}, got {values.get(key)!r}")
-    for key in ("CONFIG_UP", "CONFIG_RK3576_DMA_ALLOC", "CONFIG_NO_SERIAL_CONSOLE"):
+    forbidden = ("CONFIG_UP", "CONFIG_RK3576_DMA_ALLOC", "CONFIG_NO_SERIAL_CONSOLE")
+    if profile == "product":
+        forbidden = ("CONFIG_UP", "CONFIG_NO_SERIAL_CONSOLE")
+    for key in forbidden:
         if values.get(key) == "y":
             raise ValueError(f"{path}: {key} is incompatible with the AMP profile")
-    for key, expected_value in (("CONFIG_RAM_START", EXPECTED["openvela"][0]),
-                                ("CONFIG_RAM_SIZE", EXPECTED["openvela"][1]),
-                                ("CONFIG_SMP_DEFAULT_CPUSET", 0xF)):
+    geometry = [("CONFIG_RAM_START", EXPECTED["openvela"][0]),
+                ("CONFIG_RAM_SIZE", EXPECTED["openvela"][1]),
+                ("CONFIG_SMP_DEFAULT_CPUSET", 0xF)]
+    geometry += ([("CONFIG_RK3576_RAMBANK2_ADDR", 0x70000000),
+                  ("CONFIG_RK3576_RAMBANK2_SIZE_MB", 256)] if profile == "product"
+                 else [])
+    for key, expected_value in geometry:
         if int(values.get(key, "-1"), 0) != expected_value:
             raise ValueError(f"{path}: unexpected {key}")
 
@@ -194,6 +206,7 @@ def validate_image(path: Path, limit: int, linux: bool = False) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, help="expanded NuttX .config")
+    parser.add_argument("--profile", choices=("minimal", "product"), default="minimal")
     parser.add_argument("--dtb", type=Path, help="compiled Linux DTB (requires fdtget)")
     parser.add_argument("--linux-image", type=Path, help="Linux ARM64 Image")
     parser.add_argument("--nuttx-image", type=Path, help="NuttX ARM64 raw image")
@@ -235,9 +248,21 @@ def main() -> int:
                 raise ValueError(f"overlap: {name} and {reserved_name}")
 
     if args.config:
-        validate_config(args.config)
+        validate_config(args.config, args.profile)
     if args.dtb:
         validate_dtb(args.dtb)
+        if args.profile == "product":
+            for node, wanted in (("openvela-dma@49400000", [0, 0x49400000, 0, 0x1000000]),
+                                 ("openvela-heap@70000000", [0, 0x70000000, 0, 0x10000000])):
+                address = "/reserved-memory/" + node
+                actual = subprocess.check_output(
+                    ["fdtget", "-t", "x", str(args.dtb), address, "reg"], text=True)
+                if [int(x, 16) for x in actual.split()] != wanted:
+                    raise ValueError("product memory reservation differs: " + node)
+                props = subprocess.check_output(
+                    ["fdtget", "-p", str(args.dtb), address], text=True).split()
+                if "no-map" not in props:
+                    raise ValueError("product memory reservation needs no-map: " + node)
     if args.linux_image:
         validate_image(args.linux_image, 0x05000000, linux=True)
     if args.nuttx_image:
