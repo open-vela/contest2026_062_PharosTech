@@ -1,0 +1,114 @@
+--- a/include/system/nxplayer.h	2026-06-30 22:29:54.604613648 +0800
++++ b/include/system/nxplayer.h	2026-09-12 18:52:32.358357310 +0800
+@@ -34,6 +34,10 @@
+  * Pre-processor Definitions
+  ****************************************************************************/
+ 
++#define NXPLAYER_STATE_IDLE      0
++#define NXPLAYER_STATE_PLAYING   1
++#define NXPLAYER_STATE_PAUSED    2
++
+ /****************************************************************************
+  * Public Type Declarations
+  ****************************************************************************/
+@@ -135,6 +139,15 @@
+ 
+ FAR struct nxplayer_s *nxplayer_create(void);
+ 
++/* Query the current player state without exposing its internal descriptors. */
++int nxplayer_getstate(FAR struct nxplayer_s *pplayer);
++
++/* Play PCM from the current position of fd. Ownership transfers only on
++ * success. The caller and player must share the same task-group fd table.
++ */
++int nxplayer_playpcmfd(FAR struct nxplayer_s *pplayer, int fd,
++                        uint8_t channels, uint8_t bits, uint32_t rate);
++
+ /****************************************************************************
+  * Name: nxplayer_release
+  *
+--- a/system/nxplayer/nxplayer.c	2026-06-30 22:29:54.672615012 +0800
++++ b/system/nxplayer/nxplayer.c	2026-09-12 19:29:38.482906467 +0800
+@@ -58,9 +58,6 @@
+  * Pre-processor Definitions
+  ****************************************************************************/
+ 
+-#define NXPLAYER_STATE_IDLE      0
+-#define NXPLAYER_STATE_PLAYING   1
+-#define NXPLAYER_STATE_PAUSED    2
+ 
+ #ifndef CONFIG_NXPLAYER_MSG_PRIO
+ #  define CONFIG_NXPLAYER_MSG_PRIO  1
+@@ -1307,7 +1304,8 @@
+    * be applied before the next playback begins.
+    */
+ 
+-  if (pplayer->state == NXPLAYER_STATE_PLAYING)
++  if (pplayer->state == NXPLAYER_STATE_PLAYING ||
++      pplayer->state == NXPLAYER_STATE_PAUSED)
+     {
+       /* Send a CONFIGURE ioctl to the device to set the volume */
+ 
+@@ -2236,6 +2234,62 @@
+ 
+   return ret;
+ }
++
++/****************************************************************************
++ * Name: nxplayer_getstate
++ ****************************************************************************/
++
++int nxplayer_getstate(FAR struct nxplayer_s *pplayer)
++{
++  int state;
++
++  if (pplayer == NULL)
++    {
++      return -EINVAL;
++    }
++
++  pthread_mutex_lock(&pplayer->mutex);
++  state = pplayer->state;
++  pthread_mutex_unlock(&pplayer->mutex);
++  return state;
++}
++
++/****************************************************************************
++ * Name: nxplayer_playpcmfd
++ ****************************************************************************/
++
++int nxplayer_playpcmfd(FAR struct nxplayer_s *pplayer, int fd,
++                        uint8_t channels, uint8_t bits, uint32_t rate)
++{
++  static const struct nxplayer_dec_ops_s pcm_ops =
++    {
++      AUDIO_FMT_PCM, NULL, nxplayer_fill_common
++    };
++  int ret;
++
++  if (pplayer == NULL || fd < 0 || channels == 0 || bits == 0 || rate == 0)
++    {
++      return -EINVAL;
++    }
++
++  if (pplayer->state != NXPLAYER_STATE_IDLE)
++    {
++      return -EBUSY;
++    }
++
++  nxplayer_jointhread(pplayer);
++  pplayer->fd = fd;
++  pplayer->ops = &pcm_ops;
++  ret = nxplayer_playinternal(pplayer, AUDIO_FMT_PCM, AUDIO_FMT_UNDEF,
++                              channels, bits, rate, 0);
++  if (ret < 0)
++    {
++      pplayer->fd = -1;
++      pplayer->ops = NULL;
++    }
++
++  return ret;
++}
+ 
+ /****************************************************************************
+  * Name: nxplayer_playtone
