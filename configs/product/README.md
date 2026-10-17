@@ -7,9 +7,11 @@ openvela 产品固件，不是 AMP 地址布局；两种二进制不能互换。
 |---|---|---|
 | product | 0x40200000 | 普通固件，硬 TE，免登录 eyeprobe 关闭 |
 | product_amp | 0x4a400000 | 产品计算域配套，openvela 四 A53、Linux 四 A72 |
+| product_judge | 0x40200000 | 无屏演示，软件 TE、免登录 eyeprobe |
+| product_amp_judge | 0x4a400000 | 无屏 AMP 演示，软件 TE、免登录 eyeprobe |
 | boards/rk3576/kickpi-k7/configs/amp | 0x4a400000 | 原有四 A53 最小 AMP 验证配置，非产品 |
 
-AMP 配置由 `tools/generate_product_profiles.py` 从普通产品配置生成。
+AMP/评委配置由 `tools/generate_product_profiles.py` 从普通产品配置生成。
 修改普通 defconfig 或生成器后重新生成，用 `--check` 检查是否同步。
 产品 AMP 强制 SMP4（A53 MPIDR 0..3），Linux 仅保留 A72 MPIDR 0x100..0x103；
 第二堆为 `0x70000000 / 256 MiB`。旧产品工作区的 UP 配置不再满足验收。蓝牙音频仍待真手机验收，产品 AMP 默认关闭它。
