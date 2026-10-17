@@ -1,0 +1,16 @@
+diff --git a/interpreters/wamr/CMakeLists.txt b/interpreters/wamr/CMakeLists.txt
+--- a/interpreters/wamr/CMakeLists.txt
++++ b/interpreters/wamr/CMakeLists.txt
+@@ -60,6 +60,12 @@ if(CONFIG_INTERPRETERS_WAMR)
+              ${CMAKE_CURRENT_SOURCE_DIR}/wamr/core/iwasm/include)
+ 
+   include(${WAMR_DIR}/product-mini/platforms/nuttx/CMakeLists.txt)
++  # WAMR defines this switch only when enabled, but its public headers use
++  # it in #if expressions. Keep disabled builds valid under -Wundef.
++  if(NOT WAMR_BUILD_MODULE_INST_CONTEXT EQUAL 1)
++    add_compile_definitions(WASM_ENABLE_MODULE_INST_CONTEXT=0)
++  endif()
++
+   target_sources(wamr PRIVATE ${WAMR_SOURCES})
+   target_compile_options(wamr PRIVATE ${WAMR_CFLAGS})
+   # the WAMR_INCDIRS and WAMR_DEFINITIONS already exist in the directory domain
