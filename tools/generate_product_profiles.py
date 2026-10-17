@@ -35,7 +35,7 @@ AMP = {
     'NYABULA_CORE_VOICE': 'y', 'NYABULA_CORE_VOICE_CODEC_HALF': 'y',
     # Phone interoperability has not been accepted; do not silently turn on
     # the Bluetooth audio experiment in a reproducible product profile.
-    'NYABULA_CORE_BT': 'n', 'SV6621_BT_SCO': 'n',
+    'SV6621_BT_SCO': 'n',
 }
 JUDGE = {'NYABULA_DISPLAY_TE_BOARDCTL': 'n', 'NYABULA_DISPLAY_TE_SW': 'y',
          'NYABULA_CORE_WEB_EYEPROBE': 'y'}
