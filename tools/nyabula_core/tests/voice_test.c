@@ -816,8 +816,10 @@ static void test_machine(void)
     EV(NY_VOICE_EV_ASR_STARTED, 50, NY_VOICE_LISTENING, ""),
     TICK(1000, true, 0, NY_VOICE_LISTENING, ""),
     TICK(1000, true, 900, NY_VOICE_LISTENING, ""),
-    TICK(300, true, 1200, NY_VOICE_LISTENING, "E"),
-    TICK(100, true, 1300, NY_VOICE_LISTENING, ""),
+    TICK(300, true, 1200, NY_VOICE_LISTENING, ""),
+    TICK(399, true, 1599, NY_VOICE_LISTENING, ""),
+    TICK(1, true, 1600, NY_VOICE_LISTENING, "E"),
+    TICK(100, true, 1700, NY_VOICE_LISTENING, ""),
     DONE(NY_VOICE_EV_ASR_FINISHED, 200, true, false, NY_VOICE_THINKING,
          "2G"),
     TICK(20000, false, 0, NY_VOICE_THINKING, ""),
@@ -831,13 +833,17 @@ static void test_machine(void)
     EV(NY_VOICE_EV_ENABLE, 0, NY_VOICE_IDLE, ""),
     EV(NY_VOICE_EV_LISTEN, 0, NY_VOICE_LISTENING, "1a"),
 
-    /* The decoder's opinion arrives before the request is even confirmed:
-     * END waits for the request, and is sent once.
+    /* An empty decoder endpoint does not end the command. Once text
+     * exists, the endpoint ends it exactly once.
      */
 
     EV(NY_VOICE_EV_ASR_ENDPOINT, 10, NY_VOICE_LISTENING, ""),
-    EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, "E"),
+    EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
     EV(NY_VOICE_EV_ASR_ENDPOINT, 10, NY_VOICE_LISTENING, ""),
+    { NY_VOICE_EV_ASR_ENDPOINT, 10, true, false, true, 0,
+      NY_VOICE_LISTENING, "E" },
+    { NY_VOICE_EV_ASR_ENDPOINT, 10, true, false, true, 0,
+      NY_VOICE_LISTENING, "" },
     TICK(100, true, 5000, NY_VOICE_LISTENING, ""),
     DONE(NY_VOICE_EV_ASR_FINISHED, 100, true, true, NY_VOICE_SPEAKING, "N"),
     DONE(NY_VOICE_EV_SPEAK_DONE, 900, true, false, NY_VOICE_IDLE, "0"),
