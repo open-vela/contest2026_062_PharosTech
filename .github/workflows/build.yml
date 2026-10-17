@@ -202,12 +202,7 @@ jobs:
         run: |
           cd "${{ env.OPENVELA_DIR }}"
           REPO="$PWD/${{ env.REPO_NAME }}"
-          for pf in "$REPO"/patches/apps-*.patch; do
-            patch -d apps -p1 -N < "$pf"
-          done
-          for pf in "$REPO"/patches/packages-ai_agent-*.patch; do
-            patch -d packages/ai_agent -p1 -N < "$pf"
-          done
+          bash "$REPO/tools/apply_dependency_patches.sh" "$PWD" "$REPO/patches"
 
       - name: Generate Eye glyph tables from official Noto Sans
         if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/product'

@@ -62,22 +62,7 @@ done
 
 # apps/ and packages/ patches nyabula_core depends on (idempotent: skipped
 # when already applied). See patches/README.md.
-for pf in "$REPO"/patches/apps-*.patch; do
-  [ -f "$pf" ] || continue
-  if patch -d "$WS/apps" -p1 -N --dry-run -s < "$pf" >/dev/null 2>&1; then
-    patch -d "$WS/apps" -p1 -N -s < "$pf" && echo "  applied $(basename "$pf") -> apps/"
-  else
-    echo "  (already applied or conflict) $(basename "$pf")"
-  fi
-done
-for pf in "$REPO"/patches/packages-ai_agent-*.patch; do
-  [ -f "$pf" ] || continue
-  if patch -d "$WS/packages/ai_agent" -p1 -N --dry-run -s < "$pf" >/dev/null 2>&1; then
-    patch -d "$WS/packages/ai_agent" -p1 -N -s < "$pf" && echo "  applied $(basename "$pf") -> packages/ai_agent/"
-  else
-    echo "  (already applied or conflict) $(basename "$pf")"
-  fi
-done
+bash "$REPO/tools/apply_dependency_patches.sh" "$WS" "$REPO/patches"
 
 # generated eye fonts are gitignored (need lv_font_conv + font downloads)
 FONTS="$REPO/app/nyabula/src/generated/fonts"
