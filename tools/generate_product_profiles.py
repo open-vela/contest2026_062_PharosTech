@@ -20,7 +20,8 @@ AMP = {
     # the Bluetooth audio experiment in a reproducible product profile.
     'NYABULA_CORE_BT': 'n', 'SV6621_BT_SCO': 'n',
 }
-
+JUDGE = {'NYABULA_DISPLAY_TE_BOARDCTL': 'n', 'NYABULA_DISPLAY_TE_SW': 'y',
+         'NYABULA_CORE_WEB_EYEPROBE': 'y'}
 
 
 def derive(base, changes):
@@ -41,7 +42,8 @@ def main():
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
     base = (ROOT / 'configs/product/defconfig').read_text(encoding='utf-8')
-    for name, changes in [('product_amp', AMP)]:
+    for name, changes in [('product_amp', AMP), ('product_judge', JUDGE),
+                          ('product_amp_judge', dict(AMP, **JUDGE))]:
         path = ROOT / 'configs' / name / 'defconfig'
         expected = derive(base, changes)
         if args.check:
