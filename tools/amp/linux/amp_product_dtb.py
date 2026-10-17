@@ -36,6 +36,8 @@ import re
 import subprocess
 import sys
 import tempfile
+
+from camera_ownership import dtb_check, dtb_disable
 from pathlib import Path
 
 RESERVED = (
@@ -154,6 +156,10 @@ def main():
     subprocess.check_call(["dtc", "-I", "dts", "-O", "dtb", "-o", args.output,
                            handle.name], stderr=subprocess.DEVNULL)
     Path(handle.name).unlink()
+    owned = Path(args.output + ".owned")
+    dtb_disable(Path(args.output), owned)
+    owned.replace(args.output)
+    dtb_check(Path(args.output))
     print("wrote %s" % args.output)
 
 
