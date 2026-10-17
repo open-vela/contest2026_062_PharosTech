@@ -1,0 +1,81 @@
+--- a/drivers/audio/audio_fake.c
++++ b/drivers/audio/audio_fake.c
+@@ -44,6 +44,7 @@
+ #include <nuttx/fs/ioctl.h>
+ #include <nuttx/kmalloc.h>
+ #include <nuttx/mqueue.h>
++#include <nuttx/mutex.h>
+ #include <nuttx/signal.h>
+ #include <nuttx/kthread.h>
+ 
+@@ -71,6 +72,7 @@
+   uint64_t      total_bytes;    /* Total frame datas */
+   char          mqname[32];     /* Our message queue name */
+   struct file   mq;             /* Message queue for receiving messages */
++  mutex_t       mq_lock;        /* Serialize stop with worker teardown */
+   struct file   file;           /* Audio file for playback or capture */
+   void          *sindata;       /* Sin data buffer, surpport 8bit/16bit/32bit  */
+   uint32_t      sinsize;        /* Sin data size */
+@@ -890,9 +892,11 @@
+ 
+   /* Close the message queue */
+ 
++  nxmutex_lock(&priv->mq_lock);
+   file_mq_close(&priv->mq);
+   file_mq_unlink(priv->mqname);
+   priv->mqname[0] = '\0';
++  nxmutex_unlock(&priv->mq_lock);
+ 
+   audio_fake_sin_data_deinit(&priv->dev);
+   audio_fake_file_deinit(&priv->dev);
+@@ -992,16 +996,24 @@
+ {
+   FAR struct audio_fake_s *priv = (FAR struct audio_fake_s *)dev;
+   struct audio_msg_s term_msg;
+-
+-  /* Send a message to stop all audio streaming */
+-
+-  term_msg.msg_id = AUDIO_MSG_STOP;
+-  term_msg.u.data = 0;
+-  file_mq_send(&priv->mq, (FAR const char *)&term_msg, sizeof(term_msg),
+-               CONFIG_AUDIO_FAKE_MSG_PRIO);
+-
+-  audinfo("Return OK\n");
+-  return OK;
++  int ret = OK;
++
++  /* A player may issue STOP after AUDIO_CALLBACK_COMPLETE. The worker
++   * has already closed its queue then. Keep that stop idempotent and
++   * serialize a concurrent stop with queue teardown.
++   */
++
++  nxmutex_lock(&priv->mq_lock);
++  if (priv->mq.f_inode != NULL)
++    {
++      term_msg.msg_id = AUDIO_MSG_STOP;
++      term_msg.u.data = 0;
++      ret = file_mq_send(&priv->mq, (FAR const char *)&term_msg,
++                         sizeof(term_msg), CONFIG_AUDIO_FAKE_MSG_PRIO);
++    }
++
++  nxmutex_unlock(&priv->mq_lock);
++  return ret;
+ }
+ #endif
+ 
+@@ -1287,6 +1299,7 @@
+           continue;
+         }
+ 
++      nxmutex_init(&priv->mq_lock);
+       *param = params[i];
+       priv->dev.ops = &g_audioops;
+       priv->params  = param;
+@@ -1296,6 +1309,7 @@
+         {
+           audwarn("WARNING: Failed to register (%s) fake audio device(%d)\n",
+                   params->devname, ret);
++          nxmutex_destroy(&priv->mq_lock);
+           kmm_free(priv);
+           kmm_free(param);
+           continue;
