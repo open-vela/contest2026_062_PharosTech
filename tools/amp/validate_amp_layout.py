@@ -118,6 +118,7 @@ def validate_config(path: Path, profile: str = "minimal") -> None:
         "CONFIG_SMP_NCPUS": "4",
         "CONFIG_NCPUS": "4",
         "CONFIG_ARCH_HAVE_MULTICPU": "y",
+        "CONFIG_ARM64_PSCI": "y",
         "CONFIG_ARCH_HAVE_IRQTRIGGER": "y",
         "CONFIG_MM_REGIONS": "1",
         "CONFIG_ARM64_GICV2_PREINITIALIZED": "y",
