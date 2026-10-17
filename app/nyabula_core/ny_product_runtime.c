@@ -23,17 +23,14 @@
 #ifdef CONFIG_NYABULA_CORE_AGENT
 #include "ny_agent.h"
 #endif
-#ifdef CONFIG_NYABULA_CORE_COMPUTE
-#include "ny_compute.h"
-#endif
-#ifdef CONFIG_NYABULA_CORE_BT
-#include "ny_product_bt.h"
-#endif
 #ifdef CONFIG_NYABULA_CORE_LIGHT
 #include "ny_product_light.h"
 #endif
 #ifdef CONFIG_NYABULA_CORE_OTA
 #include "nbootctl_bootctrl.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+#include "ny_compute.h"
 #endif
 #include <errno.h>
 #include <nuttx/config.h>
@@ -105,11 +102,6 @@ static int ny_product_worker(int argc, char **argv)
       if (ret == 0)
         ret = light_ret;
 #endif
-#ifdef CONFIG_NYABULA_CORE_BT
-      int bt_ret = ny_product_bt_tick();
-      if (ret == 0)
-        ret = bt_ret;
-#endif
 #ifdef CONFIG_NYABULA_CORE_NETWORK
       int network_ret = ny_product_network_tick();
       if (ret == 0)
@@ -129,9 +121,6 @@ static int ny_product_worker(int argc, char **argv)
   ny_product_media_shutdown();
 #ifdef CONFIG_NYABULA_CORE_LIGHT
   ny_product_light_shutdown();
-#endif
-#ifdef CONFIG_NYABULA_CORE_BT
-  ny_product_bt_shutdown();
 #endif
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
   /* The compute link lives exactly as long as the product services do. */
