@@ -14,7 +14,7 @@ openvela 产品固件，不是 AMP 地址布局；两种二进制不能互换。
 AMP/评委配置由 `tools/generate_product_profiles.py` 从普通产品配置生成。
 修改普通 defconfig 或生成器后重新生成，用 `--check` 检查是否同步。
 产品 AMP 强制 SMP4（A53 MPIDR 0..3），Linux 仅保留 A72 MPIDR 0x100..0x103；
-第二堆为 `0x70000000 / 256 MiB`。旧产品工作区的 UP 配置不再满足验收。蓝牙音频仍待真手机验收，产品 AMP 默认关闭它。
+第二堆为 `0x70000000 / 256 MiB`。旧产品工作区的 UP 配置不再满足验收。蓝牙音频仍待真手机验收，已隔离到本地 `organize/hold-bluetooth-20261017`，不纳入本轮产品候选。
 
 ```sh
 TEAM=contest2026_062_PharosTech
