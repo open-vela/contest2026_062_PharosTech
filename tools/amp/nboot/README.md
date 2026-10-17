@@ -13,6 +13,8 @@ DTB、initramfs 和 openvela 四A53固件。它不修改已有 vendor FIT，避�
 | initramfs | `0x50000000` |
 | openvela | `0x4a400000` |
 
+打包前还会检查最终 DTB 的摄像头所有权；旧 Linux 相机 DTB 必须先经 `linux/camera_ownership.py` 生成独立的计算域版本。
+
 脚本要求提供该固件的展开.config，检查四核SMP、私有堆范围和最终DTB仅有四个
 A72 CPU节点，拒绝旧CPU3拓扑。随后验证Linux Image/DTB magic、gzip、openvela 16 MiB
 上限及FIT load/entry，并生成各段SHA-256。该配置文件须与输入二进制来自同一次

@@ -1,5 +1,7 @@
 # AMP 计算服务验收与板测证据（Draft）
 
+> 当前计算服务与摄像头所有权以 [COMPUTE_CURRENT.md](COMPUTE_CURRENT.md) 为准。下文保留当时的实验记录；Linux 摄像头服务不再属于本次交付。
+
 日期：2026-09-14。本文记录隔离RAM镜像的实验结果，不把它们当作本PR已交付的业务RPC。
 接口和部署边界见 [COMPUTE_INTEGRATION.md](COMPUTE_INTEGRATION.md)。
 
