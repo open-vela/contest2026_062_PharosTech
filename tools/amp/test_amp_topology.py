@@ -33,7 +33,7 @@ class TopologyTest(unittest.TestCase):
 
     def config(self, **changes):
         values = dict(SMP="y", SMP_NCPUS="4", NCPUS="4",
-                      ARCH_HAVE_MULTICPU="y", ARCH_HAVE_IRQTRIGGER="y",
+                      ARCH_HAVE_MULTICPU="y", ARCH_HAVE_IRQTRIGGER="y", ARM64_PSCI="y",
                       ARM64_GICV2_PREINITIALIZED="y", ARM64_GICV2_STATIC_SPI="y",
                       UART0_SERIAL_CONSOLE="y",
                       MM_REGIONS="1", RAM_START="0x4a400000",
@@ -61,6 +61,10 @@ class TopologyTest(unittest.TestCase):
                                    RK3576_RAMBANK2_SIZE_MB="256")
         with self.assertRaises(ValueError):
             validate_config(uniprocessor, "product")
+        eight = product_text.replace("CONFIG_SMP_NCPUS=4", "CONFIG_SMP_NCPUS=8")
+        path.write_text(eight)
+        with self.assertRaises(ValueError):
+            validate_config(path, "product")
         path.write_text(product_text.replace('0x70000000', '0x60000000'))
         with self.assertRaises(ValueError):
             validate_config(path, "product")
@@ -82,7 +86,7 @@ class TopologyTest(unittest.TestCase):
 
     def test_config_rejects_unsafe_variants(self):
         for changes in (dict(SMP="n"), dict(NCPUS="1"), dict(SMP_NCPUS="8"),
-                        dict(UP="y"), dict(ARCH_HAVE_MULTICPU="n"),
+                        dict(UP="y"), dict(ARM64_PSCI="n"), dict(ARCH_HAVE_MULTICPU="n"),
                         dict(ARCH_HAVE_IRQTRIGGER="n"), dict(MM_REGIONS="2"),
                         dict(RK3576_DMA_ALLOC="y"), dict(RAM_START="0x40200000"),
                         dict(RAM_SIZE="33554432"), dict(SMP_DEFAULT_CPUSET="0xff")):
