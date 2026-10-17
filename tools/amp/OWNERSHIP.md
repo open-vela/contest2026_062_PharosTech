@@ -1,5 +1,7 @@
 # 最小AMP所有权
 
+> 当前计算服务与摄像头所有权以 [COMPUTE_CURRENT.md](COMPUTE_CURRENT.md) 为准。下文保留当时的实验记录；Linux 摄像头服务不再属于本次交付。
+
 | 资源 | 管理方与约束 |
 |---|---|
 | A53 MPIDR 0..3 | openvela；Linux DTB不保留这些CPU节点 |

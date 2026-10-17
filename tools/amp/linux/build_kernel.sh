@@ -110,7 +110,7 @@ fi
 #
 #   scripts/extract-ikconfig Image > validated.config
 #
-# Only CONFIG_NYAMP_SHMEM is forced on top of it.
+# Shared memory is enabled and camera ownership is removed from both inputs.
 seed_config=${NYAMP_KERNEL_CONFIG:-}
 if [[ -n "$seed_config" ]]; then
   if [[ ! -f "$seed_config" ]]; then
@@ -130,8 +130,10 @@ else
   "$kernel/scripts/kconfig/merge_config.sh" -m -O "$output" \
     "$output/.config" "${fragments[@]}"
 fi
+python3 "$script_dir/camera_ownership.py" disable-config "$output/.config"
 make -C "$kernel" O="$output" ARCH=arm64 \
   CROSS_COMPILE="$cross_compile" olddefconfig
+python3 "$script_dir/camera_ownership.py" check-config "$output/.config"
 
 if [[ -n "$seed_config" ]]; then
   # olddefconfig silently resolves anything the tree does not know.  A seed
@@ -181,3 +183,9 @@ make -C "$kernel" O="$output" ARCH=arm64 \
 echo "kernel: $output/arch/arm64/boot/Image"
 echo "dtb: $output/arch/arm64/boot/dts/rockchip/"\
 "rk3576-kickpi-k7-nyabula-amp.dtb"
+
+# Apply ownership to the final compiled tree, including vendor-enabled sensors.
+raw_dtb="$output/arch/arm64/boot/dts/rockchip/rk3576-kickpi-k7-nyabula-amp.dtb"
+python3 "$script_dir/camera_ownership.py" disable-dtb "$raw_dtb" "${raw_dtb}.owned"
+mv -- "${raw_dtb}.owned" "$raw_dtb"
+python3 "$script_dir/camera_ownership.py" check-dtb "$raw_dtb"

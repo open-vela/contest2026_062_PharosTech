@@ -6,7 +6,7 @@
 transport EOF/错误或短写时立即退出，让 PID1 重新拉起并生成新的 generation。
 
 打开端点后先发送READY事件完成地址发现；已实现 health/info、LLM、模型交付(BLOB) 与语音三服务
-ASR/TTS/KWS。NPU、ISP 必须在各自 vendor runtime 和 buffer 生命周期确定后作为独立提交加入，不能先返回伪成功。
+ASR/TTS/KWS。保留服务编号不代表已实现。摄像头采集/编码由 openvela 管理，Linux 不实现 ISP/相机采集服务；当前所有权见 `../COMPUTE_CURRENT.md`。
 
 语音服务（线格式与槽位契约见 `../protocol/README.md`「语音」一节，计划与板测步骤见 `docs/voice-chain-plan.md`）：
 `nyampd_asr.*`（流式识别：边收边解码，增量文本事件，上报 sherpa 的 endpoint 标志；PUSH 或 attach 到 KWS 流）、
