@@ -101,9 +101,6 @@
 #include "ny_voice_sm.h"
 #include "ny_voice_wire.h"
 
-#ifdef CONFIG_NYABULA_CORE_BT
-#  include "ny_product_bt.h"
-#endif
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -1496,14 +1493,6 @@ static int ny_voice_play_acquire(void)
   uint64_t deadline;
   int ret = 0;
 
-#ifdef CONFIG_NYABULA_CORE_BT
-  ret = ny_product_bt_speaker_claim(true);
-  if (ret < 0)
-    {
-      cJSON_Delete(data);
-      return ret;
-    }
-#endif
 
   if (data != NULL &&
       ny_product_request(&caller, "music.status", data, &result) == 0)
@@ -1558,9 +1547,6 @@ static void ny_voice_play_release(void)
   nxmutex_lock(&g_voice.lock);
   g_voice.capture_hold = false;
   nxmutex_unlock(&g_voice.lock);
-#ifdef CONFIG_NYABULA_CORE_BT
-  ny_product_bt_speaker_release();
-#endif
 }
 
 /****************************************************************************

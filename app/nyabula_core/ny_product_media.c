@@ -40,9 +40,6 @@
 #ifdef CONFIG_NYABULA_CORE_AUDIO
 #include "ny_product_audio.h"
 #endif
-#ifdef CONFIG_NYABULA_CORE_BT
-#include "ny_product_bt.h"
-#endif
 #ifdef CONFIG_NYABULA_CORE_VOICE
 #include "ny_voice.h"
 #endif
@@ -334,10 +331,6 @@ static cJSON *ny_media_status(void)
                        : !strcmp(g_media_track, NY_MEDIA_CHIME)
                            ? "alert"
                            : "flash";
-#ifdef CONFIG_NYABULA_CORE_BT
-  if (source == NULL)
-    source = ny_product_bt_speaker_source();
-#endif
   cJSON_AddStringToObject(result, "source", source ? source : "none");
   return result;
 }
@@ -607,20 +600,6 @@ static int ny_media_start(const char *name)
   int fd = ny_media_wave(name, &wave);
   if (fd < 0)
     return fd;
-#ifdef CONFIG_NYABULA_CORE_BT
-  /* One owner of the speaker at a time: Bluetooth music lets go of the
-   * device before the player opens it (for good when this is a track,
-   * until the chime is over when it is the alert), and the tick gives the
-   * speaker back once the player is idle.  Only a phone call says no.
-   */
-
-  int claim = ny_product_bt_speaker_claim(!strcmp(name, NY_MEDIA_CHIME));
-  if (claim < 0)
-    {
-      close(fd);
-      return claim;
-    }
-#endif
 #ifdef CONFIG_NYABULA_CORE_VOICE
   /* The wake word holds the microphone open, and the ES8388 refuses a
    * playback format that differs from the capture one while it is: music
@@ -741,14 +720,6 @@ static void ny_media_alert_tick(int state, uint64_t now)
     }
   if (alert == NY_PRODUCT_MEDIA_ALERT_OFF || now < g_media_alert_next)
     return;
-#ifdef CONFIG_NYABULA_CORE_BT
-  /* A call keeps the speaker.  The alert is not spent on a start that
-   * cannot work: it stays wanted and sounds when the call is over.
-   */
-
-  if (ny_product_bt_call_active())
-    return;
-#endif
   int ret = ny_media_start(NY_MEDIA_CHIME);
   if (ret == -ENOENT || ret == -ENOTDIR)
     {
@@ -1021,18 +992,6 @@ int ny_product_media_tick(void)
     }
 
   ny_media_alert_tick(state, now);
-#ifdef CONFIG_NYABULA_CORE_BT
-  if (state == NXPLAYER_STATE_IDLE && !execute)
-    {
-      nxmutex_lock(&g_media_lock);
-      bool wanted = g_media_alert != NY_PRODUCT_MEDIA_ALERT_OFF;
-      nxmutex_unlock(&g_media_lock);
-      if (!wanted && (!g_media_player ||
-                      nxplayer_getstate(g_media_player) ==
-                          NXPLAYER_STATE_IDLE))
-        ny_product_bt_speaker_release();
-    }
-#endif
   return ret;
 #else
   return 0;
