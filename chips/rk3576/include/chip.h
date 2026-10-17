@@ -59,11 +59,18 @@
   (CONFIG_RAMBANK1_ADDR + CONFIG_RAMBANK1_SIZE + RK3576_OPTEE_SIZE)
 #define RK3576_DMA_HEAP_SIZE MB(CONFIG_RK3576_DMA_HEAP_SIZE_MB)
 
-/* Second DRAM bank: from after the DMA heap to end of DDR */
+/* Second DRAM bank: from after the DMA heap to end of DDR, unless the
+ * configuration confines it (AMP: the peer OS owns the rest).
+ */
+#if defined(CONFIG_RK3576_RAMBANK2_ADDR) && CONFIG_RK3576_RAMBANK2_ADDR != 0
+#define CONFIG_RAMBANK2_ADDR CONFIG_RK3576_RAMBANK2_ADDR
+#define CONFIG_RAMBANK2_SIZE MB(CONFIG_RK3576_RAMBANK2_SIZE_MB)
+#else
 #define CONFIG_RAMBANK2_ADDR (RK3576_DMA_HEAP_ADDR + RK3576_DMA_HEAP_SIZE)
 #define CONFIG_RAMBANK2_SIZE                                                  \
   (GB(CONFIG_RK3576_DDR_SIZE_GB) - RK3576_OPTEE_SIZE - CONFIG_RAMBANK1_SIZE - \
    RK3576_DMA_HEAP_SIZE)
+#endif
 
 #else /* !CONFIG_RK3576_DMA_ALLOC */
 

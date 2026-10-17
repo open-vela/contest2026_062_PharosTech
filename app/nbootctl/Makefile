@@ -28,6 +28,12 @@ PRIORITY  = $(CONFIG_SYSTEM_NBOOTCTL_PRIORITY)
 STACKSIZE = $(CONFIG_SYSTEM_NBOOTCTL_STACKSIZE)
 MODULE    = $(CONFIG_SYSTEM_NBOOTCTL)
 MAINSRC = nbootctl_main.c
-CSRCS   = nbootctl_bootctrl.c
+CSRCS   = nbootctl_bootctrl.c nbootctl_part.c
+
+# The formatter is mkfatfs's.  A configuration without it keeps every other
+# command and leaves the board's weak format hook answering -ENOSYS.
+ifeq ($(CONFIG_FSUTILS_MKFATFS),y)
+CSRCS  += nbootctl_format.c
+endif
 
 include $(APPDIR)/Application.mk

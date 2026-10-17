@@ -1,0 +1,45 @@
+diff -ruN a/src/infra/vela_tls.c b/src/infra/vela_tls.c
+--- a/src/infra/vela_tls.c	2026-09-20 19:26:27.662029179 +0800
++++ b/src/infra/vela_tls.c	2026-09-20 19:26:27.710030063 +0800
+@@ -623,6 +623,20 @@
+         while (resp_pos < resp_cap - 1) {
+             if (content_length >= 0 && (long)resp_pos >= content_length)
+                 break;
++
++            /* A chunked body carries no length: its end is the terminating
++             * chunk.  Without this check the loop only ended when the server
++             * closed the kept-alive connection, about 90 s later -- past the
++             * agent's 60 s watchdog, so a complete answer was thrown away as
++             * a timeout.  Tested before each read, so a body that arrived
++             * whole with the headers ends the loop too. */
++            if (chunked && content_length < 0 && resp_pos >= 5
++                && memcmp(resp_buf + resp_pos - 5, "0\r\n\r\n", 5) == 0
++                && (resp_pos == 5
++                    || (resp_pos >= 7
++                        && memcmp(resp_buf + resp_pos - 7, "\r\n", 2) == 0))) {
++                break;
++            }
+             ret = mbedtls_ssl_read(&ctx->ssl,
+                 (unsigned char*)(resp_buf + resp_pos),
+                 resp_cap - 1 - resp_pos);
+@@ -1216,6 +1230,20 @@
+         while (resp_pos < resp_cap - 1) {
+             if (content_length >= 0 && (long)resp_pos >= content_length)
+                 break;
++
++            /* A chunked body carries no length: its end is the terminating
++             * chunk.  Without this check the loop only ended when the server
++             * closed the kept-alive connection, about 90 s later -- past the
++             * agent's 60 s watchdog, so a complete answer was thrown away as
++             * a timeout.  Tested before each read, so a body that arrived
++             * whole with the headers ends the loop too. */
++            if (chunked && content_length < 0 && resp_pos >= 5
++                && memcmp(resp_buf + resp_pos - 5, "0\r\n\r\n", 5) == 0
++                && (resp_pos == 5
++                    || (resp_pos >= 7
++                        && memcmp(resp_buf + resp_pos - 7, "\r\n", 2) == 0))) {
++                break;
++            }
+             ssize_t n = read(fd, resp_buf + resp_pos, resp_cap - 1 - resp_pos);
+             if (n <= 0)
+                 break;
