@@ -1,5 +1,9 @@
 # KICKPI-K7 AMP 最小集成
 
+板载模型与摄像头后续接入见[计算服务对接草案](COMPUTE_INTEGRATION.md)和
+[实验结果/未完成验收项](COMPUTE_VALIDATION.md)。这些文档明确区分隔离镜像板测与
+本仓当前实现；以下2026-09-10记录描述最小基础，不代表所有后续业务接口已交付。
+
 2026-09-10已上板跑通：四A53运行openvela，四A72运行Linux，NSH通过真实
 RPMsg调用nyampctl health和nyampctl info。本分支基于团队PR #83。
 配套N-Boot需要新bootamp命令，并以N-Boot PR #7为基线。

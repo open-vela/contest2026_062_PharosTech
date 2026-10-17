@@ -32,6 +32,15 @@ config CONTEST2026_062_NYABULA_CORE
 
 if CONTEST2026_062_NYABULA_CORE
 
+config NYABULA_CORE_AGENT
+	bool "Nyabot official ai_agent adapter"
+	default n
+	depends on NYABULA_CORE_PRODUCT && EXAMPLES_AI_AGENT_VELA
+	select LIBSODIUM
+	---help---
+		Use the official ai_agent loop with Core-owned run records and
+		owner-only requests. Standalone channels are not started here.
+
 config NYABULA_CORE_EYE
 	bool "Connect UI capabilities to Nyabula Eye Engine"
 	default n
@@ -40,11 +49,93 @@ config NYABULA_CORE_EYE
 		ui.notify displays a caption and ui.eye submits the Eye command
 		contract. Requires an attached LVGL display owner.
 
+config NYABULA_CORE_WEATHER
+	bool "Core QWeather service"
+	default y if NYABULA_CORE_AGENT
+	depends on NYABULA_CORE_AGENT
+	---help---
+		Run configurable weather polling with verified HTTPS, bounded JSON
+		responses and persistent alert deduplication. No bundled credentials.
+
 config NYABULA_CORE_WAMR
 	bool "Enable WAMR plugin runtime"
 	default y
 	select INTERPRETERS_WAMR
 	select INTERPRETERS_WAMR_THREAD_MGR
+
+config NYABULA_CORE_WEB
+	bool "Core WebSocket service"
+	default n
+	depends on NYABULA_CORE_EYE && NET_TCP && NET_IPv4 && !BUILD_KERNEL
+	select NET_SOCKOPTS
+	select NET_LOOPBACK
+	select NET_TCPBACKLOG
+	select CRYPTO
+	select NETUTILS_CODECS
+	select CODECS_BASE64
+
+config NYABULA_CORE_WEB_EYEPROBE
+	bool "Show the eye screens at /eyeprobe without signing in"
+	default y if NYABULA_DISPLAY_TE_SW
+	default n
+	depends on NYABULA_CORE_WEB
+	---help---
+		GET /eyeprobe answers with a page that shows what the two eye
+		panels show, and GET /eyeprobe/stream with the pages themselves,
+		to anyone who can reach the Web service.  This is for a board
+		that has no panels attached: the eyes are where the device shows
+		the codes that pair a browser with it, so without them nobody
+		could get in at all.
+
+		It follows the software frame clock (NYABULA_DISPLAY_TE_SW),
+		which is what a board without panels has to be built with: the
+		panel TE pins are what paces rendering otherwise, and with no
+		panel to drive them nothing would ever be drawn.
+
+		It also means that those codes, the pair token included, can be
+		read by whoever is on the same network instead of only by whoever
+		stands in front of the device.  Leave it off for a device that has
+		its panels.  The stream the control panel uses (/eyes/stream)
+		asks for credentials either way.
+
+config NYABULA_CORE_WEB_PORT
+	int "Port of the product Web service"
+	default 80
+	range 1 65535
+	depends on NYABULA_CORE_WEB
+	---help---
+		Port used when nyabula_web is started without arguments, which is
+		how the system starts it.  The default is the one a browser assumes,
+		so that the address printed on a QR code needs no port.
+
+config NYABULA_CORE_WEB_TOKEN_PATH
+	string "Access token of the product Web service"
+	default "/config/nyabula/web.token"
+	depends on NYABULA_CORE_WEB
+	---help---
+		Read when nyabula_web is started without arguments, and created
+		from the system entropy source if absent.  It belongs with the
+		configuration rather than the bulk store: wiping /data must not
+		sign the owner out of their own device.
+
+config NYABULA_CORE_WEB_AUTH_PATH
+	string "Owner password record of the product Web service"
+	default "/config/nyabula/web.auth"
+	depends on NYABULA_CORE_WEB
+	---help---
+		Salted PBKDF2 hash of the password the owner signs in with.  It
+		is configuration for the same reason the token is: wiping /data
+		must not reset who may open the panel.
+
+config NYABULA_CORE_WEB_ROOT
+	string "Directory the product Web service serves pages from"
+	default "/data/www"
+	depends on NYABULA_CORE_WEB
+	---help---
+		Root of the built control panel.  Any request that is not for
+		the WebSocket endpoint is answered from here, read-only.  It
+		lives with the bulk data because it is replaced wholesale by an
+		update and can be restored by one.
 
 config NYABULA_CORE_HTTP
 	bool "Enable Core non-blocking HTTP transport"
@@ -194,6 +285,373 @@ config NYABULA_CORE_STATE_DATABASE
 	default "/data/nyabula/core.sqlite"
 	depends on NYABULA_CORE_STATE_SQLITE
 
+config NYABULA_CORE_PRODUCT
+	bool "Nyabula persistent product services"
+	default n
+	depends on NYABULA_CORE_STATE_SQLITE
+	---help---
+		Enable Core-owned product state and services shared by WebUI,
+		plugins and the AI Agent. No state is owned by a browser session.
+
+config NYABULA_CORE_OTA
+	bool "Firmware update from the control panel"
+	default n
+	depends on NYABULA_CORE_PRODUCT && NYABULA_CORE_WEB
+	depends on BOARDCTL_RESET && !DISABLE_MOUNTPOINT
+	select CRYPTO
+	---help---
+		Accept an image over HTTP (POST /ota/upload?target=...), write it
+		where update.apply is told to and report slot state in
+		update.status.  The NuttX firmware and the AMP image are staged
+		into the inactive N-Boot A/B slot of their domain; N-Boot itself
+		and single partitions can be written raw, which the owner has to
+		acknowledge as able to leave the board unbootable.  This drives
+		the KICKPI-K7 bootctrl record and partition layout through the
+		nbootctl sources: the layout and the handoff register are that
+		board's, so enable it only there.  When SYSTEM_NBOOTCTL is built
+		in, its objects are reused; otherwise the bootctrl and partition
+		sources are compiled into Core.
+
+config NYABULA_CORE_MODELS
+	bool "Model files from the control panel"
+	default y
+	depends on NYABULA_CORE_PRODUCT && NYABULA_CORE_WEB
+	depends on !DISABLE_MOUNTPOINT
+	select CRYPTO
+	---help---
+		Accept model files over HTTP (PUT /models/upload?path=...) in
+		resumable pieces, store them under /data/models after their
+		SHA-256 has been verified, and list, verify and delete them
+		through the models.* topics.  The models themselves are
+		third-party files the owner brings; the firmware ships none.
+
+config NYABULA_CORE_MEDIA
+	bool "Native local media playback"
+	default n
+	depends on NYABULA_CORE_PRODUCT && AUDIO
+	select SYSTEM_NXPLAYER
+	select AUDIO_DRIVER_SPECIFIC_BUFFERS
+	select NXPLAYER_INCLUDE_PREFERRED_DEVICE
+	---help---
+		Play local PCM WAV files through the existing NuttX audio stack.
+		The product worker owns playback and device descriptors.
+
+config NYABULA_CORE_MEDIA_ROOT
+	string "Local media directory"
+	default "/data/music"
+	depends on NYABULA_CORE_MEDIA
+
+config NYABULA_CORE_MEDIA_DEVICE
+	string "Default output audio device"
+	default "/dev/audio/pcm0"
+	depends on NYABULA_CORE_MEDIA
+
+config NYABULA_CORE_COMPUTE
+	bool "AMP compute-domain link and model delivery"
+	default n
+	depends on NYABULA_CORE_PRODUCT && RPMSG_CHAR && RK3576_SHMEM
+	depends on !DISABLE_MOUNTPOINT && !DISABLE_PTHREAD
+	select CRYPTO
+	---help---
+		Own the RPMsg endpoint to the Linux compute domain for as long
+		as the product runs: track its generation, route responses and
+		events to local requesters, and serve the BLOB service, through
+		which the compute domain (which has no storage of its own) pulls
+		model files out of /data/models into windows of the shared
+		arena.  Adds the compute.status topic.  When this is enabled the
+		nyampctl diagnostic talks through it instead of opening the
+		endpoint itself.
+
+config NYABULA_CORE_COMPUTE_BOUNCE
+	bool "Copy blob windows through a bounce buffer"
+	default n
+	depends on NYABULA_CORE_COMPUTE
+	---help---
+		Read model files into an ordinary buffer and copy that into the
+		shared arena, instead of letting pread() write into the arena
+		directly.  Slower; only for a storage driver that cannot
+		transfer into the non-cacheable shared region.
+
+config NYABULA_CORE_COMPUTE_LLM
+	string "Default local LLM (name under /data/models)"
+	default "llm/model.rkllm"
+	depends on NYABULA_CORE_COMPUTE
+	---help---
+		The model ny_compute_chat() loads when none is loaded yet, and
+		the one compute.llm.load loads when it is not given a name.  It
+		is a logical name under /data/models; the compute domain pulls
+		it, and the tokenizer.json beside it, on demand.
+
+config NYABULA_CORE_AUDIO
+	bool "ES8388 codec control (routes, volume, microphone)"
+	default y
+	depends on NYABULA_CORE_PRODUCT && AUDIO_ES8388
+	---help---
+		audio.* topics: output and microphone routing, volume, mute,
+		microphone gain and channel processing of the ES8388, applied to
+		the codec directly whether or not a stream is open.  Preferences
+		live in the product store and are restored once the codec nodes
+		appear.  music.volume and the audioctl command use the same path.
+
+config NYABULA_CORE_AUDIO_OUTPUT_DEVICE
+	string "ES8388 playback node"
+	default "/dev/audio/pcm0"
+	depends on NYABULA_CORE_AUDIO
+
+config NYABULA_CORE_AUDIO_INPUT_DEVICE
+	string "ES8388 capture node"
+	default "/dev/audio/pcm_in0"
+	depends on NYABULA_CORE_AUDIO
+
+config NYABULA_CORE_LIGHT
+	bool "Ambient light sensor: pupils that react to the room"
+	default y
+	depends on NYABULA_CORE_PRODUCT && ADC
+	---help---
+		light.* topics.  A photodiode on an ADC channel is read a few
+		times a second from the product worker and turned into how wide
+		the cat's pupils are: a slit in bright light, round in the dark.
+		Nothing is assumed about the circuit; the range and the direction
+		of the reading are learnt, kept in the product store, and can be
+		overruled by the owner.  The eyes are told through eyes.ambient,
+		so this does something visible only with NYABULA_CORE_EYE.
+
+config NYABULA_CORE_LIGHT_DEVICE
+	string "Photodiode ADC node"
+	default "/dev/adc4"
+	depends on NYABULA_CORE_LIGHT
+	---help---
+		The node must convert on ANIOC_TRIGGER and return one
+		struct adc_msg_s per read, as rk3576_saradc.c does.
+
+config NYABULA_CORE_VOICE
+	bool "Voice assistant: wake word, speech recognition, agent, speech"
+	default n
+	depends on NYABULA_CORE_COMPUTE && NYABULA_CORE_AGENT
+	depends on NYABULA_CORE_AUDIO && AUDIO
+	---help---
+		The control-domain half of the voice chain.  The models run on
+		the Linux compute domain (nyampd: KWS, ASR, TTS); this side owns
+		the microphone and the speaker, streams captured audio to the
+		wake word service, attaches a recognition request after
+		"ni hao openvela", submits the transcript to the agent as the
+		owner, and speaks the reply.  Adds the voice.* topics and the
+		kws/asr/tts commands of nyampctl.  Off until the owner enables
+		it (voice.enable, persisted).  Needs /data/models/kws, asr and
+		tts; see docs/voice-chain-plan.md.  About 0.4 MB of static RAM,
+		and 0.3 MB more of heap and stacks while the owner has it on.
+
+if NYABULA_CORE_VOICE
+
+choice
+	prompt "How microphone and speaker share the ES8388"
+	default NYABULA_CORE_VOICE_CODEC_HALF
+	---help---
+		The ES8388 driver refuses to configure one direction in a rate,
+		width or channel count other than the one the other direction
+		is reserved in.  The wake word needs 16 kHz mono; speech, music
+		and the alarm chime are 44.1 kHz.
+
+config NYABULA_CORE_VOICE_CODEC_HALF
+	bool "Half duplex: microphone closed while the robot speaks"
+	---help---
+		16 kHz mono capture, 44.1 kHz stereo playback, never at the same
+		time.  The only arrangement built on what was measured on the
+		board.  No echo, no self-wake; a reply is interrupted from the
+		panel (voice.listen, voice.cancel), not by voice.  Another
+		player must call ny_voice_speaker_claim() before it opens the
+		speaker, or it gets -EBUSY while the microphone is open.
+
+config NYABULA_CORE_VOICE_CODEC_SHARED_16K
+	bool "Full duplex at 16 kHz mono: speech is resampled down"
+	---help---
+		Both directions run in the capture format, so the microphone
+		stays open while the robot speaks.  Speech loses what is above
+		7 kHz.  Other players still have to claim the codec.
+
+config NYABULA_CORE_VOICE_CODEC_SHARED_44K
+	bool "Full duplex at 44.1 kHz stereo: capture is decimated to 16 kHz"
+	---help---
+		The microphone runs in the speaker's format and is decimated
+		here, so the flash player, the chime and Bluetooth music coexist
+		with the wake word without arbitration.  Not yet tried on the
+		board: needs stereo 44.1 kHz capture from the SAI.
+
+endchoice
+
+config NYABULA_CORE_VOICE_BARGE_IN
+	bool "Keep listening for the wake word while speaking"
+	default n
+	depends on !NYABULA_CORE_VOICE_CODEC_HALF
+	---help---
+		There is no echo canceller: the microphone hears the reply.
+		With this the owner can interrupt a reply by voice, at the risk
+		of the robot waking itself.  A reply that contains the wake word
+		is spoken deaf in any case.
+
+config NYABULA_CORE_VOICE_VAD_GATE
+	bool "Do not stream silence to the wake word service"
+	default n
+	---help---
+		An energy gate with an adaptive noise floor and a two second
+		hang-over; when it opens, the last 1.5 s are streamed first, so
+		wake word detection does not depend on the gate being right.
+		Without it every captured sample crosses the link.
+
+config NYABULA_CORE_VOICE_VAD_MIN_RMS
+	int "Gate: lowest level that counts as sound (16 bit RMS)"
+	default 150
+	range 1 8000
+
+config NYABULA_CORE_VOICE_WIRE_S16
+	bool "Send capture windows as int16 instead of float32"
+	default n
+	---help---
+		Halves the bytes written to the non-cacheable shared region.
+		float32 is what the compute-domain tests exercise most.
+
+config NYABULA_CORE_VOICE_WINDOW_MS
+	int "Capture window pushed to the wake word service (ms)"
+	default 200
+	range 100 1000
+	---help---
+		One RPMsg round trip per window.  It bounds how late a wake word
+		is noticed and how late a command ends.
+
+config NYABULA_CORE_VOICE_SPEAKER
+	int "Default TTS speaker id"
+	default 1
+	range 0 255
+
+config NYABULA_CORE_VOICE_CUE_DIR
+	string "Directory of pre-synthesised cues"
+	default "/data/voice"
+	---help---
+		wait.wav, not_heard.wav, busy.wav, error.wav and approval.wav
+		here (44.1 kHz mono; `nyampctl tts say <text> <file>` makes
+		them) are played while the TTS model is not loaded; two tones
+		are where a file is missing.
+
+config NYABULA_CORE_VOICE_UNLOAD_IDLE_S
+	int "Unload ASR and TTS after this many idle seconds (0 = never)"
+	default 0
+	---help---
+		The LLM (about 1 GB with its tmpfs copy), TTS (about 200 MB
+		resident) and ASR share the compute domain's memory.  Measured
+		headroom allows all of them to stay; set this when it does not.
+		The files stay in the compute domain's tmpfs, so a reload is a
+		runtime load, not a pull.
+
+config NYABULA_CORE_VOICE_PRIORITY
+	int "Voice task priority"
+	default 100
+	range 20 200
+	---help---
+		The microphone thread runs ten above it, the eye thread ten
+		below.
+
+config NYABULA_CORE_VOICE_STACKSIZE
+	int "Voice turn thread stack size"
+	default 32768
+	---help---
+		The turn thread calls agent.chat, which serialises the agent
+		store.
+
+endif # NYABULA_CORE_VOICE
+
+config NYABULA_CORE_BT
+	bool "Bluetooth speaker and hands-free unit (A2DP sink, AVRCP, HFP)"
+	default n
+	depends on NYABULA_CORE_PRODUCT && NYABULA_CORE_AUDIO
+	depends on BT_CLASSIC && BT_A2DP_SINK && BT_HFP_HF
+	depends on BT_AVRCP_CONTROLLER && BT_AVRCP_TARGET
+	depends on LIB_FLUORIDE_SBC && !DISABLE_PTHREAD
+	---help---
+		bt.* topics on the raw ZBlue host: the phone sees a speaker
+		(SBC decoded on an audio thread to the ES8388, play control,
+		track text and absolute volume over AVRCP) and a hands-free unit
+		(mSBC or CVSD call audio both ways, with the microphone gated
+		while the far end speaks).  Pairing is Just Works inside a
+		window the owner opens and confirms on the panel.
+
+		Call audio also needs the controller driver to pass SCO packets
+		(SV6621_BT_SCO).  Phones are only remembered across a restart
+		with BT_SETTINGS; BT_DEVICE_NAME_DYNAMIC lets the inquiry
+		response carry the product name.
+
+config NYABULA_CORE_BT_OUTPUT_DEVICE
+	string "Bluetooth playback node"
+	default "/dev/audio/pcm0"
+	depends on NYABULA_CORE_BT
+	---help---
+		A node behind the PCM decoder: the stream starts with a WAV
+		header that tells it the format.
+
+config NYABULA_CORE_BT_INPUT_DEVICE
+	string "Bluetooth call microphone node"
+	default "/dev/audio/pcm_in0"
+	depends on NYABULA_CORE_BT
+
+config NYABULA_CORE_BT_COD
+	hex "Class of device"
+	default 0x240414
+	depends on NYABULA_CORE_BT
+	---help---
+		Audio and rendering services, audio/video major class,
+		loudspeaker.  This is what decides the icon a phone shows.
+
+config NYABULA_CORE_BT_DISCOVERABLE_SECONDS
+	int "Default length of the pairing window (s)"
+	default 120
+	range 10 600
+	depends on NYABULA_CORE_BT
+
+config NYABULA_CORE_BT_AUTOCONNECT
+	bool "Call the last phone once after start"
+	default y
+	depends on NYABULA_CORE_BT && BT_SETTINGS
+
+config NYABULA_CORE_BT_A2DP_PREBUFFER_MS
+	int "Music buffered before playback starts (ms)"
+	default 200
+	range 40 1000
+	depends on NYABULA_CORE_BT
+	---help---
+		The cushion against radio jitter, which Wi-Fi traffic on the
+		same chip makes worse.  It is also the delay behind the phone.
+
+config NYABULA_CORE_BT_GATE_THRESHOLD
+	int "Far end level that turns the call microphone down (RMS)"
+	default 500
+	range 0 32767
+	depends on NYABULA_CORE_BT
+
+config NYABULA_CORE_BT_GATE_ATTENUATION_DB
+	int "Call microphone attenuation while the far end speaks (dB)"
+	default 24
+	range 0 90
+	depends on NYABULA_CORE_BT
+
+config NYABULA_CORE_BT_GATE_HANG_MS
+	int "Time the call microphone stays down after the far end (ms)"
+	default 250
+	range 0 2000
+	depends on NYABULA_CORE_BT
+
+config NYABULA_CORE_BT_AUDIO_PRIORITY
+	int "Bluetooth audio thread priority"
+	default 120
+	range 1 255
+	depends on NYABULA_CORE_BT
+	---help---
+		Above the product worker and the web server, so that neither
+		can make the music stutter.
+
+config NYABULA_CORE_BT_STACKSIZE
+	int "Bluetooth bring-up thread stack size"
+	default 8192
+	depends on NYABULA_CORE_BT
+
 config NYABULA_CORE_STORAGE_BYTES_LIMIT
 	int "Maximum stored value bytes per plugin"
 	default 65536
@@ -218,3 +676,55 @@ config NYABULA_CORE_MOCK_CAPABILITIES
 		the simulator and must remain disabled on production boards.
 
 endif
+
+config NYABULA_CORE_NETWORK
+	bool "Native Wi-Fi provisioning (SoftAP -> STA state machine)"
+	default y
+	depends on NYABULA_CORE_PRODUCT && NET && WIRELESS_WAPI
+	select NETUTILS_NETLIB
+	select NETUTILS_DHCPC
+	select NETUTILS_DHCPD if NET_UDP
+	---help---
+		network.* topics: SoftAP provisioning with QR payload, station
+		connect with DHCP, credentials persisted in the product store.
+
+config NYABULA_CORE_NETWORK_IFNAME
+	string "Wi-Fi interface name"
+	default "wlan0"
+	depends on NYABULA_CORE_NETWORK
+
+config NYABULA_CORE_TIMESYNC
+	bool "Set the clock from network time servers (SNTP)"
+	default y
+	depends on NYABULA_CORE_NETWORK && NET_UDP && NETDB_DNSCLIENT
+	---help---
+		Ask a time server as soon as the station has an address, then
+		every six hours, retrying after 15 s, 60 s and then every 5 min
+		while none has answered.  The answer sets the system clock and,
+		through it, the RTC.  Without this the clock is only ever set by
+		the owner's panel.
+
+config NYABULA_CORE_TIMESYNC_SERVERS
+	string "Time servers, in the order they are asked"
+	default "ntp.aliyun.com;ntp.tencent.com;cn.pool.ntp.org;pool.ntp.org"
+	depends on NYABULA_CORE_TIMESYNC
+	---help---
+		Host names or IPv4 addresses separated by semicolons.  The
+		defaults answer from inside mainland China, with the global pool
+		last for everywhere else.
+
+config NYABULA_CORE_TIMESYNC_STACKSIZE
+	int "Stack of the thread that asks the time servers"
+	default 16384
+	depends on NYABULA_CORE_TIMESYNC
+	---help---
+		The thread lives for one round of questions.  Most of what it
+		needs is the resolver's.
+
+config NYABULA_CORE_CLOCK_RTC_PATH
+	string "RTC that keeps the time across a power cycle"
+	default "/dev/rtc0"
+	depends on NYABULA_CORE_PRODUCT && RTC_DRIVER
+	---help---
+		Read at start to decide whether the clock can be believed, and
+		checked -- written, if need be -- whenever the clock is set.

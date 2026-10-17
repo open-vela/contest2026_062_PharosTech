@@ -21,6 +21,9 @@
 
 #include <nuttx/config.h>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -33,13 +36,34 @@
 
 #include <nuttx/trace.h>
 
+#ifdef CONFIG_LV_USE_QRCODE
+#include <lvgl/src/libs/qrcode/qrcodegen.h>
+#endif
+
 #include "generated/fonts/nyabula_eye_fonts.h"
 #include "generated/nyabula_eye_icons.h"
 #include "nyabula_eye_internal.h"
+#include "nyabula_eye_mirror.h"
 
 #define W                360
 #define H                360
 #define R                178.0f
+
+/* A version 6 symbol is 41 modules; with the quiet zone that is a little
+ * over five pixels a module on this panel, which a phone still reads at
+ * arm's length.  The standard asks for four modules of margin; the white
+ * plate is surrounded by a dark backdrop, and three have proved enough.
+ */
+
+#define SCENE_QR_VERSION_MAX 6
+#define SCENE_QR_QUIET       3
+
+/* Text in this scene is plain white rather than the iris tint the other
+ * scenes use.  It is there to be read at a glance by someone holding a
+ * phone up to the device, and the tinted greys are dim on these panels.
+ */
+
+#define SCENE_QR_INK         0xffffff
 #define CY               180.0f
 #define PI               3.14159265358979323846f
 #define FIBERS           48
@@ -111,6 +135,24 @@ struct font_cache_s
   uint8_t family;
 };
 
+/* A label waiting for the vector batch of its page to be drawn.  Shapes are
+ * collected into one lv_draw_vector() at the end of a page; a label handed
+ * to LVGL at once would be rasterised first and end up underneath all of
+ * them, the scene's backdrop disc included.
+ */
+
+#define LABEL_QUEUE_COUNT 24
+#define LABEL_TEXT_BYTES  160
+
+struct label_s
+{
+  const lv_font_t *font;
+  lv_area_t area;
+  lv_color_t color;
+  lv_opa_t opa;
+  char text[LABEL_TEXT_BYTES];
+};
+
 struct text_cache_s
 {
   const lv_font_t *font;
@@ -151,6 +193,8 @@ struct nyabula_eye_renderer_s
   struct fiber_s fibers[FIBERS];
   struct z_s z[ZCOUNT];
   struct text_cache_s text_cache[TEXT_CACHE_COUNT];
+  struct label_s labels[LABEL_QUEUE_COUNT];
+  int label_count;
 #if defined(CONFIG_CONTEST2026_062_NYABULA_DYNAMIC_FONTS) && LV_USE_FREETYPE
   struct font_cache_s font_cache[FONT_CACHE_COUNT];
 #endif
@@ -218,6 +262,9 @@ static void text_center_at(struct nyabula_eye_renderer_s *r,
                            const struct eye_s *e, const lv_font_t *font,
                            const char *text, float center_x, float center_y,
                            uint32_t color, float opacity);
+static const lv_font_t *font_for_text(const lv_font_t *font,
+                                      const char *text);
+static void labels_flush(struct nyabula_eye_renderer_s *r);
 static float eye_globe_radius(void);
 static void clamp_to_eye_globe(float *x, float *y, float inset);
 static void text_center(struct nyabula_eye_renderer_s *r,
@@ -406,6 +453,9 @@ static void scene_call(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
 static void scene_task(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
                        const struct nyabula_eye_scene_payload_s *payload,
                        float seconds, float opacity, float reveal);
+static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
+                     const struct nyabula_eye_scene_payload_s *payload,
+                     float opacity);
 static void
 scene_draw_content(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
                    enum nyabula_eye_scene_e scene,
@@ -433,6 +483,8 @@ static void prepare_scene_lids(struct eye_s *e,
                                float lid);
 static float scene_lid_boundary(const float samples[LID_SAMPLES], float x);
 static void apply_scene_lid_mask(lv_draw_buf_t *buffer, struct eye_s *eye);
+static void debug_dump_poll(struct nyabula_eye_renderer_s *r, int id);
+static void debug_dump(const lv_draw_buf_t *buffer, int id);
 static void render_scene_lid_mask(struct nyabula_eye_renderer_s *r,
                                   const struct nyabula_eye_frame_s *frame,
                                   const struct eye_s *scene_eye, int id);
@@ -707,6 +759,49 @@ static int text_width(struct nyabula_eye_renderer_s *r, const lv_font_t *font,
   return width;
 }
 
+/****************************************************************************
+ * Name: font_for_text
+ *
+ * Description:
+ *   One line, one table.  LVGL falls back glyph by glyph, which puts the
+ *   42 px words a table happens to hold next to 28 px ones from the table
+ *   behind it.  The line is given to the first table of the fallback chain
+ *   that has all of it instead; only when none does is the mixture accepted.
+ *
+ ****************************************************************************/
+
+static const lv_font_t *font_for_text(const lv_font_t *font, const char *text)
+{
+  const lv_font_t *candidate;
+
+  for (candidate = font; candidate != NULL; candidate = candidate->fallback)
+    {
+      lv_font_glyph_dsc_t descriptor;
+      uint32_t offset = 0;
+      bool complete = true;
+
+      while (complete && text[offset] != '\0')
+        {
+          uint32_t codepoint = utf8_next(text, &offset);
+
+          /* The table's own callback: lv_font_get_glyph_dsc() would walk
+           * the chain and always find something.
+           */
+
+          complete = codepoint < 0x20 ||
+                     candidate->get_glyph_dsc(candidate, &descriptor,
+                                              codepoint, 0);
+        }
+
+      if (complete)
+        {
+          return candidate;
+        }
+    }
+
+  return font;
+}
+
 static void text_center_at(struct nyabula_eye_renderer_s *r,
                            const struct eye_s *e, const lv_font_t *font,
                            const char *text, float center_x, float center_y,
@@ -718,7 +813,7 @@ static void text_center_at(struct nyabula_eye_renderer_s *r,
   float screen_y;
   int width;
 
-  font = renderer_font(r, font);
+  font = font_for_text(renderer_font(r, font), text);
   width = text_width(r, font, text);
   to_screen(&e->t, center_x, center_y, &screen_x, &screen_y);
   area.x1 = lroundf(screen_x - width * 0.5f);
@@ -726,13 +821,72 @@ static void text_center_at(struct nyabula_eye_renderer_s *r,
   area.x2 = area.x1 + width + 1;
   area.y2 = area.y1 + font->line_height + 1;
 
+  if (r->label_count < LABEL_QUEUE_COUNT)
+    {
+      struct label_s *label = &r->labels[r->label_count++];
+      size_t length = strlen(text);
+
+      /* Never cut a UTF-8 sequence in half. */
+
+      if (length >= LABEL_TEXT_BYTES)
+        {
+          length = LABEL_TEXT_BYTES - 1;
+          while (length > 0 && ((unsigned char)text[length] & 0xc0) == 0x80)
+            {
+              length--;
+            }
+        }
+
+      memcpy(label->text, text, length);
+      label->text[length] = '\0';
+      label->font = font;
+      label->area = area;
+      label->color = lv_color_hex(color);
+      label->opa = vector_opa(opacity);
+      return;
+    }
+
+  /* More labels than any scene has: drawn at once rather than dropped. */
+
   lv_draw_label_dsc_init(&descriptor);
   descriptor.text = text;
+  descriptor.text_local = 1;
   descriptor.font = font;
   descriptor.color = lv_color_hex(color);
   descriptor.opa = vector_opa(opacity);
   descriptor.align = LV_TEXT_ALIGN_CENTER;
   lv_draw_label(&r->layer, &descriptor, &area);
+}
+
+/****************************************************************************
+ * Name: labels_flush
+ *
+ * Description:
+ *   Hand the page's labels to LVGL, after its shapes.  The queue belongs to
+ *   the renderer and outlives lv_canvas_finish_layer(), so the text is not
+ *   copied again.
+ *
+ ****************************************************************************/
+
+static void labels_flush(struct nyabula_eye_renderer_s *r)
+{
+  lv_draw_label_dsc_t descriptor;
+  int index;
+
+  for (index = 0; index < r->label_count; index++)
+    {
+      struct label_s *label = &r->labels[index];
+
+      lv_draw_label_dsc_init(&descriptor);
+      descriptor.text = label->text;
+      descriptor.font = label->font;
+      descriptor.color = label->color;
+      descriptor.opa = label->opa;
+      descriptor.align = LV_TEXT_ALIGN_CENTER;
+      lv_draw_label(&r->layer, &descriptor, &label->area);
+    }
+
+  r->label_count = 0;
 }
 
 static float eye_globe_radius(void) { return R - 2.0f; }
@@ -3153,6 +3307,156 @@ static void scene_task(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
     }
 }
 
+/****************************************************************************
+ * Name: scene_qr
+ *
+ * Description:
+ *   Show one QR code per eye.
+ *
+ *   This is the one scene that ignores the iris colour: a code is read by a
+ *   camera, not admired, and what a camera needs is black on white with a
+ *   clear margin.  Modules are a whole number of pixels, because a module
+ *   edge that lands between pixels is drawn grey and costs exactly the
+ *   contrast the code depends on.
+ *
+ *   The dark modules go into one path, as one rectangle per horizontal
+ *   run, and are filled once.  A symbol has several hundred of them and the
+ *   rasteriser is software on a single core; filling each separately takes
+ *   long enough to see.
+ *
+ ****************************************************************************/
+
+static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
+                     const struct nyabula_eye_scene_payload_s *payload,
+                     float opacity)
+{
+#ifdef CONFIG_LV_USE_QRCODE
+  const char *text =
+      e->id == NYABULA_EYE_LEFT ? payload->qr_left : payload->qr_right;
+  uint8_t symbol[qrcodegen_BUFFER_LEN_FOR_VERSION(SCENE_QR_VERSION_MAX)];
+  uint8_t scratch[qrcodegen_BUFFER_LEN_FOR_VERSION(SCENE_QR_VERSION_MAX)];
+  bool any = false;
+  const char *label;
+  float module;
+  float origin;
+  float plate;
+  float shift;
+  int size;
+
+  if (text[0] == '\0')
+    {
+      /* An eye with no code of its own says what the other one is for. */
+
+      if (payload->title[0] != '\0')
+        {
+          text_center(r, e,
+                      scene_font(r, FONT_FAMILY_TITLE, 39,
+                                 &nyabula_font_title_42),
+                      payload->title, -R * 0.13f, SCENE_QR_INK, opacity);
+        }
+
+      /* The detail line is for an address, so it is set in the Latin face:
+       * the CJK faces are subsets built from the text in this source, and
+       * need not hold every digit.
+       */
+
+      if (payload->detail[0] != '\0')
+        {
+          text_center(r, e,
+                      scene_font(r, FONT_FAMILY_ENGLISH, 18,
+                                 &nyabula_font_english_18),
+                      payload->detail, R * 0.16f, SCENE_QR_INK,
+                      opacity * 0.86f);
+        }
+
+      return;
+    }
+
+  if (!qrcodegen_encodeText(text, scratch, symbol, qrcodegen_Ecc_LOW,
+                            qrcodegen_VERSION_MIN, SCENE_QR_VERSION_MAX,
+                            qrcodegen_Mask_AUTO, true))
+    {
+      return;
+    }
+
+  /* The largest square inside the round panel, less a little for the bezel,
+   * shared between the symbol and its quiet zone.
+   */
+
+  /* With a caption the code gives up some of its room and moves down, so
+   * that the words saying what it is sit above it inside the circle.
+   */
+
+  label = e->id == NYABULA_EYE_LEFT ? payload->qr_left_label
+                                    : payload->qr_right_label;
+  size = qrcodegen_getSize(symbol);
+  module = floorf(R * (label[0] != '\0' ? 1.12f : 1.36f) /
+                  (size + 2 * SCENE_QR_QUIET));
+  if (module < 2.0f)
+    {
+      return;
+    }
+
+  plate = module * (size + 2 * SCENE_QR_QUIET) * 0.5f;
+  origin = -module * size * 0.5f;
+  shift = label[0] != '\0' ? R * 0.13f : 0.0f;
+  if (label[0] != '\0')
+    {
+      text_center(r, e,
+                  scene_font(r, FONT_FAMILY_TITLE, 19,
+                             &nyabula_font_title_20),
+                  label, shift - plate - R * 0.12f, SCENE_QR_INK, opacity);
+    }
+
+  filled_rect(r, e, -plate, shift - plate, plate, shift + plate, 0xffffff,
+              opacity);
+
+  lv_vector_path_clear(r->path);
+  for (int y = 0; y < size; y++)
+    {
+      for (int x = 0; x < size; x++)
+        {
+          int start = x;
+          lv_fpoint_t point;
+          float top;
+
+          if (!qrcodegen_getModule(symbol, x, y))
+            {
+              continue;
+            }
+
+          while (x + 1 < size && qrcodegen_getModule(symbol, x + 1, y))
+            {
+              x++;
+            }
+
+          top = shift + origin + y * module;
+          point = (lv_fpoint_t){ origin + start * module, top };
+          lv_vector_path_move_to(r->path, &point);
+          point.x = origin + (x + 1) * module;
+          lv_vector_path_line_to(r->path, &point);
+          point.y = top + module;
+          lv_vector_path_line_to(r->path, &point);
+          point.x = origin + start * module;
+          lv_vector_path_line_to(r->path, &point);
+          lv_vector_path_close(r->path);
+          any = true;
+        }
+    }
+
+  if (any)
+    {
+      vector_eye_transform(r, e);
+      vector_fill(r, 0x000000, opacity);
+    }
+#else
+  UNUSED(r);
+  UNUSED(e);
+  UNUSED(payload);
+  UNUSED(opacity);
+#endif
+}
+
 static void
 scene_draw_content(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
                    enum nyabula_eye_scene_e scene,
@@ -3177,6 +3481,9 @@ scene_draw_content(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
         break;
       case NYABULA_EYE_SCENE_BATTERY:
         scene_battery(r, e, payload, opacity, reveal);
+        break;
+      case NYABULA_EYE_SCENE_QR:
+        scene_qr(r, e, payload, opacity);
         break;
       case NYABULA_EYE_SCENE_ALARM:
         scene_alarm(r, e, payload, seconds, opacity);
@@ -4238,6 +4545,76 @@ static float scene_lid_boundary(const float samples[LID_SAMPLES], float x)
          (samples[index + 1] - samples[index]) * (sample - index);
 }
 
+/****************************************************************************
+ * Name: debug_dump
+ *
+ * Description:
+ *   What the panel is about to be given, for somebody who cannot see the
+ *   panel.  Creating NYABULA_EYE_DUMP_TRIGGER writes the finished page of
+ *   each eye once -- width, height, stride and colour format as four
+ *   little-endian words, then the pixels -- and removes the trigger.  The
+ *   trigger is looked for every 32nd frame: a stat() per frame is not free
+ *   on FAT.  A page that is not changing is not rendered and so would never
+ *   be written; debug_dump_poll() makes both pages render once.
+ *
+ ****************************************************************************/
+
+#define NYABULA_EYE_DUMP_TRIGGER "/data/tmp/eyedump"
+
+static uint8_t g_debug_dump_pending;
+
+static void debug_dump_poll(struct nyabula_eye_renderer_s *r, int id)
+{
+  static uint8_t divider;
+  int eye;
+
+  if (g_debug_dump_pending != 0 || id != 0 || (++divider & 31) != 0 ||
+      access(NYABULA_EYE_DUMP_TRIGGER, F_OK) < 0)
+    {
+      return;
+    }
+
+  g_debug_dump_pending = (1 << NYABULA_EYE_COUNT) - 1;
+  for (eye = 0; eye < NYABULA_EYE_COUNT; eye++)
+    {
+      r->last_frame_valid[eye] = false;
+    }
+}
+
+static void debug_dump(const lv_draw_buf_t *buffer, int id)
+{
+  uint32_t header[4];
+  char path[40];
+  int fd;
+
+  if ((g_debug_dump_pending & (1 << id)) == 0)
+    {
+      return;
+    }
+
+  g_debug_dump_pending &= ~(1 << id);
+  snprintf(path, sizeof(path), "/data/tmp/eye%d.raw", id);
+  fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd >= 0)
+    {
+      header[0] = buffer->header.w;
+      header[1] = buffer->header.h;
+      header[2] = buffer->header.stride;
+      header[3] = buffer->header.cf;
+      if (write(fd, header, sizeof(header)) == sizeof(header))
+        {
+          write(fd, buffer->data, buffer->header.stride * buffer->header.h);
+        }
+
+      close(fd);
+    }
+
+  if (g_debug_dump_pending == 0)
+    {
+      unlink(NYABULA_EYE_DUMP_TRIGGER);
+    }
+}
+
 static void apply_scene_lid_mask(lv_draw_buf_t *buffer, struct eye_s *eye)
 {
   float half_pixel = 0.5f / fmaxf(fabsf(eye->t.sy), 0.001f);
@@ -4400,6 +4777,7 @@ scene_eye_is_time_independent(const struct nyabula_eye_scene_frame_s *scene,
       case NYABULA_EYE_SCENE_DEVICES:
       case NYABULA_EYE_SCENE_SYSTEM:
       case NYABULA_EYE_SCENE_PRESENCE:
+      case NYABULA_EYE_SCENE_QR:
         return true;
       case NYABULA_EYE_SCENE_MUSIC:
         return id == NYABULA_EYE_LEFT
@@ -4826,6 +5204,14 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
       r->baked = true;
     }
 
+  debug_dump_poll(r, id);
+  if (nyabula_eye_mirror_wants(id))
+    {
+      /* A viewer just attached and has nothing to show for this eye. */
+
+      r->last_frame_valid[id] = false;
+    }
+
   if (frame_pixels_unchanged(r, frame, id))
     {
       r->reused_eyes++;
@@ -4885,6 +5271,7 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
         }
 
       graphics_trace_endex(id == NYABULA_EYE_LEFT ? "eye_left" : "eye_right");
+      r->label_count = 0;
       lv_canvas_finish_layer(r->canvas[id], &r->layer);
       return;
     }
@@ -4942,6 +5329,7 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
   stage_start = lv_tick_get();
   graphics_trace_beginex("raster");
   lv_draw_vector(r->vector);
+  labels_flush(r);
   if (r->mask_ready)
     {
       lv_draw_image_dsc_t image_descriptor;
@@ -4955,6 +5343,9 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
   lv_canvas_finish_layer(r->canvas[id], &r->layer);
   graphics_trace_endex("raster");
   r->raster_total += lv_tick_elaps(stage_start);
+  debug_dump(r->draw, id);
+  nyabula_eye_mirror_publish(id, r->draw->data, r->draw->header.w,
+                             r->draw->header.h, r->draw->header.stride);
   stage_start = lv_tick_get();
   lv_obj_invalidate(r->canvas[id]);
   r->flush_total += lv_tick_elaps(stage_start);

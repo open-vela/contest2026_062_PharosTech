@@ -1,0 +1,358 @@
+/****************************************************************************
+ * packages/demos/contest2026_062_nyabula_core/ny_product.c
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to you under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ ****************************************************************************/
+
+#include "ny_product.h"
+#ifdef CONFIG_NYABULA_CORE_MODELS
+#include "ny_web_models.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_AGENT
+#include "ny_agent.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_LIGHT
+#include "ny_product_light.h"
+#endif
+#include <errno.h>
+#include <malloc.h>
+#include <math.h>
+#include <nuttx/config.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/utsname.h>
+#include <syslog.h>
+#include <time.h>
+
+static int ny_product_system(const struct ny_product_caller_s *caller,
+                             const char *topic, const cJSON *data,
+                             cJSON **result);
+
+/****************************************************************************
+ * Name: ny_product_time_ms
+ ****************************************************************************/
+
+uint64_t ny_product_time_ms(bool monotonic)
+{
+  struct timespec now;
+  clock_gettime(monotonic ? CLOCK_MONOTONIC : CLOCK_REALTIME, &now);
+  return (uint64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+/****************************************************************************
+ * Name: ny_product_system
+ ****************************************************************************/
+
+static int ny_product_system(const struct ny_product_caller_s *caller,
+                             const char *topic, const cJSON *data,
+                             cJSON **result)
+{
+  bool set_time = strcmp(topic, "system.time.set") == 0;
+  bool sync_time = strcmp(topic, "system.time.sync") == 0;
+  bool applied = false;
+  if (!set_time && !sync_time && strcmp(topic, "system.time.get") != 0 &&
+      strcmp(topic, "sys.info") != 0)
+    {
+      return -ENOSYS;
+    }
+
+  if ((set_time || sync_time) && caller->role != NY_PRODUCT_OWNER)
+    {
+      return -EACCES;
+    }
+
+  if (sync_time)
+    {
+#ifdef CONFIG_NYABULA_CORE_TIMESYNC
+      ny_product_timesync_request();
+#else
+      return -ENOTSUP;
+#endif
+    }
+
+  if (set_time)
+    {
+      const cJSON *value = cJSON_GetObjectItemCaseSensitive(data, "unix_ms");
+      if (!cJSON_IsNumber(value) || !isfinite(value->valuedouble) ||
+          value->valuedouble < (double)ny_product_clock_floor_ms() ||
+          value->valuedouble > (double)NY_PRODUCT_CLOCK_MAX_MS ||
+          floor(value->valuedouble) != value->valuedouble)
+        {
+          return -EINVAL;
+        }
+
+      /* A panel pushes its own idea of the time whenever it connects, and
+       * that is a phone's or a computer's clock.  Once a time server has
+       * been heard in this boot the device knows better, and being handed
+       * a worse time must not undo that; the reply says which it was.
+       */
+
+      if (ny_product_clock_source() == NY_PRODUCT_CLOCK_SNTP)
+        {
+          syslog(LOG_INFO, "nyclock: panel time from %s not applied, "
+                 "a time server has set the clock (it differs by %lld ms)\n",
+                 caller->id,
+                 (long long)((int64_t)value->valuedouble -
+                             (int64_t)ny_product_time_ms(false)));
+        }
+      else
+        {
+          int ret = ny_product_clock_set((uint64_t)value->valuedouble,
+                                         NY_PRODUCT_CLOCK_PANEL, caller->id);
+          if (ret < 0)
+            {
+              return ret;
+            }
+
+          applied = true;
+        }
+    }
+
+  cJSON *root = cJSON_CreateObject();
+  if (root == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  if (!cJSON_AddNumberToObject(root, "unix_ms", ny_product_time_ms(false)) ||
+      !cJSON_AddNumberToObject(root, "uptime_ms", ny_product_time_ms(true)) ||
+      !ny_product_clock_describe(root) ||
+      (set_time && !cJSON_AddBoolToObject(root, "applied", applied)))
+    {
+      cJSON_Delete(root);
+      return -ENOMEM;
+    }
+
+#ifdef CONFIG_NYABULA_CORE_TIMESYNC
+  if (strcmp(topic, "sys.info") != 0 && !ny_product_timesync_describe(root))
+    {
+      cJSON_Delete(root);
+      return -ENOMEM;
+    }
+#endif
+
+  if (strcmp(topic, "sys.info") == 0)
+    {
+      struct utsname system;
+      struct mallinfo heap = mallinfo();
+      cJSON *device = cJSON_AddObjectToObject(root, "device");
+      cJSON *memory = cJSON_AddObjectToObject(root, "memory");
+      char name[33] = "Nyabula";
+#ifdef CONFIG_NYABULA_CORE_NETWORK
+      ny_product_network_name(name, sizeof(name));
+#endif
+      if (uname(&system) < 0 || device == NULL || memory == NULL ||
+          !cJSON_AddStringToObject(device, "name", name) ||
+          !cJSON_AddStringToObject(device, "coreVersion", "product-v1") ||
+          !cJSON_AddStringToObject(device, "os", system.sysname) ||
+          !cJSON_AddStringToObject(device, "arch", system.machine) ||
+          !cJSON_AddNumberToObject(root, "uptime",
+                                   ny_product_time_ms(true) / 1000) ||
+          !cJSON_AddNumberToObject(memory, "total", heap.arena) ||
+          !cJSON_AddNumberToObject(memory, "used", heap.uordblks) ||
+          !cJSON_AddNumberToObject(memory, "free", heap.fordblks))
+        {
+          cJSON_Delete(root);
+          return -ENOMEM;
+        }
+
+      /* The board has no battery and no gauge: it runs for as long as it is
+       * plugged in, which is what a panel should say instead of an empty
+       * charge level.
+       */
+
+      cJSON *power = cJSON_AddObjectToObject(root, "power");
+      if (power == NULL || !cJSON_AddStringToObject(power, "source", "external"))
+        {
+          cJSON_Delete(root);
+          return -ENOMEM;
+        }
+
+#ifdef CONFIG_NYABULA_CORE_NETWORK
+      char ssid[33];
+      int rssi = 0;
+      if (ny_product_network_link(ssid, sizeof(ssid), &rssi) == 0)
+        {
+          cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
+          if (wifi == NULL || !cJSON_AddStringToObject(wifi, "ssid", ssid) ||
+              (rssi != 0 && !cJSON_AddNumberToObject(wifi, "rssi", rssi)))
+            {
+              cJSON_Delete(root);
+              return -ENOMEM;
+            }
+        }
+#endif
+
+#ifdef CONFIG_NYABULA_CORE_LIGHT
+      /* A copy of two numbers the light sensor already holds. */
+
+      if (!ny_product_light_describe(root))
+        {
+          cJSON_Delete(root);
+          return -ENOMEM;
+        }
+#endif
+    }
+
+  *result = root;
+  return 0;
+}
+
+/****************************************************************************
+ * Name: ny_product_request
+ ****************************************************************************/
+
+int ny_product_request(const struct ny_product_caller_s *caller,
+                       const char *topic, const cJSON *data, cJSON **result)
+{
+  int ret;
+  if (result == NULL)
+    {
+      return -EINVAL;
+    }
+
+  *result = NULL;
+  if (caller == NULL || caller->id == NULL || caller->id[0] == '\0' ||
+      caller->role < NY_PRODUCT_GUEST || caller->role > NY_PRODUCT_OWNER ||
+      strlen(caller->id) > 63 || topic == NULL || strlen(topic) > 64 ||
+      !cJSON_IsObject(data))
+    {
+      return -EINVAL;
+    }
+
+  if (strcmp(topic, "product.status") == 0 ||
+      strcmp(topic, "product.start") == 0 ||
+      strcmp(topic, "product.stop") == 0)
+    {
+      if (caller->role != NY_PRODUCT_OWNER)
+        {
+          return -EACCES;
+        }
+
+      ret = strcmp(topic, "product.start") == 0  ? ny_product_start()
+            : strcmp(topic, "product.stop") == 0 ? ny_product_stop()
+                                                 : 0;
+      if (ret < 0)
+        {
+          return ret;
+        }
+
+      *result = ny_product_runtime_status();
+      return *result == NULL ? -ENOMEM : 0;
+    }
+
+  ret = ny_product_system(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    {
+      return ret;
+    }
+
+  ret = ny_product_eyes_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+
+  ret = ny_product_device_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+
+  ret = ny_product_maintenance_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+
+#ifdef CONFIG_NYABULA_CORE_MODELS
+  ret = ny_web_models_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
+#ifdef CONFIG_NYABULA_CORE_NETWORK
+  ret = ny_product_network_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
+#ifdef CONFIG_NYABULA_CORE_AUDIO
+  ret = ny_product_audio_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
+#ifdef CONFIG_NYABULA_CORE_LIGHT
+  ret = ny_product_light_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
+#ifdef CONFIG_NYABULA_CORE_BT
+  ret = ny_product_bt_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
+#ifdef CONFIG_NYABULA_CORE_COMPUTE
+  ret = ny_compute_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
+#ifdef CONFIG_NYABULA_CORE_VOICE
+  ret = ny_voice_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
+  ret = ny_product_media_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+
+#ifdef CONFIG_NYABULA_CORE_AGENT
+  ret = ny_agent_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    {
+      return ret;
+    }
+#endif
+
+  ret = ny_product_records_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    {
+      return ret;
+    }
+
+#ifdef CONFIG_NYABULA_CORE_WEATHER
+  ret = ny_product_weather_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+#ifdef CONFIG_NYABULA_CORE_AGENT
+  ret = ny_product_companion_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+  ret = ny_product_briefing_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+  ret = ny_product_notifications_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+  ret = ny_product_alarms_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+  return ny_product_timers_request(caller, topic, data, result);
+}

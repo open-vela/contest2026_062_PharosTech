@@ -3,6 +3,7 @@
 """Offline regression tests for the four-LITTLE/four-BIG artifact gate."""
 
 import gzip
+import re
 import shutil
 import struct
 import subprocess
@@ -14,6 +15,17 @@ from validate_amp_layout import parse_defconfig, validate_config, validate_dtb
 
 
 class TopologyTest(unittest.TestCase):
+    def test_board_reserves_optee(self):
+        source = (Path(__file__).parent /
+                  "linux/rk3576-kickpi-k7-amp.dtsi").read_text(encoding="utf-8")
+        node = re.search(r"optee_reserved:\s*optee@48400000\s*\{([^}]+)\}",
+                         source)
+        self.assertIsNotNone(node, "BL32 memory must not enter the Linux allocator")
+        body = node.group(1)
+        self.assertRegex(body, r"reg\s*=\s*<0x0\s+0x48400000\s+0x0\s+0x1000000>;")
+        self.assertRegex(body, r"\bno-map\s*;")
+        self.assertNotRegex(body, r"\breusable\s*;")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

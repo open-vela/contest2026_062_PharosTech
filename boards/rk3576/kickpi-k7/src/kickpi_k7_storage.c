@@ -57,10 +57,20 @@
 #define KICKPI_K7_STORAGE_RETRIES        10
 
 #define KICKPI_K7_STORAGE_DATA_MOUNT     "/data"
+#define KICKPI_K7_STORAGE_CONFIG_MOUNT   "/config"
 #define KICKPI_K7_STORAGE_SD_MOUNT       "/sd"
 #define KICKPI_K7_STORAGE_EMMC_MOUNT     "/emmc"
 #define KICKPI_K7_STORAGE_USB_MOUNT      "/usb"
 #define KICKPI_K7_STORAGE_PERSIST_TMP    KICKPI_K7_STORAGE_DATA_MOUNT "/tmp"
+
+/* Partition holding provisioning, identity and persona.  It is mounted
+ * separately from the bulk store and is never a candidate for /data: if it
+ * were, a medium whose data partition was missing or unreadable would
+ * mount the configuration in its place, and the device would look
+ * provisioned while having nowhere to put a model.
+ */
+#define KICKPI_K7_STORAGE_CONFIG_PART   "config"
+#define KICKPI_K7_STORAGE_DATA_SCORE    100
 
 /****************************************************************************
  * Private Types
@@ -148,7 +158,7 @@ static int kickpi_k7_storage_partition_score(FAR const char *name)
 {
   if (strcasecmp(name, "data") == 0)
     {
-      return 100;
+      return KICKPI_K7_STORAGE_DATA_SCORE;
     }
 
   if (strcasecmp(name, "userdata") == 0)
@@ -173,7 +183,8 @@ static void kickpi_k7_storage_partition_handler(FAR struct partition_s *part,
   int ret;
 
   if (part->index >= KICKPI_K7_STORAGE_MAX_PARTITIONS ||
-      kickpi_k7_storage_system_partition(part->name))
+      kickpi_k7_storage_system_partition(part->name) ||
+      strcasecmp(part->name, KICKPI_K7_STORAGE_CONFIG_PART) == 0)
     {
       return;
     }
@@ -252,6 +263,212 @@ static void kickpi_k7_storage_remove_partitions(
   media->ncandidates = 0;
 }
 
+/****************************************************************************
+ * Name: kickpi_k7_storage_partition_is_blank
+ *
+ * Description:
+ *   Report whether a block device has never been written to.
+ *
+ *   Reads the first sector and looks for anything non-zero.  This is what
+ *   separates "no filesystem was ever created here" from "a filesystem is
+ *   here and cannot be read" -- both make mount() fail, but only the first
+ *   is safe to reformat without a human deciding.
+ *
+ ****************************************************************************/
+
+static bool kickpi_k7_storage_partition_is_blank(FAR const char *path)
+{
+  uint8_t sector[512];
+  struct inode *inode = NULL;
+  ssize_t nread;
+  size_t i;
+  int ret;
+
+  ret = open_blockdriver(path, 0, &inode);
+  if (ret < 0)
+    {
+      return false;
+    }
+
+  nread = inode->u.i_bops->read(inode, sector, 0, 1);
+  close_blockdriver(inode);
+
+  if (nread < 1)
+    {
+      return false;
+    }
+
+  for (i = 0; i < sizeof(sector); i++)
+    {
+      if (sector[i] != 0)
+        {
+          return false;
+        }
+    }
+
+  return true;
+}
+
+/****************************************************************************
+ * Name: kickpi_k7_storage_format
+ *
+ * Description:
+ *   Create a FAT filesystem on a block device.
+ *
+ *   The formatter lives in the application tree, and a board source file
+ *   has no business depending on that direction: it would drag the apps
+ *   directory into every configuration that uses this board, including the
+ *   ones that exclude it.  The hook is weak so a build without a formatter
+ *   still links and simply reports that the partition could not be
+ *   prepared; the strong definition lives with the tool that also exposes
+ *   the operation to an operator.
+ *
+ ****************************************************************************/
+
+int __attribute__((weak))
+kickpi_k7_storage_format_hook(FAR const char *path)
+{
+  (void)path;
+  return -ENOSYS;
+}
+
+static int kickpi_k7_storage_format(FAR const char *path)
+{
+  return kickpi_k7_storage_format_hook(path);
+}
+
+/****************************************************************************
+ * Name: kickpi_k7_storage_config_find
+ *
+ * Description:
+ *   Record the config partition's geometry.  Used as the callback for
+ *   parse_block_partition() when locating it, so that nothing is
+ *   registered as a side effect of the search.
+ *
+ ****************************************************************************/
+
+struct kickpi_k7_storage_config_lookup_s
+{
+  struct partition_s part;
+  bool found;
+};
+
+static void kickpi_k7_storage_config_find(FAR struct partition_s *part,
+                                          FAR void *arg)
+{
+  FAR struct kickpi_k7_storage_config_lookup_s *lookup = arg;
+
+  if (strcasecmp(part->name, KICKPI_K7_STORAGE_CONFIG_PART) == 0)
+    {
+      memcpy(&lookup->part, part, sizeof(*part));
+      lookup->found = true;
+    }
+}
+
+/****************************************************************************
+ * Name: kickpi_k7_storage_config_mount
+ *
+ * Description:
+ *   Mount the configuration partition at /config.
+ *
+ *   Unlike the bulk store this is not a candidate for /data: it holds the
+ *   provisioning state, and mounting it in place of a missing data
+ *   partition would leave the device apparently provisioned with nowhere
+ *   to put anything.
+ *
+ *   If the partition carries no filesystem yet -- which is what a factory
+ *   image built with an empty config produces -- one is created.  That is
+ *   the only case in which anything is written here, and it is decided by
+ *   mount() failing with EINVAL rather than by inspecting the contents: a
+ *   filesystem that exists but cannot be read is a different problem, and
+ *   formatting it would destroy settings rather than repair them.
+ *
+ ****************************************************************************/
+
+static int kickpi_k7_storage_config_mount(void)
+{
+  char path[KICKPI_K7_STORAGE_PATH_MAX];
+  struct kickpi_k7_storage_config_lookup_s lookup;
+  int ret;
+
+  /* Walk the table looking for the config partition only.  Registering
+   * every partition again is not an option: the bulk store's driver nodes
+   * were created when it mounted, and a second pass would collide with
+   * them.
+   */
+
+  memset(&lookup, 0, sizeof(lookup));
+  ret = parse_block_partition(g_emmc_media.blockdev,
+                              kickpi_k7_storage_config_find, &lookup);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (!lookup.found)
+    {
+      syslog(LOG_INFO, "INFO: storage: no %s partition\n",
+             KICKPI_K7_STORAGE_CONFIG_PART);
+      return -ENOENT;
+    }
+
+  snprintf(path, sizeof(path), "%sp%u", g_emmc_media.blockdev,
+           (unsigned int)lookup.part.index + 1);
+  unregister_blockdriver(path);
+  ret = register_blockpartition(path, 0660, g_emmc_media.blockdev,
+                                lookup.part.firstblock, lookup.part.nblocks);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (mkdir(KICKPI_K7_STORAGE_CONFIG_MOUNT, 0770) < 0 && errno != EEXIST)
+    {
+      return -errno;
+    }
+
+  if (mount(path, KICKPI_K7_STORAGE_CONFIG_MOUNT, "vfat", 0, NULL) == 0)
+    {
+      return 0;
+    }
+
+  /* An unformatted partition is expected on a device whose config was
+   * cleared, and a product cannot ask the owner to open a console.  Create
+   * the filesystem and retry -- but only when the partition is genuinely
+   * blank.
+   *
+   * The distinction matters.  mount() failing says the volume could not be
+   * read, which is equally true of a filesystem that is damaged.  Erasing
+   * a damaged config destroys the provisioning someone might still recover;
+   * erasing a blank one destroys nothing.  So read the first sector: all
+   * zeroes means nothing was ever written here, which is the only case
+   * that is safe to reformat automatically.
+   */
+
+  if (kickpi_k7_storage_partition_is_blank(path))
+    {
+      syslog(LOG_INFO, "INFO: storage: %s is unformatted, creating a "
+             "filesystem\n", KICKPI_K7_STORAGE_CONFIG_PART);
+
+      if (kickpi_k7_storage_format(path) == 0 &&
+          mount(path, KICKPI_K7_STORAGE_CONFIG_MOUNT, "vfat", 0, NULL) == 0)
+        {
+          return 0;
+        }
+
+      syslog(LOG_WARNING, "WARNING: storage: could not create /config\n");
+      return -EIO;
+    }
+
+  syslog(LOG_WARNING, "WARNING: storage: /config mount failed: %d "
+         "(partition is not blank; refusing to reformat)\n", errno);
+  return -errno;
+}
+
+/****************************************************************************
+ * Name: kickpi_k7_storage_mount
+ ****************************************************************************/
+
 static int kickpi_k7_storage_mount(FAR struct kickpi_k7_storage_media_s *media)
 {
   FAR struct kickpi_k7_storage_candidate_s *candidate;
@@ -286,11 +503,38 @@ static int kickpi_k7_storage_mount(FAR struct kickpi_k7_storage_media_s *media)
 
   while ((candidate = kickpi_k7_storage_best_candidate(media)) != NULL)
     {
+      bool labelled_data = candidate->score == KICKPI_K7_STORAGE_DATA_SCORE;
+
       candidate->score = -1;
       if (mount(candidate->path, mountpoint, fstype, 0, NULL) == 0)
         {
           source = candidate->path;
           goto mounted;
+        }
+
+      /* The bulk store is initialised on the board, not by an image: a
+       * filesystem written from a host is as large as the image was, not
+       * as large as the partition, and the partition is where the models
+       * go.  So a partition labelled "data" that has never been written
+       * gets a filesystem of its full size here.  Only a blank one: a
+       * volume that fails to mount for any other reason may still hold
+       * something its owner wants back.
+       */
+
+      if (labelled_data && !media->removable &&
+          kickpi_k7_storage_partition_is_blank(candidate->path))
+        {
+          syslog(LOG_INFO, "INFO: storage: %s is unformatted, creating a "
+                 "filesystem\n", candidate->path);
+          if (kickpi_k7_storage_format(candidate->path) == 0 &&
+              mount(candidate->path, mountpoint, fstype, 0, NULL) == 0)
+            {
+              source = candidate->path;
+              goto mounted;
+            }
+
+          syslog(LOG_WARNING, "WARNING: storage: could not create a "
+                 "filesystem on %s\n", candidate->path);
         }
     }
 
@@ -402,6 +646,17 @@ static void kickpi_k7_storage_start_worker(FAR void *arg)
       if (ret < 0)
         {
           syslog(LOG_INFO, "INFO: storage: eMMC not mountable: %d\n", ret);
+        }
+
+      /* Configuration is mounted whether or not the bulk store came up.
+       * The two are independent, and a device that cannot reach its models
+       * still needs to know its own name and how to join a network.
+       */
+
+      ret = kickpi_k7_storage_config_mount();
+      if (ret < 0)
+        {
+          syslog(LOG_INFO, "INFO: storage: /config not mountable: %d\n", ret);
         }
     }
 

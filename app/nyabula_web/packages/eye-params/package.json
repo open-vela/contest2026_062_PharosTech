@@ -1,0 +1,9 @@
+{
+  "name": "@nyabula/eye-params",
+  "version": "1.0.0",
+  "description": "Single source of truth for Nyabula eye parameters.",
+  "type": "module",
+  "exports": {
+    "./eye-params.json": "./eye-params.json"
+  }
+}

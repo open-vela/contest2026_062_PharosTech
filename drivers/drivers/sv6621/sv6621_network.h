@@ -49,7 +49,7 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define SV6621_NETWORK_RX_DEPTH           4
+#define SV6621_NETWORK_RX_DEPTH           32
 #define SV6621_NETWORK_FORWARD_DEPTH      8
 #define SV6621_NETWORK_MULTICAST_CAPACITY 32
 

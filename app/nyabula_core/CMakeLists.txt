@@ -35,8 +35,91 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
       ny_scheduler.c
       ny_wasm.c)
   set(NYABULA_CORE_DEPENDS libqjs)
+  if(CONFIG_NYABULA_CORE_AGENT)
+    list(APPEND NYABULA_CORE_SRCS ny_agent.c ny_agent_capabilities.c ny_agent_config.c ny_agent_skills.c ny_agent_automation.c ny_agent_mcp_wire.c ny_agent_mcp.c ny_agent_mcp_in.c)
+    list(APPEND NYABULA_CORE_SRCS ny_agent_profile.c ny_agent_channels.c ny_agent_builtin.c ny_agent_weixin.c ny_agent_feishu.c ny_agent_node.c)
+    list(APPEND NYABULA_CORE_SRCS ny_product_companion.c ny_agent_local.c
+         ny_agent_local_intent.c)
+    list(APPEND NYABULA_CORE_DEPENDS apps_ai_agent libsodium)
+    list(APPEND NYABULA_CORE_SRCS ny_agent_mcp_server.c)
+    set(NYABULA_AGENT_INCLUDES ${NUTTX_APPS_DIR}/../packages/ai_agent/include
+        ${NUTTX_APPS_DIR}/../packages/ai_agent/src
+        ${NUTTX_APPS_DIR}/netutils/cjson/cJSON)
+  endif()
+  if(CONFIG_NYABULA_CORE_WEB)
+    list(APPEND NYABULA_CORE_SRCS ny_web.c ny_web_auth.c ny_web_http.c ny_websocket.c
+         ny_web_mirror.c)
+  endif()
+  if(CONFIG_NYABULA_CORE_PRODUCT)
+    list(APPEND NYABULA_CORE_SRCS ny_product_store.c ny_product_records.c
+         ny_product_cli.c ny_product.c ny_product_timers.c ny_product_runtime.c
+         ny_product_alarms.c ny_product_notifications.c ny_product_briefing.c
+         ny_product_eyes.c ny_product_device.c ny_product_media.c
+         ny_product_maintenance.c ny_product_clock.c ny_sntp.c)
+    if(CONFIG_NYABULA_CORE_AUDIO)
+      list(APPEND NYABULA_CORE_SRCS ny_product_audio.c)
+    endif()
+    if(CONFIG_NYABULA_CORE_LIGHT)
+      list(APPEND NYABULA_CORE_SRCS ny_product_light.c ny_light_math.c)
+    endif()
+    if(CONFIG_NYABULA_CORE_BT)
+      list(APPEND NYABULA_CORE_SRCS ny_product_bt.c ny_product_bt_audio.c
+           ny_audio_stream.c ny_pcm.c ny_sbc.c)
+      set(NYCORE_BT_INCLUDES
+          ${NUTTX_APPS_DIR}/external/zblue/zblue/port/include
+          ${NUTTX_APPS_DIR}/external/zblue/zblue/port/include/zephyr
+          ${NUTTX_APPS_DIR}/external/libfluoride-sbc/libfluoride-sbc/decoder/include
+          ${NUTTX_APPS_DIR}/external/libfluoride-sbc/libfluoride-sbc/encoder/include)
+      list(APPEND NYABULA_CORE_DEPENDS zblue libfluoride-sbc)
+    endif()
+    if(CONFIG_NYABULA_CORE_NETWORK)
+      list(APPEND NYABULA_CORE_SRCS ny_product_network.c)
+    endif()
+    if(CONFIG_NYABULA_CORE_TIMESYNC)
+      list(APPEND NYABULA_CORE_SRCS ny_product_timesync.c)
+    endif()
+    if(CONFIG_NYABULA_CORE_MODELS)
+      list(APPEND NYABULA_CORE_SRCS ny_web_models.c)
+    endif()
+    if(CONFIG_NYABULA_CORE_OTA)
+      # nbootctl lives where the manifest links it, not beside this directory:
+      # "../nbootctl" is only true in the team repository checkout.
+      set(NYCORE_NBOOTCTL_DIR ${NUTTX_APPS_DIR}/system/nbootctl)
+      list(APPEND NYABULA_CORE_SRCS ny_web_ota.c)
+      # A flat build links every built-in application into one image, so when
+      # the nbootctl command is built in, its bootctrl and partition objects
+      # already provide these symbols.  Compiling them again here would define
+      # them twice.
+      if(NOT "${CONFIG_SYSTEM_NBOOTCTL}" STREQUAL "y")
+        list(APPEND NYABULA_CORE_SRCS ${NYCORE_NBOOTCTL_DIR}/nbootctl_bootctrl.c
+             ${NYCORE_NBOOTCTL_DIR}/nbootctl_part.c)
+      endif()
+    endif()
+  endif()
   if(CONFIG_NYABULA_CORE_EYE)
     list(APPEND NYABULA_CORE_DEPENDS nyabula_eye)
+  endif()
+  if(CONFIG_NYABULA_CORE_WEATHER)
+    list(APPEND NYABULA_CORE_SRCS ny_product_weather.c)
+  endif()
+
+  if(CONFIG_NYABULA_CORE_COMPUTE)
+    # The wire codec is shared with the Linux half of the link and lives with
+    # it in the team repository; this directory is reached through a link.
+    get_filename_component(NYCORE_REAL_DIR "${CMAKE_CURRENT_LIST_DIR}" REALPATH)
+    set(NYCORE_NYAMP_DIR ${NYCORE_REAL_DIR}/../../tools/amp/protocol)
+    list(APPEND NYABULA_CORE_SRCS ny_compute.c)
+    # When the nyampctl diagnostic is built in, its copy of the codec already
+    # provides these symbols to the same flat image.
+    if(NOT "${CONFIG_EXAMPLES_NYAMPCTL}" STREQUAL "y")
+      list(APPEND NYABULA_CORE_SRCS ${NYCORE_NYAMP_DIR}/nyamp_protocol.c)
+    endif()
+    if(CONFIG_NYABULA_CORE_VOICE)
+      # The voice chain: wake word, recognition and speech run on the compute
+      # domain; these own the microphone, the speaker and the turn.
+      list(APPEND NYABULA_CORE_SRCS ny_voice.c ny_voice_audio.c ny_voice_dsp.c
+           ny_voice_sm.c ny_voice_wire.c)
+    endif()
   endif()
 
   if(CONFIG_NYABULA_CORE_HTTP)
@@ -85,9 +168,26 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     SRCS
     ${NYABULA_CORE_SRCS}
     INCLUDE_DIRECTORIES
+    ${NYABULA_AGENT_INCLUDES}
     ${NYCORE_SQLITE_DIR}
+    ${NYCORE_NBOOTCTL_DIR}
+    ${NYCORE_NYAMP_DIR}
+    ${NYCORE_BT_INCLUDES}
     ${NUTTX_APPS_DIR}/crypto/libsodium/libsodium/src/libsodium/include
     ${NUTTX_APPS_DIR}/interpreters/wamr/wamr/core/iwasm/include
     DEPENDS
     ${NYABULA_CORE_DEPENDS})
+
+  if(CONFIG_NYABULA_CORE_WEB)
+    nuttx_add_application(NAME nyabula_web PRIORITY 100 STACKSIZE 16384
+      SRCS ny_web_main.c DEPENDS apps_nycore)
+    if(CONFIG_NYABULA_EYE_WS)
+      nuttx_add_application(NAME nyabula_eye_ws PRIORITY 100 STACKSIZE 16384
+        SRCS ny_eye_ws_compat_main.c DEPENDS apps_nycore)
+    endif()
+  endif()
+  if(CONFIG_NYABULA_CORE_AGENT)
+    nuttx_add_application(NAME nyabula_mcp PRIORITY 100 STACKSIZE 16384
+      SRCS ny_mcp_main.c DEPENDS apps_nycore)
+  endif()
 endif()

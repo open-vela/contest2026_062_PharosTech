@@ -20,7 +20,15 @@
 # ##############################################################################
 
 if(CONFIG_SYSTEM_AUDIOCTL)
+  # Volume, mute and microphone gain go through the Nyabula audio service when
+  # it is built in.  Its header lives where the manifest links Core.
+  if(CONFIG_NYABULA_CORE_AUDIO)
+    set(AUDIOCTL_INCLUDES
+        ${NUTTX_APPS_DIR}/../packages/demos/contest2026_062_nyabula_core)
+  endif()
   nuttx_add_application(
+    INCLUDE_DIRECTORIES
+    ${AUDIOCTL_INCLUDES}
     MODULE
     ${CONFIG_SYSTEM_AUDIOCTL}
     NAME

@@ -78,6 +78,7 @@ static const struct nyabula_eye_json_name_s g_nyabula_scenes[] = {
   { "companion", NYABULA_EYE_SCENE_COMPANION },
   { "home", NYABULA_EYE_SCENE_HOME },
   { "subwoofer", NYABULA_EYE_SCENE_SUBWOOFER },
+  { "qr", NYABULA_EYE_SCENE_QR },
 };
 
 static const struct nyabula_eye_json_name_s g_nyabula_styles[] = {
@@ -387,6 +388,10 @@ nyabula_eye_json_parse_payload(cJSON *object,
   NYABULA_PAYLOAD_TEXT(previous_line);
   NYABULA_PAYLOAD_TEXT(current_line);
   NYABULA_PAYLOAD_TEXT(next_line);
+  NYABULA_PAYLOAD_TEXT(qr_left);
+  NYABULA_PAYLOAD_TEXT(qr_right);
+  NYABULA_PAYLOAD_TEXT(qr_left_label);
+  NYABULA_PAYLOAD_TEXT(qr_right_label);
 #undef NYABULA_PAYLOAD_TEXT
 
   bands = nyabula_eye_json_object_item(object, "eq_bands");
@@ -565,6 +570,27 @@ int nyabula_eye_json_parse_command(cJSON *json,
           return -EINVAL;
         }
 
+      /* Every other text is a caption and may be shortened to fit.  A QR
+       * code may not: one missing character is a different, valid-looking
+       * code that leads somewhere else or nowhere.
+       */
+
+      if (scene_value == NYABULA_EYE_SCENE_QR)
+        {
+          const char *left = nyabula_eye_json_string(payload, "qr_left", "");
+          const char *right =
+              nyabula_eye_json_string(payload, "qr_right", "");
+          if ((left[0] == '\0' && right[0] == '\0') ||
+              strlen(left) >= NYABULA_EYE_TEXT_QR ||
+              strlen(right) >= NYABULA_EYE_TEXT_QR)
+            {
+              snprintf(error, error_size,
+                       "qr_left or qr_right required, each under %d bytes",
+                       NYABULA_EYE_TEXT_QR);
+              return -EINVAL;
+            }
+        }
+
       command->action = NYABULA_CORE_ACTION_SCENE_SHOW;
       command->data.scene_show.request.scene = scene_value;
       command->data.scene_show.request.style = style_value;
@@ -577,6 +603,16 @@ int nyabula_eye_json_parse_command(cJSON *json,
       if (!cJSON_IsObject(payload))
         {
           snprintf(error, error_size, "payload object is required");
+          return -EINVAL;
+        }
+
+      if (strlen(nyabula_eye_json_string(payload, "qr_left", "")) >=
+              NYABULA_EYE_TEXT_QR ||
+          strlen(nyabula_eye_json_string(payload, "qr_right", "")) >=
+              NYABULA_EYE_TEXT_QR)
+        {
+          snprintf(error, error_size, "qr text must be under %d bytes",
+                   NYABULA_EYE_TEXT_QR);
           return -EINVAL;
         }
 

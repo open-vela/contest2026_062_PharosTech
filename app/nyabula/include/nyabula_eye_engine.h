@@ -95,6 +95,7 @@ enum nyabula_eye_scene_e
   NYABULA_EYE_SCENE_COMPANION,
   NYABULA_EYE_SCENE_HOME,
   NYABULA_EYE_SCENE_SUBWOOFER,
+  NYABULA_EYE_SCENE_QR,
   NYABULA_EYE_SCENE_COUNT
 };
 
@@ -177,6 +178,13 @@ enum nyabula_eye_eq_view_e
 #define NYABULA_EYE_TEXT_MEDIUM 48
 #define NYABULA_EYE_EQ_BANDS    10
 
+/* Longest text one eye can show as a QR code.  A version 6 symbol at the
+ * lowest correction level holds 134 bytes, and that is about as dense as a
+ * phone camera resolves on a 360 pixel panel with a quiet zone around it.
+ */
+
+#define NYABULA_EYE_TEXT_QR     135
+
 struct nyabula_eye_scene_payload_s
 {
   enum nyabula_eye_weather_e weather;
@@ -223,6 +231,10 @@ struct nyabula_eye_scene_payload_s
   char previous_line[NYABULA_EYE_TEXT_MEDIUM];
   char current_line[NYABULA_EYE_TEXT_MEDIUM];
   char next_line[NYABULA_EYE_TEXT_MEDIUM];
+  char qr_left[NYABULA_EYE_TEXT_QR];
+  char qr_right[NYABULA_EYE_TEXT_QR];
+  char qr_left_label[NYABULA_EYE_TEXT_MEDIUM];
+  char qr_right_label[NYABULA_EYE_TEXT_MEDIUM];
 };
 
 struct nyabula_eye_scene_request_s

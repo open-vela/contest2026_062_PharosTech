@@ -1,0 +1,65 @@
+diff --git a/drivers/serial/uart_bth4.c b/drivers/serial/uart_bth4.c
+index ffa0a44e50..419d32b970 100644
+--- a/drivers/serial/uart_bth4.c
++++ b/drivers/serial/uart_bth4.c
+@@ -50,6 +50,7 @@ union bt_hdr_u
+   struct bt_hci_acl_hdr_s acl;
+   struct bt_hci_evt_hdr_s evt;
+   struct bt_hci_iso_hdr_s iso;
++  struct bt_hci_sco_hdr_s sco;
+ };
+ 
+ struct uart_bth4_s
+@@ -154,6 +155,10 @@ static int uart_bth4_receive(FAR struct bt_driver_s *drv,
+         {
+           htype = H4_ISO;
+         }
++      else if (type == BT_SCO_IN)
++        {
++          htype = H4_SCO;
++        }
+       else
+         {
+           ret = -EINVAL;
+@@ -327,6 +332,11 @@ static ssize_t uart_bth4_write(FAR struct file *filep,
+             pktlen = hdr->iso.len;
+             type = BT_ISO_OUT;
+             break;
++          case H4_SCO:
++            hdrlen = sizeof(struct bt_hci_sco_hdr_s);
++            pktlen = hdr->sco.len;
++            type = BT_SCO_OUT;
++            break;
+           default:
+             ret = -EINVAL;
+             goto err;
+diff --git a/include/nuttx/wireless/bluetooth/bt_buf.h b/include/nuttx/wireless/bluetooth/bt_buf.h
+index d825a56f94..c762a4acb7 100644
+--- a/include/nuttx/wireless/bluetooth/bt_buf.h
++++ b/include/nuttx/wireless/bluetooth/bt_buf.h
+@@ -59,6 +59,8 @@ enum bt_buf_type_e
+   BT_ACL_IN,          /* Incoming ACL data */
+   BT_ISO_OUT,         /* Outgoing ISO data */
+   BT_ISO_IN,          /* Incoming ISO data */
++  BT_SCO_OUT,         /* Outgoing SCO/eSCO data */
++  BT_SCO_IN,          /* Incoming SCO/eSCO data */
+   BT_DUMMY = BT_CMD   /* Only used for waking up kernel threads */
+ };
+ 
+diff --git a/include/nuttx/wireless/bluetooth/bt_hci.h b/include/nuttx/wireless/bluetooth/bt_hci.h
+index c8d905dbd0..64cd72f2f6 100644
+--- a/include/nuttx/wireless/bluetooth/bt_hci.h
++++ b/include/nuttx/wireless/bluetooth/bt_hci.h
+@@ -296,6 +296,12 @@ begin_packed_struct struct bt_hci_acl_hdr_s
+   uint16_t len;
+ } end_packed_struct;
+ 
++begin_packed_struct struct bt_hci_sco_hdr_s
++{
++  uint16_t handle;
++  uint8_t len;
++} end_packed_struct;
++
+ begin_packed_struct struct bt_hci_iso_hdr_s
+ {
+   uint16_t handle;
