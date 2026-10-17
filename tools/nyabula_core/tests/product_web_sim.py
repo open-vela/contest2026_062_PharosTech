@@ -4,6 +4,7 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import secrets
 import socket
 import tempfile
@@ -76,7 +77,11 @@ def main():
             item = next(row for row in restored["items"] if row["id"] == live_id)
             assert item["status"] == "running" and 0 < item["remaining_ms"] < 20000
             assert call(reconnected, "memory.list", {}) == saved
-            for _ in range(3):
+            source = (Path(__file__).resolve().parents[3] /
+                      "app/nyabula_core/ny_web.c").read_text(encoding="utf-8")
+            match = re.search(r"#define\s+NY_WEB_MAX_CLIENTS\s+(\d+)", source)
+            assert match, "Web client limit moved; update the regression contract"
+            for _ in range(int(match[1]) - 1):
                 connect()
             try:
                 extra = Peer(port)
