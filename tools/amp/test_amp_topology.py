@@ -46,6 +46,30 @@ class TopologyTest(unittest.TestCase):
     def test_config_accepts_four_little(self):
         validate_config(self.config())
 
+    def test_product_profile_is_explicit(self):
+        path = self.config(MM_REGIONS="2",
+                           RK3576_DMA_ALLOC="y", RK3576_SHMEM="y",
+                           RK3576_RAMBANK2_ADDR="0x70000000",
+                           RK3576_RAMBANK2_SIZE_MB="256")
+        validate_config(path, "product")
+        product_text = path.read_text()
+        with self.assertRaises(ValueError):
+            validate_config(path)
+        uniprocessor = self.config(SMP="n", SMP_NCPUS="1", NCPUS="1", MM_REGIONS="2",
+                                   RK3576_DMA_ALLOC="y", RK3576_SHMEM="y",
+                                   RK3576_RAMBANK2_ADDR="0x70000000",
+                                   RK3576_RAMBANK2_SIZE_MB="256")
+        with self.assertRaises(ValueError):
+            validate_config(uniprocessor, "product")
+        path.write_text(product_text.replace('0x70000000', '0x60000000'))
+        with self.assertRaises(ValueError):
+            validate_config(path, "product")
+        path.write_text(product_text + "CONFIG_PM=y\nCONFIG_PM_NDOMAINS=1\n")
+        with self.assertRaises(ValueError):
+            validate_config(path, "product")
+        path.write_text(product_text + "CONFIG_PM=y\nCONFIG_PM_NDOMAINS=5\n")
+        validate_config(path, "product")
+
     def test_savedefconfig_may_omit_default_cpu_count(self):
         path = self.root / "defconfig"
         base = ("CONFIG_RAM_START=0x4a400000\nCONFIG_RAM_SIZE=16777216\n"
