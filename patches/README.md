@@ -22,3 +22,13 @@ patch -d apps              -p1 -N < contest2026_062_PharosTech/patches/apps-nxpl
 
 另外 `app/nyabula/src/generated/fonts/nyabula_font_*.c` 被 gitignore（约 5.7 MB 生成物），
 链接前需用 `app/nyabula/tools/generate_fonts.py` 生成或从上次构建复制。
+
+## 本地整理新增依赖修复（2026-10-17）
+
+- `apps-wamr-context-default.patch`：关闭 module instance context 时显式定义为 0，
+  修复 CMake 的 `-Werror=undef`；不改变开启该功能时的值。
+- `packages-ai_agent-slash-remind-bounds.patch`：提醒回复按容量追加文本，保留原有
+  截断行为，消除 CMake 的 `-Werror=format-truncation`，不全局关闭警告。
+
+使用 `bash tools/apply_dependency_patches.sh <openvela工作区>`，脚本会识别已应用
+的重叠补丁栈，真正冲突则非零退出。原始依赖源码副本与版本记录在本地整理报告中。
