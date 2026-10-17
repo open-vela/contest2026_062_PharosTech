@@ -21,8 +21,7 @@
 include common/Make.defs
 
 # Rockchip RK3576 specific C source files
-CHIP_CSRCS  = rk3576_boot.c rk3576_serial.c rk3576_clk_tree.c \
-              rk3576_addrenv.c
+CHIP_CSRCS  = rk3576_boot.c rk3576_serial.c rk3576_clk_tree.c
 
 ifeq ($(CONFIG_PM),y)
 CHIP_CSRCS += rk3576_pminitialize.c
@@ -64,10 +63,8 @@ endif
 # when DEV_SIMPLE_ADDRENV is selected, and the two definitions collide at link
 # time.  Prefer the generic one where it is enabled: it is the maintained copy,
 # and this one is a fork of an older revision of it.
-ifneq ($(filter y,$(CONFIG_RK3576_DMA) $(CONFIG_RK3576_USBHOST)),)
 ifneq ($(CONFIG_DEV_SIMPLE_ADDRENV),y)
 CHIP_CSRCS += rk3576_addrenv.c
-endif
 endif
 
 ifeq ($(CONFIG_RK3576_DMA),y)

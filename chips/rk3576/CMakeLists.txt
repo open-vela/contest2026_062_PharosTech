@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-set(SRCS rk3576_boot.c rk3576_serial.c rk3576_clk_tree.c rk3576_addrenv.c)
+set(SRCS rk3576_boot.c rk3576_serial.c rk3576_clk_tree.c)
 
 if(CONFIG_PM)
   list(APPEND SRCS rk3576_pminitialize.c)
@@ -41,7 +41,7 @@ endif()
 # DEV_SIMPLE_ADDRENV is selected, and the two collide at link time.  Prefer
 # the generic copy where it is enabled: it is the maintained one, and this
 # file is a fork of an older revision of it.
-if((CONFIG_RK3576_DMA OR CONFIG_RK3576_USBHOST) AND NOT CONFIG_DEV_SIMPLE_ADDRENV)
+if(NOT CONFIG_DEV_SIMPLE_ADDRENV)
   list(APPEND SRCS rk3576_addrenv.c)
 endif()
 
