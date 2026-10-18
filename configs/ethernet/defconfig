@@ -528,6 +528,19 @@ CONFIG_ETH_PHY_MAE0621A=y
 # all, so a port that trains a link but carries no traffic is a black box.
 CONFIG_NET_STATISTICS=y
 
+# Network debug output, but only at the warn and error levels.  ninfo() is
+# where the stack narrates every packet it builds and every event it resumes,
+# and on this board the console interleaves that with the ping's own output
+# badly enough to lose the lines that matter.  What a dropped packet needs to
+# say, it says with nwarn()/nerr() ("Bad IP checksum", "Dropped, Unknown type",
+# "Dropped frame due to lower dev not up"), and those are few: keeping them and
+# dropping the narration is what makes the driver's own traces readable.
+CONFIG_DEBUG_ERROR=y
+CONFIG_DEBUG_WARN=y
+CONFIG_DEBUG_NET=y
+CONFIG_DEBUG_NET_ERROR=y
+CONFIG_DEBUG_NET_WARN=y
+
 # The vendor kernel's PHY configuration is the one known to train a link, and it
 # never touches PHYCR1: automatic MDI/MDIX, no forcing.  The forcing that used
 # to be here was ours, added to test a pairing hypothesis that turned out to be
