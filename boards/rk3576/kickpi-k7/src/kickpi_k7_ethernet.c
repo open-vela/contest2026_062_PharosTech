@@ -56,10 +56,16 @@
 #include <string.h>
 #include <syslog.h>
 
+#include <nuttx/arch.h>
+#include <nuttx/net/mii.h>
+
 #include <ethernet_phy.h>
+
+#include <nuttx/arch.h>
 
 #include "chip.h"
 #include "hardware/rk3576_gmac.h"
+#include "hardware/rk3576_gpio.h"
 #include "hardware/rk3576_memorymap.h"
 #include "kickpi_k7.h"
 #include "rk3576_gmac.h"
@@ -153,6 +159,12 @@ static void kickpi_k7_eth1_phy_reset(bool assert);
  *
  *   MDC 3A6, MDIO 3A5, TXCTL 3B3, TXD0 3B5, TXD1 3B4, TXD2 3C3, TXD3 3C2,
  *   TXCLK 3B6, RXCTL 3A7, RXD0 3B2, RXD1 3B1, RXD2 3D3, RXD3 3D2, RXCLK 3D1.
+ */
+
+/* The schematic's clock option for this board is Option 1: a fitted 25 MHz
+ * crystal per PHY, with the SoC's alternative (the R6710/R6713 path from
+ * GMACn_MCLKINOUT_M0 to the PHY's CLKOUT) marked NC.  So neither the SoC's
+ * refclko25m output nor those pads are used, and nothing here muxes them.
  */
 
 static const struct kickpi_k7_eth_pin_s g_eth0_pins[] = {
@@ -485,6 +497,14 @@ static int kickpi_k7_eth_reset(FAR struct gpio_dev_s **handle,
     }
 
   rk3576_gpio_write_bit(*handle, !assert);
+
+  /* Nothing is read back here.  EXT_PORT does not reliably reflect a pin that
+   * is driven as an output on this part -- a check on it fired on a reset that
+   * demonstrably worked, because the PHY's BMCR came back at its reset default
+   * on the next ifup.  What proves the reset reaches the part is that default,
+   * not a pad level.
+   */
+
   return OK;
 }
 

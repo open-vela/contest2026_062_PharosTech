@@ -172,6 +172,12 @@
 
 #define GM_PHY_ID2_MASK 0xfff0
 
+/* One-shot bring-up diagnostics: reported once per port, never again. */
+
+#define GM_DIAG_IRQ (1u << 0)
+#define GM_DIAG_TX  (1u << 1)
+#define GM_DIAG_RX  (1u << 2)
+
 /* Timeouts: microsecond loop counters, and milliseconds for the work queue. */
 
 #define GM_MDIO_TIMEOUT  100000
@@ -259,6 +265,13 @@ struct rk3576_gmac_s
    * being plugged in, or autonegotiation getting somewhere, shows up in the
    * log once per change instead of never -- or every second.
    */
+
+  /* One-shot bring-up counters: the first interrupt, the first completed
+   * transmit and the first received frame, so that a port that trains a link
+   * but carries no traffic says where the traffic stops.
+   */
+
+  uint16_t diag;
 
   uint16_t trace_bmsr;
   uint16_t trace_lpa;
@@ -1539,6 +1552,13 @@ static int gm_interrupt(int irq, FAR void *context, FAR void *arg)
   status = gm_getreg(priv, RK3576_GMAC_DMA_CH0_STATUS);
   gm_putreg(priv, RK3576_GMAC_DMA_CH0_STATUS, status & GM_IRQ_STATUS);
 
+  if ((priv->diag & GM_DIAG_IRQ) == 0)
+    {
+      priv->diag |= GM_DIAG_IRQ;
+      syslog(LOG_INFO, "gmac%d: first interrupt, ch0 status 0x%08" PRIx32 "\n",
+             priv->intf, status);
+    }
+
   if ((status & (RK3576_GMAC_CH0STS_FBE | RK3576_GMAC_CH0STS_CDE |
                  RK3576_GMAC_CH0STS_RPS)) != 0)
     {
@@ -1549,6 +1569,12 @@ static int gm_interrupt(int irq, FAR void *context, FAR void *arg)
 
   if ((status & RK3576_GMAC_CH0STS_TI) != 0)
     {
+      if ((priv->diag & GM_DIAG_TX) == 0)
+        {
+          priv->diag |= GM_DIAG_TX;
+          syslog(LOG_INFO, "gmac%d: first transmit complete\n", priv->intf);
+        }
+
       gm_tx_reap(priv);
       txdone = true;
     }
@@ -1699,6 +1725,41 @@ static FAR netpkt_t *gm_receive(FAR struct netdev_lowerhalf_s *dev)
       status = desc->des3;
       len = status & RK3576_GMAC_RDES3_PL_M;
       pkt = priv->rxpkt[index];
+
+      if ((priv->diag & GM_DIAG_RX) == 0)
+        {
+          FAR const uint8_t *data = netpkt_getdata(dev, pkt);
+          size_t dump = len < 48 ? len : 48;
+          char line[3 * 16 + 1];
+          size_t i;
+
+          priv->diag |= GM_DIAG_RX;
+
+          syslog(LOG_INFO,
+                 "gmac%d: first frame received, %" PRIu32
+                 " bytes, rdes3 0x%08" PRIx32 "\n",
+                 priv->intf, len, status);
+
+          /* The bytes themselves: an ICMP echo request that arrives intact is
+           * answered, so a port that receives one and never transmits a reply
+           * has a frame whose checksums do not add up -- and only the bytes
+           * can say whether that is the wire or this driver.
+           */
+
+          for (i = 0; i < dump; i += 16)
+            {
+              size_t j;
+
+              for (j = 0; j < 16 && i + j < dump; j++)
+                {
+                  snprintf(&line[j * 3], 4, " %02x", data[i + j]);
+                }
+
+              line[j * 3] = '\0';
+              syslog(LOG_INFO, "gmac%d: rx [%02u]%s\n", priv->intf,
+                     (unsigned int)i, line);
+            }
+        }
 
       gm_buf_inval(netpkt_getdata(dev, pkt),
                    len <= GM_BUFSIZE ? len : GM_BUFSIZE);
@@ -2093,13 +2154,20 @@ rearm:
  * Name: gm_board_power
  *
  * Description:
- *   The board's half of the bring-up: mux the RGMII pads and take the PHY out
- *   of reset.  Called once at boot and again on ifup, so a port whose cable
- *   was plugged in later gets another chance.
+ *   The board's half of the bring-up: mux the RGMII pads, and take the PHY out
+ *   of reset when `reset` says so.
+ *
+ *   The reset is *not* pulsed on every ifup.  On this part the crystal
+ *   oscillator comes up with the supply, and a PHYRSTB pulse does not restart
+ *   it: a port that is reset at ifup is left with its analog side -- and so
+ *its reference clock -- stopped, while MDIO, the register file and the bias
+ *   resistor all look perfectly healthy.  That is the state this board has
+ *been stuck in, and the vendor kernel never gets there because it resets the
+ *PHY once, when it probes it.
  *
  ****************************************************************************/
 
-static int gm_board_power(FAR struct rk3576_gmac_s *priv)
+static int gm_board_power(FAR struct rk3576_gmac_s *priv, bool reset)
 {
   int ret;
 
@@ -2113,7 +2181,7 @@ static int gm_board_power(FAR struct rk3576_gmac_s *priv)
         }
     }
 
-  if (priv->cfg->phy_reset != NULL)
+  if (reset && priv->cfg->phy_reset != NULL)
     {
       /* PHYRSTB is active low: at least 10 ms asserted, then at least 72 ms
        * before the PHY's MDIO registers may be touched.  The vendor DTB's
@@ -2151,7 +2219,7 @@ static int gm_platform_init(FAR struct rk3576_gmac_s *priv)
       return ret;
     }
 
-  ret = gm_board_power(priv);
+  ret = gm_board_power(priv, true);
   if (ret < 0)
     {
       return ret;
@@ -2222,7 +2290,13 @@ static int gm_ifup(FAR struct netdev_lowerhalf_s *dev)
       return OK;
     }
 
-  ret = gm_board_power(priv);
+  /* The PHY is reset once, at boot.  Resetting it again here would leave the
+   * crystal oscillator stopped: see gm_board_power().  A port whose PHY never
+   * answered at boot is the one case where another pulse cannot make things
+   * worse.
+   */
+
+  ret = gm_board_power(priv, priv->phyaddr == GM_PHY_ADDR_NONE);
   if (ret < 0)
     {
       return ret;
