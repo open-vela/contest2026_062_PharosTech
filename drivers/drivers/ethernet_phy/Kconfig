@@ -1,0 +1,43 @@
+############################################################################
+# drivers/drivers/ethernet_phy/Kconfig
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.  The
+# ASF licenses this file to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance with the
+# License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+# License for the specific language governing permissions and limitations
+# under the License.
+#
+############################################################################
+#
+# Ethernet PHY drivers: the part-specific half of a clause 22 driver.  The
+# generic half -- the management bus, the address walk and the link state
+# machine -- stays with the MAC, which is how the rest of the tree does it.  A
+# board joins the two by putting these ops in its MAC configuration, so neither
+# tree includes the other.
+#
+############################################################################
+
+config ETH_PHY_MAE0621A
+	bool "Maxio MAE0621A gigabit PHY"
+	default n
+	---help---
+		Part-specific configuration for the Maxio MAE0621A: the vendor
+		register pages, the link-down power saving pair that has to stay
+		clear, the MDI pairing bits that only take effect across a reset,
+		and an advertisement derived from the part's own capability
+		registers rather than from a constant.
+
+		The MAC driver still owns the management bus and the clause 22
+		link poll; this only supplies the two hooks a board points its
+		configuration at.
