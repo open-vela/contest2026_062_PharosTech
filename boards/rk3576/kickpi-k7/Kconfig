@@ -221,12 +221,18 @@ config KICKPI_K7_ETHERNET
 	bool "On-board dual Gigabit Ethernet (GMAC0 + GMAC1)"
 	default n
 	depends on RK3576_GMAC && RK3576_GPIO
+	select ETH_PHY_MAE0621A
 	---help---
 		Bring up the two on-board RJ45 ports, each behind its own Maxio
-		MAE0621A gigabit PHY.  The part is described to the MAC driver as
-		a struct phy_desc_s in kickpi_k7_ethernet.c -- NuttX's own way of
-		naming a PHY (imx9_enet's BOARD_ENETn_PHY_LIST does the same) --
-		so there is no separate PHY driver to select.
+		MAE0621A gigabit PHY.
+
+		Two descriptions of the part live in kickpi_k7_ethernet.c, and
+		they are for different consumers: a struct phy_desc_s, which is
+		NuttX's own way of naming a PHY and is what the MAC driver's
+		probe and address walk use, and a struct ethernet_phy_s, which is
+		what the PHY driver in drivers/drivers/ethernet_phy runs on.  This
+		file is the only place that sees both, which is why the chip and
+		the driver trees never include each other.
 
 		  GMAC0 (0x2a220000) -- MAE0621A -- RJ45
 		  GMAC1 (0x2a230000) -- MAE0621A -- RJ45

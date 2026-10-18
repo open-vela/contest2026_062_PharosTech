@@ -519,11 +519,10 @@ CONFIG_KICKPI_K7_CAMERA=y
 
 CONFIG_RK3576_GMAC=y
 
-# Bring-up scaffolding, not a feature: the PHY's vendor page is dumped while
-# the link is down (PHYCR1/PHYCR2/PHYSR, the LED control register), because
-# clause 22's own registers only say "no link" and the answer to why has been
-# in the vendor page every time.  Remove this line once the port links.
-CONFIG_RK3576_GMAC_PHY_DEBUG=y
+# The part-specific PHY configuration (vendor pages, the forced MDI test mode,
+# the advertisement derived from the part's capability registers) comes from
+# this driver, which the board's own option selects.
+CONFIG_ETH_PHY_MAE0621A=y
 
 # The board's PHY never trains a link, and the vendor dump shows it sitting in
 # MDI with its crossover detection never advancing (PHYSR bit 1 stays 0).  A

@@ -209,24 +209,6 @@ config RK3576_GMAC_TX_DESC
 		A packet stays in its slot, and in the network buffer pool, until
 		the DMA has sent it.
 
-config RK3576_GMAC_PHY_DEBUG
-	bool "Dump the PHY's vendor registers when the link is down"
-	default n
-	---help---
-		Read the PHY's vendor page (0xA43 and 0xD04) once when the interface
-		comes up with no link, and once more a few seconds later, and log
-		PHYCR1, PHYCR2, PHYSR and the LED control register.
-
-		Clause 22's own registers say "no link" and nothing more.  The
-		vendor page is where the rest lives: PHYSR reports the real-time
-		link and the actual MDI/MDIX state, and PHYCR1 carries the link-down
-		power-saving bits -- and on this board RXD2 is strapped to PLLOFF,
-		so a PHY that entered link-down power saving with the PLL off would
-		be unable to hear a partner while still answering MDIO perfectly.
-
-		Bring-up scaffolding: turn it off once the port links.  It costs a
-		handful of MDIO transactions and four lines per port per ifup.
-
 endif # RK3576_GMAC
 
 config RK3576_USB

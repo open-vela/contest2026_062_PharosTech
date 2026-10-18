@@ -146,20 +146,11 @@
 #define GM_PHY_CTRL1000 0x09 /* 1000BASE-T control           */
 #define GM_PHY_STAT1000 0x0a /* 1000BASE-T status            */
 
-/* Register 9's 1000BASE-T bits are *not* where register 10's are, which is the
- * kind of pair that gets written from memory and then read wrong: register 9
- * advertises full duplex in bit 9 and half duplex in bit 10, with bits 11 and
- * 12 choosing master/slave by hand; register 10 reports the partner's choice
- * in bits 11 and 10.
- *
- * Only full duplex is advertised.  The part's own GBESR (register 15) says it
- * is not 1000BASE-T half duplex capable, so advertising half duplex describes
- * a mode that the PHY cannot enter -- and, worse, leaves the line advertising
- * *only* an impossible gigabit mode.
+/* Register 10's 1000BASE-T result bits: bit 11 full duplex, bit 10 half.  Note
+ * that register 9 puts the advertisement in *different* bits (9 and 10), which
+ * is the kind of pair that gets written from memory and then read wrong.
  */
 
-#define GM_PHY_ADV_1000FULL (1 << 9)  /* reg 9 bit 9  */
-#define GM_PHY_ADV_1000HALF (1 << 10) /* reg 9 bit 10, not advertised */
 #define GM_PHY_LPA_1000FULL (1 << 11) /* reg 10 bit 11 */
 #define GM_PHY_LPA_1000HALF (1 << 10) /* reg 10 bit 10 */
 
@@ -174,38 +165,6 @@
    MII_ADVERTISE_8023)
 
 #define GM_PHY_ADDR_NONE 0xff
-
-/* The vendor register pages and the register that selects them (PAGSR).  Every
- * page includes register 31 as the selector; writing 0 puts the standard IEEE
- * registers 0..15 back.  See the MAE0621A datasheet's register map.
- */
-
-#define GM_PHY_PAGSR    0x1f
-#define GM_PHY_PAGE_STD 0x0000
-#define GM_PHY_PAGE_PHY 0xa43 /* PHYCR1 0x18, PHYCR2 0x19, PHYSR 0x1a */
-#define GM_PHY_PAGE_LED 0xd04 /* LCR 0x10                            */
-#define GM_PHY_PHYCR1   0x18
-#define GM_PHY_PHYCR2   0x19
-#define GM_PHY_PHYSR    0x1a
-#define GM_PHY_LCR      0x10
-
-/* PHYCR1's MDI pair: bit 9 turns manual configuration on, bit 8 then picks MDI
- * (1) or MDIX (0).  Both only take effect across a PHY reset.
- */
-
-#define GM_PHYCR1_MDI_MANUAL (1u << 9)
-#define GM_PHYCR1_MDI_MDI    (1u << 8)
-
-/* Bits of PHYCR1 that are never wanted and are cleared whenever this driver
- * writes that register: bit 7 asserts CRS on transmit, bit 6 makes a part
- * strapped to address 0 latch the first non-zero address it sees, and bits 2
- * and 1 are the link-down power saving pair, which with the PLL off leaves the
- * copper side unable to send or hear a link pulse while MDIO still answers.
- * Clearing them also repairs a register left holding all ones, which is what a
- * failed read once turned into.
- */
-
-#define GM_PHYCR1_CLEAR_MASK ((1u << 7) | (1u << 6) | (1u << 2) | (1u << 1))
 
 /* PHYID2's low four bits are the revision, so only the rest is compared -- the
  * same masking imx9_enet does.
@@ -336,10 +295,6 @@ static int gm_ifdown(FAR struct netdev_lowerhalf_s *dev);
 static void gm_reclaim(FAR struct netdev_lowerhalf_s *dev);
 static void gm_link_work(FAR void *arg);
 static void gm_rx_retry(FAR void *arg);
-static int gm_phy_page_read(FAR struct rk3576_gmac_s *priv, uint16_t page,
-                            uint8_t regaddr, FAR uint16_t *value);
-static int gm_phy_page_write(FAR struct rk3576_gmac_s *priv, uint16_t page,
-                             uint8_t regaddr, uint16_t value);
 #ifdef CONFIG_NET_MCASTGROUP
 static int gm_addmac(FAR struct netdev_lowerhalf_s *dev,
                      FAR const uint8_t *mac);
@@ -354,6 +309,14 @@ static int gm_ioctl(FAR struct netdev_lowerhalf_s *dev, int cmd,
 /****************************************************************************
  * Private Data
  ****************************************************************************/
+
+/* The two controllers, so that a board-side PHY driver can reach a port's
+ * management bus by index without holding an opaque handle -- the PHY driver
+ * must not include this header, and the board is the only place that knows
+ * which index belongs to which port.
+ */
+
+static FAR struct rk3576_gmac_s *g_gm_port[2];
 
 static const struct netdev_ops_s g_gm_ops = {
   .ifup = gm_ifup,
@@ -764,128 +727,45 @@ found:
 }
 
 /****************************************************************************
- * Name: gm_phy_set_mdi
- *
- * Description:
- *   Force the MDI pairing instead of leaving it to the part's crossover
- *   detection, which is what a board needs when that detection does not
- *   advance -- two identical PHYs back to back being the classic case.
- *
- *   PHYCR1's MDI bits only take effect across a reset, so this writes them and
- *   then software-resets the PHY.  Autonegotiation restarts by itself after a
- *   reset, and gm_phy_start() runs afterwards, so the advertisement written
- *   there is not lost.
- *
- *   Forcing MDIX pairs the board the way a switch port is paired: a straight
- *   cable then reaches an MDI endpoint (a PC, an instrument, a router).
- *
- ****************************************************************************/
-
-static int gm_phy_set_mdi(FAR struct rk3576_gmac_s *priv)
-{
-  uint16_t cr1 = 0;
-  uint16_t bmcr = MII_MCR_RESET;
-  uint16_t want;
-  uint32_t timeout;
-  int ret;
-
-  ret = gm_phy_page_read(priv, GM_PHY_PAGE_PHY, GM_PHY_PHYCR1, &cr1);
-  if (ret < 0)
-    {
-      syslog(LOG_ERR, "gmac%d: PHYCR1 unreadable, MDI mode left alone\n",
-             priv->intf);
-      return ret;
-    }
-
-  cr1 &= ~GM_PHYCR1_CLEAR_MASK;
-  cr1 |= GM_PHYCR1_MDI_MANUAL;
-  if (priv->cfg->mdi_mode == RK3576_GMAC_MDI_MDI)
-    {
-      cr1 |= GM_PHYCR1_MDI_MDI;
-    }
-  else
-    {
-      cr1 &= ~GM_PHYCR1_MDI_MDI;
-    }
-
-  want = cr1 & (GM_PHYCR1_MDI_MANUAL | GM_PHYCR1_MDI_MDI);
-
-  ret = gm_phy_page_write(priv, GM_PHY_PAGE_PHY, GM_PHY_PHYCR1, cr1);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  /* Read it back: a write that silently did not land would leave the port
-   * paired the old way while the log claimed otherwise.
-   */
-
-  ret = gm_phy_page_read(priv, GM_PHY_PAGE_PHY, GM_PHY_PHYCR1, &cr1);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  syslog(LOG_INFO, "gmac%d: PHY MDI forced to %s (phycr1 0x%04x)\n",
-         priv->intf,
-         priv->cfg->mdi_mode == RK3576_GMAC_MDI_MDI ? "MDI" : "MDIX", cr1);
-
-  if ((cr1 & (GM_PHYCR1_MDI_MANUAL | GM_PHYCR1_MDI_MDI)) != want)
-    {
-      syslog(LOG_ERR, "gmac%d: PHYCR1 MDI bits did not take\n", priv->intf);
-      return -EIO;
-    }
-
-  ret = gm_mdio_write(priv, priv->phyaddr, MII_MCR, bmcr);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  for (timeout = GM_RESET_TIMEOUT; timeout > 0; timeout--)
-    {
-      ret = gm_mdio_read(priv, priv->phyaddr, MII_MCR, &bmcr);
-      if (ret < 0)
-        {
-          return ret;
-        }
-
-      if ((bmcr & MII_MCR_RESET) == 0)
-        {
-          return OK;
-        }
-
-      up_mdelay(1);
-    }
-
-  syslog(LOG_ERR, "gmac%d: PHY software reset never completed\n", priv->intf);
-  return -ETIMEDOUT;
-}
-
-/****************************************************************************
  * Name: gm_phy_start
  *
  * Description:
- *   Advertise what the link can do and restart autonegotiation.  Called when
- *   the interface comes up, which is the first moment the part may be written.
+ *   Let the board's PHY driver configure the part and write what it can do,
+ *   then restart autonegotiation.  Called when the interface comes up, which
+ *is the first moment the part may be written.
+ *
+ *   The two hooks are plain function pointers so that this driver keeps no
+ *   knowledge of any particular PHY: the board puts them in its configuration,
+ *   and it is the only place that sees both this header and the PHY driver's.
+ *   Without them the port still works as a clause 22 port -- autonegotiation
+ *is restarted with whatever the part advertises by default.
  *
  ****************************************************************************/
 
 static int gm_phy_start(FAR struct rk3576_gmac_s *priv)
 {
+  FAR const struct rk3576_gmac_config_s *cfg = priv->cfg;
   int ret;
 
-  ret = gm_mdio_write(priv, priv->phyaddr, MII_ADVERTISE, GM_PHY_ANAR_10_100);
-  if (ret < 0)
+  if (cfg->phy_init != NULL)
     {
-      return ret;
+      ret = cfg->phy_init(cfg->phy_ctx);
+      if (ret < 0)
+        {
+          syslog(LOG_ERR, "gmac%d: PHY init failed: %d\n", priv->intf, ret);
+          return ret;
+        }
     }
 
-  ret =
-      gm_mdio_write(priv, priv->phyaddr, GM_PHY_CTRL1000, GM_PHY_ADV_1000FULL);
-  if (ret < 0)
+  if (cfg->phy_advertise != NULL)
     {
-      return ret;
+      ret = cfg->phy_advertise(cfg->phy_ctx);
+      if (ret < 0)
+        {
+          syslog(LOG_ERR, "gmac%d: PHY advertise failed: %d\n", priv->intf,
+                 ret);
+          return ret;
+        }
     }
 
   return gm_mdio_write(priv, priv->phyaddr, MII_MCR,
@@ -1048,122 +928,6 @@ static int gm_phy_link(FAR struct rk3576_gmac_s *priv,
 }
 
 /****************************************************************************
- * Name: gm_phy_page_read
- *
- * Description:
- *   Read one register out of a vendor page: select it through PAGSR, read,
- *   and put the standard register set back.  The link poll keeps running while
- *   this happens, so the page must never be left selected.
- *
- ****************************************************************************/
-
-static int gm_phy_page_read(FAR struct rk3576_gmac_s *priv, uint16_t page,
-                            uint8_t regaddr, FAR uint16_t *value)
-{
-  int attempt;
-  int ret;
-
-  /* Validated and retried, because a page switch is exactly the kind of access
-   * that has come back all-ones on this hardware -- the first management
-   * transaction after a reset can fail, and a read that is not checked turns
-   * into a write of 0xffff a moment later.  The part also needs a moment after
-   * PAGSR changes before the page answers.
-   */
-
-  for (attempt = 0; attempt < 3; attempt++)
-    {
-      if (attempt > 0)
-        {
-          up_mdelay(10);
-        }
-
-      ret = gm_mdio_write(priv, priv->phyaddr, GM_PHY_PAGSR, page);
-      if (ret < 0)
-        {
-          continue;
-        }
-
-      up_udelay(100);
-
-      ret = gm_mdio_read(priv, priv->phyaddr, regaddr, value);
-
-      if (gm_mdio_write(priv, priv->phyaddr, GM_PHY_PAGSR, GM_PHY_PAGE_STD) <
-          0)
-        {
-          continue;
-        }
-
-      if (ret == OK && *value != 0xffff && *value != 0x0000)
-        {
-          return OK;
-        }
-    }
-
-  return -EIO;
-}
-
-/****************************************************************************
- * Name: gm_phy_page_write
- *
- * Description:
- *   Write one register in a vendor page, and always put the standard register
- *   set back afterwards.
- *
- ****************************************************************************/
-
-static int gm_phy_page_write(FAR struct rk3576_gmac_s *priv, uint16_t page,
-                             uint8_t regaddr, uint16_t value)
-{
-  int ret;
-
-  ret = gm_mdio_write(priv, priv->phyaddr, GM_PHY_PAGSR, page);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  ret = gm_mdio_write(priv, priv->phyaddr, regaddr, value);
-
-  if (gm_mdio_write(priv, priv->phyaddr, GM_PHY_PAGSR, GM_PHY_PAGE_STD) < 0)
-    {
-      return -EIO;
-    }
-
-  return ret;
-}
-
-#ifdef CONFIG_RK3576_GMAC_PHY_DEBUG
-/****************************************************************************
- * Name: gm_phy_dump
- *
- * Description:
- *   Log the vendor registers that clause 22 has no room for.  What matters
- *   here: PHYSR reports the *real time* link and the MDI/MDIX state the part
- *   actually settled on, and PHYCR1 carries the link-down power-saving pair
- *   (ALDPS enable, and PLL off inside it) -- which on this board is worth
- *   watching because RXD2 is strapped to PLLOFF.
- *
- ****************************************************************************/
-
-static void gm_phy_dump(FAR struct rk3576_gmac_s *priv)
-{
-  uint16_t cr1 = 0;
-  uint16_t cr2 = 0;
-  uint16_t sr = 0;
-  uint16_t lcr = 0;
-
-  gm_phy_page_read(priv, GM_PHY_PAGE_PHY, GM_PHY_PHYCR1, &cr1);
-  gm_phy_page_read(priv, GM_PHY_PAGE_PHY, GM_PHY_PHYCR2, &cr2);
-  gm_phy_page_read(priv, GM_PHY_PAGE_PHY, GM_PHY_PHYSR, &sr);
-  gm_phy_page_read(priv, GM_PHY_PAGE_LED, GM_PHY_LCR, &lcr);
-
-  syslog(LOG_INFO,
-         "gmac%d: phycr1 0x%04x phycr2 0x%04x physr 0x%04x lcr 0x%04x\n",
-         priv->intf, cr1, cr2, sr, lcr);
-}
-#endif /* CONFIG_RK3576_GMAC_PHY_DEBUG */
-
-/****************************************************************************
  * Name: gm_phy_trace
  *
  * Description:
@@ -1187,14 +951,12 @@ static void gm_phy_trace(FAR struct rk3576_gmac_s *priv,
   uint16_t stat1000 = 0;
   uint16_t aner = 0;
   uint16_t ctrl1000 = 0;
-  uint16_t insr = 0;
 
   gm_mdio_read(priv, priv->phyaddr, MII_MCR, &bmcr);
   gm_mdio_read(priv, priv->phyaddr, MII_ADVERTISE, &anar);
   gm_mdio_read(priv, priv->phyaddr, GM_PHY_STAT1000, &stat1000);
   gm_mdio_read(priv, priv->phyaddr, GM_PHY_ANER, &aner);
   gm_mdio_read(priv, priv->phyaddr, GM_PHY_CTRL1000, &ctrl1000);
-  gm_phy_page_read(priv, GM_PHY_PAGE_PHY, 0x1d, &insr);
 
   syslog(LOG_INFO,
          "gmac%d: phy addr %u bmcr 0x%04x bmsr 0x%04x anar 0x%04x "
@@ -1206,8 +968,8 @@ static void gm_phy_trace(FAR struct rk3576_gmac_s *priv,
    * part's own view of how autonegotiation ended (bit 0 error, bit 3 done).
    */
 
-  syslog(LOG_INFO, "gmac%d: aner 0x%04x ctrl1000 0x%04x insr 0x%04x\n",
-         priv->intf, aner, ctrl1000, insr);
+  syslog(LOG_INFO, "gmac%d: aner 0x%04x ctrl1000 0x%04x\n", priv->intf, aner,
+         ctrl1000);
 }
 
 /****************************************************************************
@@ -2256,9 +2018,6 @@ static void gm_link_work(FAR void *arg)
       if (trace)
         {
           gm_phy_trace(priv, &st);
-#ifdef CONFIG_RK3576_GMAC_PHY_DEBUG
-          gm_phy_dump(priv);
-#endif
           priv->trace_bmsr = st.bmsr;
           priv->trace_lpa = st.lpa;
           priv->trace_valid = true;
@@ -2494,17 +2253,6 @@ static int gm_ifup(FAR struct netdev_lowerhalf_s *dev)
         }
     }
 
-  if (priv->cfg->mdi_mode != RK3576_GMAC_MDI_AUTO)
-    {
-      ret = gm_phy_set_mdi(priv);
-      if (ret < 0)
-        {
-          syslog(LOG_ERR, "gmac%d: could not force the MDI mode: %d\n",
-                 priv->intf, ret);
-          return ret;
-        }
-    }
-
   ret = gm_phy_start(priv);
   if (ret < 0)
     {
@@ -2582,6 +2330,48 @@ static int gm_ifdown(FAR struct netdev_lowerhalf_s *dev)
  ****************************************************************************/
 
 /****************************************************************************
+ * Name: rk3576_gmac_mdio_read / rk3576_gmac_mdio_write
+ *
+ * Description:
+ *   Clause 22 access to a port's management bus, for the PHY driver that the
+ *   board pointed its configuration at.  The signatures are the PHY
+ *   interface's, with the port as a plain index for the same reason.
+ *
+ ****************************************************************************/
+
+int rk3576_gmac_mdio_read(int intf, uint8_t phyaddr, uint8_t regaddr,
+                          FAR uint16_t *value)
+{
+  if (intf != RK3576_GMAC0 && intf != RK3576_GMAC1)
+    {
+      return -EINVAL;
+    }
+
+  if (g_gm_port[intf] == NULL)
+    {
+      return -ENODEV;
+    }
+
+  return gm_mdio_read(g_gm_port[intf], phyaddr, regaddr, value);
+}
+
+int rk3576_gmac_mdio_write(int intf, uint8_t phyaddr, uint8_t regaddr,
+                           uint16_t value)
+{
+  if (intf != RK3576_GMAC0 && intf != RK3576_GMAC1)
+    {
+      return -EINVAL;
+    }
+
+  if (g_gm_port[intf] == NULL)
+    {
+      return -ENODEV;
+    }
+
+  return gm_mdio_write(g_gm_port[intf], phyaddr, regaddr, value);
+}
+
+/****************************************************************************
  * Name: rk3576_gmac_initialize
  *
  * Description:
@@ -2651,6 +2441,8 @@ int rk3576_gmac_initialize(int intf,
       goto errout;
     }
 
+  g_gm_port[intf] = priv;
+
   syslog(LOG_INFO,
          "gmac%d: registered as %s, mac "
          "%02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -2659,6 +2451,7 @@ int rk3576_gmac_initialize(int intf,
   return OK;
 
 errout:
+  g_gm_port[intf] = NULL;
   kmm_free(priv);
   return ret;
 }
