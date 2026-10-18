@@ -524,21 +524,17 @@ CONFIG_RK3576_GMAC=y
 # this driver, which the board's own option selects.
 CONFIG_ETH_PHY_MAE0621A=y
 
-# The board's PHY never trains a link, and the vendor dump shows it sitting in
-# MDI with its crossover detection never advancing (PHYSR bit 1 stays 0).  A
-# straight cable needs one end MDI and the other MDIX, and both things this
-# board has been tested against are endpoints -- so both are MDI, and neither
-# pairing could have worked however healthy the PHY is.
-#
-# So the two ports are deliberately paired against each other: GMAC0 as MDIX,
-# GMAC1 as MDI.  Cable the two ports together and the pairing is correct for a
-# straight cable; plug the instrument into GMAC0 and that pairing is correct
-# too.  If either comes up, the PHY and its copper side are fine and the whole
-# failure was the test topology.  Production pairs an endpoint with a switch,
-# which is MDI against MDIX and needs no forcing -- this goes back to "auto"
-# (or a deliberate "force MDI") once the question is answered.
-CONFIG_KICKPI_K7_ETHERNET_MDI0_MDIX=y
-CONFIG_KICKPI_K7_ETHERNET_MDI1_MDI=y
+# Bring-up visibility: without this, ifconfig and netstats show no counters at
+# all, so a port that trains a link but carries no traffic is a black box.
+CONFIG_NET_STATISTICS=y
+
+# The vendor kernel's PHY configuration is the one known to train a link, and it
+# never touches PHYCR1: automatic MDI/MDIX, no forcing.  The forcing that used
+# to be here was ours, added to test a pairing hypothesis that turned out to be
+# wrong; leaving it on would mean this build is not comparable with the vendor
+# one.  Both ports are automatic.
+CONFIG_KICKPI_K7_ETHERNET_MDI0_AUTO=y
+CONFIG_KICKPI_K7_ETHERNET_MDI1_AUTO=y
 CONFIG_KICKPI_K7_ETHERNET=y
 CONFIG_KICKPI_K7_ETHERNET_PORT1=y
 
