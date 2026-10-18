@@ -112,22 +112,46 @@
 
 #define GM_BUFSIZE CONFIG_IOB_BUFSIZE
 
-/* Descriptors are 16 bytes, but each one gets a whole D-cache line: four to
- * a line and every clean or invalidate would touch its neighbours, including
- * their OWN bits.  One per line makes each cache operation exact, for 3 KB of
- * ring space per port.
+/* The ring is packed at the hardware's descriptor size: descriptor n lives at
+ * base + 16n and the stride is not ours to choose.  Padding each descriptor
+ * out to a whole D-cache line was tried -- for cache operations that could not
+ * disturb a neighbour -- and it cost exactly one frame per direction.  The DMA
+ * walked base, base+16, base+32, found the zero padding where it expected the
+ * next descriptor's OWN bit, reported TBU and suspended, while the driver
+ * happily queued frames at base+64, base+128 that the DMA never looked at. The
+ * symptom is a port that trains its link, sends one frame, receives one frame,
+ * and then reports "transmit buffer unavailable" forever.
+ *
+ * Cache safety comes from the discipline in gm_desc_sync()/gm_desc_inval()
+ * instead: a line is only ever dirty between writing a descriptor and cleaning
+ * it, so an invalidate that shares its line with a neighbour drops clean
+ * copies and cannot clobber a status the DMA has written.
  */
 
-#define GM_DESC_STRIDE 64
+#define GM_DESC_SIZE   16
+#define GM_DESC_STRIDE GM_DESC_SIZE
 #define GM_TX_DESC     CONFIG_RK3576_GMAC_TX_DESC
 #define GM_RX_DESC     CONFIG_RK3576_GMAC_RX_DESC
 
-/* Quota is the ring depth: a slot holds one netpkt for as long as the
- * interface is up, and netpkt_alloc() refuses to exceed it.
+/* Quota is what netpkt_alloc()/netpkt_get() will hand out for a direction.
+ *
+ * The transmit quota is the ring depth: a slot holds one netpkt from submit
+ * until the completion interrupt frees it.
+ *
+ * The receive quota has to be larger than the ring, because a completed frame
+ * is replaced *before* it is handed up: receive() allocates the buffer for the
+ * descriptor's next use while the received packet is still held here, and the
+ * framework only returns that packet's quota after receive() has returned. Set
+ * it to the ring depth alone and the last allocation can never succeed, so
+ * every received frame is dropped on the floor with no error anywhere -- the
+ * ring stays armed, the link comes up, ARP still works out of the
+ * pending-queue path, and IP never sees a packet.  Other drivers spell this as
+ * "ring depth + spare" for the same reason (e1000's E1000_RX_QUOTA).
  */
 
 #define GM_TX_QUOTA GM_TX_DESC
-#define GM_RX_QUOTA GM_RX_DESC
+#define GM_RX_SPARE 4
+#define GM_RX_QUOTA (GM_RX_DESC + GM_RX_SPARE)
 
 /* The controller's aliveness test (TRM Part 2, MAC_VERSION). */
 
@@ -171,12 +195,6 @@
  */
 
 #define GM_PHY_ID2_MASK 0xfff0
-
-/* One-shot bring-up diagnostics: reported once per port, never again. */
-
-#define GM_DIAG_IRQ (1u << 0)
-#define GM_DIAG_TX  (1u << 1)
-#define GM_DIAG_RX  (1u << 2)
 
 /* Timeouts: microsecond loop counters, and milliseconds for the work queue. */
 
@@ -266,12 +284,11 @@ struct rk3576_gmac_s
    * log once per change instead of never -- or every second.
    */
 
-  /* One-shot bring-up counters: the first interrupt, the first completed
-   * transmit and the first received frame, so that a port that trains a link
-   * but carries no traffic says where the traffic stops.
+  /* Set when the RX ring ran out of buffers, so the complaint is made once
+   * rather than once per frame.
    */
 
-  uint16_t diag;
+  bool rxstarved;
 
   uint16_t trace_bmsr;
   uint16_t trace_lpa;
@@ -971,18 +988,14 @@ static void gm_phy_trace(FAR struct rk3576_gmac_s *priv,
   gm_mdio_read(priv, priv->phyaddr, GM_PHY_ANER, &aner);
   gm_mdio_read(priv, priv->phyaddr, GM_PHY_CTRL1000, &ctrl1000);
 
-  syslog(LOG_INFO,
-         "gmac%d: phy addr %u bmcr 0x%04x bmsr 0x%04x anar 0x%04x "
-         "lpa 0x%04x stat1000 0x%04x\n",
-         priv->intf, priv->phyaddr, bmcr, st->bmsr, anar, st->lpa, stat1000);
-
   /* ANER says whether the partner was heard at all and whether parallel
-   * detection faulted; ctrl1000 is what we advertise for gigabit; INSR is the
-   * part's own view of how autonegotiation ended (bit 0 error, bit 3 done).
+   * detection faulted; ctrl1000 is what we advertise for gigabit.
    */
 
-  syslog(LOG_INFO, "gmac%d: aner 0x%04x ctrl1000 0x%04x\n", priv->intf, aner,
-         ctrl1000);
+  syslog(LOG_INFO,
+         "gmac%d: no link: bmcr 0x%04x bmsr 0x%04x anar 0x%04x lpa 0x%04x "
+         "stat1000 0x%04x aner 0x%04x ctrl1000 0x%04x\n",
+         priv->intf, bmcr, st->bmsr, anar, st->lpa, stat1000, aner, ctrl1000);
 }
 
 /****************************************************************************
@@ -1083,8 +1096,6 @@ static int gm_clocks(FAR struct rk3576_gmac_s *priv)
     }
 
   rate = clk_get_rate(priv->clk125);
-  syslog(LOG_INFO, "gmac%d: 125m clock %" PRIu32 " Hz\n", priv->intf, rate);
-
   if (rate != 125000000)
     {
       /* Not fatal, but it has to be loud.  The clock is a divider-only clock
@@ -1360,7 +1371,19 @@ static int gm_rx_arm_one(FAR struct rk3576_gmac_s *priv, uint32_t index)
   desc->des0 = (uint32_t)up_addrenv_va_to_pa(netpkt_getdata(&priv->dev, pkt));
   desc->des1 = 0;
   desc->des2 = 0;
-  desc->des3 = RK3576_GMAC_RDES3_OWN | RK3576_GMAC_RDES3_BUF1V;
+
+  /* RDES3[30] is the receive descriptor's interrupt enable: the TRM says the
+   * RI status bit is not set for a packet whose descriptor leaves it clear
+   * ("because of the setting of Interrupt Enable bit ... RDES3[30]").  Without
+   * it the ring silently fills: frames land in the descriptors, no interrupt
+   * announces them, and the only wakeup is the RBU the DMA raises when it
+   * finally reaches the tail -- which drains whatever accumulated and then
+   * stops for good.  That looked like "the first ping receives nothing, the
+   * second delivers GM_RX_DESC - 1 frames at once and nothing after".
+   */
+
+  desc->des3 =
+      RK3576_GMAC_RDES3_OWN | RK3576_GMAC_RDES3_IOC | RK3576_GMAC_RDES3_BUF1V;
 
   gm_desc_sync(desc);
   return OK;
@@ -1378,8 +1401,12 @@ static int gm_rings_alloc(FAR struct rk3576_gmac_s *priv)
 {
   uint32_t i;
 
-  priv->txring = kmm_memalign(GM_DESC_STRIDE, GM_DESC_STRIDE * GM_TX_DESC);
-  priv->rxring = kmm_memalign(GM_DESC_STRIDE, GM_DESC_STRIDE * GM_RX_DESC);
+  /* Keep the ring itself line-aligned: the individual descriptors are packed,
+   * but the first one should not share a line with whatever precedes it.
+   */
+
+  priv->txring = kmm_memalign(64, GM_DESC_STRIDE * GM_TX_DESC);
+  priv->rxring = kmm_memalign(64, GM_DESC_STRIDE * GM_RX_DESC);
 
   if (priv->txring == NULL || priv->rxring == NULL)
     {
@@ -1552,13 +1579,6 @@ static int gm_interrupt(int irq, FAR void *context, FAR void *arg)
   status = gm_getreg(priv, RK3576_GMAC_DMA_CH0_STATUS);
   gm_putreg(priv, RK3576_GMAC_DMA_CH0_STATUS, status & GM_IRQ_STATUS);
 
-  if ((priv->diag & GM_DIAG_IRQ) == 0)
-    {
-      priv->diag |= GM_DIAG_IRQ;
-      syslog(LOG_INFO, "gmac%d: first interrupt, ch0 status 0x%08" PRIx32 "\n",
-             priv->intf, status);
-    }
-
   if ((status & (RK3576_GMAC_CH0STS_FBE | RK3576_GMAC_CH0STS_CDE |
                  RK3576_GMAC_CH0STS_RPS)) != 0)
     {
@@ -1569,12 +1589,6 @@ static int gm_interrupt(int irq, FAR void *context, FAR void *arg)
 
   if ((status & RK3576_GMAC_CH0STS_TI) != 0)
     {
-      if ((priv->diag & GM_DIAG_TX) == 0)
-        {
-          priv->diag |= GM_DIAG_TX;
-          syslog(LOG_INFO, "gmac%d: first transmit complete\n", priv->intf);
-        }
-
       gm_tx_reap(priv);
       txdone = true;
     }
@@ -1663,16 +1677,27 @@ static int gm_transmit(FAR struct netdev_lowerhalf_s *dev, FAR netpkt_t *pkt)
 
   desc->des0 = (uint32_t)up_addrenv_va_to_pa(netpkt_getdata(dev, pkt));
   desc->des1 = 0;
-  desc->des2 = (uint32_t)len; /* BUF1L, bits 13:0 */
+  desc->des2 =
+      RK3576_GMAC_TDES2_IOC | ((uint32_t)len & RK3576_GMAC_TDES2_B1L_M);
   desc->des3 = RK3576_GMAC_TDES3_OWN | RK3576_GMAC_TDES3_FD |
                RK3576_GMAC_TDES3_LD | ((uint32_t)len & RK3576_GMAC_TDES3_FL_M);
 
   gm_buf_clean(netpkt_getdata(dev, pkt), len);
   gm_desc_sync(desc);
 
+  /* Publish the descriptor into the ring exactly the way the receive side
+   * does it: advance the tail pointer to the descriptor that was just made
+   * valid.  Pointing it at the next, still-unowned descriptor instead leaves
+   * the transmit FSM looking at a descriptor nobody owns, and it stops there
+   * for good -- the TRM's TBU entry lists "advance the Transmit Descriptor
+   * Tail Pointer" as the way to resume, and the tail the hardware is told
+   * about has to be a descriptor it may actually use.
+   */
+
   priv->txnow = next;
+
   gm_putreg(priv, RK3576_GMAC_DMA_CH0_TXDESC_TAIL_PTR,
-            (uint32_t)up_addrenv_va_to_pa(gm_desc(priv->txring, priv->txnow)));
+            (uint32_t)up_addrenv_va_to_pa(desc));
 
   spin_unlock_irqrestore(&priv->lock, flags);
   return OK;
@@ -1726,41 +1751,6 @@ static FAR netpkt_t *gm_receive(FAR struct netdev_lowerhalf_s *dev)
       len = status & RK3576_GMAC_RDES3_PL_M;
       pkt = priv->rxpkt[index];
 
-      if ((priv->diag & GM_DIAG_RX) == 0)
-        {
-          FAR const uint8_t *data = netpkt_getdata(dev, pkt);
-          size_t dump = len < 48 ? len : 48;
-          char line[3 * 16 + 1];
-          size_t i;
-
-          priv->diag |= GM_DIAG_RX;
-
-          syslog(LOG_INFO,
-                 "gmac%d: first frame received, %" PRIu32
-                 " bytes, rdes3 0x%08" PRIx32 "\n",
-                 priv->intf, len, status);
-
-          /* The bytes themselves: an ICMP echo request that arrives intact is
-           * answered, so a port that receives one and never transmits a reply
-           * has a frame whose checksums do not add up -- and only the bytes
-           * can say whether that is the wire or this driver.
-           */
-
-          for (i = 0; i < dump; i += 16)
-            {
-              size_t j;
-
-              for (j = 0; j < 16 && i + j < dump; j++)
-                {
-                  snprintf(&line[j * 3], 4, " %02x", data[i + j]);
-                }
-
-              line[j * 3] = '\0';
-              syslog(LOG_INFO, "gmac%d: rx [%02u]%s\n", priv->intf,
-                     (unsigned int)i, line);
-            }
-        }
-
       gm_buf_inval(netpkt_getdata(dev, pkt),
                    len <= GM_BUFSIZE ? len : GM_BUFSIZE);
 
@@ -1770,6 +1760,15 @@ static FAR netpkt_t *gm_receive(FAR struct netdev_lowerhalf_s *dev)
 
       if (gm_rx_arm_one(priv, index) < 0)
         {
+          if (!priv->rxstarved)
+            {
+              priv->rxstarved = true;
+              syslog(LOG_ERR,
+                     "gmac%d: out of buffers for the RX ring; frames stay in "
+                     "the ring until one is free\n",
+                     priv->intf);
+            }
+
           if (work_available(&priv->rxretry))
             {
               work_queue(LPWORK, &priv->rxretry, gm_rx_retry, priv,
@@ -1785,6 +1784,15 @@ static FAR netpkt_t *gm_receive(FAR struct netdev_lowerhalf_s *dev)
       gm_putreg(priv, RK3576_GMAC_DMA_CH0_RXDESC_TAIL_PTR,
                 (uint32_t)up_addrenv_va_to_pa(desc));
 
+      /* No StartRx command here.  The TRM's RBU entry says that a receive
+       * suspended on a descriptor it does not own is resumed by "advancing the
+       * Receive Descriptor Tail Pointer" in ring mode, and only asks for a
+       * receive poll demand when the tail pointer is *not* used.  Issuing
+       * StartRx per frame instead reset the receive process on every packet:
+       * the ring delivered GM_RX_DESC - 1 frames -- exactly up to the tail it
+       * was given at ifup -- and then stopped receiving altogether.
+       */
+
       if ((status & RK3576_GMAC_RDES3_ES) != 0 || len == 0 || len > GM_BUFSIZE)
         {
           /* A damaged or impossible frame: count it and look at the next
@@ -1799,6 +1807,7 @@ static FAR netpkt_t *gm_receive(FAR struct netdev_lowerhalf_s *dev)
       spin_unlock_irqrestore(&priv->lock, flags);
 
       netpkt_setdatalen(dev, pkt, len);
+
       return pkt;
     }
 }

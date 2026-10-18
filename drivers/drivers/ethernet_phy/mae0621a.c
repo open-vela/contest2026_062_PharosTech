@@ -368,73 +368,6 @@ static int mae0621a_force_mdi(FAR struct ethernet_phy_s *phy)
 }
 
 /****************************************************************************
- * Name: mae0621a_dump
- *
- * Description:
- *   One line of the vendor registers, because clause 22's own registers only
- *   say "no link" and the reasons live in the vendor page: PHYSR reports the
- *   real-time link and the MDI/MDIX state the part actually settled on, and
- *   PHYCR1/PHYCR2 carry the power saving and clock bits.
- *
- ****************************************************************************/
-
-static void mae0621a_dump(FAR struct ethernet_phy_s *phy)
-{
-  uint16_t cr1 = 0;
-  uint16_t cr2 = 0;
-  uint16_t sr = 0;
-  uint16_t lcr = 0;
-  uint16_t insr = 0;
-  uint16_t bmcr = 0;
-  uint16_t bmsr = 0;
-  uint16_t anar = 0;
-  uint16_t stat1000 = 0;
-  uint16_t estatus = 0;
-  uint16_t scr = 0;
-  uint16_t eelcr = 0;
-  uint16_t miicr = 0;
-  uint16_t intbcr = 0;
-
-  mae0621a_read(phy, MII_MCR, &bmcr);
-  mae0621a_read(phy, MII_MSR, &bmsr);
-  mae0621a_page_read(phy, MAE0621A_PAGE_PHY, MAE0621A_PHYCR1, &cr1);
-  mae0621a_page_read(phy, MAE0621A_PAGE_PHY, MAE0621A_PHYCR2, &cr2);
-  mae0621a_page_read(phy, MAE0621A_PAGE_PHY, MAE0621A_PHYSR, &sr);
-  mae0621a_page_read(phy, MAE0621A_PAGE_PHY, MAE0621A_INSR, &insr);
-  mae0621a_page_read(phy, MAE0621A_PAGE_LED, MAE0621A_LCR, &lcr);
-
-  /* INSR is sticky: bit 0 says autonegotiation ended in an error, bit 3 that
-   * it completed, bit 4 that the link changed.  All zero means the state
-   * machine never got anywhere, which is a different fault from one that ran
-   * and failed.
-   */
-
-  mae0621a_read(phy, MII_ADVERTISE, &anar);
-  mae0621a_read(phy, MII_MSSTATUS, &stat1000);
-  mae0621a_read(phy, MII_ESTATUS, &estatus);
-  mae0621a_page_read(phy, MAE0621A_PAGE_SCR, MAE0621A_PHYSCR, &scr);
-  mae0621a_page_read(phy, MAE0621A_PAGE_LED2, MAE0621A_EEELCR, &eelcr);
-  mae0621a_page_read(phy, MAE0621A_PAGE_MII, MAE0621A_MIICR, &miicr);
-  mae0621a_page_read(phy, MAE0621A_PAGE_INTB, MAE0621A_INTBCR, &intbcr);
-
-  syslog(LOG_INFO,
-         "%s: bmcr 0x%04x bmsr 0x%04x phycr1 0x%04x phycr2 0x%04x "
-         "physr 0x%04x insr 0x%04x lcr 0x%04x\n",
-         phy->name, bmcr, bmsr, cr1, cr2, sr, insr, lcr);
-
-  /* The rest of the documented space, so that this driver's view can be
-   * diffed against the vendor kernel's on the same board: anar and the pause
-   * bits, the 1000BASE-T status, and the four small vendor registers that
-   * nobody has looked at yet.
-   */
-
-  syslog(LOG_INFO,
-         "%s: anar 0x%04x stat1000 0x%04x estatus 0x%04x physcr 0x%04x "
-         "eelcr 0x%04x miicr 0x%04x intbcr 0x%04x\n",
-         phy->name, anar, stat1000, estatus, scr, eelcr, miicr, intbcr);
-}
-
-/****************************************************************************
  * Name: mae0621a_page_read_raw
  *
  * Description:
@@ -632,7 +565,6 @@ static int mae0621a_init(FAR struct ethernet_phy_s *phy)
   ret = mae0621a_analog_init(phy);
   if (ret < 0)
     {
-      mae0621a_dump(phy);
       return ret;
     }
 
@@ -675,7 +607,6 @@ static int mae0621a_init(FAR struct ethernet_phy_s *phy)
         }
     }
 
-  mae0621a_dump(phy);
   return 0;
 }
 
