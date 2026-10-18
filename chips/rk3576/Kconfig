@@ -161,6 +161,74 @@ config RK3576_I2C
 		brought up via the CRU; SCL/SDA pin muxing is the board's
 		responsibility.
 
+config RK3576_GMAC
+	bool "Gigabit Ethernet MAC (DWC EQOS, GMAC0 + GMAC1)"
+	default n
+	depends on NET && NET_ETHERNET
+	select SCHED_WORKQUEUE
+	select SCHED_LPWORK
+	---help---
+		Enable the RK3576 Gigabit Ethernet MAC driver: the two Synopsys
+		DWC EQOS controllers at 0x2a220000 (GMAC0) and 0x2a230000
+		(GMAC1).  Each has its own MDIO bus and its own RGMII PHY; the
+		two share nothing but the CRU gate register and the clock tree.
+
+		The driver is a netdev lower half (netdev_lowerhalf): the
+		descriptor rings point straight at the packet buffers the network
+		stack owns, so a frame is not copied in either direction.
+		Everything that belongs to the SoC is here -- the CRU clocks, the
+		SDGMAC_GRF RGMII mode registers, the VCCIO delay lines, the
+		controller reset, MDIO and the rings.  The parts that belong to
+		the board -- which pads carry the RGMII
+		signals and which GPIO resets which PHY -- come in through
+		rk3576_gmac_initialize().
+
+		CONFIG_IOB_BUFSIZE must be at least 1518 and a whole AXI beat (a
+		multiple of 16), because the RX buffer size programmed into the
+		DMA is the network buffer size itself.  The ethernet board
+		configuration uses 1536; the driver refuses to build otherwise.
+
+if RK3576_GMAC
+
+config RK3576_GMAC_RX_DESC
+	int "Receive descriptor ring depth"
+	default 16
+	range 4 64
+	---help---
+		Number of receive descriptors, which is also the receive quota:
+		one netpkt is held per slot for as long as the interface is up,
+		out of CONFIG_IOB_NBUFFERS.  Each port claims this many, so a
+		two-port build holds twice as many.
+
+config RK3576_GMAC_TX_DESC
+	int "Transmit descriptor ring depth"
+	default 8
+	range 4 64
+	---help---
+		Number of transmit descriptors, which is also the transmit quota.
+		A packet stays in its slot, and in the network buffer pool, until
+		the DMA has sent it.
+
+config RK3576_GMAC_PHY_DEBUG
+	bool "Dump the PHY's vendor registers when the link is down"
+	default n
+	---help---
+		Read the PHY's vendor page (0xA43 and 0xD04) once when the interface
+		comes up with no link, and once more a few seconds later, and log
+		PHYCR1, PHYCR2, PHYSR and the LED control register.
+
+		Clause 22's own registers say "no link" and nothing more.  The
+		vendor page is where the rest lives: PHYSR reports the real-time
+		link and the actual MDI/MDIX state, and PHYCR1 carries the link-down
+		power-saving bits -- and on this board RXD2 is strapped to PLLOFF,
+		so a PHY that entered link-down power saving with the PLL off would
+		be unable to hear a partner while still answering MDIO perfectly.
+
+		Bring-up scaffolding: turn it off once the port links.  It costs a
+		handful of MDIO transactions and four lines per port per ifup.
+
+endif # RK3576_GMAC
+
 config RK3576_USB
 	bool "RK3576 USB OTG0 controller (DWC3)"
 	default n

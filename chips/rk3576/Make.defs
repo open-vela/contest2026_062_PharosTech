@@ -60,8 +60,16 @@ ifeq ($(CONFIG_RK3576_EMMC),y)
 CHIP_CSRCS += rk3576_emmc.c
 endif
 
-ifneq ($(filter y,$(CONFIG_RK3576_DMA) $(CONFIG_RK3576_USBHOST)),)
+ifneq ($(filter y,$(CONFIG_RK3576_DMA) $(CONFIG_RK3576_USBHOST) $(CONFIG_RK3576_GMAC)),)
 CHIP_CSRCS += rk3576_addrenv.c
+endif
+
+# The GMAC's descriptors carry physical addresses, and the netdev lower half it
+# implements needs NET, MM_IOB and the work queues; those are Kconfig's job.
+# Mirror: chips/rk3576/CMakeLists.txt -- change both.
+
+ifeq ($(CONFIG_RK3576_GMAC),y)
+CHIP_CSRCS += rk3576_gmac.c
 endif
 
 ifeq ($(CONFIG_RK3576_DMA),y)

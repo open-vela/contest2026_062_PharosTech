@@ -87,6 +87,12 @@ ifeq ($(CONFIG_KICKPI_K7_CAMERA),y)
 CSRCS += kickpi_k7_camera.c
 endif
 
+# Mirror: this directory's CMakeLists.txt -- change both.
+
+ifeq ($(CONFIG_KICKPI_K7_ETHERNET),y)
+CSRCS += kickpi_k7_ethernet.c
+endif
+
 ifeq ($(CONFIG_ETC_ROMFS),y)
   RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS
 endif
