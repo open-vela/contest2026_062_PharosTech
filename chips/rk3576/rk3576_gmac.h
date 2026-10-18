@@ -60,19 +60,6 @@
 #define RK3576_GMAC0 0
 #define RK3576_GMAC1 1
 
-/* How the PHY's MDI pairs are paired: leave it to the PHY's own crossover
- * detection, or force one side.  Forcing is what a board needs when the part's
- * automatic crossover does not advance -- two identical PHYs back to back are
- * the classic case, and so is a partner that never sends link pulses.
- */
-
-enum rk3576_gmac_mdi_e
-{
-  RK3576_GMAC_MDI_AUTO = 0, /* the PHY decides (PHYCR1 bit 9 = 0)      */
-  RK3576_GMAC_MDI_MDI,      /* force MDI   (PHYCR1 bit 9 = 1, bit 8=1) */
-  RK3576_GMAC_MDI_MDIX,     /* force MDIX  (PHYCR1 bit 9 = 1, bit 8=0) */
-};
-
 /****************************************************************************
  * Public Types
  ****************************************************************************/
@@ -121,12 +108,22 @@ struct rk3576_gmac_config_s
 
   FAR const struct phy_desc_s *phy;
 
-  /* One of enum rk3576_gmac_mdi_e.  Applied after the PHY is reset and before
-   * autonegotiation is restarted, because PHYCR1's MDI bits only take effect
-   * across a reset.
+  /* The board's PHY driver, or NULL for a port that only needs clause 22.
+   *
+   * `phy_init` configures the part after it has been reset and before
+   * autonegotiation starts; `phy_advertise` writes what it can do, before this
+   * driver restarts autonegotiation.  `phy_ctx` is whatever the board passed,
+   * and is handed back unchanged.
+   *
+   * These are plain `void *` on purpose: the PHY driver lives in the drivers
+   * tree, this header is in the chip tree, and neither includes the other. The
+   * board is the only place that sees both, and it is what joins them up.  The
+   * PHY interface's own note says the same from its side.
    */
 
-  uint8_t mdi_mode;
+  CODE int (*phy_init)(FAR void *ctx);
+  CODE int (*phy_advertise)(FAR void *ctx);
+  FAR void *phy_ctx;
 
   /* Board callbacks.  Both are required: without the pads muxed and the PHY
    * out of reset, nothing below works.
@@ -168,6 +165,26 @@ struct rk3576_gmac_config_s
 
 int rk3576_gmac_initialize(int intf,
                            FAR const struct rk3576_gmac_config_s *cfg);
+
+/****************************************************************************
+ * Name: rk3576_gmac_mdio_read / rk3576_gmac_mdio_write
+ *
+ * Description:
+ *   Clause 22 access to a port's management bus.  A board-side PHY driver
+ *   reaches the part through these; the board adapts them to the PHY
+ *   interface's callbacks, which is what keeps the two trees from including
+ *   each other.  `intf` is RK3576_GMAC0 or RK3576_GMAC1.
+ *
+ * Returned Value:
+ *   Zero on success, a negated errno on failure; -ENODEV while the port has
+ *   not been registered.
+ *
+ ****************************************************************************/
+
+int rk3576_gmac_mdio_read(int intf, uint8_t phyaddr, uint8_t regaddr,
+                          FAR uint16_t *value);
+int rk3576_gmac_mdio_write(int intf, uint8_t phyaddr, uint8_t regaddr,
+                           uint16_t value);
 
 #endif /* CONFIG_RK3576_GMAC */
 #endif /* __VENDOR_ROCKCHIP_CHIPS_RK3576_RK3576_GMAC_H */

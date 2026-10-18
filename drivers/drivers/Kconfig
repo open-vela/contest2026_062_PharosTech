@@ -16,5 +16,6 @@ source "$BINDIR/drivers/platform/drivers/gt911/Kconfig"
 source "$BINDIR/drivers/platform/drivers/ov5647/Kconfig"
 source "$BINDIR/drivers/platform/drivers/rk806/Kconfig"
 source "$BINDIR/drivers/platform/drivers/ws2812/Kconfig"
+source "$BINDIR/drivers/platform/drivers/ethernet_phy/Kconfig"
 
 endif

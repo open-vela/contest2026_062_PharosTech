@@ -56,6 +56,8 @@
 #include <string.h>
 #include <syslog.h>
 
+#include <ethernet_phy.h>
+
 #include "chip.h"
 #include "hardware/rk3576_gmac.h"
 #include "hardware/rk3576_memorymap.h"
@@ -103,19 +105,19 @@
  */
 
 #if defined(CONFIG_KICKPI_K7_ETHERNET_MDI0_MDI)
-#define KICKPI_K7_ETH0_MDI_MODE RK3576_GMAC_MDI_MDI
+#define KICKPI_K7_ETH0_MDI_MODE ETHERNET_PHY_MDI_MDI
 #elif defined(CONFIG_KICKPI_K7_ETHERNET_MDI0_MDIX)
-#define KICKPI_K7_ETH0_MDI_MODE RK3576_GMAC_MDI_MDIX
+#define KICKPI_K7_ETH0_MDI_MODE ETHERNET_PHY_MDI_MDIX
 #else
-#define KICKPI_K7_ETH0_MDI_MODE RK3576_GMAC_MDI_AUTO
+#define KICKPI_K7_ETH0_MDI_MODE ETHERNET_PHY_MDI_AUTO
 #endif
 
 #if defined(CONFIG_KICKPI_K7_ETHERNET_MDI1_MDI)
-#define KICKPI_K7_ETH1_MDI_MODE RK3576_GMAC_MDI_MDI
+#define KICKPI_K7_ETH1_MDI_MODE ETHERNET_PHY_MDI_MDI
 #elif defined(CONFIG_KICKPI_K7_ETHERNET_MDI1_MDIX)
-#define KICKPI_K7_ETH1_MDI_MODE RK3576_GMAC_MDI_MDIX
+#define KICKPI_K7_ETH1_MDI_MODE ETHERNET_PHY_MDI_MDIX
 #else
-#define KICKPI_K7_ETH1_MDI_MODE RK3576_GMAC_MDI_AUTO
+#define KICKPI_K7_ETH1_MDI_MODE ETHERNET_PHY_MDI_AUTO
 #endif
 
 /****************************************************************************
@@ -257,6 +259,52 @@ static const struct phy_desc_s g_eth1_phy = {
   .clause = 22,
 };
 
+/* The PHY driver's view of the two ports.  The management bus is reached
+ * through the controller's own accessors, and the port index is carried in the
+ * opaque context: this file is the only place that knows a port number and a
+ * PHY instance belong together, which is what keeps the chip and the driver
+ * trees from including each other.
+ */
+
+static const int g_eth_intf[2] = { RK3576_GMAC0, RK3576_GMAC1 };
+
+static int kickpi_k7_eth_mdio_read(FAR void *ctx, uint8_t phyaddr,
+                                   uint8_t regaddr, FAR uint16_t *value)
+{
+  return rk3576_gmac_mdio_read(*(FAR const int *)ctx, phyaddr, regaddr, value);
+}
+
+static int kickpi_k7_eth_mdio_write(FAR void *ctx, uint8_t phyaddr,
+                                    uint8_t regaddr, uint16_t value)
+{
+  return rk3576_gmac_mdio_write(*(FAR const int *)ctx, phyaddr, regaddr,
+                                value);
+}
+
+static const struct ethernet_phy_s g_eth0_phy_dev = {
+  .name = "MAE0621A",
+  .ops = &g_mae0621a_ops,
+  .mdio = {
+    .read = kickpi_k7_eth_mdio_read,
+    .write = kickpi_k7_eth_mdio_write,
+    .ctx = (FAR void *)&g_eth_intf[0],
+  },
+  .addr = KICKPI_K7_ETH_PHYADDR,
+  .mdi_mode = KICKPI_K7_ETH0_MDI_MODE,
+};
+
+static const struct ethernet_phy_s g_eth1_phy_dev = {
+  .name = "MAE0621A",
+  .ops = &g_mae0621a_ops,
+  .mdio = {
+    .read = kickpi_k7_eth_mdio_read,
+    .write = kickpi_k7_eth_mdio_write,
+    .ctx = (FAR void *)&g_eth_intf[1],
+  },
+  .addr = KICKPI_K7_ETH_PHYADDR,
+  .mdi_mode = KICKPI_K7_ETH1_MDI_MODE,
+};
+
 static const struct rk3576_gmac_config_s g_eth0_config = {
   .ioc_offset = KICKPI_K7_ETH0_IOC_OFFSET,
   .tx_delay = CONFIG_KICKPI_K7_ETHERNET_TX_DELAY0,
@@ -267,7 +315,9 @@ static const struct rk3576_gmac_config_s g_eth0_config = {
   .pinmux = kickpi_k7_eth0_pinmux,
   .phy_reset = kickpi_k7_eth0_phy_reset,
   .phy = &g_eth0_phy,
-  .mdi_mode = KICKPI_K7_ETH0_MDI_MODE,
+  .phy_init = ethernet_phy_init,
+  .phy_advertise = ethernet_phy_advertise,
+  .phy_ctx = (FAR void *)&g_eth0_phy_dev,
 };
 
 static const struct rk3576_gmac_config_s g_eth1_config = {
@@ -280,7 +330,9 @@ static const struct rk3576_gmac_config_s g_eth1_config = {
   .pinmux = kickpi_k7_eth1_pinmux,
   .phy_reset = kickpi_k7_eth1_phy_reset,
   .phy = &g_eth1_phy,
-  .mdi_mode = KICKPI_K7_ETH1_MDI_MODE,
+  .phy_init = ethernet_phy_init,
+  .phy_advertise = ethernet_phy_advertise,
+  .phy_ctx = (FAR void *)&g_eth1_phy_dev,
 };
 
 /****************************************************************************
