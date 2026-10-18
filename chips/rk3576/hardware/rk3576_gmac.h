@@ -290,7 +290,16 @@
  * length in des3[14:0].
  */
 
-#define RK3576_GMAC_DESC_SIZE   16
+#define RK3576_GMAC_DESC_SIZE 16
+
+/* TDES2 carries the buffer length in [13:0] and, in bit 31, "interrupt on
+ * completion".  Without that bit a descriptor completes silently: the frame
+ * goes out, no transmit interrupt follows, the ring never recycles and the
+ * port stops transmitting after its quota of frames.
+ */
+
+#define RK3576_GMAC_TDES2_IOC   (1u << 31)
+#define RK3576_GMAC_TDES2_B1L_M 0x00003fff
 
 #define RK3576_GMAC_TDES3_OWN   (1u << 31)
 #define RK3576_GMAC_TDES3_CTXT  (1u << 30)
