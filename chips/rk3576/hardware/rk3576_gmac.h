@@ -166,6 +166,19 @@
 #define RK3576_GMAC_MTL_RXQ0_RQS_S      20
 #define RK3576_GMAC_MTL_RXQ0_RQS_M      (0x7fu << 20)
 
+/* MAC_HW_FEATURE1, 0x0120: what the FIFOs actually are.  Bit 5 is SPRAM;
+ * [10:6] and [4:0] are the two sizes, both Log2(bytes) - 7.  They are
+ * read-only configuration, and they are what the MTL queues must be sized
+ * from -- TQS and RQS cannot be guessed.
+ */
+
+#define RK3576_GMAC_MAC_HW_FEATURE1 0x0120
+
+#define RK3576_GMAC_HWFEAT1_TXFIFOSZ_S 6
+#define RK3576_GMAC_HWFEAT1_TXFIFOSZ_M (0x1fu << 6)
+#define RK3576_GMAC_HWFEAT1_RXFIFOSZ_S 0
+#define RK3576_GMAC_HWFEAT1_RXFIFOSZ_M (0x1fu << 0)
+
 /* DMA registers (TRM Part 2, ch. 8.6).  Only channel 0 is used: the DTB
  * instantiates queue0 alone, so channels 1..7 are never touched.
  */
