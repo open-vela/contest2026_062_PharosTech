@@ -1937,12 +1937,61 @@ static int gm_ioctl(FAR struct netdev_lowerhalf_s *dev, int cmd,
 
 static void gm_mac_start(FAR struct rk3576_gmac_s *priv)
 {
-  /* MTL: store-and-forward in both directions, one TX queue enabled. */
+  uint32_t hwfeat;
+  uint32_t txqsz;
+  uint32_t rxqsz;
+
+  /* MTL: store-and-forward in both directions, one TX queue enabled.
+   *
+   * The queue size fields live in these same two registers and are not
+   * decoration.  TQS/RQS say how many 256-byte blocks of the FIFO the queue
+   * may use, and with store-and-forward on, the MTL has to hold a whole frame
+   * before it starts transmitting -- so a queue smaller than the frame means
+   * the frame can never be sent: the FIFO fills, the transmit underflows, the
+   * frame leaves truncated and the peer drops it.  Reset leaves both fields at
+   * zero, which the TRM reads as 256 bytes, and writing these registers
+   * without them -- as this did -- puts them back there.  The result was a
+   * port on which ping worked up to a 224-byte frame and silently lost
+   * everything longer: the sender saw a completed descriptor, the receiver saw
+   * a bad frame, and no counter anywhere moved.
+   *
+   * So derive them from what the hardware reports in MAC_HW_FEATURE1 rather
+   * than guessing: Log2(bytes)-7, per direction, read-only.
+   */
+
+  hwfeat = gm_getreg(priv, RK3576_GMAC_MAC_HW_FEATURE1);
+  txqsz = ((hwfeat & RK3576_GMAC_HWFEAT1_TXFIFOSZ_M) >>
+           RK3576_GMAC_HWFEAT1_TXFIFOSZ_S);
+  rxqsz = ((hwfeat & RK3576_GMAC_HWFEAT1_RXFIFOSZ_M) >>
+           RK3576_GMAC_HWFEAT1_RXFIFOSZ_S);
+
+  /* In 256-byte blocks, and inside what each field can hold: the two fields
+   * are not the same width, and a 16 KB TX FIFO is one block more than TQS can
+   * express.  The shift is bounded first so that a field the hardware reports
+   * as reserved cannot turn into an undefined shift.
+   */
+
+  txqsz = txqsz > 10 ? 10 : txqsz;
+  rxqsz = rxqsz > 10 ? 10 : rxqsz;
+
+  txqsz = (1u << (txqsz + 7)) / 256;
+  if (txqsz > (RK3576_GMAC_MTL_TXQ0_TQS_M >> RK3576_GMAC_MTL_TXQ0_TQS_S))
+    {
+      txqsz = RK3576_GMAC_MTL_TXQ0_TQS_M >> RK3576_GMAC_MTL_TXQ0_TQS_S;
+    }
+
+  rxqsz = (1u << (rxqsz + 7)) / 256;
+  if (rxqsz > (RK3576_GMAC_MTL_RXQ0_RQS_M >> RK3576_GMAC_MTL_RXQ0_RQS_S))
+    {
+      rxqsz = RK3576_GMAC_MTL_RXQ0_RQS_M >> RK3576_GMAC_MTL_RXQ0_RQS_S;
+    }
 
   gm_putreg(priv, RK3576_GMAC_MTL_TXQ0_OPERATION_MODE,
-            RK3576_GMAC_MTL_TXQ0_TSF | RK3576_GMAC_MTL_TXQ0_TXQEN_ENABLE);
+            RK3576_GMAC_MTL_TXQ0_TSF | RK3576_GMAC_MTL_TXQ0_TXQEN_ENABLE |
+                (txqsz << RK3576_GMAC_MTL_TXQ0_TQS_S));
   gm_putreg(priv, RK3576_GMAC_MTL_RXQ0_OPERATION_MODE,
-            RK3576_GMAC_MTL_RXQ0_RSF);
+            RK3576_GMAC_MTL_RXQ0_RSF |
+                (rxqsz << RK3576_GMAC_MTL_RXQ0_RQS_S));
 
   /* MAC: RX queue 0 enabled for generic traffic. */
 
