@@ -32,17 +32,6 @@ CONFIG_DEBUG_ASSERTIONS=y
 CONFIG_DEBUG_FEATURES=y
 CONFIG_DEBUG_FULLOPT=y
 CONFIG_DEBUG_SYMBOLS=y
-# The video subsystem's error channels.  Both have to be named: DEBUG_VIDEO is
-# the parent and defaults to off, and its children are inside that "if", so a
-# defconfig that asks for DEBUG_VIDEO_ERROR alone has the line silently
-# discarded -- no warning, and a build whose video stack cannot report a fault
-# at all.  Errors and warnings are worth having in a shipped build for that
-# reason; the informational channel is not turned on, because the driver and
-# the capture path use it for bring-up detail that a running stream does not
-# need to repeat.
-CONFIG_DEBUG_VIDEO=y
-CONFIG_DEBUG_VIDEO_ERROR=y
-CONFIG_DEBUG_VIDEO_WARN=y
 CONFIG_DEFAULT_TASK_STACKSIZE=8192
 CONFIG_DEV_URANDOM=y
 CONFIG_DRIVERS_IEEE80211=y
@@ -78,22 +67,6 @@ CONFIG_RAW_BINARY=y
 CONFIG_READLINE_CMD_HISTORY=y
 CONFIG_RK3576_DDR_4G=y
 CONFIG_RK3576_DMA_ALLOC=y
-
-# The capture path's DMA footprint at 1296x960 is about 22 MiB, over the
-# 16 MiB default: VICAP's two raw frame buffers are 5.1 MiB on their own,
-# and the encoder adds its two reconstruction sets (4.0 MiB), the staging
-# buffer (1.8 MiB) and its input/output buffer pools (5.3 MiB each) on top.
-# With 16 MiB the encoder's second REQBUFS fails with ENOMEM and camenc
-# aborts before the camera ever starts.
-#
-# The largest mode is 1920x1080, and every term above grows with the picture:
-# VICAP's pair becomes 8.4 MiB, the reconstruction pair 6.4 MiB, the staging
-# buffer 3.0 MiB and the two pools 9.0 MiB each, for about 36 MiB in total.
-# A mode change needs more still: VICAP takes the new geometry's buffers
-# before releasing the old ones, so the peak is the sum of the two sets.
-# Thirty-two MiB would fail the way sixteen did, so this is sized for the
-# largest mode with room to spare.
-CONFIG_RK3576_DMA_HEAP_SIZE_MB=48
 CONFIG_RK3576_EMMC=y
 CONFIG_RK3576_SDMMC=y
 CONFIG_RK3576_SDIO=y
@@ -433,81 +406,18 @@ CONFIG_WATCHDOG_AUTOMONITOR=y
 CONFIG_WATCHDOG_AUTOMONITOR_BY_WDOG=y
 CONFIG_WATCHDOG_AUTOMONITOR_TIMEOUT=10
 
-#
-# MIPI CSI camera: OV5647 on the CSI0 connector.
-#
-# The module hangs off the DCPHY's RX (slave) lanes, so this build needs
-# CONFIG_RK3576_MIPI_CSI even though it does not bring up a display: the
-# DCPHY is shared with the DSI output, but each side has its own reset,
-# register banks and lane enables, so a camera-only build simply leaves the
-# TX side alone.
-#
-# The capture path registers /dev/video0 through the NuttX capture
-# framework, which is what DRIVERS_VIDEO + VIDEO_STREAM compile in.
-#
-
-CONFIG_RK3576_MIPI_DCPHY=y
-CONFIG_RK3576_MIPI_CSI=y
-CONFIG_RK3576_VICAP=y
-
-# Hardware video encoder (VEPU510 @ 0x27a00000): power, resets and clocks for
-# PD_VEPU0, the H.264 fixed-QP encode path, and the V4L2 mem-to-mem device
-# that presents it as /dev/video1.
-#
-# Both self-tests are named rather than inherited: they are how this board's
-# encoder is known to work, and leaving them to a Kconfig default would mean
-# losing them the day that default changes, quietly.
-CONFIG_RK3576_VEPU=y
-CONFIG_RK3576_VEPU_SELFTEST=y
-CONFIG_RK3576_VEPU_CODEC=y
-CONFIG_RK3576_VEPU_CODEC_SELFTEST=y
-
-# The encoder's diagnostic switches used to live here.  They are gone rather
-# than turned off: each one changed what was being measured, and the questions
-# they were written for are answered.  What they found is recorded where it
-# belongs -- in the comments on the code they instrumented, and in the commit
-# that removed them -- so that a future run can put one back from history
-# rather than carry it in every build.
-#
-# The two findings that outlived them are behaviour now, not switches: the
-# vendor kernel's 0x5300 counter clear is written on every job, and the
-# anti-smear block's state fields are written with MPP 1.0.6's constants.
-
-# Camera to H.264 to fragmented MP4, in one command, to a file or to a
-# browser over WebSocket.  Lives in app/camenc and is reached through
-# apps/examples/camenc.
-CONFIG_EXAMPLES_CAMENC=y
-
-CONFIG_DRIVERS_VIDEO=y
-CONFIG_VIDEO_STREAM=y
-
 CONFIG_NYABULA_CUSTOM_DRIVERS=y
-CONFIG_VIDEO_OV5647=y
-
-# There is deliberately no setting here for the sensor mode the board's
-# receive chain is brought up with.  A capture device has to exist before an
-# application can ask it for anything, and the capture engine behind this
-# sensor has no scaler -- so a device node implies a geometry, and one has to
-# be named before the node can be registered.  The driver names it in
-# OV5647_MODE_DEFAULT (drivers/include/ov5647.h) rather than here, because it
-# is not a choice: an application names the mode it wants before it opens the
-# camera, and the same board command can move the chain to any of the other
-# six at run time.  Nothing about which modes can be filmed in depends on a
-# boot setting, so there is nothing here for a board to configure.
-
-CONFIG_OV5647_I2C_ADDR=0x36
-CONFIG_OV5647_I2C_FREQUENCY=100000
-
-
-CONFIG_KICKPI_K7_CAMERA=y
 
 #
 # Wired Ethernet: the two on-board RJ45 ports, each behind its own MAE0621A.
 #
-# This is what the configuration is named for.  The camera half above is kept
-# because the board's product is the camera: this is the configuration the
-# branch boots, with both wired ports added to it, rather than a stripped build
-# that can only prove the MAC works.
+# This is what the configuration is named for: the board's wired ports, with
+# the camera, capture and encoder halves left out so that a failure here
+# belongs to the MAC, the PHY or the stack rather than to a pipeline above
+# them.
+#
+# CONFIG_NYABULA_CUSTOM_DRIVERS above is not a leftover from the camera: that
+# Kconfig block is what sources the part-specific PHY driver below.
 #
 # The ports are up only after `ifup eth0` and `ifup eth1`: registration and
 # the platform bring-up happen at boot, and they print what they found --
