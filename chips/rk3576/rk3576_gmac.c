@@ -112,31 +112,52 @@
 
 #define GM_BUFSIZE CONFIG_IOB_BUFSIZE
 
-/* The ring is packed at the hardware's descriptor size: descriptor n lives at
- * base + 16n and the stride is not ours to choose.  Padding each descriptor
- * out to a whole D-cache line was tried -- for cache operations that could not
- * disturb a neighbour -- and it cost exactly one frame per direction.  The DMA
- * walked base, base+16, base+32, found the zero padding where it expected the
- * next descriptor's OWN bit, reported TBU and suspended, while the driver
- * happily queued frames at base+64, base+128 that the DMA never looked at. The
- * symptom is a port that trains its link, sends one frame, receives one frame,
- * and then reports "transmit buffer unavailable" forever.
+/* One descriptor per D-cache line.
  *
- * Cache safety comes from the discipline in gm_desc_sync()/gm_desc_inval()
- * instead: a line is only ever dirty between writing a descriptor and cleaning
- * it, so an invalidate that shares its line with a neighbour drops clean
- * copies and cannot clobber a status the DMA has written.
+ * The descriptor itself is 16 bytes, so four of them share a 64-byte cache
+ * line.  The cache maintenance in gm_desc_sync()/gm_desc_inval() works on
+ * lines, not on 16-byte objects: writing descriptor N+1 dirties the line that
+ * also holds descriptor N, and the clean that follows writes the whole line
+ * back -- including the cached copy of N's OWN bit.  If the DMA completed N
+ * before that clean, the clean puts OWN=1 back, the DMA never revisits the
+ * descriptor because it is behind the tail, and gm_tx_reap() waits for a
+ * completion that can never come: the TX ring fills and every transmit
+ * returns -ENOMEM.  That is a rare race at a steady 130 Mbit/s (it needs N's
+ * completion to land between the two descriptor writes) and an immediate one
+ * when a large send buffer makes the stack queue several descriptors back to
+ * back.
+ *
+ * The fix is to give each descriptor its own line and tell the DMA to skip
+ * the padding: DMA_CH0_CONTROL.DSL inserts that skip between descriptors.
+ * The DWC units the skip by its data bus width, and the TRM gives this GMAC
+ * a 64-bit application-side interface, so the unit is a dword (8 bytes) and
+ * (64 - 16) / 8 = 6.  Descriptor n then lives at base + 64n and a cache
+ * operation on it can only touch its own line.
+ *
+ * The earlier attempt at padding without DSL is what produced the "sends one
+ * frame and reports transmit buffer unavailable" symptom recorded in the
+ * memory notes: with DSL left at zero the DMA walked base, base+16, base+32
+ * and stopped in the padding.
  */
 
 #define GM_DESC_SIZE   16
-#define GM_DESC_STRIDE GM_DESC_SIZE
+#define GM_DESC_STRIDE 64
+#define GM_DESC_DSL    ((GM_DESC_STRIDE - GM_DESC_SIZE) / 8)
 #define GM_TX_DESC     CONFIG_RK3576_GMAC_TX_DESC
 #define GM_RX_DESC     CONFIG_RK3576_GMAC_RX_DESC
 
 /* Quota is what netpkt_alloc()/netpkt_get() will hand out for a direction.
  *
- * The transmit quota is the ring depth: a slot holds one netpkt from submit
- * until the completion interrupt frees it.
+ * The transmit quota is one less than the ring depth.  The ring tells "full"
+ * from "empty" by keeping one slot unused (next == txdone means full), so
+ * only depth - 1 packets can be in flight.  Giving the stack the full depth
+ * lets it offer one more than the ring can take: the driver answers -ENOMEM,
+ * and the upper half drops that packet *after* the TCP send state has moved
+ * past it, so only an RTO recovers it.  With the default 32 KiB send buffer
+ * the stack rarely manages a burst that fills the ring and the bug is rare;
+ * with 64 KiB it fills the ring in the first poll and the connection settles
+ * into one dropped segment per retransmission timeout -- a trickle at
+ * 0.2 Mbit/s instead of a gigabit.
  *
  * The receive quota has to be larger than the ring, because a completed frame
  * is replaced *before* it is handed up: receive() allocates the buffer for the
@@ -149,7 +170,7 @@
  * "ring depth + spare" for the same reason (e1000's E1000_RX_QUOTA).
  */
 
-#define GM_TX_QUOTA GM_TX_DESC
+#define GM_TX_QUOTA (GM_TX_DESC - 1)
 #define GM_RX_SPARE 4
 #define GM_RX_QUOTA (GM_RX_DESC + GM_RX_SPARE)
 
@@ -1401,8 +1422,9 @@ static int gm_rings_alloc(FAR struct rk3576_gmac_s *priv)
 {
   uint32_t i;
 
-  /* Keep the ring itself line-aligned: the individual descriptors are packed,
-   * but the first one should not share a line with whatever precedes it.
+  /* Keep the ring line-aligned: with the stride below, every descriptor owns
+   * exactly one cache line, and the first one must not share a line with
+   * whatever precedes the allocation.
    */
 
   priv->txring = kmm_memalign(64, GM_DESC_STRIDE * GM_TX_DESC);
@@ -1504,6 +1526,31 @@ static void gm_dma_setup(FAR struct rk3576_gmac_s *priv)
             RK3576_GMAC_SYSBUS_BLEN4 | RK3576_GMAC_SYSBUS_BLEN8 |
                 RK3576_GMAC_SYSBUS_BLEN16);
 
+  /* One descriptor per cache line: see GM_DESC_STRIDE.  The skip is in
+   * units of the 64-bit application interface's dword.
+   */
+
+  gm_putreg(priv, RK3576_GMAC_DMA_CH0_CONTROL,
+            GM_DESC_DSL << RK3576_GMAC_CH0CTRL_DSL_S);
+
+  /* macirq is shared between the MAC and the DMA.  This driver has no use
+   * for the MAC-level events (it polls the PHY), but disabling them is not
+   * enough to keep the shared line quiet: MACIS is a summary of the MAC
+   * status, and the enable does not gate it.  Mask what can be masked and
+   * let gm_interrupt() clear the sources it cannot.
+   *
+   * The MMC statistics block is the one that actually fires: its good-octet
+   * counter raises an interrupt at half of its 32-bit range, which is about
+   * 2 GB of traffic on the wire, and the summary then stays asserted until
+   * the MMC interrupt register is read.  This driver does not use those
+   * counters, so mask the block and clear what is pending.
+   */
+
+  gm_putreg(priv, RK3576_GMAC_MMC_RX_INTERRUPT_MASK, 0xffffffff);
+  gm_putreg(priv, RK3576_GMAC_MMC_TX_INTERRUPT_MASK, 0xffffffff);
+  gm_putreg(priv, RK3576_GMAC_MMC_RX_INTERRUPT, 0xffffffff);
+  gm_putreg(priv, RK3576_GMAC_MMC_TX_INTERRUPT, 0xffffffff);
+
   /* 16-beat bursts in both directions, no 8xPBL. */
 
   gm_putreg(priv, RK3576_GMAC_DMA_CH0_TX_CONTROL,
@@ -1560,7 +1607,7 @@ static void gm_tx_reap(FAR struct rk3576_gmac_s *priv)
 }
 
 /****************************************************************************
- * Private Functions: interrupt
+ * Name: gm_interrupt
  ****************************************************************************/
 
 static int gm_interrupt(int irq, FAR void *context, FAR void *arg)
@@ -1578,6 +1625,40 @@ static int gm_interrupt(int irq, FAR void *context, FAR void *arg)
 
   status = gm_getreg(priv, RK3576_GMAC_DMA_CH0_STATUS);
   gm_putreg(priv, RK3576_GMAC_DMA_CH0_STATUS, status & GM_IRQ_STATUS);
+
+  /* macirq is shared with the MAC, and a MAC status bit holds the line high
+   * on its own.  Not all of those bits are write-1-clear: RGSMIIIS needs a
+   * read of MAC_PHYIF_CONTROL_STATUS, the RX/TX status bits a read of
+   * MAC_RX_TX_STATUS, and the MMC summary a read of the MMC interrupt
+   * registers.  Clear the sources first, then the summary, or MACIS stays
+   * asserted and the shared line storms.
+   */
+
+  {
+    uint32_t macstatus = gm_getreg(priv, RK3576_GMAC_MAC_INTERRUPT_STATUS);
+
+    if (macstatus != 0)
+      {
+        if ((macstatus & (1u << 0)) != 0)
+          {
+            gm_getreg(priv, RK3576_GMAC_MAC_PHYIF_CONTROL_STATUS);
+          }
+
+        if ((macstatus & ((1u << 13) | (1u << 14))) != 0)
+          {
+            gm_getreg(priv, RK3576_GMAC_MAC_RX_TX_STATUS);
+          }
+
+        if ((macstatus & ((1u << 8) | (1u << 9) | (1u << 10) | (1u << 11) |
+                          (1u << 19) | (1u << 20))) != 0)
+          {
+            gm_getreg(priv, RK3576_GMAC_MMC_TX_INTERRUPT);
+            gm_getreg(priv, RK3576_GMAC_MMC_RX_INTERRUPT);
+          }
+
+        gm_putreg(priv, RK3576_GMAC_MAC_INTERRUPT_STATUS, macstatus);
+      }
+  }
 
   if ((status & (RK3576_GMAC_CH0STS_FBE | RK3576_GMAC_CH0STS_CDE |
                  RK3576_GMAC_CH0STS_RPS)) != 0)
@@ -1990,8 +2071,7 @@ static void gm_mac_start(FAR struct rk3576_gmac_s *priv)
             RK3576_GMAC_MTL_TXQ0_TSF | RK3576_GMAC_MTL_TXQ0_TXQEN_ENABLE |
                 (txqsz << RK3576_GMAC_MTL_TXQ0_TQS_S));
   gm_putreg(priv, RK3576_GMAC_MTL_RXQ0_OPERATION_MODE,
-            RK3576_GMAC_MTL_RXQ0_RSF |
-                (rxqsz << RK3576_GMAC_MTL_RXQ0_RQS_S));
+            RK3576_GMAC_MTL_RXQ0_RSF | (rxqsz << RK3576_GMAC_MTL_RXQ0_RQS_S));
 
   /* MAC: RX queue 0 enabled for generic traffic. */
 
