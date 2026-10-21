@@ -602,6 +602,24 @@ void board_late_initialize(void)
   }
 #endif /* CONFIG_KICKPI_K7_CAMERA */
 
+#ifdef CONFIG_KICKPI_K7_ETHERNET
+  /* Register the two on-board wired ports.  Only registration happens here:
+   * the clock tree, the SDGMAC_GRF mode, the RGMII delay lines and the PHY
+   * probe are done, but the rings and the PHY's autonegotiation wait for
+   * `ifup`, which is a user thread that may sleep.  A failure only logs --
+   * the rest of the board, and the other port, do not depend on it.
+   */
+
+  {
+    int ret = kickpi_k7_ethernet_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: kickpi_k7_ethernet_initialize failed: %d\n",
+               ret);
+      }
+  }
+#endif /* CONFIG_KICKPI_K7_ETHERNET */
+
 #ifdef CONFIG_RK3576_VEPU
   /* Bring the hardware video encoder (VEPU0) up in two steps, each of which
    * proves something the previous one cannot.

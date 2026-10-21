@@ -214,5 +214,32 @@ int kickpi_k7_camera_initialize(void);
 int kickpi_k7_camera_set_mode(unsigned int index);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_ETHERNET
+/****************************************************************************
+ * Name: kickpi_k7_ethernet_initialize
+ *
+ * Description:
+ *   Register the two on-board wired Ethernet ports, each behind its own
+ *   Maxio MAE0621A PHY: mux the RGMII pad group, hold the PHY in reset and
+ *   release it, and hand the port to rk3576_gmac_initialize(), which does the
+ *   platform bring-up, verifies the controller answers and probes the PHY.
+ *
+ *   The receive and transmit rings, and the PHY's autonegotiation, come up
+ *   later, on `ifup eth0` / `ifup eth1` -- those may sleep and want a user
+ *   thread.  Until then the ports are registered but down.
+ *
+ *   Requires the clock tree (rk3576_clk_tree_initialize()) to have run,
+ *   which board_late_initialize() does first.
+ *
+ * Returned Value:
+ *   Zero (OK) if every enabled port was registered; a negated errno otherwise.
+ *   A port that fails only logs, so that one bad port does not cost the
+ *   other one or the rest of the board.
+ *
+ ****************************************************************************/
+
+int kickpi_k7_ethernet_initialize(void);
+#endif
+
 #endif /* __ASSEMBLY__ */
 #endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */

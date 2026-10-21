@@ -628,6 +628,7 @@ static void rk3576_clk_register_pll_factors(void)
  *     aclk_center_root  sel@CON168[7:5]  div@CON167[13:9]
  *       (mux and divider sit in different CLKSEL registers)
  *     aclk_nvm_root     CLKSEL_CON88 sel[7] div[6:2] + GATE_CON33[1]
+ *     aclk_sdgmac_root  CLKSEL_CON103 sel[7] div[6:2] + GATE_CON42[1]
  ****************************************************************************/
 
 static void rk3576_clk_register_axi(void)
@@ -739,6 +740,44 @@ static void rk3576_clk_register_axi(void)
                             CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
     _assert_registered(clk);
   }
+
+  /* SDGMAC-domain AXI root — dedicated ACLK root of the SDGMAC subsystem
+   * (SDIO, SDMMC0, FSPI1, GMAC0/1, DSMC, HSGPIO).  1-bit mux (GPLL/CPLL)
+   * @ CLKSEL_CON103[7] + 5-bit divider @ CLKSEL_CON103[6:2] (value+1) +
+   * gate @ GATE_CON42[1].  This is the parent of aclk_gmac0/1 and
+   * aclk_hsgpio.
+   *
+   * Its PCLK and HCLK siblings share CLKSEL_CON103 and GATE_CON42 but
+   * belong to their own bus functions: pclk_sdgmac_root is registered in
+   * rk3576_clk_register_apb() and hclk_sdgmac_root in
+   * rk3576_clk_register_ahb().  Keep the three in step.
+   */
+
+  {
+    static const char *parents[] = {
+      "clk_gpll", /* 1'b0 */
+      "clk_cpll", /* 1'b1 */
+    };
+
+    clk = clk_register_mux(
+        "aclk_sdgmac_root_sel", parents, nitems(parents),
+        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+        cru + RK3576_CRU_CLKSEL_CON(103), 7, 1, CLK_MUX_HIWORD_MASK);
+    _assert_registered(clk);
+
+    clk = clk_register_divider(
+        "aclk_sdgmac_root_div", "aclk_sdgmac_root_sel",
+        CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+        cru + RK3576_CRU_CLKSEL_CON(103), 2, 5, CLK_DIVIDER_HIWORD_MASK);
+    _assert_registered(clk);
+
+    clk = clk_register_gate("aclk_sdgmac_root", "aclk_sdgmac_root_div",
+                            CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                                CLK_PARENT_NAME_IS_STATIC,
+                            cru + RK3576_CRU_GATE_CON(42), 1,
+                            CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+    _assert_registered(clk);
+  }
 }
 
 /****************************************************************************
@@ -806,6 +845,11 @@ static void rk3576_clk_register_ahb(void)
    * controller domain.  Source 2-bit mux @ CLKSEL_CON103[1:0] + gate
    * @ GATE_CON42[0].  This is the parent of hclk_sdio (registered in
    * rk3576_clk_register_sdio()).
+   *
+   * The ACLK and PCLK siblings of this root share CLKSEL_CON103 and
+   * GATE_CON42 but belong to their own bus functions: aclk_sdgmac_root is
+   * registered in rk3576_clk_register_axi() and pclk_sdgmac_root in
+   * rk3576_clk_register_apb().  Keep the three in step.
    */
 
   clk = clk_register_mux(
@@ -852,6 +896,7 @@ static void rk3576_clk_register_ahb(void)
  *     pclk_top_root     CLKSEL_CON08  sel[8:7]
  *     pclk_bus_root     CLKSEL_CON55  sel[3:2]
  *     pclk_center_root  CLKSEL_CON168 sel[13:12]
+ *     pclk_sdgmac_root  CLKSEL_CON103 sel[9:8] + GATE_CON42[2]
  ****************************************************************************/
 
 static void rk3576_clk_register_apb(void)
@@ -885,6 +930,30 @@ static void rk3576_clk_register_apb(void)
                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC,
                          cru + RK3576_CRU_CLKSEL_CON(168), 12, 2,
                          CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  /* SDGMAC-domain APB root — dedicated PCLK root of the SDGMAC subsystem.
+   * 2-bit mux (CPLL/10, CPLL/20, XIN_OSC0) @ CLKSEL_CON103[9:8] + gate
+   * @ GATE_CON42[2]; no divider.  This is the parent of pclk_gmac0/1,
+   * pclk_sdgmac_grf and pclk_dsmc.
+   *
+   * Its ACLK and HCLK siblings share CLKSEL_CON103 and GATE_CON42 but
+   * belong to their own bus functions: aclk_sdgmac_root is registered in
+   * rk3576_clk_register_axi() and hclk_sdgmac_root in
+   * rk3576_clk_register_ahb().  Keep the three in step.
+   */
+
+  clk = clk_register_mux(
+      "pclk_sdgmac_root_sel", parents, nitems(parents),
+      CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(103), 8, 2, CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("pclk_sdgmac_root", "pclk_sdgmac_root_sel",
+                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                              CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(42), 2,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
   _assert_registered(clk);
 
   /* PMU1-domain APB root — parent of PMU-domain peripherals (pclk_uart1,
@@ -2489,6 +2558,192 @@ static void rk3576_clk_register_sdmmc0(void)
   clk = clk_register_gate("hclk_sdmmc0", "hclk_sdgmac_root",
                           CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
                           cru + RK3576_CRU_GATE_CON(43), 2,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+}
+
+/****************************************************************************
+ * Name: rk3576_clk_register_gmac
+ *
+ * Description:
+ *   Register the SDGMAC ethernet clock domain: the two GMAC controllers
+ *   (DWC EQOS) and the clocks hanging off the SDGMAC bus roots.
+ *
+ *   The three SDGMAC bus roots are NOT registered here.  Each belongs with
+ *   its own bus type, next to the NVM-root sibling of the same shape:
+ *
+ *     aclk_sdgmac_root  rk3576_clk_register_axi()
+ *     pclk_sdgmac_root  rk3576_clk_register_apb()
+ *     hclk_sdgmac_root  rk3576_clk_register_ahb()
+ *
+ *   All three are fed from CLKSEL_CON103 and gated from CRU_GATE_CON42
+ *   (0x08a8).  What is registered here is the SDGMAC_GRF register-file clock
+ *   (through which GMACn_CON selects RGMII/RMII and the TX clock source) and
+ *   the per-controller bus gates:
+ *
+ *     pclk_sdgmac_grf   GATE_CON42[3],   parent pclk_sdgmac_root
+ *     aclk_gmac0/1      GATE_CON42[7]/[8],   parent aclk_sdgmac_root
+ *     pclk_gmac0/1      GATE_CON42[9]/[10],  parent pclk_sdgmac_root
+ *
+ *   The 125 MHz RGMII line clock (stmmaceth) is divider-only: the source is
+ *   CPLL, with no parent mux, so the divider alone sets the rate.
+ *
+ *     clk_gmac0_125m_src  CLKSEL_CON30[14:10] + GATE_CON03[6]
+ *     clk_gmac1_125m_src  CLKSEL_CON31[4:0]   + GATE_CON03[7]
+ *
+ *   The PTP reference clocks are gated from the same GATE_CON42 except for
+ *   clk_gmac0_ptp_ref_src, whose gate lives in GATE_CON43[0]:
+ *
+ *     clk_gmac0_ptp_ref_src  sel CON105[6:5] div[4:0]  + GATE_CON43[0]
+ *     clk_gmac1_ptp_ref_src  sel CON104[14:13] div[12:8] + GATE_CON42[15]
+ *     clk_gmac0_ptp_ref      GATE_CON42[14] of clk_gmac0_ptp_ref_src
+ *     clk_gmac1_ptp_ref      GATE_CON42[13] of clk_gmac1_ptp_ref_src
+ *
+ *   cclk_src_sdio/hclk_sdio and cclk_src_sdmmc0/hclk_sdmmc0 are also
+ *   gated from GATE_CON42/43 but are registered in
+ *   rk3576_clk_register_sdio() / rk3576_clk_register_sdmmc0().
+ *
+ *   Not modelled: the RMII CRU clocks (GATE_CON05) and the 25 MHz
+ *   refclko25m_gmac0/1_out (CLKSEL_CON36 + GATE_CON05).  The KICKPI-K7
+ *   uses RGMII and its PHYs carry their own 25 MHz crystals.
+ ****************************************************************************/
+
+static void rk3576_clk_register_gmac(void)
+{
+  static const char *gmac0_ptp_ref_src_parents[] = {
+    "clk_gpll",            /* 2'b00 */
+    "clk_cpll",            /* 2'b01 */
+    "gmac0_ptp_refclk_in", /* 2'b10; external pad clock, not registered */
+  };
+  static const char *gmac1_ptp_ref_src_parents[] = {
+    "clk_gpll",            /* 2'b00 */
+    "clk_cpll",            /* 2'b01 */
+    "gmac1_ptp_refclk_in", /* 2'b10; external pad clock, not registered */
+  };
+  const unsigned long cru = RK3576_CRU_ADDR;
+  FAR struct clk_s *clk;
+
+  /* PCLK_SDGMAC_GRF: SDGMAC_GRF register-file clock, parented by the APB
+   * root of the same domain.
+   */
+
+  clk = clk_register_gate("pclk_sdgmac_grf", "pclk_sdgmac_root",
+                          CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(42), 3,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  /* Per-controller AXI/APB interface gates. */
+
+  clk = clk_register_gate("aclk_gmac0", "aclk_sdgmac_root", CLK_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(42), 7,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("aclk_gmac1", "aclk_sdgmac_root", CLK_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(42), 8,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("pclk_gmac0", "pclk_sdgmac_root", CLK_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(42), 9,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("pclk_gmac1", "pclk_sdgmac_root", CLK_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(42), 10,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  /* The 125 MHz RGMII line clocks.  The divider does NOT carry
+   * CLK_SET_RATE_PARENT: its source is CPLL, which is shared with the rest
+   * of the SoC, so a rate request must be satisfied by the divider alone.
+   * The gate does carry it, so that clk_set_rate() on clk_gmac<n>_125m_src
+   * programs the divider below it.
+   */
+
+  clk = clk_register_divider("clk_gmac0_125m_src_div", "clk_cpll",
+                             CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                             cru + RK3576_CRU_CLKSEL_CON(30), 10, 5,
+                             CLK_DIVIDER_HIWORD_MASK |
+                                 CLK_DIVIDER_ROUND_CLOSEST);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("clk_gmac0_125m_src", "clk_gmac0_125m_src_div",
+                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                              CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(3), 6,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  clk = clk_register_divider("clk_gmac1_125m_src_div", "clk_cpll",
+                             CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                             cru + RK3576_CRU_CLKSEL_CON(31), 0, 5,
+                             CLK_DIVIDER_HIWORD_MASK |
+                                 CLK_DIVIDER_ROUND_CLOSEST);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("clk_gmac1_125m_src", "clk_gmac1_125m_src_div",
+                          CLK_SET_RATE_PARENT | CLK_NAME_IS_STATIC |
+                              CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(3), 7,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  /* PTP reference clock sources: GPLL/CPLL/PTP pad, then a divider.  The
+   * 2'b10 parent is an external pin clock and is deliberately not
+   * registered, so a mux selecting it leaves this node without a parent.
+   */
+
+  clk = clk_register_mux(
+      "clk_gmac0_ptp_ref_src_sel", gmac0_ptp_ref_src_parents,
+      nitems(gmac0_ptp_ref_src_parents),
+      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(105), 5, 2, CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_divider(
+      "clk_gmac0_ptp_ref_src_div", "clk_gmac0_ptp_ref_src_sel",
+      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(105), 0, 5, CLK_DIVIDER_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("clk_gmac0_ptp_ref_src", "clk_gmac0_ptp_ref_src_div",
+                          CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(43), 0,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  clk = clk_register_mux(
+      "clk_gmac1_ptp_ref_src_sel", gmac1_ptp_ref_src_parents,
+      nitems(gmac1_ptp_ref_src_parents),
+      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(104), 13, 2, CLK_MUX_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_divider(
+      "clk_gmac1_ptp_ref_src_div", "clk_gmac1_ptp_ref_src_sel",
+      CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+      cru + RK3576_CRU_CLKSEL_CON(104), 8, 5, CLK_DIVIDER_HIWORD_MASK);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("clk_gmac1_ptp_ref_src", "clk_gmac1_ptp_ref_src_div",
+                          CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(42), 15,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  /* Per-controller PTP reference outputs. */
+
+  clk = clk_register_gate("clk_gmac0_ptp_ref", "clk_gmac0_ptp_ref_src",
+                          CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(42), 14,
+                          CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
+  _assert_registered(clk);
+
+  clk = clk_register_gate("clk_gmac1_ptp_ref", "clk_gmac1_ptp_ref_src",
+                          CLK_NAME_IS_STATIC | CLK_PARENT_NAME_IS_STATIC,
+                          cru + RK3576_CRU_GATE_CON(42), 13,
                           CLK_GATE_HIWORD_MASK | CLK_GATE_SET_TO_DISABLE);
   _assert_registered(clk);
 }
@@ -4600,6 +4855,13 @@ void rk3576_clk_tree_initialize(void)
   rk3576_clk_register_sdio();
 
   rk3576_clk_register_sdmmc0();
+
+  /* Ethernet hangs off the SDGMAC bus roots; all three are registered above
+   * by rk3576_clk_register_axi()/apb()/ahb(), so the gates below find their
+   * parents.
+   */
+
+  rk3576_clk_register_gmac();
 
   rk3576_clk_register_emmc();
 

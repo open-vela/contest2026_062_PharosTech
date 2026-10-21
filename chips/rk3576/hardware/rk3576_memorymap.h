@@ -192,6 +192,29 @@
 #define RK3576_VCCIO6_IOC_ADDR \
   0x2604A000 /* VCCIO6 IOC: HPD / DDC / CEC pads */
 
+/* Gigabit Ethernet MAC (DWC EQOS, "dwmac-4.20a").  Two independent
+ * controllers, each with its own MDIO bus (TRM Part 2, ch. 8):
+ *
+ *   GMAC0 @ 0x2A220000 ── MAE0621A ── RJ45
+ *   GMAC1 @ 0x2A230000 ── MAE0621A ── RJ45
+ *
+ * Both RGMII ports are configured through the SDGMAC_GRF register file (the
+ * RGMII-vs-RMII mode and the TX clock divider) and their RGMII delay lines in
+ * the VCCIO_IOC, which is a *different* IOC from the main one at 0x26040000.
+ */
+
+#define RK3576_GMAC0_ADDR 0x2A220000 /* GMAC0 MAC + DMA (DWC EQOS)   */
+#define RK3576_GMAC1_ADDR 0x2A230000 /* GMAC1 MAC + DMA (DWC EQOS)   */
+#define RK3576_GMAC_SIZE  0x00010000
+
+#define RK3576_SDGMAC_GRF_ADDR                               \
+  0x26038000 /* SDGMAC_GRF: GMACn_CON RGMII mode / TX clock, \
+              * and the PD_SDGMAC memory controls            \
+              */
+#define RK3576_VCCIO_IOC_ADDR                                  \
+  0x26046000 /* VCCIO_IOC: RGMII TX/RX delay lines for GMAC0/1 \
+              */
+
 /* Rockchip FSPI (Flexible Serial Peripheral Interface) */
 
 #define RK3576_FSPI0_ADDR 0x2A340000

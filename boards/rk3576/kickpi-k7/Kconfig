@@ -217,6 +217,143 @@ config KICKPI_K7_CAMERA
 		engine has no scaler, so a device node needs some geometry, and the
 		first request replaces it.
 
+config KICKPI_K7_ETHERNET
+	bool "On-board dual Gigabit Ethernet (GMAC0 + GMAC1)"
+	default n
+	depends on RK3576_GMAC && RK3576_GPIO
+	select ETH_PHY_MAE0621A
+	---help---
+		Bring up the two on-board RJ45 ports, each behind its own Maxio
+		MAE0621A gigabit PHY.
+
+		Two descriptions of the part live in kickpi_k7_ethernet.c, and
+		they are for different consumers: a struct phy_desc_s, which is
+		NuttX's own way of naming a PHY and is what the MAC driver's
+		probe and address walk use, and a struct ethernet_phy_s, which is
+		what the PHY driver in drivers/drivers/ethernet_phy runs on.  This
+		file is the only place that sees both, which is why the chip and
+		the driver trees never include each other.
+
+		  GMAC0 (0x2a220000) -- MAE0621A -- RJ45
+		  GMAC1 (0x2a230000) -- MAE0621A -- RJ45
+
+		This is a board function, not a peripheral that has to be added:
+		both PHYs are populated on every revision of the board.
+
+		The pin sets are disjoint -- GMAC0 on GPIO bank 3 at alternate
+		function 3 (the eth0m0 group), GMAC1 on bank 2 at function 2
+		(eth1m0) -- which is what makes two instances safe at the pinmux
+		level.  The PHY reset lines are crossed with respect to the data
+		pins: GMAC0's data is on bank 3 but its reset is GPIO2_B5, and
+		GMAC1's is the other way round (GPIO3_A3).
+
+		Both ports are RGMII with the TXC driven by the SoC
+		(clock_in_out = "output") and the PHY adding the RX delay in its
+		own pins (rgmii-rxid).  That is a fact rather than a preference:
+		the PHYs are strapped TXDLY = 0, RXDLY = 1, and the resistors
+		that would have fed the PHY's 125 MHz CLKOUT back to the SoC are
+		marked NC and unpopulated.  So the SoC supplies the TX delay and
+		must leave its RX delay off, or the delay is counted twice.
+
+if KICKPI_K7_ETHERNET
+
+config KICKPI_K7_ETHERNET_PORT1
+	bool "Also bring up the second port (GMAC1)"
+	default y
+	---help---
+		Register the second RJ45 as well.  Turning this off leaves only
+		GMAC0, which is useful when only one port's PHY is suspected: it
+		halves the network buffers the driver holds.
+
+config KICKPI_K7_ETHERNET_TX_DELAY0
+	int "GMAC0 RGMII TX delay (taps, 1/8 ns each)"
+	default 33
+	range 0 127
+	---help---
+		The tx_delay the vendor DTB specifies for ethernet@2a220000: 0x21,
+		i.e. 33 taps of the VCCIO TX clock delay line.  A number here, not
+		a register write somewhere in the driver, so that retiming a board
+		is a rebuild and not an edit.
+
+		The PHY's own TXDLY strap is 0 on this board, so this is the only
+		TX delay in the path.  If the link trains at gigabit but loses
+		frames, this is the first number to move.
+
+config KICKPI_K7_ETHERNET_TX_DELAY1
+	int "GMAC1 RGMII TX delay (taps, 1/8 ns each)"
+	default 32
+	range 0 127
+	---help---
+		The tx_delay the vendor DTB specifies for ethernet@2a230000: 0x20,
+		i.e. 32 taps.  One tap less than port 0, which is what the vendor
+		DTB says and not a transcription error.
+
+choice
+	prompt "PHY MDI pairing, GMAC0"
+	default KICKPI_K7_ETHERNET_MDI0_AUTO
+	---help---
+		How the PHY's twisted pairs are paired.  Left to the part, its own
+		crossover detection picks MDI or MDIX; forced, the board is paired
+		one way and stays that way.
+
+		Automatic is right for a normal deployment.  Forcing is the way to
+		test a pairing hypothesis: a straight cable needs one end MDI and
+		the other MDIX, and two identical endpoints (two NICs, or two
+		boards) are both MDI.
+
+config KICKPI_K7_ETHERNET_MDI0_AUTO
+	bool "automatic (the PHY decides)"
+
+config KICKPI_K7_ETHERNET_MDI0_MDI
+	bool "force MDI"
+
+config KICKPI_K7_ETHERNET_MDI0_MDIX
+	bool "force MDIX (as a switch port is paired)"
+
+endchoice
+
+choice
+	prompt "PHY MDI pairing, GMAC1"
+	default KICKPI_K7_ETHERNET_MDI1_AUTO
+	---help---
+		Same choice for the second port.  The two are separate so that one
+		flash can pair the two ports against each other: cable them
+		together with one forced MDI and the other forced MDIX and a
+		straight cable is then correctly paired.
+
+config KICKPI_K7_ETHERNET_MDI1_AUTO
+	bool "automatic (the PHY decides)"
+
+config KICKPI_K7_ETHERNET_MDI1_MDI
+	bool "force MDI"
+
+config KICKPI_K7_ETHERNET_MDI1_MDIX
+	bool "force MDIX (as a switch port is paired)"
+
+endchoice
+
+config KICKPI_K7_ETHERNET_MACADDR0
+	string "GMAC0 MAC address"
+	default "02:52:4b:37:76:00"
+	---help---
+		The address programmed into MAC address register 0 of GMAC0.
+
+		Nothing on this board supplies one: the vendor DTB sets no
+		mac-address, no nvmem-cells and no local-mac-address on either
+		ethernet node, and the RK3576 GMAC has no OTP MAC.  So the board
+		states it.  The default is locally administered (the 0x02 bit) and
+		unique per port; give each board its own if several share a
+		segment.
+
+config KICKPI_K7_ETHERNET_MACADDR1
+	string "GMAC1 MAC address"
+	default "02:52:4b:37:76:01"
+	depends on KICKPI_K7_ETHERNET_PORT1
+	---help---
+		The address programmed into MAC address register 0 of GMAC1.
+
+endif # KICKPI_K7_ETHERNET
+
 choice
 	prompt "kickpi-k7 primary display output"
 	default KICKPI_K7_MIPI_DSI

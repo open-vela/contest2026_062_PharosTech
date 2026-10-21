@@ -37,8 +37,16 @@ if(CONFIG_RK3576_EMMC)
   list(APPEND SRCS rk3576_emmc.c)
 endif()
 
-if(CONFIG_RK3576_DMA OR CONFIG_RK3576_USBHOST)
+if(CONFIG_RK3576_DMA OR CONFIG_RK3576_USBHOST OR CONFIG_RK3576_GMAC)
   list(APPEND SRCS rk3576_addrenv.c)
+endif()
+
+# The GMAC's descriptors carry physical addresses, and the netdev lower half it
+# implements needs NET, MM_IOB and the work queues; those are Kconfig's job.
+# Mirror: chips/rk3576/Make.defs -- change both.
+
+if(CONFIG_RK3576_GMAC)
+  list(APPEND SRCS rk3576_gmac.c)
 endif()
 
 if(CONFIG_RK3576_DMA)
