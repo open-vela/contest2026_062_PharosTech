@@ -73,6 +73,18 @@
 #include "rk806.h"
 
 /****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* RK806 control bus: I2C1 default signal group (DTS i2c1m0-xfer).  Both
+ * pads are in the GPIO0 bank and select alternate function 11.
+ */
+
+#define KICKPI_K7_I2C1_SCL_PIN (GPIO_PORT0 | GPIO_PIN_B2)
+#define KICKPI_K7_I2C1_SDA_PIN (GPIO_PORT0 | GPIO_PIN_B3)
+#define KICKPI_K7_I2C1_AF      11
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -99,18 +111,42 @@ int kickpi_k7_regulator_initialize(void)
 #ifndef CONFIG_KICKPI_K7_REGULATOR
   return -ENODEV;
 #else
-  /* I2C1 M0 for RK806 PMIC */
-  rk3576_config_gpio(GPIO_PORT0 | GPIO_PIN_B2 | GPIO_ALT | GPIO_AF11);
-  rk3576_config_gpio(GPIO_PORT0 | GPIO_PIN_B3 | GPIO_ALT | GPIO_AF11);
+  FAR struct gpio_dev_s *scl;
+  FAR struct gpio_dev_s *sda;
+  FAR struct i2c_master_s *i2c1;
+  int ret;
 
-  struct i2c_master_s *i2c1 = rk3576_i2c_initialize(1);
-  if (!i2c1)
+  /* Mux the I2C1 signal group.  The handles are deliberately not put():
+   * once muxed, the pads belong to the I2C controller for as long as it
+   * runs.
+   */
+
+  ret = rk3576_gpio_get(KICKPI_K7_I2C1_SCL_PIN, &scl);
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: failed to claim I2C1 SCL (GPIO0_B2): %d\n", ret);
+      return ret;
+    }
+
+  rk3576_gpio_set_af(scl, KICKPI_K7_I2C1_AF);
+
+  ret = rk3576_gpio_get(KICKPI_K7_I2C1_SDA_PIN, &sda);
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: failed to claim I2C1 SDA (GPIO0_B3): %d\n", ret);
+      return ret;
+    }
+
+  rk3576_gpio_set_af(sda, KICKPI_K7_I2C1_AF);
+
+  i2c1 = rk3576_i2c_initialize(1);
+  if (i2c1 == NULL)
     {
       syslog(LOG_ERR, "Failed to init I2C1\n");
       return -EIO;
     }
 
-  int ret = rk806_initialize(i2c1);
+  ret = rk806_initialize(i2c1);
   if (ret < 0)
     {
       syslog(LOG_ERR, "Failed to init RK806\n");
