@@ -502,25 +502,4 @@ config KICKPI_K7_REGULATOR
 		the fine-grained RK806 regulator configuration and want to exclude
 		the board bring-up code from the build.
 
-if KICKPI_K7_REGULATOR
-
-choice
-	prompt "DDR memory type"
-	default KICKPI_K7_DDR_LPDDR5
-	---help---
-		Select the DDR type populated on this board.  This only selects the
-		voltage reported for the read-only vddq_ddr_s0 and vdd2_ddr_s3
-		rails: NuttX never writes those rails because the boot chain has
-		already trained DRAM.
-
-config KICKPI_K7_DDR_LPDDR4
-	bool "LPDDR4"
-
-config KICKPI_K7_DDR_LPDDR5
-	bool "LPDDR5"
-
-endchoice
-
-endif # KICKPI_K7_REGULATOR
-
 endif # ARCH_BOARD_KICKPI_K7
