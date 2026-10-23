@@ -25,16 +25,17 @@
  *
  * This file registers the four fixed input rails that feed the PMIC
  * (vcc12v_dcin -> vcc_sys -> vcc_2v0_pldo_s3 / vcc_1v1_nldo_s3), then
- * configures and registers the 21 direct RK806 outputs (BUCK1-10, PLDO1-6,
- * NLDO1-5).  The parent names and the board voltage limits come from
- * g_kickpi_k7_rk806_cfg[] below.  The RK806_<OUT>_SUPPLY Kconfig symbols are
- * retained for now but are overridden by that table.
+ * registers the 21 direct RK806 outputs (BUCK1-10, PLDO1-6, NLDO1-5).  The
+ * complete board description -- names, voltage limits, parent supplies and
+ * boot flags -- lives in g_kickpi_k7_rk806_cfg[] below.
  *
- * The DDR rails (vddq_ddr_s0, vdd2_ddr_s3) are registered read-only: the
- * boot chain has already trained DRAM, so their ops deliberately provide no
+ * The DDR rails (vddq_ddr_s0, vdd2_ddr_s3) are set by external feedback
+ * resistors populated per memory type, not by the PMIC VSEL register.  They
+ * are registered read-only: their ops deliberately provide no
  * enable/disable/set_voltage callback and NuttX never writes those PMIC
- * registers.  Their reported voltage is selected by the board DDR type
- * Kconfig (LPDDR4/LPDDR5).
+ * registers.  Because software cannot know the actual voltage, their
+ * regulator_get_voltage() reports -ENODATA and the board table carries no
+ * voltage value for them.
  *
  * IMPORTANT: parent rails MUST be registered onto the regulator framework
  * BEFORE rk806_initialize() is called.  A boot_on/always_on descriptor
@@ -86,19 +87,12 @@
 #define KICKPI_K7_RAIL_VCC_2V0_PLDO "vcc_2v0_pldo_s3"
 #define KICKPI_K7_RAIL_VCC_1V1_NLDO "vcc_1v1_nldo_s3"
 
-/* DDR rail voltages are board-population dependent.  The rails are read-only
- * in NuttX: the boot chain has already trained DRAM, and changing VDDQ/VDD2
- * afterwards is not safe.  The value below is only reported through
- * regulator_get_voltage(); the driver never writes these rails.
+/* DDR rail voltages are set by external feedback resistors (BUCK6/BUCK9 FB
+ * pin, not the PMIC VSEL register).  The rails are read-only in NuttX: the
+ * boot chain has already trained DRAM, and changing VDDQ/VDD2 afterwards is
+ * not safe.  Software cannot know the actual voltage, so these rails report
+ * -ENODATA and carry no voltage value at all.
  */
-
-#if defined(CONFIG_KICKPI_K7_DDR_LPDDR4)
-#define KICKPI_K7_VDDQ_DDR_UV 610000
-#define KICKPI_K7_VDD2_DDR_UV 1100000
-#else
-#define KICKPI_K7_VDDQ_DDR_UV 510000
-#define KICKPI_K7_VDD2_DDR_UV 1050000
-#endif
 
 #ifdef CONFIG_KICKPI_K7_REGULATOR
 
@@ -176,130 +170,82 @@ static const struct regulator_desc_s g_kickpi_k7_fixed_rails[] = {
   },
 };
 
-/* Board constraints for the 21 RK806 outputs, taken from the official board
+/* Board description for the 21 RK806 outputs, taken from the official board
  * DTS.  The chip itself can span a wider range; min_uv/max_uv here are what
  * the load on this board is allowed to see.
  *
- * The parent names override the Kconfig RK806_*_SUPPLY defaults.  The Kconfig
- * symbols are kept for now and can be folded into this table in the later
- * configuration cleanup.
+ * READBACK rails use the PMIC's internal feedback and the normal regulator
+ * operations.  The DDR rails (BUCK6/BUCK9) use external feedback resistors
+ * populated per memory type: their VSEL registers do not reflect the output,
+ * so they are UNKNOWN and read-only.  Because software cannot know their
+ * voltage, their min_uv/max_uv are zero and regulator_get_voltage() returns
+ * -ENODATA.
  *
- * Only the DDR rails are read-only.  The other rails stay controllable so
+ * Only the DDR rails are always-on.  The other rails stay controllable so
  * that the future consumer drivers (SDIO voltage switching, peripheral power
- * sequencing) can enable and disable them on demand.  The DDR rails are
- * additionally marked always-on in configs/dev/defconfig.
+ * sequencing) can enable and disable them on demand.
  */
 
-static const struct rk806_rail_cfg
-    g_kickpi_k7_rk806_cfg[RK806_NUM_OUTPUTS] = {
-      [RK806_ID_BUCK1] = {
-        .min_uv = 550000,
-        .max_uv = 950000,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_BUCK2] = {
-        .min_uv = 550000,
-        .max_uv = 950000,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_BUCK3] = {
-        .min_uv = 550000,
-        .max_uv = 950000,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_BUCK4] = {
-        .min_uv = 3300000,
-        .max_uv = 3300000,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_BUCK5] = {
-        .min_uv = 550000,
-        .max_uv = 900000,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_BUCK6] = {
-        .min_uv = KICKPI_K7_VDDQ_DDR_UV,
-        .max_uv = KICKPI_K7_VDDQ_DDR_UV,
-        .readonly = true,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_BUCK7] = {
-        .min_uv = 550000,
-        .max_uv = 800000,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_BUCK8] = {
-        .min_uv = 1800000,
-        .max_uv = 1800000,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_BUCK9] = {
-        .min_uv = KICKPI_K7_VDD2_DDR_UV,
-        .max_uv = KICKPI_K7_VDD2_DDR_UV,
-        .readonly = true,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_BUCK10] = {
-        .min_uv = 550000,
-        .max_uv = 1200000,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_NLDO1] = {
-        .min_uv = 750000,
-        .max_uv = 750000,
-        .supply = KICKPI_K7_RAIL_VCC_1V1_NLDO,
-      },
-      [RK806_ID_NLDO2] = {
-        .min_uv = 850000,
-        .max_uv = 850000,
-        .supply = KICKPI_K7_RAIL_VCC_1V1_NLDO,
-      },
-      [RK806_ID_NLDO3] = {
-        .min_uv = 837500,
-        .max_uv = 837500,
-        .supply = KICKPI_K7_RAIL_VCC_1V1_NLDO,
-      },
-      [RK806_ID_NLDO4] = {
-        .min_uv = 850000,
-        .max_uv = 850000,
-        .supply = KICKPI_K7_RAIL_VCC_1V1_NLDO,
-      },
-      [RK806_ID_NLDO5] = {
-        .min_uv = 750000,
-        .max_uv = 750000,
-        .supply = KICKPI_K7_RAIL_VCC_1V1_NLDO,
-      },
-      [RK806_ID_PLDO1] = {
-        .min_uv = 1800000,
-        .max_uv = 1800000,
-        .supply = KICKPI_K7_RAIL_VCC_2V0_PLDO,
-      },
-      [RK806_ID_PLDO2] = {
-        .min_uv = 1800000,
-        .max_uv = 1800000,
-        .supply = KICKPI_K7_RAIL_VCC_2V0_PLDO,
-      },
-      [RK806_ID_PLDO3] = {
-        .min_uv = 1200000,
-        .max_uv = 1200000,
-        .supply = KICKPI_K7_RAIL_VCC_2V0_PLDO,
-      },
-      [RK806_ID_PLDO4] = {
-        .min_uv = 3300000,
-        .max_uv = 3300000,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_PLDO5] = {
-        .min_uv = 1800000,
-        .max_uv = 3300000,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-      [RK806_ID_PLDO6] = {
-        .min_uv = 1800000,
-        .max_uv = 1800000,
-        .supply = KICKPI_K7_RAIL_VCC_SYS,
-      },
-    };
+#define KICKPI_K7_RK806_RAIL(_name, _supply, _min, _max)              \
+  {                                                                   \
+    .name = _name, .supply = _supply, .min_uv = _min, .max_uv = _max, \
+    .voltage_source = RK806_VOLTAGE_READBACK, .boot_on = true         \
+  }
+
+#define KICKPI_K7_RK806_RAIL_UNKNOWN(_name, _supply)            \
+  {                                                             \
+    .name = _name, .supply = _supply, .min_uv = 0, .max_uv = 0, \
+    .voltage_source = RK806_VOLTAGE_UNKNOWN, .boot_on = true,   \
+    .always_on = true                                           \
+  }
+
+static const struct rk806_rail_cfg g_kickpi_k7_rk806_cfg[RK806_NUM_OUTPUTS] = {
+  [RK806_ID_BUCK1] = KICKPI_K7_RK806_RAIL(
+      "vdd_cpu_big_s0", KICKPI_K7_RAIL_VCC_SYS, 550000, 950000),
+  [RK806_ID_BUCK2] = KICKPI_K7_RK806_RAIL("vdd_npu_s0", KICKPI_K7_RAIL_VCC_SYS,
+                                          550000, 950000),
+  [RK806_ID_BUCK3] = KICKPI_K7_RK806_RAIL(
+      "vdd_cpu_lit_s0", KICKPI_K7_RAIL_VCC_SYS, 550000, 950000),
+  [RK806_ID_BUCK4] = KICKPI_K7_RK806_RAIL("vcc_3v3_s3", KICKPI_K7_RAIL_VCC_SYS,
+                                          3300000, 3300000),
+  [RK806_ID_BUCK5] = KICKPI_K7_RK806_RAIL("vdd_gpu_s0", KICKPI_K7_RAIL_VCC_SYS,
+                                          550000, 900000),
+  [RK806_ID_BUCK6] =
+      KICKPI_K7_RK806_RAIL_UNKNOWN("vddq_ddr_s0", KICKPI_K7_RAIL_VCC_SYS),
+  [RK806_ID_BUCK7] = KICKPI_K7_RK806_RAIL(
+      "vdd_logic_s0", KICKPI_K7_RAIL_VCC_SYS, 550000, 800000),
+  [RK806_ID_BUCK8] = KICKPI_K7_RK806_RAIL("vcc_1v8_s3", KICKPI_K7_RAIL_VCC_SYS,
+                                          1800000, 1800000),
+  [RK806_ID_BUCK9] =
+      KICKPI_K7_RK806_RAIL_UNKNOWN("vdd2_ddr_s3", KICKPI_K7_RAIL_VCC_SYS),
+  [RK806_ID_BUCK10] = KICKPI_K7_RK806_RAIL(
+      "vdd_ddr_s0", KICKPI_K7_RAIL_VCC_SYS, 550000, 1200000),
+  [RK806_ID_NLDO1] = KICKPI_K7_RK806_RAIL(
+      "vdd_0v75_s3", KICKPI_K7_RAIL_VCC_1V1_NLDO, 750000, 750000),
+  [RK806_ID_NLDO2] = KICKPI_K7_RK806_RAIL(
+      "vdda_ddr_pll_s0", KICKPI_K7_RAIL_VCC_1V1_NLDO, 850000, 850000),
+  [RK806_ID_NLDO3] = KICKPI_K7_RK806_RAIL(
+      "vdda0v75_hdmi_s0", KICKPI_K7_RAIL_VCC_1V1_NLDO, 837500, 837500),
+  [RK806_ID_NLDO4] = KICKPI_K7_RK806_RAIL(
+      "vdda_0v85_s0", KICKPI_K7_RAIL_VCC_1V1_NLDO, 850000, 850000),
+  [RK806_ID_NLDO5] = KICKPI_K7_RK806_RAIL(
+      "vdda_0v75_s0", KICKPI_K7_RAIL_VCC_1V1_NLDO, 750000, 750000),
+  [RK806_ID_PLDO1] = KICKPI_K7_RK806_RAIL(
+      "vcca_1v8_s0", KICKPI_K7_RAIL_VCC_2V0_PLDO, 1800000, 1800000),
+  [RK806_ID_PLDO2] = KICKPI_K7_RK806_RAIL(
+      "vcca1v8_pldo2_s0", KICKPI_K7_RAIL_VCC_2V0_PLDO, 1800000, 1800000),
+  [RK806_ID_PLDO3] = KICKPI_K7_RK806_RAIL(
+      "vdda_1v2_s0", KICKPI_K7_RAIL_VCC_2V0_PLDO, 1200000, 1200000),
+  [RK806_ID_PLDO4] = KICKPI_K7_RK806_RAIL(
+      "vcca_3v3_s0", KICKPI_K7_RAIL_VCC_SYS, 3300000, 3300000),
+  [RK806_ID_PLDO5] = KICKPI_K7_RK806_RAIL(
+      "vccio_sd_s0", KICKPI_K7_RAIL_VCC_SYS, 1800000, 3300000),
+  [RK806_ID_PLDO6] = KICKPI_K7_RK806_RAIL(
+      "vcca1v8_pldo6_s3", KICKPI_K7_RAIL_VCC_SYS, 1800000, 1800000),
+};
+
+#undef KICKPI_K7_RK806_RAIL_UNKNOWN
+#undef KICKPI_K7_RK806_RAIL
 
 /****************************************************************************
  * Private Functions
@@ -322,25 +268,6 @@ static int kickpi_k7_fixed_initialize(void)
       syslog(LOG_INFO, "Registered fixed regulator %s (%u uV)\n",
              g_kickpi_k7_fixed_rails[i].name,
              g_kickpi_k7_fixed_rails[i].min_uv);
-    }
-
-  return OK;
-}
-
-static int kickpi_k7_rk806_configure(void)
-{
-  unsigned int i;
-
-  for (i = 0; i < RK806_NUM_OUTPUTS; i++)
-    {
-      int ret = rk806_rail_configure(i, &g_kickpi_k7_rk806_cfg[i]);
-
-      if (ret < 0)
-        {
-          syslog(LOG_ERR, "ERROR: failed to configure RK806 rail %u: %d\n", i,
-                 ret);
-          return ret;
-        }
     }
 
   return OK;
@@ -392,17 +319,6 @@ int kickpi_k7_regulator_initialize(void)
       return ret;
     }
 
-  /* Apply the board voltage limits, read-only policy and parent names before
-   * the RK806 descriptors are registered.
-   */
-
-  ret = kickpi_k7_rk806_configure();
-  if (ret < 0)
-    {
-      syslog(LOG_ERR, "Failed to configure RK806 rails\n");
-      return ret;
-    }
-
   /* Mux the I2C1 signal group.  The handles are deliberately not put():
    * once muxed, the pads belong to the I2C controller for as long as it
    * runs.
@@ -433,7 +349,7 @@ int kickpi_k7_regulator_initialize(void)
       return -EIO;
     }
 
-  ret = rk806_initialize(i2c1);
+  ret = rk806_initialize(i2c1, g_kickpi_k7_rk806_cfg, RK806_NUM_OUTPUTS);
   if (ret < 0)
     {
       syslog(LOG_ERR, "Failed to init RK806\n");

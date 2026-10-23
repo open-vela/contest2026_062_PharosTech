@@ -23,7 +23,6 @@
 #include <errno.h>
 #include <string.h>
 
-#include <nuttx/devicetree/util_macro.h>
 #include <nuttx/i2c/i2c_master.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/power/regulator.h>
@@ -48,6 +47,20 @@ _Static_assert(RK806_NUM_REGULATORS == RK806_NUM_OUTPUTS,
 /****************************************************************************
  * Private Types
  ****************************************************************************/
+
+/* Chip-side metadata for one RK806 output.  Everything here is fixed by the
+ * PMIC itself; the board-specific name, limits, parent and flags come from
+ * the table passed to rk806_initialize().
+ */
+
+struct rk806_hw_s
+{
+  unsigned int vsel_reg;
+  unsigned int vsel_mask;
+  unsigned int enable_reg;
+  unsigned int enable_mask;
+  unsigned int n_voltages;
+};
 
 /* The RK806 driver private state.
  *
@@ -82,14 +95,6 @@ static struct rk806_dev_s g_rk806 = {
   RK806_I2C_ADDRESS, /* addr */
   RK806_BUS_SPEED,   /* frequency */
 };
-
-/* Fold an empty string into NULL for the desc->supply_name field.  The
- * Kconfig *_SUPPLY symbol is a string; when a board leaves it empty it
- * means the rail's input is a fixed (always-on) supply with no independent
- * parent regulator, so the framework must not try to resolve/enable it.
- */
-
-#define RK806_SUPPLY_OR_NULL(s) ((s)[0] ? (s) : NULL)
 
 /****************************************************************************
  * Name: rk806_decode_buck_voltage
@@ -157,100 +162,67 @@ static unsigned int rk806_get_voltage_count(unsigned int id)
 }
 
 /****************************************************************************
- * Regulator descriptors.
+ * Chip-side output table.
  *
- * One descriptor per output.  All outputs (BUCK and LDO) share the same
- * adjustable range (RK806_MIN_UV .. RK806_MAX_UV, in microvolts).
- * Set boot_on / always_on as required by the kickpi-k7 power design
- * (default: off / not forced-on).
-
+ * One entry per RK806 output, in RK806_ID_* order.  These values are fixed by
+ * the PMIC; the board supplies everything else in its rk806_rail_cfg table.
  */
 
-#define RK806_BUCK_REG(_id, _enable_reg, _enable_mask)                    \
-  {                                                                       \
-    .name = CONFIG_RK806_BUCK##_id##_NAME, .id = RK806_ID_BUCK##_id,      \
-    .n_voltages = RK806_BUCK_SEL_COUNT,                                   \
-    .vsel_reg = RK806_REG_BUCK##_id##_ON_VSEL,                            \
-    .vsel_mask = RK806_BUCK_VSEL_MASK, .enable_reg = _enable_reg,         \
-    .enable_mask = _enable_mask, .min_uv = RK806_MIN_UV,                  \
-    .max_uv = RK806_MAX_UV,                                               \
-    .boot_on = IS_ENABLED(CONFIG_RK806_BUCK##_id##_BOOT_ON),              \
-    .always_on = IS_ENABLED(CONFIG_RK806_BUCK##_id##_ALWAYS_ON),          \
-    .supply_name = RK806_SUPPLY_OR_NULL(CONFIG_RK806_BUCK##_id##_SUPPLY), \
+#define RK806_BUCK_HW(_id, _ereg, _emask)                               \
+  {                                                                     \
+    RK806_REG_BUCK##_id##_ON_VSEL, RK806_BUCK_VSEL_MASK, _ereg, _emask, \
+        RK806_BUCK_SEL_COUNT                                            \
   }
 
-#define RK806_NLDO_REG(_id, _enable_reg, _enable_mask, _supply)      \
-  {                                                                  \
-    .name = CONFIG_RK806_NLDO##_id##_NAME, .id = RK806_ID_NLDO##_id, \
-    .n_voltages = RK806_LDO_SEL_COUNT,                               \
-    .vsel_reg = RK806_REG_NLDO##_id##_ON_VSEL,                       \
-    .vsel_mask = RK806_NLDO_VSEL_MASK, .enable_reg = _enable_reg,    \
-    .enable_mask = _enable_mask, .min_uv = RK806_MIN_UV,             \
-    .max_uv = RK806_MAX_UV,                                          \
-    .boot_on = IS_ENABLED(CONFIG_RK806_NLDO##_id##_BOOT_ON),         \
-    .always_on = IS_ENABLED(CONFIG_RK806_NLDO##_id##_ALWAYS_ON),     \
-    .supply_name = RK806_SUPPLY_OR_NULL(_supply),                    \
+#define RK806_NLDO_HW(_id, _ereg, _emask)                               \
+  {                                                                     \
+    RK806_REG_NLDO##_id##_ON_VSEL, RK806_NLDO_VSEL_MASK, _ereg, _emask, \
+        RK806_LDO_SEL_COUNT                                             \
   }
 
-#define RK806_PLDO_REG(_id, _enable_reg, _enable_mask, _supply)      \
-  {                                                                  \
-    .name = CONFIG_RK806_PLDO##_id##_NAME, .id = RK806_ID_PLDO##_id, \
-    .n_voltages = RK806_LDO_SEL_COUNT,                               \
-    .vsel_reg = RK806_REG_PLDO##_id##_ON_VSEL,                       \
-    .vsel_mask = RK806_PLDO_VSEL_MASK, .enable_reg = _enable_reg,    \
-    .enable_mask = _enable_mask, .min_uv = RK806_MIN_UV,             \
-    .max_uv = RK806_MAX_UV,                                          \
-    .boot_on = IS_ENABLED(CONFIG_RK806_PLDO##_id##_BOOT_ON),         \
-    .always_on = IS_ENABLED(CONFIG_RK806_PLDO##_id##_ALWAYS_ON),     \
-    .supply_name = RK806_SUPPLY_OR_NULL(_supply),                    \
+#define RK806_PLDO_HW(_id, _ereg, _emask)                               \
+  {                                                                     \
+    RK806_REG_PLDO##_id##_ON_VSEL, RK806_PLDO_VSEL_MASK, _ereg, _emask, \
+        RK806_LDO_SEL_COUNT                                             \
   }
 
-static struct regulator_desc_s g_rk806_regulators[RK806_NUM_REGULATORS] = {
-  RK806_BUCK_REG(1, RK806_BUCK1_EN_REG, RK806_BUCK1_EN_MASK),
-  RK806_BUCK_REG(2, RK806_BUCK2_EN_REG, RK806_BUCK2_EN_MASK),
-  RK806_BUCK_REG(3, RK806_BUCK3_EN_REG, RK806_BUCK3_EN_MASK),
-  RK806_BUCK_REG(4, RK806_BUCK4_EN_REG, RK806_BUCK4_EN_MASK),
-  RK806_BUCK_REG(5, RK806_BUCK5_EN_REG, RK806_BUCK5_EN_MASK),
-  RK806_BUCK_REG(6, RK806_BUCK6_EN_REG, RK806_BUCK6_EN_MASK),
-  RK806_BUCK_REG(7, RK806_BUCK7_EN_REG, RK806_BUCK7_EN_MASK),
-  RK806_BUCK_REG(8, RK806_BUCK8_EN_REG, RK806_BUCK8_EN_MASK),
-  RK806_BUCK_REG(9, RK806_BUCK9_EN_REG, RK806_BUCK9_EN_MASK),
-  RK806_BUCK_REG(10, RK806_BUCK10_EN_REG, RK806_BUCK10_EN_MASK),
+static const struct rk806_hw_s g_rk806_hw[RK806_NUM_OUTPUTS] = {
+  [RK806_ID_BUCK1] = RK806_BUCK_HW(1, RK806_BUCK1_EN_REG, RK806_BUCK1_EN_MASK),
+  [RK806_ID_BUCK2] = RK806_BUCK_HW(2, RK806_BUCK2_EN_REG, RK806_BUCK2_EN_MASK),
+  [RK806_ID_BUCK3] = RK806_BUCK_HW(3, RK806_BUCK3_EN_REG, RK806_BUCK3_EN_MASK),
+  [RK806_ID_BUCK4] = RK806_BUCK_HW(4, RK806_BUCK4_EN_REG, RK806_BUCK4_EN_MASK),
+  [RK806_ID_BUCK5] = RK806_BUCK_HW(5, RK806_BUCK5_EN_REG, RK806_BUCK5_EN_MASK),
+  [RK806_ID_BUCK6] = RK806_BUCK_HW(6, RK806_BUCK6_EN_REG, RK806_BUCK6_EN_MASK),
+  [RK806_ID_BUCK7] = RK806_BUCK_HW(7, RK806_BUCK7_EN_REG, RK806_BUCK7_EN_MASK),
+  [RK806_ID_BUCK8] = RK806_BUCK_HW(8, RK806_BUCK8_EN_REG, RK806_BUCK8_EN_MASK),
+  [RK806_ID_BUCK9] = RK806_BUCK_HW(9, RK806_BUCK9_EN_REG, RK806_BUCK9_EN_MASK),
+  [RK806_ID_BUCK10] =
+      RK806_BUCK_HW(10, RK806_BUCK10_EN_REG, RK806_BUCK10_EN_MASK),
 
-  RK806_NLDO_REG(1, RK806_NLDO1_EN_REG, RK806_NLDO1_EN_MASK,
-                 CONFIG_RK806_NLDO1_2_3_SUPPLY),
-  RK806_NLDO_REG(2, RK806_NLDO2_EN_REG, RK806_NLDO2_EN_MASK,
-                 CONFIG_RK806_NLDO1_2_3_SUPPLY),
-  RK806_NLDO_REG(3, RK806_NLDO3_EN_REG, RK806_NLDO3_EN_MASK,
-                 CONFIG_RK806_NLDO1_2_3_SUPPLY),
-  RK806_NLDO_REG(4, RK806_NLDO4_EN_REG, RK806_NLDO4_EN_MASK,
-                 CONFIG_RK806_NLDO4_5_SUPPLY),
-  RK806_NLDO_REG(5, RK806_NLDO5_EN_REG, RK806_NLDO5_EN_MASK,
-                 CONFIG_RK806_NLDO4_5_SUPPLY),
+  [RK806_ID_NLDO1] = RK806_NLDO_HW(1, RK806_NLDO1_EN_REG, RK806_NLDO1_EN_MASK),
+  [RK806_ID_NLDO2] = RK806_NLDO_HW(2, RK806_NLDO2_EN_REG, RK806_NLDO2_EN_MASK),
+  [RK806_ID_NLDO3] = RK806_NLDO_HW(3, RK806_NLDO3_EN_REG, RK806_NLDO3_EN_MASK),
+  [RK806_ID_NLDO4] = RK806_NLDO_HW(4, RK806_NLDO4_EN_REG, RK806_NLDO4_EN_MASK),
+  [RK806_ID_NLDO5] = RK806_NLDO_HW(5, RK806_NLDO5_EN_REG, RK806_NLDO5_EN_MASK),
 
-  RK806_PLDO_REG(1, RK806_PLDO1_EN_REG, RK806_PLDO1_EN_MASK,
-                 CONFIG_RK806_PLDO1_2_3_SUPPLY),
-  RK806_PLDO_REG(2, RK806_PLDO2_EN_REG, RK806_PLDO2_EN_MASK,
-                 CONFIG_RK806_PLDO1_2_3_SUPPLY),
-  RK806_PLDO_REG(3, RK806_PLDO3_EN_REG, RK806_PLDO3_EN_MASK,
-                 CONFIG_RK806_PLDO1_2_3_SUPPLY),
-  RK806_PLDO_REG(4, RK806_PLDO4_EN_REG, RK806_PLDO4_EN_MASK,
-                 CONFIG_RK806_PLDO4_5_SUPPLY),
-  RK806_PLDO_REG(5, RK806_PLDO5_EN_REG, RK806_PLDO5_EN_MASK,
-                 CONFIG_RK806_PLDO4_5_SUPPLY),
-  RK806_PLDO_REG(6, RK806_PLDO6_EN_REG, RK806_PLDO6_EN_MASK,
-                 CONFIG_RK806_PLDO6_SUPPLY),
+  [RK806_ID_PLDO1] = RK806_PLDO_HW(1, RK806_PLDO1_EN_REG, RK806_PLDO1_EN_MASK),
+  [RK806_ID_PLDO2] = RK806_PLDO_HW(2, RK806_PLDO2_EN_REG, RK806_PLDO2_EN_MASK),
+  [RK806_ID_PLDO3] = RK806_PLDO_HW(3, RK806_PLDO3_EN_REG, RK806_PLDO3_EN_MASK),
+  [RK806_ID_PLDO4] = RK806_PLDO_HW(4, RK806_PLDO4_EN_REG, RK806_PLDO4_EN_MASK),
+  [RK806_ID_PLDO5] = RK806_PLDO_HW(5, RK806_PLDO5_EN_REG, RK806_PLDO5_EN_MASK),
+  [RK806_ID_PLDO6] = RK806_PLDO_HW(6, RK806_PLDO6_EN_REG, RK806_PLDO6_EN_MASK),
 };
 
-#undef RK806_PLDO_REG
-#undef RK806_NLDO_REG
-#undef RK806_BUCK_REG
+#undef RK806_PLDO_HW
+#undef RK806_NLDO_HW
+#undef RK806_BUCK_HW
 
-/* Per-output board policy.  rk806_rail_configure() sets the read-only bit
- * before rk806_initialize() picks the operations table for each output.
- */
+_Static_assert(sizeof(g_rk806_hw) / sizeof(g_rk806_hw[0]) == RK806_NUM_OUTPUTS,
+               "RK806 hardware table does not match the output ID enum");
 
-static bool g_rk806_readonly[RK806_NUM_OUTPUTS];
+/* Descriptors are filled from the board table at registration time. */
+
+static struct regulator_desc_s g_rk806_regulators[RK806_NUM_OUTPUTS];
 
 /****************************************************************************
  * Private Functions
@@ -489,16 +461,16 @@ static int rk806_disable(FAR struct regulator_dev_s *rdev)
 }
 
 /****************************************************************************
- * Name: rk806_fixed_list_voltage
+ * Name: rk806_nominal_list_voltage
  *
  * Description:
- *   Voltage table for a read-only rail: only selector 0 exists, and it maps
- *   to the board-provided fixed voltage.
+ *   Voltage table for a read-only rail with a board nominal: only selector 0
+ *   exists, and it maps to the board-provided value.
  *
  ****************************************************************************/
 
-static int rk806_fixed_list_voltage(FAR struct regulator_dev_s *rdev,
-                                    unsigned int selector)
+static int rk806_nominal_list_voltage(FAR struct regulator_dev_s *rdev,
+                                      unsigned int selector)
 {
   if (selector != 0)
     {
@@ -509,27 +481,48 @@ static int rk806_fixed_list_voltage(FAR struct regulator_dev_s *rdev,
 }
 
 /****************************************************************************
- * Name: rk806_fixed_get_voltage
+ * Name: rk806_nominal_get_voltage
  *
  * Description:
- *   Report the board-provided fixed voltage of a read-only rail.
+ *   Report the board nominal of a read-only rail.
  *
  ****************************************************************************/
 
-static int rk806_fixed_get_voltage(FAR struct regulator_dev_s *rdev)
+static int rk806_nominal_get_voltage(FAR struct regulator_dev_s *rdev)
 {
   return (int)rdev->desc->min_uv;
 }
 
-/* Read-only output operations.  There is deliberately no enable, disable, or
- * voltage-set callback: a rail using this table can be queried but its
- * hardware state is never touched.  Used for the DDR rails, which the boot
- * chain has already trained.
+/* Read-only NOMINAL operations: the rail can be queried but not enabled,
+ * disabled, or voltage-set.  The reported value is a board nominal, not a
+ * measurement.
  */
 
-static const struct regulator_ops_s g_rk806_fixed_ops = {
-  .list_voltage = rk806_fixed_list_voltage,
-  .get_voltage = rk806_fixed_get_voltage,
+static const struct regulator_ops_s g_rk806_nominal_ops = {
+  .list_voltage = rk806_nominal_list_voltage,
+  .get_voltage = rk806_nominal_get_voltage,
+};
+
+/****************************************************************************
+ * Name: rk806_unknown_get_voltage
+ *
+ * Description:
+ *   Read-only UNKNOWN rail: software has no way to know the actual voltage.
+ *
+ ****************************************************************************/
+
+static int rk806_unknown_get_voltage(FAR struct regulator_dev_s *rdev)
+{
+  return -ENODATA;
+}
+
+/* Read-only UNKNOWN operations: no enable, disable, or voltage-set callback,
+ * and voltage reads report -ENODATA.  Used for the DDR rails, which are set
+ * by external feedback resistors and must not be touched by NuttX.
+ */
+
+static const struct regulator_ops_s g_rk806_unknown_ops = {
+  .get_voltage = rk806_unknown_get_voltage,
 };
 
 /****************************************************************************
@@ -552,54 +545,25 @@ static const struct regulator_ops_s g_rk806_ops = {
  ****************************************************************************/
 
 /****************************************************************************
- * Name: rk806_rail_configure
- *
- * Description:
- *   Apply board-specific voltage limits, read-only policy and parent supply
- *   name to one output.  Must be called before rk806_initialize().
- *
- ****************************************************************************/
-
-int rk806_rail_configure(unsigned int id, FAR const struct rk806_rail_cfg *cfg)
-{
-  if (id >= RK806_NUM_OUTPUTS || cfg == NULL)
-    {
-      return -EINVAL;
-    }
-
-  if (cfg->min_uv < (int)RK806_MIN_UV || cfg->max_uv > (int)RK806_MAX_UV ||
-      cfg->min_uv > cfg->max_uv)
-    {
-      return -EINVAL;
-    }
-
-  g_rk806_regulators[id].min_uv = cfg->min_uv;
-  g_rk806_regulators[id].max_uv = cfg->max_uv;
-  g_rk806_regulators[id].supply_name = cfg->supply;
-  g_rk806_readonly[id] = cfg->readonly;
-
-  return OK;
-}
-
-/****************************************************************************
  * Name: rk806_initialize
  *
  * Description:
  *   Register the RK806 PMIC regulators onto the regulator framework.
- *   Called from board initialization.
+ *   Called from board initialization with the board's per-rail table.
  *
  ****************************************************************************/
 
-int rk806_initialize(FAR struct i2c_master_s *i2c)
+int rk806_initialize(FAR struct i2c_master_s *i2c,
+                     FAR const struct rk806_rail_cfg *rails, size_t n_rails)
 {
   int ret;
   int i;
   int failed = false;
   struct rk806_dev_s *priv = &g_rk806;
 
-  if (i2c == NULL)
+  if (i2c == NULL || rails == NULL || n_rails != RK806_NUM_OUTPUTS)
     {
-      return -ENODEV;
+      return -EINVAL;
     }
 
   /* Store the I2C lower-half pointer in the global device state. */
@@ -632,31 +596,95 @@ int rk806_initialize(FAR struct i2c_master_s *i2c)
   _info("Read rk806 chip name: 0x%X, chip version 0x%X\n", chip_name,
         chip_version);
 
-  /* Register every BUCK/LDO output onto the regulator framework.  Normal
-   * outputs share g_rk806_ops; read-only outputs (the DDR rails) use the
-   * passive g_rk806_fixed_ops so registration never writes their hardware.
-   * Per-output state (registers, voltage table) is carried in the
-   * descriptor and reached through desc->id.
+  /* Fill each descriptor from the board table and the chip-side hardware
+   * table, then register it with the operations selected by the board's
+   * voltage-source policy.
    */
 
-  for (i = 0; i < RK806_NUM_REGULATORS; i++)
+  for (i = 0; i < RK806_NUM_OUTPUTS; i++)
     {
+      FAR const struct rk806_rail_cfg *cfg = &rails[i];
+      FAR const struct rk806_hw_s *hw = &g_rk806_hw[i];
+      FAR struct regulator_desc_s *desc = &g_rk806_regulators[i];
       FAR const struct regulator_ops_s *ops;
       FAR struct regulator_dev_s *rdev;
 
-      ops = g_rk806_readonly[i] ? &g_rk806_fixed_ops : &g_rk806_ops;
-      rdev = regulator_register(&g_rk806_regulators[i], ops, priv);
+      if (cfg->name == NULL || cfg->name[0] == '\0' || hw->n_voltages == 0)
+        {
+          _err("ERROR: invalid board config for RK806 output %d\n", i);
+          return -EINVAL;
+        }
+
+      if (cfg->voltage_source == RK806_VOLTAGE_UNKNOWN)
+        {
+          /* UNKNOWN means there is no voltage value to carry. */
+
+          if (cfg->min_uv != 0 || cfg->max_uv != 0)
+            {
+              _err("ERROR: UNKNOWN RK806 rail %s carries a voltage\n",
+                   cfg->name);
+              return -EINVAL;
+            }
+        }
+      else if (cfg->min_uv < (int)RK806_MIN_UV ||
+               cfg->max_uv > (int)RK806_MAX_UV || cfg->min_uv > cfg->max_uv)
+        {
+          _err("ERROR: invalid voltage limits for RK806 rail %s\n", cfg->name);
+          return -EINVAL;
+        }
+
+      desc->name = cfg->name;
+      desc->id = i;
+      desc->n_voltages = hw->n_voltages;
+      desc->vsel_reg = hw->vsel_reg;
+      desc->vsel_mask = hw->vsel_mask;
+      desc->enable_reg = hw->enable_reg;
+      desc->enable_mask = hw->enable_mask;
+      desc->min_uv = cfg->min_uv;
+      desc->max_uv = cfg->max_uv;
+      desc->boot_on = cfg->boot_on;
+      desc->always_on = cfg->always_on;
+      desc->supply_name = cfg->supply;
+
+      switch (cfg->voltage_source)
+        {
+          case RK806_VOLTAGE_READBACK:
+            ops = &g_rk806_ops;
+            break;
+
+          case RK806_VOLTAGE_NOMINAL:
+            ops = &g_rk806_nominal_ops;
+            break;
+
+          case RK806_VOLTAGE_UNKNOWN:
+            ops = &g_rk806_unknown_ops;
+            break;
+
+          default:
+            _err("ERROR: invalid voltage source for %s\n", cfg->name);
+            return -EINVAL;
+        }
+
+      rdev = regulator_register(desc, ops, priv);
       if (rdev == NULL)
         {
-          _err("ERROR: failed to register %s\n", g_rk806_regulators[i].name);
+          _err("ERROR: failed to register %s\n", desc->name);
           failed = true;
+        }
+      else if (cfg->voltage_source == RK806_VOLTAGE_READBACK)
+        {
+          _info("Registered regulator %s (%u-%u uV)\n", desc->name,
+                desc->min_uv, desc->max_uv);
+        }
+      else if (cfg->voltage_source == RK806_VOLTAGE_NOMINAL)
+        {
+          _info("Registered regulator %s (nominal %u uV, read-only)\n",
+                desc->name, desc->min_uv);
         }
       else
         {
-          _info("Registered regulator %s (%u-%u uV%s)\n",
-                g_rk806_regulators[i].name, g_rk806_regulators[i].min_uv,
-                g_rk806_regulators[i].max_uv,
-                g_rk806_readonly[i] ? ", read-only" : "");
+          _info("Registered regulator %s (voltage unknown, read-only)\n",
+                desc->name);
         }
     }
 
