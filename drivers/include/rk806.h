@@ -137,8 +137,38 @@ struct rk806_rail_cfg
  *           entries.
  *   n_rails - Number of entries in rails; must equal RK806_NUM_OUTPUTS.
  *
+ * Failure policy:
+ *   Initialization is per output, not all-or-nothing, and nothing is rolled
+ *   back.
+ *
+ *   The whole board table is validated before any output is registered, so an
+ *   entry the driver rejects (empty name, UNKNOWN source carrying a voltage,
+ *   limits outside the chip range, unknown voltage source) is reported and
+ *   skipped without having written anything to the PMIC.  The same holds for
+ *   an output the framework refuses: it is reported and skipped, and the
+ *   remaining outputs still register.  One bad rail therefore costs only that
+ *   rail, exactly as one unregistered clock costs only its consumer.
+ *
+ *   Rollback would not buy anything.  regulator_register() has already
+ *   switched on every boot_on output by the time a later output fails, so
+ *   unregistering the earlier ones would tear down the software view while the
+ *   PMIC stays powered.  regulator_unregister() is also not guaranteed to
+ *   complete: it refuses (and only logs) while a consumer holds the rail, so a
+ *   "rollback" could itself stop halfway.  A consumer of a skipped output just
+ *   fails to get that supply and keeps everything else, which is the outcome
+ *   this driver wants; the failure is never fatal to the system.
+ *
+ *   The function registers once, during board bring-up; it keeps no shadow
+ *   copy of the regulator devices it created, because the regulator framework
+ *   list is the only state.  Calling it a second time is not a supported
+ *   operation: every name is already taken, so it reports failure for each
+ *   output and registers nothing.
+ *
  * Returned Value:
- *   OK (0) on success; a negated errno value on failure.
+ *   OK (0) if every output was registered; otherwise the first error
+ *   encountered (-EINVAL for a rejected board entry, -ENODEV when the
+ *   framework refused an output).  A negative return does not mean that
+ *   nothing was registered: outputs that succeeded stay registered.
  *
  ****************************************************************************/
 
