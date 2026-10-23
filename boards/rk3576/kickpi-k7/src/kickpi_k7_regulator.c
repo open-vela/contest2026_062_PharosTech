@@ -255,6 +255,12 @@ static int kickpi_k7_fixed_initialize(void)
 {
   size_t i;
 
+  /* Stop at the first failure here, unlike rk806_initialize(): these four
+   * rails are a parent chain (vcc12v_dcin -> vcc_sys -> vcc_2v0_pldo_s3 /
+   * vcc_1v1_nldo_s3), so a rail whose parent is missing cannot register
+   * either, and continuing would only repeat the same failure further down.
+   */
+
   for (i = 0; i < nitems(g_kickpi_k7_fixed_rails); i++)
     {
       if (regulator_register(&g_kickpi_k7_fixed_rails[i],
@@ -352,7 +358,13 @@ int kickpi_k7_regulator_initialize(void)
   ret = rk806_initialize(i2c1, g_kickpi_k7_rk806_cfg, RK806_NUM_OUTPUTS);
   if (ret < 0)
     {
-      syslog(LOG_ERR, "Failed to init RK806\n");
+      /* Not fatal: rk806_initialize() reports a failure for a single rail
+       * while the others stay registered, so the tree is partial rather than
+       * absent (see the contract in rk806.h).
+       */
+
+      syslog(LOG_ERR, "RK806: rail tree incomplete (%d), some rails are up\n",
+             ret);
       return ret;
     }
 

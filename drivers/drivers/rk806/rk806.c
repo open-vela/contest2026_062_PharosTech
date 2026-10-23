@@ -41,6 +41,7 @@
 
 #include <debug.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <string.h>
 
 #include <nuttx/i2c/i2c_master.h>
@@ -561,6 +562,98 @@ static const struct regulator_ops_s g_rk806_ops = {
 };
 
 /****************************************************************************
+ * Name: rk806_ops_for
+ *
+ * Description:
+ *   Return the operation set selected by the board's voltage-source policy,
+ *   or NULL when the policy value is not one of the three defined ones.
+ *
+ ****************************************************************************/
+
+static FAR const struct regulator_ops_s *
+rk806_ops_for(enum rk806_voltage_source_e source)
+{
+  switch (source)
+    {
+      case RK806_VOLTAGE_READBACK:
+        return &g_rk806_ops;
+
+      case RK806_VOLTAGE_NOMINAL:
+        return &g_rk806_nominal_ops;
+
+      case RK806_VOLTAGE_UNKNOWN:
+        return &g_rk806_unknown_ops;
+
+      default:
+        return NULL;
+    }
+}
+
+/****************************************************************************
+ * Name: rk806_config_output
+ *
+ * Description:
+ *   Validate one board table entry and fill its regulator descriptor from
+ *   that entry plus the chip-side hardware table.
+ *
+ *   This is pure software: nothing is registered and no PMIC register is
+ *   written, so a rejected entry leaves no trace behind and cannot affect any
+ *   other output.
+ *
+ ****************************************************************************/
+
+static int rk806_config_output(unsigned int i,
+                               FAR const struct rk806_rail_cfg *cfg)
+{
+  FAR const struct rk806_hw_s *hw = &g_rk806_hw[i];
+  FAR struct regulator_desc_s *desc = &g_rk806_regulators[i];
+
+  if (cfg->name == NULL || cfg->name[0] == '\0' || hw->n_voltages == 0)
+    {
+      _err("ERROR: invalid board config for RK806 output %u\n", i);
+      return -EINVAL;
+    }
+
+  if (rk806_ops_for(cfg->voltage_source) == NULL)
+    {
+      _err("ERROR: invalid voltage source for %s\n", cfg->name);
+      return -EINVAL;
+    }
+
+  if (cfg->voltage_source == RK806_VOLTAGE_UNKNOWN)
+    {
+      /* UNKNOWN means there is no voltage value to carry. */
+
+      if (cfg->min_uv != 0 || cfg->max_uv != 0)
+        {
+          _err("ERROR: UNKNOWN RK806 rail %s carries a voltage\n", cfg->name);
+          return -EINVAL;
+        }
+    }
+  else if (cfg->min_uv < (int)RK806_MIN_UV ||
+           cfg->max_uv > (int)RK806_MAX_UV || cfg->min_uv > cfg->max_uv)
+    {
+      _err("ERROR: invalid voltage limits for RK806 rail %s\n", cfg->name);
+      return -EINVAL;
+    }
+
+  desc->name = cfg->name;
+  desc->id = i;
+  desc->n_voltages = hw->n_voltages;
+  desc->vsel_reg = hw->vsel_reg;
+  desc->vsel_mask = hw->vsel_mask;
+  desc->enable_reg = hw->enable_reg;
+  desc->enable_mask = hw->enable_mask;
+  desc->min_uv = cfg->min_uv;
+  desc->max_uv = cfg->max_uv;
+  desc->boot_on = cfg->boot_on;
+  desc->always_on = cfg->always_on;
+  desc->supply_name = cfg->supply;
+
+  return OK;
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -571,15 +664,27 @@ static const struct regulator_ops_s g_rk806_ops = {
  *   Register the RK806 PMIC regulators onto the regulator framework.
  *   Called from board initialization with the board's per-rail table.
  *
+ *   The board table is checked in full before anything is registered or
+ *   written to the PMIC, and each output is then handled independently: an
+ *   output whose board entry is rejected, or that the framework refuses, is
+ *   logged and skipped while the remaining outputs still register.  Failure is
+ *   therefore not all-or-nothing and is never rolled back.  The contract, and
+ *   why rollback would not help, are documented on the prototype in rk806.h.
+ *
+ * Returned Value:
+ *   OK (0) if every output was registered; otherwise the first error
+ *   encountered.  Outputs that did register stay registered in that case.
+ *
  ****************************************************************************/
 
 int rk806_initialize(FAR struct i2c_master_s *i2c,
                      FAR const struct rk806_rail_cfg *rails, size_t n_rails)
 {
+  bool configured[RK806_NUM_OUTPUTS];
+  struct rk806_dev_s *priv = &g_rk806;
+  int err = OK;
   int ret;
   int i;
-  int failed = false;
-  struct rk806_dev_s *priv = &g_rk806;
 
   if (i2c == NULL || rails == NULL || n_rails != RK806_NUM_OUTPUTS)
     {
@@ -616,99 +721,75 @@ int rk806_initialize(FAR struct i2c_master_s *i2c,
   _info("Read rk806 chip name: 0x%X, chip version 0x%X\n", chip_name,
         chip_version);
 
-  /* Fill each descriptor from the board table and the chip-side hardware
-   * table, then register it with the operations selected by the board's
-   * voltage-source policy.
+  /* First pass: validate the board table and fill the descriptors.  Nothing
+   * is registered and no PMIC register is written here, so a bad table is
+   * rejected before it can power anything up.
+   */
+
+  for (i = 0; i < RK806_NUM_OUTPUTS; i++)
+    {
+      ret = rk806_config_output(i, &rails[i]);
+      configured[i] = (ret == OK);
+      if (ret < 0 && err == OK)
+        {
+          err = ret;
+        }
+    }
+
+  /* Second pass: register every accepted output.  A registration failure is
+   * confined to its own rail -- the remaining outputs still register, and a
+   * consumer of the failed rail simply does not get that supply.  Nothing is
+   * rolled back: regulator_register() has already switched on boot_on rails,
+   * so unregistering would only tear down the software view while the PMIC
+   * stays powered.  The returned device is deliberately not kept either: the
+   * framework list is the only state this driver has.
    */
 
   for (i = 0; i < RK806_NUM_OUTPUTS; i++)
     {
       FAR const struct rk806_rail_cfg *cfg = &rails[i];
-      FAR const struct rk806_hw_s *hw = &g_rk806_hw[i];
       FAR struct regulator_desc_s *desc = &g_rk806_regulators[i];
       FAR const struct regulator_ops_s *ops;
-      FAR struct regulator_dev_s *rdev;
 
-      if (cfg->name == NULL || cfg->name[0] == '\0' || hw->n_voltages == 0)
+      if (!configured[i])
         {
-          _err("ERROR: invalid board config for RK806 output %d\n", i);
-          return -EINVAL;
+          continue;
         }
 
-      if (cfg->voltage_source == RK806_VOLTAGE_UNKNOWN)
-        {
-          /* UNKNOWN means there is no voltage value to carry. */
+      ops = rk806_ops_for(cfg->voltage_source);
+      DEBUGASSERT(ops != NULL);
 
-          if (cfg->min_uv != 0 || cfg->max_uv != 0)
+      if (regulator_register(desc, ops, priv) == NULL)
+        {
+          _err("ERROR: failed to register %s\n", desc->name);
+          if (err == OK)
             {
-              _err("ERROR: UNKNOWN RK806 rail %s carries a voltage\n",
-                   cfg->name);
-              return -EINVAL;
+              err = -ENODEV;
             }
-        }
-      else if (cfg->min_uv < (int)RK806_MIN_UV ||
-               cfg->max_uv > (int)RK806_MAX_UV || cfg->min_uv > cfg->max_uv)
-        {
-          _err("ERROR: invalid voltage limits for RK806 rail %s\n", cfg->name);
-          return -EINVAL;
-        }
 
-      desc->name = cfg->name;
-      desc->id = i;
-      desc->n_voltages = hw->n_voltages;
-      desc->vsel_reg = hw->vsel_reg;
-      desc->vsel_mask = hw->vsel_mask;
-      desc->enable_reg = hw->enable_reg;
-      desc->enable_mask = hw->enable_mask;
-      desc->min_uv = cfg->min_uv;
-      desc->max_uv = cfg->max_uv;
-      desc->boot_on = cfg->boot_on;
-      desc->always_on = cfg->always_on;
-      desc->supply_name = cfg->supply;
+          continue;
+        }
 
       switch (cfg->voltage_source)
         {
           case RK806_VOLTAGE_READBACK:
-            ops = &g_rk806_ops;
+            _info("Registered regulator %s (%u-%u uV)\n", desc->name,
+                  desc->min_uv, desc->max_uv);
             break;
 
           case RK806_VOLTAGE_NOMINAL:
-            ops = &g_rk806_nominal_ops;
-            break;
-
-          case RK806_VOLTAGE_UNKNOWN:
-            ops = &g_rk806_unknown_ops;
+            _info("Registered regulator %s (nominal %u uV, read-only)\n",
+                  desc->name, desc->min_uv);
             break;
 
           default:
-            _err("ERROR: invalid voltage source for %s\n", cfg->name);
-            return -EINVAL;
-        }
-
-      rdev = regulator_register(desc, ops, priv);
-      if (rdev == NULL)
-        {
-          _err("ERROR: failed to register %s\n", desc->name);
-          failed = true;
-        }
-      else if (cfg->voltage_source == RK806_VOLTAGE_READBACK)
-        {
-          _info("Registered regulator %s (%u-%u uV)\n", desc->name,
-                desc->min_uv, desc->max_uv);
-        }
-      else if (cfg->voltage_source == RK806_VOLTAGE_NOMINAL)
-        {
-          _info("Registered regulator %s (nominal %u uV, read-only)\n",
-                desc->name, desc->min_uv);
-        }
-      else
-        {
-          _info("Registered regulator %s (voltage unknown, read-only)\n",
-                desc->name);
+            _info("Registered regulator %s (voltage unknown, read-only)\n",
+                  desc->name);
+            break;
         }
     }
 
-  return failed ? -ENODEV : OK;
+  return err;
 }
 
 #endif /* CONFIG_REGULATOR_RK806 */
