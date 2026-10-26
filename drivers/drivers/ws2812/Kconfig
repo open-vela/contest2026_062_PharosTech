@@ -1,0 +1,53 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config WS2812_CHARDEV
+    bool "WS2812 addressable LED character driver (SPI)"
+    default n
+    depends on SPI
+    ---help---
+        Register WS2812-family strips that are driven over SPI as
+        character devices.  One WS2812 bit is encoded as one SPI byte, so
+        the SPI clock must be eight times the strip's bit rate.
+
+        Unlike the in-tree CONFIG_WS2812 driver, this one keeps no pixel
+        shadow buffer and holds no permanent claim on the SPI bus.  Each
+        write() carries a complete frame and is transmitted immediately;
+        nothing is carried over between calls and lseek() is rejected.
+        The bus is locked only for the duration of one frame, and an
+        optional select callback runs around each frame, so several strips
+        can share one SPI controller through an external multiplexer and
+        take turns on it.
+
+        Do not enable CONFIG_WS2812 (the in-tree driver) for the same SPI
+        bus: it locks the bus permanently at registration time.
+
+if WS2812_CHARDEV
+
+config WS2812_CHARDEV_FREQUENCY
+    int "Requested SPI clock frequency (Hz)"
+    default 6400000
+    ---help---
+        SPI clock to request, not the strip's bit rate (one WS2812 bit is
+        one SPI byte, so the clock is eight times the bit rate).  6.4 MHz
+        targets the common 800 kHz parts at 1.25 us per bit.
+
+        The SPI lower-half may not be able to hit the request exactly, and
+        the rate it reports back can disagree with the SCLK the controller
+        actually generates.  The driver therefore measures the real byte
+        rate at registration (about 90 ms of idle low) and derives the 0/1
+        high times from that measurement.  Any measured clock in 3.6-9.0
+        MHz is accepted; outside that range write() fails with -EIO.
+
+config WS2812_CHARDEV_MAX_PIXELS
+    int "Maximum pixels per write"
+    default 1024
+    range 1 65535
+    ---help---
+        Largest frame the driver accepts in one write(); the transmit
+        scratch buffer is sized from it.  A write carrying more pixels
+        fails with -EFBIG.
+
+endif # WS2812_CHARDEV
