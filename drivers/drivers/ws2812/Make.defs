@@ -1,0 +1,16 @@
+############################################################################
+# boards/rk3576/drivers/drivers/ws2812/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# WS2812 addressable LED driver — compiled into libdrivers.a (kernel side).
+# Collected by the parent platform Make.defs; compilation happens in
+# nuttx/drivers/, so VPATH/DEPPATH are relative to the `platform/` link.
+############################################################################
+
+ifeq ($(CONFIG_WS2812_CHARDEV),y)
+CSRCS += ws2812.c
+
+DEPPATH += --dep-path platform$(DELIM)drivers$(DELIM)ws2812
+VPATH += :platform$(DELIM)drivers$(DELIM)ws2812
+endif
