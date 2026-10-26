@@ -1443,7 +1443,16 @@ static void rk3576_clk_register_spi(void)
   const unsigned long cru = RK3576_CRU_ADDR;
 
   /* SPI: 00=GPLL/6, 01=GPLL/8, 10=CPLL/10, 11=XIN_OSC0 (TRM CLKSEL_CON70/71).
+   *
+   * This is the TRM order, and the one mainline uses since
+   * "clk: rockchip: rk3576: fix source muxes for SPI0..SPI4" (586ff159ec02,
+   * 2026-08-05).  The vendor develop-6.1 kernel still carries the older
+   * {GPLL/6, CPLL/10, CPLL/20, XIN} order for the same field, which reports
+   * a different rate for a given mux value; do not copy that table here.
+   * I2C really does use that other order (see rk3576_clk_register_i2c()),
+   * so the two must not be merged.
    */
+
   static const char *spi_sel_parents[] = {
     "clk_gpll_div6",  /* 0b00 */
     "clk_gpll_div8",  /* 0b01 */
