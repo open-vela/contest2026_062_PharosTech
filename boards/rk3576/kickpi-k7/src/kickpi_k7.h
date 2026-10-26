@@ -112,6 +112,28 @@ int kickpi_k7_lcd_initialize(void);
 int kickpi_k7_usbhost_initialize(void);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_WS2812
+/****************************************************************************
+ * Name: kickpi_k7_ws2812_initialize
+ *
+ * Description:
+ *   Register the board's WS2812 strip as /dev/ws2812.  The data line is
+ *   GPIO3_A1, parked between frames as a GPIO output driving 0 and muxed
+ *   to SPI3 MOSI (M0, alternate function 10) only while a frame is
+ *   transmitted; the other SPI3 pins are left in their default
+ *   multiplexing.  SPI3 itself is brought up by the chip driver.
+ *
+ *   Caller must have brought up the RK3576 clock tree
+ *   (rk3576_clk_tree_initialize() in board_late_initialize()).
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int kickpi_k7_ws2812_initialize(void);
+#endif
+
 #ifdef CONFIG_KICKPI_K7_MIPI_DSI
 /****************************************************************************
  * Name: kickpi_k7_mipi_dsi_initialize

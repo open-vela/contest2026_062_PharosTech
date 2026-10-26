@@ -625,6 +625,22 @@ void board_late_initialize(void)
   }
 #endif /* CONFIG_KICKPI_K7_CAMERA */
 
+#ifdef CONFIG_KICKPI_K7_WS2812
+  /* Register the WS2812 strip as /dev/ws2812.  Only the data line is
+   * muxed (SPI3 MOSI on GPIO3_A1); a failure must not stop the board from
+   * booting.
+   */
+
+  {
+    int ret = kickpi_k7_ws2812_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: kickpi_k7_ws2812_initialize failed: %d\n",
+               ret);
+      }
+  }
+#endif /* CONFIG_KICKPI_K7_WS2812 */
+
 #ifdef CONFIG_RK3576_VEPU
   /* Bring the hardware video encoder (VEPU0) up in two steps, each of which
    * proves something the previous one cannot.
