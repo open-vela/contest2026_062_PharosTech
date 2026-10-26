@@ -74,6 +74,17 @@
 #define RK3576_SPI_POLL_LIMIT 1000000 /* busy-wait iterations */
 #define RK3576_SPI_NUM_CLKSRC 4       /* clock source mux parent count */
 
+/* The SCLK this controller produces is half of what the TRM formula
+ * (Fsclk = Fspi_clk / BAUDR) predicts: with clk_spi3 = 100 MHz and
+ * BAUDR = 16 a logic analyzer measures 3.125 MHz, not 6.25 MHz, and the
+ * same factor shows up at BAUDR = 198 (505 kHz predicted, 253 kHz
+ * measured).  clk_spi3 itself is not in doubt -- CPLL, which feeds it,
+ * also clocks the GMAC at 1000M -- so the divider is modelled as
+ * 2 * BAUDR for both the divider search and the achieved-rate report.
+ */
+
+#define RK3576_SPI_SCLK_DIV 2u
+
 /* Consecutive inert (no-progress) outer iterations before a transfer is
  * declared timed out.  See rk3576_spi_exchange() for the rationale.
  */
@@ -258,6 +269,7 @@ static void rk3576_spi_setbaudr(struct rk3576_spi_priv_s *priv, uint32_t freq)
   uint32_t actual;
   uint32_t best_baudr = 0;
   uint32_t best_actual = 0;
+  uint32_t enr;
   int best_idx = -1;
   int i;
 
@@ -314,7 +326,7 @@ static void rk3576_spi_setbaudr(struct rk3576_spi_priv_s *priv, uint32_t freq)
 
   for (i = 0; i < nsr; i++)
     {
-      sr = rates[i];
+      sr = rates[i] / RK3576_SPI_SCLK_DIV;
 
       k = (sr + freq - 1) / freq; /* ceil(sr/freq) */
       if (k < 2)
@@ -365,11 +377,28 @@ static void rk3576_spi_setbaudr(struct rk3576_spi_priv_s *priv, uint32_t freq)
       best_baudr = RK3576_SPI_BAUDR_MAX;
     }
 
-  /* Switch to the chosen source */
+  /* Switch to the chosen source and program the divider.
+   *
+   * The DW SSI accepts control-register writes only while it is disabled
+   * (the same rule rk3576_spi_setmode() follows for CTRLR0); a BAUDR write
+   * issued while SSIENR=1 is silently dropped.  That went unnoticed until
+   * the WS2812 driver started calling setfrequency() per frame: the source
+   * mux below switched, but the divider stayed at its 1 MHz value, so the
+   * bus ran at (new source / old divider) instead of the requested rate.
+   *
+   * Drop SSIENR around both writes and restore the previous state.  This
+   * only runs from initialize() and setfrequency(), i.e. between
+   * transfers, so clearing the FIFOs while disabled is harmless.
+   */
+
+  enr = spi_getreg(priv, RK3576_SPI_ENR_OFFSET);
+  spi_putreg(priv, RK3576_SPI_ENR_OFFSET, 0);
 
   clk_set_parent(mux, srcs[best_idx]);
 
   spi_putreg(priv, RK3576_SPI_BAUDR_OFFSET, best_baudr);
+
+  spi_putreg(priv, RK3576_SPI_ENR_OFFSET, enr);
 }
 
 /****************************************************************************
@@ -666,7 +695,7 @@ static uint32_t rk3576_spi_getbaudr(struct rk3576_spi_priv_s *priv)
       return 0; /* nothing sane to report */
     }
 
-  return sr / baudr;
+  return (sr / RK3576_SPI_SCLK_DIV) / baudr;
 }
 
 /****************************************************************************
