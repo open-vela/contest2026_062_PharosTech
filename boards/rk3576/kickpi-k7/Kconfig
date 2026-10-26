@@ -160,6 +160,31 @@ config KICKPI_K7_LCD
 		The display backlight (GPIO2_D7 -> PWM2 CH7) is registered as
 		/dev/pwm0 for user-layer control (active-low: HIGH = off).
 
+config KICKPI_K7_WS2812
+	bool "WS2812 LED strip on SPI3 MOSI (GPIO3_A1)"
+	default n
+	depends on RK3576_SPI && RK3576_GPIO && WS2812_CHARDEV
+	---help---
+		Register the WS2812 character driver as /dev/ws2812, driven by
+		SPI3 in its M0 pin multiplexing with the data line on GPIO3_A1
+		(header pin 24).  VCCIO4 supplies both SPI3 M0 pins at 3.3 V, so
+		the strip can be driven without a level shifter.
+
+		Only the data line is muxed, and only while a frame is being
+		sent: between frames the pin is parked as a GPIO output driving
+		0, because a WS2812 data line left high is decoded as a
+		never-ending run of '1' bits (the strip latches white at the
+		next reset).  The SPI3 clock pin (GPIO3_A0), the MISO pin
+		(GPIO3_A2, not on the header) and the chip selects are left in
+		their default GPIO multiplexing; a WS2812 strip needs none of
+		them, and nothing is transmitted on the clock pin.
+
+		The driver's select callback performs that pin parking.  When
+		the external multiplexer that lets several strips share this
+		data line is fitted, its control belongs in the same callback,
+		and each strip's device node is registered against the same SPI
+		handle.
+
 config KICKPI_K7_WDT
 	bool "On-chip Watchdog Timer (WDT_NS)"
 	default n

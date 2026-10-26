@@ -1,0 +1,35 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config EXAMPLES_WS2812_TEST
+	tristate "WS2812 灯带测试程序"
+	default n
+	depends on KICKPI_K7_WS2812
+	---help---
+		在 /dev/ws2812 上跑一段固定的点灯序列：前 16 颗灯先红、绿、蓝各
+		亮 1 秒，然后红 x4 / 绿 x4 / 蓝 x4 / 白 x4 显示 3 秒，最后把
+		前 16 颗灯熄灭并返回。
+
+		每次写一整帧（16 像素），符合 WS2812 字符驱动不缓存、不允许
+		seek 的语义；链上第 16 颗之后的灯不会被改动。
+
+if EXAMPLES_WS2812_TEST
+
+config EXAMPLES_WS2812_TEST_PROGNAME
+	string "Program name"
+	default "ws2812_test"
+
+config EXAMPLES_WS2812_TEST_PRIORITY
+	int "Task priority"
+	default 100
+
+config EXAMPLES_WS2812_TEST_STACKSIZE
+	int "Stack size"
+	default 4096
+	---help---
+		收尾时会 open/read 一次设备并打印状态行；printf 加 VFS 的调用链
+		在 2 KB 栈上会溢出（实测 data abort），所以默认给 4 KB。
+
+endif # EXAMPLES_WS2812_TEST
