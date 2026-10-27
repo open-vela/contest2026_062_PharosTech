@@ -112,8 +112,8 @@ struct rk806_rail_cfg
   int min_uv;
   int max_uv;
   enum rk806_voltage_source_e voltage_source;
-  bool boot_on;
-  bool always_on;
+  bool boot_on;   /* switch the rail on during registration */
+  bool always_on; /* never switch it off after registration */
 };
 
 /****************************************************************************
