@@ -497,7 +497,10 @@ bool ny_product_clock_describe(cJSON *root)
   synced_at_ms = g_clock.synced_at_ms;
   floor_ms = g_clock.floor_ms;
   nxmutex_unlock(&g_clock_lock);
-  return cJSON_AddBoolToObject(root, "clock_valid",
+  char utc[40];
+  ny_clock_iso(ny_product_time_ms(false), utc, sizeof(utc));
+  return cJSON_AddStringToObject(root, "utc", utc) != NULL &&
+         cJSON_AddBoolToObject(root, "clock_valid",
                                source != NY_PRODUCT_CLOCK_NONE) != NULL &&
          cJSON_AddStringToObject(root, "clock_source",
                                  g_clock_source_names[source]) != NULL &&
