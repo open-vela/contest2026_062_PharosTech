@@ -106,7 +106,8 @@ public:
   virtual models::Status Load(const KwsModel &model) = 0;
   virtual void Unload() = 0;
   virtual models::Status Accept(const float *samples, std::size_t count,
-                                const Sink &sink, const models::Stop &stop) = 0;
+                                const Sink &sink,
+                                const models::Stop &stop) = 0;
   virtual models::Status Reset() = 0;
   virtual std::vector<std::string> Labels() const = 0;
 };

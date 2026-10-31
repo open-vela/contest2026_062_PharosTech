@@ -310,8 +310,7 @@ public:
   {
     for (const WireEvent &event : events)
       {
-        if (event.header.service == service &&
-            event.header.opcode == opcode &&
+        if (event.header.service == service && event.header.opcode == opcode &&
             event.header.request_id == request_id &&
             (event.header.flags & NYAMP_FLAG_KIND_MASK) == kind)
           {
@@ -605,7 +604,7 @@ struct TtsScript
   std::atomic<unsigned int> refused{ 0 };
   std::mutex mutex;
   std::vector<std::string> units; /* Text of every unit synthesized. */
-  std::vector<std::vector<std::int64_t>> unit_ids;
+  std::vector<std::vector<std::int64_t> > unit_ids;
   std::vector<std::size_t> unit_frames;
   std::string loaded_directory;
 };
@@ -623,8 +622,8 @@ public:
   std::vector<nyamp::TtsUnit> Process(const std::string &text,
                                       std::size_t max_frames) override
   {
-    const std::size_t budget =
-        std::max<std::size_t>(1, max_frames / script_->believed_frames_per_phoneme);
+    const std::size_t budget = std::max<std::size_t>(
+        1, max_frames / script_->believed_frames_per_phoneme);
     std::vector<nyamp::TtsUnit> units;
     std::size_t from = 0;
 

@@ -135,15 +135,15 @@ public:
 
   /* Files and fault injection. */
 
-  std::map<std::string, std::vector<std::uint8_t>> files;
+  std::map<std::string, std::vector<std::uint8_t> > files;
   std::uint32_t generation = kGeneration;
-  std::uint32_t max_read = 0;        /* Non-zero: cap every READ.         */
-  int corrupt_read = -1;             /* Flip a byte in this READ index.   */
-  int stale_after_reads = -1;        /* "Restart" after this many READs.  */
-  int eof_after_reads = -1;          /* File "shrinks" after this many.   */
+  std::uint32_t max_read = 0; /* Non-zero: cap every READ.         */
+  int corrupt_read = -1;      /* Flip a byte in this READ index.   */
+  int stale_after_reads = -1; /* "Restart" after this many READs.  */
+  int eof_after_reads = -1;   /* File "shrinks" after this many.   */
   bool lie_about_digest = false;
-  bool hold_open = false;            /* Never answer OPEN.                */
-  bool stale_window = false;         /* BENCH FILL leaves old bytes.      */
+  bool hold_open = false;    /* Never answer OPEN.                */
+  bool stale_window = false; /* BENCH FILL leaves old bytes.      */
   bool link_down = false;
 
   /* Observations. */
@@ -358,9 +358,10 @@ private:
               }
 
             /* Direct children of the prefix, files and directories alike. */
-            const std::string base =
-                length == 0 ? std::string() : std::string(prefix, length) + "/";
-            std::map<std::string, std::pair<std::uint64_t, bool>> children;
+            const std::string base = length == 0
+                                         ? std::string()
+                                         : std::string(prefix, length) + "/";
+            std::map<std::string, std::pair<std::uint64_t, bool> > children;
             for (const auto &file : files)
               {
                 if (file.first.compare(0, base.size(), base) != 0)
@@ -617,10 +618,10 @@ private:
 
 struct Script
 {
-  std::string output;          /* Spelled as byte ids.                     */
+  std::string output; /* Spelled as byte ids.                     */
   std::int32_t stop_id = kStopImEnd; /* 0: end without reporting a stop.   */
-  bool endless = false;        /* Keep emitting 'a' until stopped.         */
-  int delay_ms = 0;            /* Per token, to leave room for a cancel.   */
+  bool endless = false; /* Keep emitting 'a' until stopped.         */
+  int delay_ms = 0;     /* Per token, to leave room for a cancel.   */
 
   std::vector<std::int32_t> seen_prompt;
   std::uint32_t seen_max_new_tokens = 0;
