@@ -59,6 +59,30 @@ class PatchTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(target.read_text(), 'conflicting transport\n')
 
+    def test_overlapping_apps_stack_is_repeatable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            apps = root / 'apps'
+            apps.mkdir()
+            patches = root / 'patches'
+            patches.mkdir()
+            target = apps / 'CMakeLists.txt'
+            target.write_text('base\n')
+            for name, old, new in [('a', 'base', 'default'),
+                                   ('b', 'default', 'owned')]:
+                (patches / f'apps-{name}.patch').write_text(
+                    '--- a/CMakeLists.txt\n+++ b/CMakeLists.txt\n'
+                    f'@@ -1 +1 @@\n-{old}\n+{new}\n')
+            command = ['bash', str(SCRIPT), str(root), str(patches)]
+            for _ in range(2):
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(target.read_text(), 'owned\n')
+            target.write_text('unrelated local edit\n')
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(target.read_text(), 'unrelated local edit\n')
+
     def test_apply_repeat_and_conflict(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
