@@ -1,0 +1,17 @@
+--- a/subsys/bluetooth/host/conn.c
++++ b/subsys/bluetooth/host/conn.c
+@@ -2746,12 +2746,12 @@
+ #if defined(CONFIG_BT_KEYS_OVERWRITE_OLDEST)
+ 	if (!err && conn->sec_level >= BT_SECURITY_L2) {
+ 		if (conn->type == BT_CONN_TYPE_LE) {
+-			bt_keys_update_usage(conn->id, bt_conn_get_dst(conn));
++			bt_keys_update_usage(conn->hdev, conn->id, bt_conn_get_dst(conn));
+ 		}
+ 
+ #if defined(CONFIG_BT_CLASSIC)
+ 		if (conn->type == BT_CONN_TYPE_BR) {
+-			bt_keys_link_key_update_usage(&conn->br.dst);
++			bt_keys_link_key_update_usage(conn->hdev, &conn->br.dst);
+ 		}
+ #endif /* CONFIG_BT_CLASSIC */
+ 
