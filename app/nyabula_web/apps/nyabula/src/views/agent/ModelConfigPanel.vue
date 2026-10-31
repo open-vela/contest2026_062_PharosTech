@@ -6,6 +6,8 @@ import { useNyabotStore } from '../../stores/nyabot';
 import ModelRouterPanel from './ModelRouterPanel.vue';
 import LocalModelCard from './LocalModelCard.vue';
 import PersonaPanel from './PersonaPanel.vue';
+import MimoThinkingPanel from './MimoThinkingPanel.vue';
+import MimoProviderPanel from './MimoProviderPanel.vue';
 
 interface ModelConfig { host: string; path: string; port: string; model: string; keySet: boolean; canSave: boolean }
 const session = useSessionStore();
@@ -73,6 +75,8 @@ watch([() => session.client, () => bot.status?.ready], () => { if (!dirty.value)
       </div>
       <p role="status">{{ busy ? '处理中' : dirty ? '未保存' : applied ? '已应用' : '设备配置' }}</p>
     </form>
+    <MimoThinkingPanel />
+    <MimoProviderPanel />
     <LocalModelCard :reload-key="routerChanged" @changed="localChanged++" />
     <ModelRouterPanel :reload-key="localChanged" @changed="routerChanged++" />
     <PersonaPanel />
