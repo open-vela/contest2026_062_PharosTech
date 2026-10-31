@@ -129,7 +129,8 @@ struct ny_bt_audio_worker_s
   uint32_t rate;
   uint8_t channels;
   bool msbc_call;
-  bool playing; /* Media: past the prebuffer */
+  bool playing;    /* Media: past the prebuffer */
+  bool recovering; /* Waiting to reopen after an underrun */
   unsigned int tx_sequence;
   size_t tx_credit;
   size_t tx_packet;
@@ -143,6 +144,7 @@ static uint64_t ny_bt_audio_now(void);
 static void ny_bt_audio_error(int error);
 static void ny_bt_audio_leave(struct ny_bt_audio_worker_s *worker);
 static void ny_bt_audio_media_service(struct ny_bt_audio_worker_s *worker);
+static void ny_bt_audio_media_recover(struct ny_bt_audio_worker_s *worker);
 static int ny_bt_audio_call_open(struct ny_bt_audio_worker_s *worker);
 static void ny_bt_audio_call_play(struct ny_bt_audio_worker_s *worker,
                                   int16_t *pcm, size_t samples);
@@ -211,12 +213,39 @@ static void ny_bt_audio_leave(struct ny_bt_audio_worker_s *worker)
     }
 #endif
   worker->playing = false;
+  worker->recovering = false;
   worker->mode = NY_BT_AUDIO_OWNER_NONE;
   nxmutex_lock(&g_bt_audio.lock);
   g_bt_audio.status.owner = NY_BT_AUDIO_OWNER_NONE;
   g_bt_audio.status.rate = 0;
   g_bt_audio.status.channels = 0;
   g_bt_audio.device_closed = true;
+  nxmutex_unlock(&g_bt_audio.lock);
+}
+
+/****************************************************************************
+ * Name: ny_bt_audio_media_recover
+ ****************************************************************************/
+
+static void ny_bt_audio_media_recover(struct ny_bt_audio_worker_s *worker)
+{
+  /* The hardware has run dry, even if the DSP still owns a
+   * partial block. Resume through a fresh output lifecycle:
+   * stop/clear the FIFO, reset SRC/DSP and SBC, then prebuffer.
+   * Keep the voice claim so capture cannot steal the clock.
+   */
+
+  ny_audio_stream_close(worker->speaker);
+  worker->speaker = NULL;
+  worker->playing = false;
+  worker->recovering = true;
+  nxmutex_lock(&g_bt_audio.lock);
+  g_bt_audio.device_closed = true;
+  g_bt_audio.status.owner = NY_BT_AUDIO_OWNER_NONE;
+  g_bt_audio.status.rate = 0;
+  g_bt_audio.status.channels = 0;
+  g_bt_audio.status.media_underruns++;
+  g_bt_audio.status.media_last_underrun_ms = ny_bt_audio_now();
   nxmutex_unlock(&g_bt_audio.lock);
 }
 
@@ -245,6 +274,20 @@ static void ny_bt_audio_media_service(struct ny_bt_audio_worker_s *worker)
   if (rate == 0)
     {
       return;
+    }
+
+  if (worker->playing && worker->speaker != NULL)
+    {
+      struct ny_audio_stream_stats_s stats;
+      ny_audio_stream_stats(worker->speaker, &stats);
+      if (stats.starved > 0)
+        {
+          /* Packets may already be buffered again when the worker wakes.
+           * A previous hardware underrun still requires a fresh output.
+           */
+
+          ny_bt_audio_media_recover(worker);
+        }
     }
 
   if (!worker->playing)
@@ -309,6 +352,12 @@ static void ny_bt_audio_media_service(struct ny_bt_audio_worker_s *worker)
           ny_sbc_decoder_reset(worker->sbc);
           worker->rate = rate;
           nxmutex_lock(&g_bt_audio.lock);
+          if (worker->recovering)
+            {
+              g_bt_audio.status.media_recoveries++;
+              g_bt_audio.status.media_last_recovery_ms = ny_bt_audio_now();
+              worker->recovering = false;
+            }
           g_bt_audio.status.owner = NY_BT_AUDIO_OWNER_MEDIA;
           g_bt_audio.status.rate = rate;
           g_bt_audio.status.channels = 2;
@@ -343,12 +392,11 @@ static void ny_bt_audio_media_service(struct ny_bt_audio_worker_s *worker)
            * cushion again rather than limp from packet to packet.
            */
 
-          if (ny_audio_stream_queued(worker->speaker) == 0)
+          struct ny_audio_stream_stats_s stats;
+          ny_audio_stream_stats(worker->speaker, &stats);
+          if (stats.queued_bytes == 0)
             {
-              worker->playing = false;
-              nxmutex_lock(&g_bt_audio.lock);
-              g_bt_audio.status.media_underruns++;
-              nxmutex_unlock(&g_bt_audio.lock);
+              ny_bt_audio_media_recover(worker);
             }
 
           return;
