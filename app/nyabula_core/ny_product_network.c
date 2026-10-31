@@ -29,8 +29,8 @@
  * WEXT API in apps/include/wireless/wapi.h:
  *   AP : wapi mode wlan0 3; wapi freq wlan0 <ch> 1; wapi psk wlan0 <pw> 3 3;
  *        wapi essid wlan0 <ssid> 1; ifconfig wlan0 192.168.4.1; dhcpd
- *   STA: wapi mode wlan0 2; wapi psk wlan0 <pw> 3 3; wapi essid wlan0 <ssid> 1;
- *        ifconfig wlan0 dhcp
+ *   STA: wapi mode wlan0 2; wapi psk wlan0 <pw> 3 3; wapi essid wlan0 <ssid>
+ *1; ifconfig wlan0 dhcp
  ****************************************************************************/
 
 #include "ny_product.h"
@@ -58,21 +58,21 @@
 #include <unistd.h>
 
 #if defined(CONFIG_NYABULA_CORE_EYE) && defined(CONFIG_NYABULA_CORE_WEB)
-#  include <nyabula_eye_engine.h>
-#  include <nyabula_eye_service.h>
+#include <nyabula_eye_engine.h>
+#include <nyabula_eye_service.h>
 #endif
 
 #ifdef CONFIG_WIRELESS_WAPI
-#  include <wireless/wapi.h>
+#include <wireless/wapi.h>
 #endif
 #ifdef CONFIG_NETUTILS_DHCPD
-#  include <netutils/dhcpd.h>
+#include <netutils/dhcpd.h>
 #endif
 #ifdef CONFIG_NETUTILS_DHCPC
-#  include <netutils/dhcpc.h>
+#include <netutils/dhcpc.h>
 #endif
 #ifdef CONFIG_NETUTILS_NETLIB
-#  include <netutils/netlib.h>
+#include <netutils/netlib.h>
 #endif
 
 /****************************************************************************
@@ -80,33 +80,35 @@
  ****************************************************************************/
 
 #ifndef CONFIG_NYABULA_CORE_NETWORK_IFNAME
-#  define CONFIG_NYABULA_CORE_NETWORK_IFNAME "wlan0"
+#define CONFIG_NYABULA_CORE_NETWORK_IFNAME "wlan0"
 #endif
 
-#define NY_NET_IFNAME        CONFIG_NYABULA_CORE_NETWORK_IFNAME
-#define NY_NET_STORE_DOMAIN  "wifi"
-#define NY_NET_AP_SSID_FMT   "Nyabula-%02X%02X"
-#define NY_NET_AP_PSK        "nyabula123"
-#define NY_NET_AP_CHANNEL    6
-#define NY_NET_AP_ADDR       "192.168.4.1"
-#define NY_NET_AP_MASK       "255.255.255.0"
-#define NY_NET_AP_POOL_START "192.168.4.100"
-#define NY_NET_STA_TIMEOUT_S 25
-#define NY_NET_STA_RETRIES   3
-#define NY_NET_STA_RETRY_S   5
-#define NY_NET_RSSI_PERIOD_S 10
-#define NY_NET_LINK_MISSES   2  /* polls without carrier before rejoining */
-#define NY_NET_LINK_RECHECK_S 3 /* the second look comes sooner */
-#define NY_NET_LOAD_RETRIES  150  /* worker ticks, about 15 s */
-#define NY_NET_SSID_MAX      32
-#define NY_NET_PSK_MAX       64
-#define NY_NET_SCAN_MAX      24
+#define NY_NET_IFNAME         CONFIG_NYABULA_CORE_NETWORK_IFNAME
+#define NY_NET_STORE_DOMAIN   "wifi"
+#define NY_NET_AP_SSID_FMT    "Nyabula-%02X%02X"
+#define NY_NET_AP_PSK         "nyabula123"
+#define NY_NET_AP_CHANNEL     6
+#define NY_NET_AP_ADDR        "192.168.4.1"
+#define NY_NET_AP_MASK        "255.255.255.0"
+#define NY_NET_AP_POOL_START  "192.168.4.100"
+#define NY_NET_STA_TIMEOUT_S  25
+#define NY_NET_STA_RETRIES    3
+#define NY_NET_STA_RETRY_S    5
+#define NY_NET_RSSI_PERIOD_S  10
+#define NY_NET_LINK_MISSES    2   /* polls without carrier before rejoining */
+#define NY_NET_LINK_RECHECK_S 3   /* the second look comes sooner */
+#define NY_NET_LOAD_RETRIES   150 /* worker ticks, about 15 s */
+#define NY_NET_SSID_MAX       32
+#define NY_NET_PSK_MAX        64
+#define NY_NET_SCAN_MAX       24
 
-#define NY_NET_EYE_SOURCE    "network"
-#define NY_NET_EYE_PRIORITY  70
-#define NY_NET_EYE_LEASE_MS  15000
-#define NY_NET_EYE_RENEW_S   5
-#define NY_NET_EYE_ONLINE_MS 60000
+#define NY_NET_EYE_LOGIN_MS   (5U * 60U * 1000U)
+
+#define NY_NET_EYE_SOURCE     "network"
+#define NY_NET_EYE_PRIORITY   70
+#define NY_NET_EYE_LEASE_MS   15000
+#define NY_NET_EYE_RENEW_S    5
+#define NY_NET_EYE_ONLINE_MS  60000
 
 /* What each code is for, shown above it.  The two on the access point are
  * numbered because they have to be used in that order.  Any text added
@@ -134,25 +136,25 @@ enum ny_net_state_e
 struct ny_net_s
 {
   enum ny_net_state_e state;
-  char name[NY_NET_SSID_MAX + 1];  /* what the owner calls it; "" = default */
+  char name[NY_NET_SSID_MAX + 1]; /* what the owner calls it; "" = default */
   char ap_ssid[NY_NET_SSID_MAX + 1];
   char ap_psk[NY_NET_PSK_MAX + 1];
-  int  ap_channel;
+  int ap_channel;
   char sta_ssid[NY_NET_SSID_MAX + 1];
   char sta_psk[NY_NET_PSK_MAX + 1];
   char sta_ipv4[INET_ADDRSTRLEN];
   time_t sta_started;
-  time_t sta_retry_at;  /* no station attempt before this */
-  time_t rejoin_at;     /* when to try the stored network again; 0 = never */
-  time_t rssi_at;       /* when the signal level is read next */
-  int  sta_rssi;        /* dBm, 0 = not known */
-  int  link_misses;     /* consecutive polls that found the carrier down */
+  time_t sta_retry_at; /* no station attempt before this */
+  time_t rejoin_at;    /* when to try the stored network again; 0 = never */
+  time_t rssi_at;      /* when the signal level is read next */
+  int sta_rssi;        /* dBm, 0 = not known */
+  int link_misses;     /* consecutive polls that found the carrier down */
   unsigned int rejoin_step;
-  int  sta_attempt;
-  int  last_error;
-  bool pending_sta;   /* wifi.set arrived, worker must (re)connect */
-  bool pending_ap;    /* provision.start arrived, worker must bring AP up */
-  bool pending_stop;  /* provision.stop arrived */
+  int sta_attempt;
+  int last_error;
+  bool pending_sta;  /* wifi.set arrived, worker must (re)connect */
+  bool pending_ap;   /* provision.start arrived, worker must bring AP up */
+  bool pending_stop; /* provision.stop arrived */
   uint64_t revision;
 };
 
@@ -166,10 +168,9 @@ static bool g_net_loaded;
 static bool g_net_boot_decided;
 static int g_net_load_attempts;
 
-static const char *g_net_state_names[] =
-{
-  "idle", "ap_provision", "sta_connecting", "sta_online", "sta_failed"
-};
+static const char *g_net_state_names[] = { "idle", "ap_provision",
+                                           "sta_connecting", "sta_online",
+                                           "sta_failed" };
 
 /****************************************************************************
  * Private Functions
@@ -296,8 +297,8 @@ static void ny_net_load(void)
    * and only after a bounded wait settle for what can be had.
    */
 
-  int ret = ny_product_store_read(NY_NET_STORE_DOMAIN, &value,
-                                  &g_net.revision);
+  int ret =
+      ny_product_store_read(NY_NET_STORE_DOMAIN, &value, &g_net.revision);
   if (ret < 0 && g_net_load_attempts++ < NY_NET_LOAD_RETRIES)
     return;
   g_net_loaded = true;
@@ -317,7 +318,7 @@ static void ny_net_load(void)
   cJSON *automatic = cJSON_GetObjectItemCaseSensitive(value, "auto");
   if (g_net.sta_ssid[0] != '\0' &&
       (automatic == NULL || cJSON_IsTrue(automatic)))
-    g_net.pending_sta = true;   /* auto-connect on boot */
+    g_net.pending_sta = true; /* auto-connect on boot */
   cJSON_Delete(value);
 }
 
@@ -386,22 +387,19 @@ static int ny_net_apply_security(int sock, const char *psk)
 {
   /* Mirrors `wapi psk wlan0 <pw> 3 3`: CCMP + WPA2 */
 
-  int ret = wpa_driver_wext_set_key_ext(sock, NY_NET_IFNAME, WPA_ALG_CCMP,
-                                        psk, strlen(psk));
+  int ret = wpa_driver_wext_set_key_ext(sock, NY_NET_IFNAME, WPA_ALG_CCMP, psk,
+                                        strlen(psk));
   if (ret < 0)
     return ret;
-  ret = wpa_driver_wext_set_auth_param(sock, NY_NET_IFNAME,
-                                       IW_AUTH_WPA_VERSION,
-                                       IW_AUTH_WPA_VERSION_WPA2);
+  ret = wpa_driver_wext_set_auth_param(
+      sock, NY_NET_IFNAME, IW_AUTH_WPA_VERSION, IW_AUTH_WPA_VERSION_WPA2);
   if (ret < 0)
     return ret;
-  ret = wpa_driver_wext_set_auth_param(sock, NY_NET_IFNAME,
-                                       IW_AUTH_CIPHER_PAIRWISE,
-                                       IW_AUTH_CIPHER_CCMP);
+  ret = wpa_driver_wext_set_auth_param(
+      sock, NY_NET_IFNAME, IW_AUTH_CIPHER_PAIRWISE, IW_AUTH_CIPHER_CCMP);
   if (ret < 0)
     return ret;
-  return wpa_driver_wext_set_auth_param(sock, NY_NET_IFNAME,
-                                        IW_AUTH_KEY_MGMT,
+  return wpa_driver_wext_set_auth_param(sock, NY_NET_IFNAME, IW_AUTH_KEY_MGMT,
                                         IW_AUTH_KEY_MGMT_PSK);
 }
 #endif
@@ -429,11 +427,11 @@ static int ny_net_hw_ap_start(const char *ssid, const char *psk, int channel)
         ret = wapi_set_netmask(sock, NY_NET_IFNAME, &addr);
     }
   close(sock);
-#  ifdef CONFIG_NETUTILS_NETLIB
+#ifdef CONFIG_NETUTILS_NETLIB
   if (ret == 0)
     ret = netlib_ifup(NY_NET_IFNAME);
-#  endif
-#  ifdef CONFIG_NETUTILS_DHCPD
+#endif
+#ifdef CONFIG_NETUTILS_DHCPD
   if (ret == 0)
     {
       struct in_addr addr;
@@ -453,10 +451,12 @@ static int ny_net_hw_ap_start(const char *ssid, const char *psk, int channel)
       dhcpd_set_netmask(ntohl(addr.s_addr));
       ret = dhcpd_start(NY_NET_IFNAME);
     }
-#  endif
+#endif
   return ret;
 #else
-  (void)ssid; (void)psk; (void)channel;
+  (void)ssid;
+  (void)psk;
+  (void)channel;
   return -ENOSYS;
 #endif
 }
@@ -492,13 +492,14 @@ static int ny_net_hw_sta_connect(const char *ssid, const char *psk)
   if (ret == 0)
     ret = wapi_set_essid(sock, NY_NET_IFNAME, ssid, WAPI_ESSID_ON);
   close(sock);
-#  ifdef CONFIG_NETUTILS_NETLIB
+#ifdef CONFIG_NETUTILS_NETLIB
   if (ret == 0)
     ret = netlib_ifup(NY_NET_IFNAME);
-#  endif
+#endif
   return ret;
 #else
-  (void)ssid; (void)psk;
+  (void)ssid;
+  (void)psk;
   return -ENOSYS;
 #endif
 }
@@ -633,9 +634,9 @@ static cJSON *ny_net_hw_scan(int *error)
  */
 
 static mutex_t g_scan_lock = NXMUTEX_INITIALIZER;
-static cJSON *g_scan_list;     /* The last list, owned here. */
+static cJSON *g_scan_list; /* The last list, owned here. */
 static int g_scan_error;
-static uint32_t g_scan_seq;    /* Completed scans. */
+static uint32_t g_scan_seq; /* Completed scans. */
 static time_t g_scan_at;
 static bool g_scan_running;
 
@@ -704,10 +705,9 @@ static cJSON *ny_net_scan_json(void)
       cJSON_AddBoolToObject(root, "scanning", g_scan_running);
       cJSON_AddNumberToObject(root, "seq", g_scan_seq);
       cJSON_AddNumberToObject(root, "error", g_scan_error);
-      cJSON_AddNumberToObject(root, "ageSeconds",
-                              g_scan_seq == 0
-                                  ? -1
-                                  : (double)(time(NULL) - g_scan_at));
+      cJSON_AddNumberToObject(
+          root, "ageSeconds",
+          g_scan_seq == 0 ? -1 : (double)(time(NULL) - g_scan_at));
     }
 
   nxmutex_unlock(&g_scan_lock);
@@ -898,7 +898,8 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
       const char *ssid = ny_net_text(data, "ssid");
       const char *psk = ny_net_text(data, "psk");
       const cJSON *channel = cJSON_GetObjectItemCaseSensitive(data, "channel");
-      if (ssid == NULL || !ny_net_copy(g_net.ap_ssid, sizeof(g_net.ap_ssid), ssid))
+      if (ssid == NULL ||
+          !ny_net_copy(g_net.ap_ssid, sizeof(g_net.ap_ssid), ssid))
         {
           if (ny_net_name_is_ssid(g_net.name))
             strlcpy(g_net.ap_ssid, g_net.name, sizeof(g_net.ap_ssid));
@@ -931,7 +932,8 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
           ret = -EINVAL;
           goto out;
         }
-      if (psk == NULL || !ny_net_copy(g_net.sta_psk, sizeof(g_net.sta_psk), psk))
+      if (psk == NULL ||
+          !ny_net_copy(g_net.sta_psk, sizeof(g_net.sta_psk), psk))
         g_net.sta_psk[0] = '\0';
       ret = ny_net_save();
       if (ret < 0)
@@ -1116,7 +1118,7 @@ static int ny_net_step(void)
   nxmutex_unlock(&g_net_lock);
 
   int error = 0;
-  enum ny_net_state_e next = (enum ny_net_state_e)-1;
+  enum ny_net_state_e next = (enum ny_net_state_e) - 1;
   char ipv4[INET_ADDRSTRLEN] = { 0 };
 
   if (do_stop)
@@ -1181,7 +1183,7 @@ static int ny_net_step(void)
   if (do_sta)
     g_net.sta_attempt++;
 
-  if (next != (enum ny_net_state_e)-1)
+  if (next != (enum ny_net_state_e) - 1)
     {
       if (next == NY_NET_STA_CONNECTING)
         {
@@ -1280,6 +1282,65 @@ static int ny_net_eye_submit(const char *action, cJSON *params,
   return ret;
 }
 
+/****************************************************************************
+ * Name: ny_product_network_pair_show
+ *
+ * Description:
+ *   Show the local owner's login code for five minutes. Never return the
+ *   credential in a tool result or send it through the language model.
+ ****************************************************************************/
+
+int ny_product_network_pair_show(void)
+{
+  char address[INET_ADDRSTRLEN] = { 0 };
+  char token[65];
+  char url[NYABULA_EYE_TEXT_QR];
+  cJSON *params;
+  cJSON *payload;
+  int ret = nxmutex_lock(&g_net_lock);
+  if (ret < 0)
+    return ret;
+  if (g_net.state == NY_NET_STA_ONLINE)
+    strlcpy(address, g_net.sta_ipv4, sizeof(address));
+  else if (g_net.state == NY_NET_AP_PROVISION)
+    strlcpy(address, NY_NET_AP_ADDR, sizeof(address));
+  nxmutex_unlock(&g_net_lock);
+  if (address[0] == 0)
+    return -ENETDOWN;
+  ret = ny_web_product_token(token, sizeof(token));
+  if (ret < 0)
+    return ret;
+  ret = snprintf(url, sizeof(url), "http://%s/#/?token=%s", address, token);
+  memset(token, 0, sizeof(token));
+  if (ret < 0 || ret >= sizeof(url))
+    return -EOVERFLOW;
+  params = cJSON_CreateObject();
+  payload = params ? cJSON_AddObjectToObject(params, "payload") : NULL;
+  if (!payload || !cJSON_AddStringToObject(params, "scene", "qr") ||
+      !cJSON_AddStringToObject(params, "style", "full") ||
+      !cJSON_AddStringToObject(payload, "qr_right", url) ||
+      !cJSON_AddStringToObject(payload, "qr_right_label",
+                               NY_NET_EYE_OPEN_PANEL) ||
+      !cJSON_AddStringToObject(payload, "title", "登录面板") ||
+      !cJSON_AddStringToObject(payload, "detail", address))
+    {
+      memset(url, 0, sizeof(url));
+      cJSON_Delete(params);
+      return -ENOMEM;
+    }
+  memset(url, 0, sizeof(url));
+  return ny_net_eye_submit("eyes.scene.show", params, NY_NET_EYE_LOGIN_MS);
+}
+
+/****************************************************************************
+ * Name: ny_product_network_pair_hide
+ ****************************************************************************/
+
+int ny_product_network_pair_hide(void)
+{
+  return ny_net_eye_submit("eyes.scene.hide", NULL, NY_NET_EYE_LOGIN_MS);
+}
+
 /* Build the payload for the pairing scene: the address of the setup page on
  * right eye, the access point's own join code on the left.  A phone scans
  * the left to get onto the device's network and the right to open the
@@ -1330,10 +1391,11 @@ static cJSON *ny_net_eye_pairing(const char *ssid, const char *psk)
   memset(pass, 0, sizeof(pass));
   if (ny_web_product_token(token, sizeof(token)) == 0)
     {
-      snprintf(text, sizeof(text), "http://" NY_NET_AP_ADDR
-               "/#/provision?token=%s", token);
+      snprintf(text, sizeof(text),
+               "http://" NY_NET_AP_ADDR "/#/provision?token=%s", token);
       cJSON_AddStringToObject(payload, "qr_right", text);
-      cJSON_AddStringToObject(payload, "qr_right_label", NY_NET_EYE_STEP_SETUP);
+      cJSON_AddStringToObject(payload, "qr_right_label",
+                              NY_NET_EYE_STEP_SETUP);
       memset(token, 0, sizeof(token));
     }
   memset(text, 0, sizeof(text));
@@ -1380,7 +1442,7 @@ static void ny_net_console_announce(enum ny_net_state_e state,
 
   if (host[0] == '\0' || ny_web_product_token(token, sizeof(token)) != 0)
     {
-      return;                   /* Not known yet: the next pass will do */
+      return; /* Not known yet: the next pass will do */
     }
 
   fd = open("/dev/console", O_WRONLY | O_CLOEXEC);
@@ -1534,14 +1596,15 @@ static void ny_net_eye_sync(void)
         memset(text, 0, sizeof(text));
       }
 
-      cJSON_AddStringToObject(payload, "qr_right_label", NY_NET_EYE_OPEN_PANEL);
+      cJSON_AddStringToObject(payload, "qr_right_label",
+                              NY_NET_EYE_OPEN_PANEL);
       cJSON_AddStringToObject(payload, "title", "网络已连接");
       cJSON_AddStringToObject(payload, "detail", ipv4);
       cJSON_AddStringToObject(params, "scene", "qr");
       cJSON_AddStringToObject(params, "style", "full");
       cJSON_AddItemToObject(params, "payload", payload);
-      if (ny_net_eye_submit("eyes.scene.show", params,
-                            NY_NET_EYE_ONLINE_MS) == 0)
+      if (ny_net_eye_submit("eyes.scene.show", params, NY_NET_EYE_ONLINE_MS) ==
+          0)
         {
           shown = NY_NET_STA_ONLINE;
           visible = true;

@@ -149,6 +149,10 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
                                const char *topic, const cJSON *data,
                                cJSON **result);
 int ny_product_network_tick(void);
+#if defined(CONFIG_NYABULA_CORE_EYE) && defined(CONFIG_NYABULA_CORE_WEB)
+int ny_product_network_pair_show(void);
+int ny_product_network_pair_hide(void);
+#endif
 int ny_product_network_link(char *ssid, size_t size, int *rssi);
 int ny_product_network_name(char *out, size_t size);
 void ny_product_network_shutdown(void);
