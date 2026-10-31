@@ -25,12 +25,14 @@ const props = withDefaults(
     height?: number | string;
     title?: string;
   }>(),
-  { patches: () => [], extraVars: () => [], height: 320, title: 'plugin' },
+  { patches: () => [], extraVars: () => [], height: 'auto', title: 'plugin' },
 );
 const emit = defineEmits<{ (e: 'command', payload: NyaUiCommand): void; (e: 'ready'): void }>();
 
 const frame = ref<HTMLIFrameElement>();
 const ready = ref(false);
+const contentHeight = ref(1);
+const frameHeight = computed(() => props.height === 'auto' ? `${contentHeight.value}px` : typeof props.height === 'number' ? `${props.height}px` : props.height);
 const themeVars = ref<Record<string, string>>({});
 
 const VAR_PREFIXES = ['--md-', '--radius-', '--dur', '--ease', '--font-'];
@@ -70,15 +72,16 @@ function escapeInline(s: string): string {
 }
 
 const srcdoc = computed(() => {
-  const vars = themeVars.value;
+  // Read the initial theme when HTML changes. Reactive theme updates travel
+  // through postMessage and must not navigate/reload the iframe document.
+  const vars = readThemeVars();
   const css = Object.entries(vars)
     .map(([k, v]) => `${k}:${v};`)
     .join('');
-  const scheme = typeof document !== 'undefined' ? document.documentElement.dataset.theme === 'light' ? 'light' : 'dark' : 'dark';
   const head =
-    `<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
-    `<style id="nya-theme">:root{${escapeInline(css)}color-scheme:${scheme};}` +
-    `html,body{margin:0;background:transparent;color:var(--md-on-surface,inherit);font-family:var(--font-body,sans-serif);}</style>` +
+    `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none';"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+    `<style id="nya-theme">:root{${escapeInline(css)}color-scheme:normal;}` +
+    `html,body{margin:0;min-height:0;background:transparent;color:var(--md-on-surface,inherit);font-family:var(--font-body,sans-serif);}body{display:flow-root;}</style>` +
     // Tag names are split so the SFC parser does not treat them as this block's end tag.
     `<${'script'}>${escapeInline(buildHtmlSdk(props.pluginId, vars))}</${'script'}>`;
   return `<!doctype html><html><head>${head}</head><body>${props.html}</body></html>`;
@@ -99,9 +102,16 @@ function onMessage(ev: MessageEvent): void {
   if (!frame.value || ev.source !== frame.value.contentWindow) return;
   const m = ev.data as NyaHtmlFrameToHost | undefined;
   if (!m || m.nyaui !== 1 || typeof m.type !== 'string') return;
+  if (m.type === 'resize') {
+    if (typeof m.height === 'number' && Number.isFinite(m.height) && m.height >= 0) {
+      contentHeight.value = Math.min(32768, Math.max(1, Math.ceil(m.height)));
+    }
+    return;
+  }
   if (m.type === 'ready') {
     ready.value = true;
     emit('ready');
+    postTheme();
     postPatches(props.patches);
     return;
   }
@@ -154,7 +164,7 @@ defineExpose({ postPatches, postTheme, ready });
     sandbox="allow-scripts"
     referrerpolicy="no-referrer"
     :title="title"
-    :style="{ height: typeof height === 'number' ? height + 'px' : height }"
+    :style="{ height: frameHeight }"
   />
 </template>
 
