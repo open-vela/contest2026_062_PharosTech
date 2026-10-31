@@ -69,14 +69,14 @@
  * escaped the transport could not reach a third party.
  */
 
-#define NY_AGENT_LOCAL_HOST   "nyabula.local"
-#define NY_AGENT_LOCAL_PATH   "/v1/chat/completions"
-#define NY_AGENT_LOCAL_PORT   "1"
-#define NY_AGENT_LOCAL_KEY    "on-device" /* The framework wants one */
-#define NY_AGENT_LOCAL_SLOT   (LLM_ROUTER_MAX_BACKENDS - 1)
-#define NY_AGENT_LOCAL_WAIT   180000
-#define NY_AGENT_LOCAL_TRIMS  8
-#define NY_AGENT_LOCAL_CALLER "nyabot-local"
+#define NY_AGENT_LOCAL_HOST    "nyabula.local"
+#define NY_AGENT_LOCAL_PATH    "/v1/chat/completions"
+#define NY_AGENT_LOCAL_PORT    "1"
+#define NY_AGENT_LOCAL_KEY     "on-device" /* The framework wants one */
+#define NY_AGENT_LOCAL_SLOT    (LLM_ROUTER_MAX_BACKENDS - 1)
+#define NY_AGENT_LOCAL_WAIT    180000
+#define NY_AGENT_LOCAL_TRIMS   8
+#define NY_AGENT_LOCAL_CALLER  "nyabot-local"
 
 /* New tokens per kind of call.  A forced call is one short JSON object and
  * a summary is one sentence; letting either run on only costs the owner
@@ -91,9 +91,9 @@
  * stays inside the window; -E2BIG trimming covers a wrong estimate.
  */
 
-#define NY_AGENT_LOCAL_HISTORY 3000
-#define NY_AGENT_LOCAL_WISHES  360 /* Of the profile's free-text wishes */
-#define NY_AGENT_LOCAL_FACTS   3   /* Parallel results worth one sentence */
+#define NY_AGENT_LOCAL_HISTORY  3000
+#define NY_AGENT_LOCAL_WISHES   360 /* Of the profile's free-text wishes */
+#define NY_AGENT_LOCAL_FACTS    3   /* Parallel results worth one sentence */
 
 /* No product setting holds a time zone: the panel sends the browser's
  * offset with each alarm, briefing and companion schedule.  The newest of
@@ -155,8 +155,8 @@ static bool ny_agent_local_owner(const cJSON *tools)
   cJSON_ArrayForEach(tool, tools)
   {
     const cJSON *function = cJSON_GetObjectItemCaseSensitive(tool, "function");
-    const cJSON *name =
-        cJSON_GetObjectItemCaseSensitive(function ? function : tool, "name");
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(
+        function ? function : tool, "name");
     if (cJSON_IsString(name) &&
         !strcmp(name->valuestring, NY_AGENT_LOCAL_OWNER_TOOL))
       return true;
@@ -176,8 +176,8 @@ static int ny_agent_local_ask(const char *topic, cJSON **result)
   const struct ny_product_caller_s caller = { NY_AGENT_LOCAL_CALLER,
                                               NY_PRODUCT_OWNER, false };
   cJSON *empty = cJSON_CreateObject();
-  int ret =
-      empty ? ny_product_request(&caller, topic, empty, result) : -ENOMEM;
+  int ret = empty ? ny_product_request(&caller, topic, empty, result)
+                  : -ENOMEM;
   cJSON_Delete(empty);
   if (ret == 0 && !cJSON_IsObject(*result))
     {
@@ -202,8 +202,8 @@ static int ny_agent_local_offset(const cJSON *alarms)
   if (!alarms && ny_agent_local_ask("alarm.list", &fetched) == 0)
     alarms = fetched;
   const cJSON *items = cJSON_GetObjectItemCaseSensitive(alarms, "items");
-  const cJSON *newest =
-      cJSON_GetArrayItem(items, cJSON_GetArraySize(items) - 1);
+  const cJSON *newest = cJSON_GetArrayItem(items,
+                                           cJSON_GetArraySize(items) - 1);
   const cJSON *value =
       cJSON_GetObjectItemCaseSensitive(newest, "utc_offset_minutes");
   if (cJSON_IsNumber(value))
@@ -219,8 +219,8 @@ static int ny_agent_local_offset(const cJSON *alarms)
       cJSON *settings = NULL;
       if (ny_agent_local_ask(topics[i], &settings) == 0)
         {
-          value =
-              cJSON_GetObjectItemCaseSensitive(settings, "utc_offset_minutes");
+          value = cJSON_GetObjectItemCaseSensitive(settings,
+                                                   "utc_offset_minutes");
           if (cJSON_IsNumber(value) && value->valuedouble != 0)
             offset = value->valuedouble;
         }
@@ -241,11 +241,12 @@ static int ny_agent_local_offset(const cJSON *alarms)
 static void ny_agent_local_persona(bool owner, bool chat, char *text,
                                    size_t size)
 {
-  static const char *const tones[][2] = { { "warm",
-                                            "温暖、体贴，像家人一样陪伴" },
-                                          { "playful", "活泼俏皮，可以撒娇" },
-                                          { "concise", "简洁直接，先说结论" },
-                                          { "calm", "平静舒缓，不急不躁" } };
+  static const char *const tones[][2] = {
+    { "warm", "温暖、体贴，像家人一样陪伴" },
+    { "playful", "活泼俏皮，可以撒娇" },
+    { "concise", "简洁直接，先说结论" },
+    { "calm", "平静舒缓，不急不躁" }
+  };
   cJSON *profile = NULL;
   char piece[NY_AGENT_LOCAL_WISHES + 1];
   int used;
@@ -286,7 +287,8 @@ static void ny_agent_local_persona(bool owner, bool chat, char *text,
     }
   if (wishes[0] && (size_t)used < size)
     {
-      ny_agent_local_intent_copy(piece, sizeof(piece), wishes, strlen(wishes));
+      ny_agent_local_intent_copy(piece, sizeof(piece), wishes,
+                                 strlen(wishes));
       used += snprintf(text + used, size - used, "主人还希望：%s。", piece);
     }
   if (language[0] && strncmp(language, "zh", 2) && (size_t)used < size)
@@ -428,8 +430,8 @@ static int ny_agent_local_force(const char *utterance,
   char *response = NULL;
   if (!table)
     return -ENOTSUP;
-  snprintf(content, sizeof(content), "%s（必须调用 %s 工具，不要自行回答。）",
-           utterance, name);
+  snprintf(content, sizeof(content),
+           "%s（必须调用 %s 工具，不要自行回答。）", utterance, name);
   cJSON *root = cJSON_CreateObject();
   cJSON *messages = root ? cJSON_AddArrayToObject(root, "messages") : NULL;
   cJSON *tools = cJSON_Parse(table);
@@ -441,8 +443,8 @@ static int ny_agent_local_force(const char *utterance,
   if (ret < 0)
     cJSON_Delete(tools);
   else
-    ret = ny_agent_local_generate(root, NY_AGENT_LOCAL_TOKENS_FORCED, "slot",
-                                  &response);
+    ret = ny_agent_local_generate(root, NY_AGENT_LOCAL_TOKENS_FORCED,
+                                  "slot", &response);
   cJSON_Delete(root);
   if (ret < 0)
     return ret;
@@ -460,11 +462,12 @@ static int ny_agent_local_force(const char *utterance,
       "function");
   const cJSON *arguments =
       cJSON_GetObjectItemCaseSensitive(function, "arguments");
-  cJSON *parsed =
-      cJSON_IsString(arguments) ? cJSON_Parse(arguments->valuestring) : NULL;
-  ret =
-      ny_agent_local_intent_fill(intent, ny_agent_local_text(function, "name"),
-                                 parsed ? parsed : arguments);
+  cJSON *parsed = cJSON_IsString(arguments)
+                      ? cJSON_Parse(arguments->valuestring)
+                      : NULL;
+  ret = ny_agent_local_intent_fill(intent,
+                                   ny_agent_local_text(function, "name"),
+                                   parsed ? parsed : arguments);
   syslog(LOG_INFO, "nyagent: on-device slot for %s: %s\n",
          ny_agent_local_intent_name(intent->kind),
          ret == 0 ? "accepted" : "rejected");
@@ -505,8 +508,8 @@ static int ny_agent_local_gather(const struct ny_agent_local_intent_s *intent,
           context->utc_offset_minutes = ny_agent_local_offset(result);
           if (ny_product_clock_valid())
             context->now_minutes =
-                (int)(((int64_t)(now / 60000) + context->utc_offset_minutes) %
-                      1440);
+                (int)(((int64_t)(now / 60000) +
+                       context->utc_offset_minutes) % 1440);
         }
     }
   else if (intent->kind == NY_AGENT_LOCAL_MUSIC_PLAY)
@@ -528,8 +531,8 @@ static int ny_agent_local_gather(const struct ny_agent_local_intent_s *intent,
       if (ret == 0)
         {
           context->volume = (int)volume->valuedouble;
-          context->muted =
-              cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result, "muted"));
+          context->muted = cJSON_IsTrue(
+              cJSON_GetObjectItemCaseSensitive(result, "muted"));
         }
     }
   cJSON_Delete(result);
@@ -593,8 +596,8 @@ static int ny_agent_local_command(const char *utterance, char **response)
   syslog(LOG_INFO, "nyagent: on-device rule %s -> %s\n",
          ny_agent_local_intent_name(intent->kind),
          say ? "asked the owner" : tool);
-  *response =
-      ny_agent_local_intent_reply(say ? NULL : tool, arguments, say, unique);
+  *response = ny_agent_local_intent_reply(say ? NULL : tool, arguments, say,
+                                          unique);
   free(arguments);
   free(intent);
   return *response ? 1 : -ENOMEM;
@@ -642,9 +645,10 @@ static int ny_agent_local_report(const cJSON *messages, int last, bool owner,
       for (int back = first - 1; back >= 0 && !function; back--)
         {
           const cJSON *call;
-          cJSON_ArrayForEach(
-              call, cJSON_GetObjectItemCaseSensitive(
-                        cJSON_GetArrayItem(messages, back), "tool_calls"))
+          cJSON_ArrayForEach(call,
+                             cJSON_GetObjectItemCaseSensitive(
+                                 cJSON_GetArrayItem(messages, back),
+                                 "tool_calls"))
           {
             if (!strcmp(ny_agent_local_text(call, "id"), id))
               function = cJSON_GetObjectItemCaseSensitive(call, "function");
@@ -673,15 +677,13 @@ static int ny_agent_local_report(const cJSON *messages, int last, bool owner,
        * the model is kept to chat and to reading slots.
        */
 
-      snprintf(prompt, NY_AGENT_LOCAL_FACTS * NY_AGENT_LOCAL_FACT_MAX + 64,
-               "%s%s。",
-               failed    ? "抱歉，"
-               : applied ? "好的～"
-                         : "",
-               facts);
+      snprintf(prompt,
+               NY_AGENT_LOCAL_FACTS * NY_AGENT_LOCAL_FACT_MAX + 64, "%s%s。",
+               failed ? "抱歉，" : applied ? "好的～" : "", facts);
       *response = ny_agent_local_intent_reply(
           NULL, NULL, prompt,
-          (ny_product_time_ms(true) << 12) | (++g_agent_local_serial & 0xfff));
+          (ny_product_time_ms(true) << 12) |
+              (++g_agent_local_serial & 0xfff));
       ret = *response ? 0 : -ENOMEM;
     }
   free(facts);
@@ -739,7 +741,8 @@ static int ny_agent_local_chat(const cJSON *messages, bool owner,
       const cJSON *message = cJSON_GetArrayItem(messages, index);
       const char *role = ny_agent_local_text(message, "role");
       const char *content = ny_agent_local_text(message, "content");
-      if ((strcmp(role, "user") && strcmp(role, "assistant")) || !content[0] ||
+      if ((strcmp(role, "user") && strcmp(role, "assistant")) ||
+          !content[0] ||
           cJSON_GetObjectItemCaseSensitive(message, "tool_calls"))
         continue;
       if (!ny_agent_local_add(fresh, role, content))
@@ -788,10 +791,10 @@ static int ny_agent_local_transport(const char *request, char **response,
 
   /* The framework closes some runs with a system hint after the result. */
 
-  while (
-      ret == 0 && last > 0 &&
-      !strcmp(ny_agent_local_text(cJSON_GetArrayItem(messages, last), "role"),
-              "system"))
+  while (ret == 0 && last > 0 &&
+         !strcmp(ny_agent_local_text(cJSON_GetArrayItem(messages, last),
+                                     "role"),
+                 "system"))
     last--;
   if (ret == 0)
     {
@@ -833,14 +836,15 @@ static int ny_agent_local_transport(const char *request, char **response,
   return OK;
 }
 
+
 /****************************************************************************
  * Name: ny_agent_local_init
  ****************************************************************************/
 
 int ny_agent_local_init(void)
 {
-  return llm_set_local_transport(NY_AGENT_LOCAL_HOST, ny_agent_local_transport,
-                                 NULL) == OK
+  return llm_set_local_transport(NY_AGENT_LOCAL_HOST,
+                                 ny_agent_local_transport, NULL) == OK
              ? 0
              : -EIO;
 }
@@ -869,16 +873,19 @@ int ny_agent_local(const char *topic, const cJSON *data, cJSON **result)
       const cJSON *priority =
           cJSON_GetObjectItemCaseSensitive(data, "priority");
       if (!cJSON_IsBool(enabled) ||
-          (priority &&
-           (!cJSON_IsNumber(priority) || priority->valuedouble < 0 ||
-            priority->valuedouble > 100)))
+          (priority && (!cJSON_IsNumber(priority) ||
+                        priority->valuedouble < 0 ||
+                        priority->valuedouble > 100)))
         return -EINVAL;
       if (present && !ours)
         return -EEXIST;
       memset(&backend, 0, sizeof(backend));
-      snprintf(backend.host, sizeof(backend.host), "%s", NY_AGENT_LOCAL_HOST);
-      snprintf(backend.path, sizeof(backend.path), "%s", NY_AGENT_LOCAL_PATH);
-      snprintf(backend.port, sizeof(backend.port), "%s", NY_AGENT_LOCAL_PORT);
+      snprintf(backend.host, sizeof(backend.host), "%s",
+               NY_AGENT_LOCAL_HOST);
+      snprintf(backend.path, sizeof(backend.path), "%s",
+               NY_AGENT_LOCAL_PATH);
+      snprintf(backend.port, sizeof(backend.port), "%s",
+               NY_AGENT_LOCAL_PORT);
       snprintf(backend.api_key, sizeof(backend.api_key), "%s",
                NY_AGENT_LOCAL_KEY);
       snprintf(backend.model, sizeof(backend.model), "%s",

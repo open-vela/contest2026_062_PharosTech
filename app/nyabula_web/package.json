@@ -4,11 +4,15 @@
   "version": "0.1.0",
   "scripts": {
     "build": "pnpm -r build",
-    "typecheck": "pnpm --filter @nyabula/eye-engine build && pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "typecheck": "pnpm build:packages && pnpm -r typecheck",
+    "test": "pnpm build:packages && pnpm -r test",
+    "build:packages": "pnpm --filter @nyabula/nyalink --filter @nyabula/eye-engine build"
   },
   "packageManager": "pnpm@10.6.4",
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "vue-demi"]
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "vue-demi"
+    ]
   }
 }

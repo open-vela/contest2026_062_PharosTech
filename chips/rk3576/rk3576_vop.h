@@ -1,0 +1,257 @@
+/****************************************************************************
+ * chips/rk3576/rk3576_vop.h
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.  The
+ * ASF licenses this file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the
+ * License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ *
+ ****************************************************************************/
+
+/****************************************************************************
+ * RK3576 Video Output Processor (VOP) framebuffer driver public interface.
+ *
+ * Wraps the NuttX generic framebuffer framework (struct fb_vtable_s) on top
+ * of the RK3576 VOP.  rk3576_vop_initialize() allocates the framebuffer
+ * (via the DMA heap), programs one WIN0 layer + one video port + one output
+ * interface, then self-registers the framebuffer as /dev/fbN.
+ *
+ * The VOP is shared by multiple physical output interfaces (MIPI DSI,
+ * HDMI, eDP, DP, RGB).  Routing is expressed as an (interface, port) pair
+ * so that the driver is interface-agnostic and extensible: adding a new
+ * output only requires a new RK3576_VOP_IFACE_* entry and a matching
+ * interface-ctrl register offset in the internal map.
+ ****************************************************************************/
+
+#ifndef __VENDOR_ROCKCHIP_RK3576_RK3576_VOP_H
+#define __VENDOR_ROCKCHIP_RK3576_RK3576_VOP_H
+
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
+#include <nuttx/config.h>
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifdef CONFIG_RK3576_VOP
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* Default display number used when config.display is left as
+ * RK3576_VOP_DISPLAY_DEFAULT.  The framebuffer is registered as /dev/fbN.
+ */
+
+#define RK3576_VOP_DISPLAY_DEFAULT 0
+
+/* Pixel clock requested when rk3576_vop_config.pixel_clock is left 0 (Hz). */
+
+#define RK3576_VOP_DEFAULT_PCLK_HZ 64000000u
+
+/****************************************************************************
+ * Public Types
+ ****************************************************************************/
+
+/* Logical output interface.  Values map to SYS_CTRL_*_INFACE_CTRL offsets
+ * through the driver's internal table; the caller never deals with raw
+ * register offsets.
+ */
+
+enum rk3576_vop_iface_e
+{
+  RK3576_VOP_IFACE_MIPI_DSI = 0, /* MIPI DSI (SYS_CTRL_MIPI0_INFACE_CTRL) */
+  RK3576_VOP_IFACE_HDMI,         /* HDMI (SYS_CTRL_HDMI0_INFACE_CTRL) */
+  RK3576_VOP_IFACE_EDP,          /* eDP (SYS_CTRL_EDP0_INFACE_CTRL) */
+  RK3576_VOP_IFACE_DP,           /* DP (SYS_CTRL_DP0_INFACE_CTRL) */
+  RK3576_VOP_IFACE_RGB,          /* RGB (SYS_CTRL_RGB_INFACE_CTRL) */
+  RK3576_VOP_IFACE_MAX
+};
+
+/* Video port.  Each port has its own pixel clock (dclk_vp0/1/2) and its
+ * own POST timing block (POST0/1/2).  The DSI host's IPI is fed from the
+ * port selected by mipi_port_sel (interfaces select a port independently).
+ */
+
+enum rk3576_vop_port_e
+{
+  RK3576_VOP_PORT0 = 0, /* dclk_vp0, up to 600MHz */
+  RK3576_VOP_PORT1 = 1, /* dclk_vp1, up to 300MHz */
+  RK3576_VOP_PORT2 = 2, /* dclk_vp2, up to 150MHz */
+};
+
+/* One-time VOP/framebuffer configuration, passed to
+ * rk3576_vop_initialize().  Fixed for the life of the instance.
+ */
+
+struct rk3576_vop_config
+{
+  /* Framebuffer geometry (visible resolution). */
+
+  uint16_t xres; /* Horizontal pixels */
+  uint16_t yres; /* Vertical lines */
+
+  /* Output routing: which interface and which video port. */
+
+  enum rk3576_vop_iface_e iface; /* Output interface */
+  enum rk3576_vop_port_e port;   /* Video port to route */
+
+  /* Framebuffer device registration. */
+
+  uint8_t display; /* /dev/fbN number */
+  uint8_t plane;   /* Color plane (0 for RGB) */
+
+  /* Output timing.  These describe the panel/interface scan-out timing
+   * and must match what the output interface (e.g. the DSI host's IPI)
+   * is programmed with.
+   */
+
+  uint16_t hsync_len;    /* HSYNC pulse width (pixels) */
+  uint16_t hfront_porch; /* Horizontal front porch */
+  uint16_t hback_porch;  /* Horizontal back porch */
+  uint16_t vsync_len;    /* VSYNC pulse width (lines) */
+  uint16_t vfront_porch; /* Vertical front porch */
+  uint16_t vback_porch;  /* Vertical back porch */
+
+  /* Sync polarities as the SINK or panel expects them (`true` = active high,
+   * i.e. the interface's own reset default).
+   *
+   * These used to be hard-coded positive in rk3576_vop_configure_port(), which
+   * was correct for the two CEA-861 modes this driver shipped with (1080p60
+   * and the DSI panel both use positive sync) but not for a timing taken from
+   * a sink's EDID: 1024x768@60 and 1440x900@60 both advertise negative sync,
+   * and driving the opposite polarity to the one advertised shifts or loses
+   * the picture.
+   *
+   * MIND THE DEFAULT: `false` is NEGATIVE sync, so a zero-initialised config
+   * means inverted sync.  Every initialiser must set both fields explicitly.
+   */
+
+  bool hsync_positive;
+  bool vsync_positive;
+
+  /* Nominal pixel clock to request for the video port, in Hz.
+   *
+   * This is the SINGLE SOURCE OF TRUTH for the pixel rate and must be the
+   * same number the output interface was programmed with.  It is a REQUEST:
+   * the CRU can only divide the parent PLL by an integer, so the achieved
+   * dclk will usually differ slightly (asking for 62 MHz on this board lands
+   * on gpll/19 = 62.526 MHz).
+   *
+   * That residual error is deliberately NOT corrected afterwards.  Both the
+   * IPI timing and the PHY ratios are derived from the nominal mode clock,
+   * never from the achieved rate, so a ~1% mismatch is the normal, working
+   * condition -- and re-writing the IPI timing
+   * registers while the video datapath is live re-times a running state
+   * machine mid-packet, which is a race (see the comment in
+   * rk3576_vop_enable_clocks()).
+   */
+
+  uint32_t pixel_clock; /* Hz; 0 = keep the driver default */
+};
+
+/****************************************************************************
+ * Public Function Prototypes
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: rk3576_vop_initialize
+ *
+ * Description:
+ *   Initialize the RK3576 VOP, allocate the framebuffer, program a single
+ *   WIN0 RGB888 layer routed through the requested video port to the
+ *   requested output interface, and self-register the framebuffer as
+ *   /dev/fbN (N = config->display).
+ *
+ *   The framebuffer is allocated from the RK3576 DMA heap
+ *   (rk3576_dma_alloc) because the VOP WIN0 YRGB_MST register is a 32-bit
+ *   physical address (MMU bypass), therefore the buffer must be physically
+ *   contiguous and below 4GB.
+ *
+ *   The caller must have already brought up the output interface (e.g.
+ *   rk3576_mipi_dsi_initialize()) and programmed its timing to match
+ *   config->xres/yres and the porch/sync timings.
+ *
+ * Input Parameters:
+ *   config - Framebuffer/routing configuration.  Must not be NULL.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int rk3576_vop_initialize(FAR const struct rk3576_vop_config *config);
+
+/****************************************************************************
+ * Name: rk3576_vop_fill
+ *
+ * Description:
+ *   Fill the framebuffer with a single solid colour.
+ *
+ *   Two uses, both about making a bring-up experiment legible:
+ *
+ *     - A solid colour is the only pattern whose appearance on the panel is
+ *       unambiguous.  The default checkerboard is fine as an "is the source
+ *       black?" probe, but a panel that lights up showing OUR colour proves
+ *       pixel data traversed the whole path (VOP -> IPI -> PHY -> panel) with
+ *       the right content, while stripes or noise proves the packets arrive
+ *       but are misparsed.  A checkerboard cannot tell those apart.
+ *
+ *     - Giving each configuration under test its OWN colour lets a human
+ *       observer report which one lit the panel without needing to read the
+ *       console for timing: "it showed green" identifies the third entry of
+ *       the matrix directly.
+ *
+ *   It also gets the source out of the way as an explanation for a dark
+ *   screen: an all-zero framebuffer would make every one of the above
+ *   unanswerable.
+ *
+ * Input Parameters:
+ *   rgb - 0xRRGGBB (the framebuffer is R,G,B byte order, matching RGB888).
+ *
+ * Returned Value:
+ *   OK, or -ENODEV if the VOP has not been initialised.
+ *
+ ****************************************************************************/
+
+int rk3576_vop_fill(uint32_t rgb);
+
+/****************************************************************************
+ * Name: rk3576_vop_fill_bands
+ *
+ * Description:
+ *   Paint horizontal bands of solid colour into the framebuffer and clean the
+ *   D-cache so the ESMART layer's MMU-bypassed fetch sees them.
+ *
+ *   The colours are chosen so that a wrong byte order shows up in one look:
+ *   red and blue exchange places, and a solid white or black fill could never
+ *   reveal it because swapping two equal bytes changes nothing.
+ *
+ * Input Parameters:
+ *   colors - Array of RGB888 values, first band first.
+ *   nbands - Number of entries in colors.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; -ENODEV if no display is up; -EINVAL on a bad
+ *   argument.
+ *
+ ****************************************************************************/
+
+int rk3576_vop_fill_bands(FAR const uint32_t *colors, uint32_t nbands);
+
+#endif /* CONFIG_RK3576_VOP */
+#endif /* __VENDOR_ROCKCHIP_RK3576_RK3576_VOP_H */

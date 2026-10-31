@@ -47,7 +47,8 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
         ${NUTTX_APPS_DIR}/netutils/cjson/cJSON)
   endif()
   if(CONFIG_NYABULA_CORE_WEB)
-    list(APPEND NYABULA_CORE_SRCS ny_web.c ny_web_auth.c ny_web_http.c ny_websocket.c)
+    list(APPEND NYABULA_CORE_SRCS ny_web.c ny_web_auth.c ny_web_http.c ny_websocket.c
+         ny_web_mirror.c)
   endif()
   if(CONFIG_NYABULA_CORE_PRODUCT)
     list(APPEND NYABULA_CORE_SRCS ny_product_store.c ny_product_records.c
@@ -60,16 +61,6 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     endif()
     if(CONFIG_NYABULA_CORE_LIGHT)
       list(APPEND NYABULA_CORE_SRCS ny_product_light.c ny_light_math.c)
-    endif()
-    if(CONFIG_NYABULA_CORE_BT)
-      list(APPEND NYABULA_CORE_SRCS ny_product_bt.c ny_product_bt_audio.c
-           ny_audio_stream.c ny_pcm.c ny_sbc.c)
-      set(NYCORE_BT_INCLUDES
-          ${NUTTX_APPS_DIR}/external/zblue/zblue/port/include
-          ${NUTTX_APPS_DIR}/external/zblue/zblue/port/include/zephyr
-          ${NUTTX_APPS_DIR}/external/libfluoride-sbc/libfluoride-sbc/decoder/include
-          ${NUTTX_APPS_DIR}/external/libfluoride-sbc/libfluoride-sbc/encoder/include)
-      list(APPEND NYABULA_CORE_DEPENDS zblue libfluoride-sbc)
     endif()
     if(CONFIG_NYABULA_CORE_NETWORK)
       list(APPEND NYABULA_CORE_SRCS ny_product_network.c)
@@ -171,7 +162,7 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     ${NYCORE_SQLITE_DIR}
     ${NYCORE_NBOOTCTL_DIR}
     ${NYCORE_NYAMP_DIR}
-    ${NYCORE_BT_INCLUDES}
+
     ${NUTTX_APPS_DIR}/crypto/libsodium/libsodium/src/libsodium/include
     ${NUTTX_APPS_DIR}/interpreters/wamr/wamr/core/iwasm/include
     DEPENDS

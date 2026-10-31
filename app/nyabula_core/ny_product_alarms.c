@@ -30,9 +30,9 @@
 #include <nyabula_eye_service.h>
 #endif
 
-#define NY_ALARM_LIMIT    32
-#define NY_ALARM_DAY_MS   86400000LL
-#define NY_ALARM_GRACE_MS 300000ULL
+#define NY_ALARM_LIMIT     32
+#define NY_ALARM_DAY_MS    86400000LL
+#define NY_ALARM_GRACE_MS  300000ULL
 
 /* How long an alarm rings before it gives up and marks itself missed.
  * Ringing is durable state that survives a reboot, and a one-shot alarm
@@ -41,14 +41,14 @@
  * panel showed the row as "off", so there was nothing obvious to press.
  */
 
-#define NY_ALARM_RING_MS 600000ULL
+#define NY_ALARM_RING_MS   600000ULL
 
 /* An occurrence is never scheduled more than a week ahead, so a next_at
  * within this distance of a reading of the clock was worked out from that
  * reading.
  */
 
-#define NY_ALARM_FRAME_MS (8 * NY_ALARM_DAY_MS)
+#define NY_ALARM_FRAME_MS  (8 * NY_ALARM_DAY_MS)
 
 static mutex_t g_alarm_lock = NXMUTEX_INITIALIZER;
 static cJSON *g_alarms;

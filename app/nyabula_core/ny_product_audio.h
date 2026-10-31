@@ -49,7 +49,7 @@
 
 /* Pass as a level to ny_product_audio_set_levels() to leave it unchanged. */
 
-#define NY_PRODUCT_AUDIO_KEEP (-1)
+#define NY_PRODUCT_AUDIO_KEEP   (-1)
 
 /****************************************************************************
  * Public Types
@@ -61,10 +61,10 @@
 
 struct ny_product_audio_levels_s
 {
-  int volume;  /* 0..100, the level restored when unmuted */
-  bool muted;  /* Playback mute */
-  int gain;    /* 0..100 microphone gain */
-  int gain_db; /* What the codec PGA was given for that gain */
+  int  volume;  /* 0..100, the level restored when unmuted */
+  bool muted;   /* Playback mute */
+  int  gain;    /* 0..100 microphone gain */
+  int  gain_db; /* What the codec PGA was given for that gain */
 };
 
 /****************************************************************************

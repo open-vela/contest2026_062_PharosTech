@@ -183,7 +183,7 @@ enum nyabula_eye_eq_view_e
  * phone camera resolves on a 360 pixel panel with a quiet zone around it.
  */
 
-#define NYABULA_EYE_TEXT_QR 135
+#define NYABULA_EYE_TEXT_QR     135
 
 struct nyabula_eye_scene_payload_s
 {

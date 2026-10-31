@@ -45,7 +45,10 @@ int ny_web_auth_load(const char *path)
   return 0;
 }
 
-bool ny_web_auth_has_password(void) { return false; }
+bool ny_web_auth_has_password(void)
+{
+  return false;
+}
 
 bool ny_web_auth_locked(uint32_t *retry_after_ms)
 {
@@ -404,7 +407,8 @@ int ny_web_auth_check(const char *password, uint32_t *retry_after_ms)
   ret = strlen(password) <= NY_WEB_AUTH_PASSWORD_MAX
             ? ny_auth_derive(password, g_auth.salt, g_auth.iterations, hash)
             : -EACCES;
-  if (ret == 0 && mbedtls_ct_memcmp(hash, g_auth.hash, NY_AUTH_HASH_SIZE) == 0)
+  if (ret == 0 &&
+      mbedtls_ct_memcmp(hash, g_auth.hash, NY_AUTH_HASH_SIZE) == 0)
     {
       g_auth.failures = 0;
     }
@@ -523,7 +527,8 @@ int ny_web_auth_session_token(const char *pair_token, char *out)
     }
 
   memcpy(message, NY_AUTH_LABEL, sizeof(NY_AUTH_LABEL) - 1);
-  memcpy(message + sizeof(NY_AUTH_LABEL) - 1, g_auth.hash, NY_AUTH_HASH_SIZE);
+  memcpy(message + sizeof(NY_AUTH_LABEL) - 1, g_auth.hash,
+         NY_AUTH_HASH_SIZE);
   nxmutex_unlock(&g_auth_lock);
 
   ret = mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),

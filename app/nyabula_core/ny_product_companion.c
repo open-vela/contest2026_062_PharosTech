@@ -29,7 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define NY_COMPANION_TICK_MS 1000
+#define NY_COMPANION_TICK_MS   1000
 static mutex_t g_companion_lock = NXMUTEX_INITIALIZER;
 static uint64_t g_companion_tick;
 

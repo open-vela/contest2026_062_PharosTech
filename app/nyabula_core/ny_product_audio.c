@@ -48,13 +48,13 @@
  * Included Files
  ****************************************************************************/
 
-#include "ny_product_audio.h"
 #include "ny_product.h"
+#include "ny_product_audio.h"
 #include "ny_product_store.h"
 
+#include <nuttx/config.h>
 #include <nuttx/audio/audio.h>
 #include <nuttx/audio/es8388.h>
-#include <nuttx/config.h>
 #include <nuttx/mutex.h>
 
 #include <errno.h>
@@ -71,26 +71,26 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NY_AUDIO_DOMAIN "audio"
-#define NY_AUDIO_SCHEMA 1
+#define NY_AUDIO_DOMAIN          "audio"
+#define NY_AUDIO_SCHEMA          1
 
 /* AUDIO_FU_VOLUME runs 0..1000 and the panel 0..100. */
 
-#define NY_AUDIO_VOLUME_SCALE 10
+#define NY_AUDIO_VOLUME_SCALE    10
 
 /* The driver takes the microphone gain in dB and only has 3 dB steps. */
 
-#define NY_AUDIO_GAIN_DB_MAX  24
-#define NY_AUDIO_GAIN_DB_STEP 3
+#define NY_AUDIO_GAIN_DB_MAX     24
+#define NY_AUDIO_GAIN_DB_STEP    3
 
 /* What the driver programs at start-up, so that a device which never had a
  * preference stored reports what it actually plays at.
  */
 
-#define NY_AUDIO_DEFAULT_VOLUME \
-  (CONFIG_ES8388_OUTPUT_INITVOLUME / NY_AUDIO_VOLUME_SCALE)
-#define NY_AUDIO_DEFAULT_GAIN \
-  (CONFIG_ES8388_INPUT_INITVOLUME / NY_AUDIO_VOLUME_SCALE)
+#define NY_AUDIO_DEFAULT_VOLUME  (CONFIG_ES8388_OUTPUT_INITVOLUME / \
+                                  NY_AUDIO_VOLUME_SCALE)
+#define NY_AUDIO_DEFAULT_GAIN    (CONFIG_ES8388_INPUT_INITVOLUME / \
+                                  NY_AUDIO_VOLUME_SCALE)
 
 /* The codec nodes are registered by board initialization, which may finish
  * after the product worker starts: ask often at first, then rarely.
@@ -103,11 +103,11 @@
 
 /* Set before the store was read: the stored record must not undo these. */
 
-#define NY_AUDIO_EARLY_VOLUME (1 << 0)
-#define NY_AUDIO_EARLY_MUTED  (1 << 1)
-#define NY_AUDIO_EARLY_GAIN   (1 << 2)
-#define NY_AUDIO_EARLY_OUTPUT (1 << 3)
-#define NY_AUDIO_EARLY_INPUT  (1 << 4)
+#define NY_AUDIO_EARLY_VOLUME    (1 << 0)
+#define NY_AUDIO_EARLY_MUTED     (1 << 1)
+#define NY_AUDIO_EARLY_GAIN      (1 << 2)
+#define NY_AUDIO_EARLY_OUTPUT    (1 << 3)
+#define NY_AUDIO_EARLY_INPUT     (1 << 4)
 
 /****************************************************************************
  * Private Types
@@ -180,19 +180,21 @@ static cJSON *ny_audio_status(void);
  * Private Data
  ****************************************************************************/
 
-static const char *const g_audio_output_names[] = {
-  [ES8388_OUTPUT_ROUTE_NONE] = "off",
+static const char *const g_audio_output_names[] =
+{
+  [ES8388_OUTPUT_ROUTE_NONE]  = "off",
   [ES8388_OUTPUT_ROUTE_LINE1] = "headphones",
   [ES8388_OUTPUT_ROUTE_LINE2] = "speaker",
-  [ES8388_OUTPUT_ROUTE_BOTH] = "both",
-  [ES8388_OUTPUT_ROUTE_AUTO] = "auto",
+  [ES8388_OUTPUT_ROUTE_BOTH]  = "both",
+  [ES8388_OUTPUT_ROUTE_AUTO]  = "auto",
 };
 
-static const char *const g_audio_input_names[] = {
-  [ES8388_INPUT_ROUTE_NONE] = "off",
+static const char *const g_audio_input_names[] =
+{
+  [ES8388_INPUT_ROUTE_NONE]  = "off",
   [ES8388_INPUT_ROUTE_LINE1] = "headset",
   [ES8388_INPUT_ROUTE_LINE2] = "main",
-  [ES8388_INPUT_ROUTE_BOTH] = "both",
+  [ES8388_INPUT_ROUTE_BOTH]  = "both",
 };
 
 #define NY_AUDIO_OUTPUT_NAMES \
@@ -421,8 +423,8 @@ static int ny_audio_push_output(int fd, const struct ny_audio_prefs_s *prefs)
   control.swap = prefs->swap;
   control.invert_left = prefs->invert_left;
   control.invert_right = prefs->invert_right;
-  return ioctl(fd, ES8388IOC_SET_CONTROL, (unsigned long)(uintptr_t)&control) <
-                 0
+  return ioctl(fd, ES8388IOC_SET_CONTROL,
+               (unsigned long)(uintptr_t)&control) < 0
              ? -errno
              : 0;
 }
@@ -444,8 +446,8 @@ static int ny_audio_push_input(int fd, const struct ny_audio_prefs_s *prefs)
   control.mask = ES8388_CONTROL_INPUT;
   control.input_route = prefs->input_route;
   control.microphone_muted = prefs->mic_muted;
-  return ioctl(fd, ES8388IOC_SET_CONTROL, (unsigned long)(uintptr_t)&control) <
-                 0
+  return ioctl(fd, ES8388IOC_SET_CONTROL,
+               (unsigned long)(uintptr_t)&control) < 0
              ? -errno
              : 0;
 }
@@ -496,8 +498,8 @@ static void ny_audio_decode(const cJSON *root)
     {
       int route = ny_audio_name_index(g_audio_input_names,
                                       NY_AUDIO_INPUT_NAMES, input);
-      valid =
-          route >= 0 && ny_audio_flag(root, "micMuted", &prefs.mic_muted) == 1;
+      valid = route >= 0 &&
+              ny_audio_flag(root, "micMuted", &prefs.mic_muted) == 1;
       if (valid)
         {
           prefs.input_route = (enum es8388_input_route_e)route;
@@ -617,13 +619,14 @@ static void ny_audio_save(void)
   if (valid && prefs->output_set)
     {
       const char *name = ny_audio_output_name(prefs->route);
-      valid = cJSON_AddStringToObject(root, "outputRoute", name) != NULL &&
-              cJSON_AddBoolToObject(root, "mono", prefs->mono) != NULL &&
-              cJSON_AddBoolToObject(root, "swap", prefs->swap) != NULL &&
-              cJSON_AddBoolToObject(root, "invertLeft", prefs->invert_left) !=
-                  NULL &&
-              cJSON_AddBoolToObject(root, "invertRight",
-                                    prefs->invert_right) != NULL;
+      valid =
+          cJSON_AddStringToObject(root, "outputRoute", name) != NULL &&
+          cJSON_AddBoolToObject(root, "mono", prefs->mono) != NULL &&
+          cJSON_AddBoolToObject(root, "swap", prefs->swap) != NULL &&
+          cJSON_AddBoolToObject(root, "invertLeft",
+                                prefs->invert_left) != NULL &&
+          cJSON_AddBoolToObject(root, "invertRight",
+                                prefs->invert_right) != NULL;
     }
 
   if (valid && prefs->input_set)
@@ -635,8 +638,8 @@ static void ny_audio_save(void)
           cJSON_AddBoolToObject(root, "micMuted", prefs->mic_muted) != NULL;
     }
 
-  ret = valid ? ny_product_store_write(NY_AUDIO_DOMAIN, root, g_audio.revision,
-                                       &revision)
+  ret = valid ? ny_product_store_write(NY_AUDIO_DOMAIN, root,
+                                       g_audio.revision, &revision)
               : -ENOMEM;
   if (ret == -ESTALE)
     {
@@ -649,8 +652,8 @@ static void ny_audio_save(void)
       cJSON_Delete(other);
       if (ret == 0)
         {
-          ret = ny_product_store_write(NY_AUDIO_DOMAIN, root, g_audio.revision,
-                                       &revision);
+          ret = ny_product_store_write(NY_AUDIO_DOMAIN, root,
+                                       g_audio.revision, &revision);
         }
     }
 
@@ -752,9 +755,10 @@ static void ny_audio_ensure(void)
       g_audio.attempts++;
     }
 
-  g_audio.restore_after = now + (g_audio.attempts < NY_AUDIO_RESTORE_FAST
-                                     ? NY_AUDIO_RESTORE_FAST_MS
-                                     : NY_AUDIO_RESTORE_SLOW_MS);
+  g_audio.restore_after =
+      now + (g_audio.attempts < NY_AUDIO_RESTORE_FAST
+                 ? NY_AUDIO_RESTORE_FAST_MS
+                 : NY_AUDIO_RESTORE_SLOW_MS);
 }
 
 /****************************************************************************
@@ -768,8 +772,8 @@ static void ny_audio_ensure(void)
 static int ny_audio_levels_apply(int volume, int muted, int gain)
 {
   struct ny_audio_prefs_s next = g_audio.prefs;
-  bool output =
-      volume != NY_PRODUCT_AUDIO_KEEP || muted != NY_PRODUCT_AUDIO_KEEP;
+  bool output = volume != NY_PRODUCT_AUDIO_KEEP ||
+                muted != NY_PRODUCT_AUDIO_KEEP;
   int ret = 0;
   int fd;
 
@@ -831,10 +835,12 @@ static int ny_audio_levels_apply(int volume, int muted, int gain)
   g_audio.saved = false;
   if (!g_audio.loaded)
     {
-      g_audio.early |=
-          (volume != NY_PRODUCT_AUDIO_KEEP ? NY_AUDIO_EARLY_VOLUME : 0) |
-          (muted != NY_PRODUCT_AUDIO_KEEP ? NY_AUDIO_EARLY_MUTED : 0) |
-          (gain != NY_PRODUCT_AUDIO_KEEP ? NY_AUDIO_EARLY_GAIN : 0);
+      g_audio.early |= (volume != NY_PRODUCT_AUDIO_KEEP
+                            ? NY_AUDIO_EARLY_VOLUME : 0) |
+                       (muted != NY_PRODUCT_AUDIO_KEEP
+                            ? NY_AUDIO_EARLY_MUTED : 0) |
+                       (gain != NY_PRODUCT_AUDIO_KEEP
+                            ? NY_AUDIO_EARLY_GAIN : 0);
     }
 
   return 0;
@@ -893,9 +899,9 @@ static int ny_audio_output_apply(const cJSON *data, bool channel)
     }
   else
     {
-      ret =
-          ny_audio_name_index(g_audio_output_names, NY_AUDIO_OUTPUT_NAMES,
-                              cJSON_GetObjectItemCaseSensitive(data, "route"));
+      ret = ny_audio_name_index(
+          g_audio_output_names, NY_AUDIO_OUTPUT_NAMES,
+          cJSON_GetObjectItemCaseSensitive(data, "route"));
       if (ret >= 0)
         {
           next.route = (enum es8388_output_route_e)ret;
@@ -961,9 +967,9 @@ static int ny_audio_input_apply(const cJSON *data, bool route)
 
   if (route)
     {
-      ret =
-          ny_audio_name_index(g_audio_input_names, NY_AUDIO_INPUT_NAMES,
-                              cJSON_GetObjectItemCaseSensitive(data, "route"));
+      ret = ny_audio_name_index(
+          g_audio_input_names, NY_AUDIO_INPUT_NAMES,
+          cJSON_GetObjectItemCaseSensitive(data, "route"));
       if (ret >= 0)
         {
           next.input_route = (enum es8388_input_route_e)ret;
@@ -1035,8 +1041,8 @@ static cJSON *ny_audio_status(void)
   fd = ny_audio_open(NY_PRODUCT_AUDIO_INPUT);
   if (fd >= 0)
     {
-      in_live =
-          ioctl(fd, ES8388IOC_GET_CONTROL, (unsigned long)(uintptr_t)&in) >= 0;
+      in_live = ioctl(fd, ES8388IOC_GET_CONTROL,
+                      (unsigned long)(uintptr_t)&in) >= 0;
       close(fd);
     }
 
@@ -1065,15 +1071,15 @@ static cJSON *ny_audio_status(void)
       cJSON_AddBoolToObject(root, "inputAvailable", in_live) != NULL &&
       cJSON_AddBoolToObject(root, "restored", g_audio.restored) != NULL &&
       cJSON_AddBoolToObject(root, "settingsSaved", g_audio.saved) != NULL &&
-      cJSON_AddNumberToObject(root, "revision", (double)g_audio.revision) !=
-          NULL &&
+      cJSON_AddNumberToObject(root, "revision",
+                              (double)g_audio.revision) != NULL &&
       cJSON_AddStringToObject(output, "route",
                               ny_audio_output_name(out.route)) != NULL &&
       cJSON_AddStringToObject(output, "activeRoute",
                               ny_audio_output_name(out.active_route)) !=
           NULL &&
-      cJSON_AddBoolToObject(output, "headphones", out.headphones_connected) !=
-          NULL &&
+      cJSON_AddBoolToObject(output, "headphones",
+                            out.headphones_connected) != NULL &&
       cJSON_AddNumberToObject(output, "volume", prefs->volume) != NULL &&
       cJSON_AddBoolToObject(output, "muted", prefs->muted) != NULL &&
       cJSON_AddBoolToObject(output, "mono", out.mono) != NULL &&

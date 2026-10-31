@@ -60,12 +60,12 @@
  ****************************************************************************/
 
 #ifndef CONFIG_NYABULA_CORE_TIMESYNC_SERVERS
-#define CONFIG_NYABULA_CORE_TIMESYNC_SERVERS \
-  "ntp.aliyun.com;ntp.tencent.com;cn.pool.ntp.org;pool.ntp.org"
+#  define CONFIG_NYABULA_CORE_TIMESYNC_SERVERS \
+     "ntp.aliyun.com;ntp.tencent.com;cn.pool.ntp.org;pool.ntp.org"
 #endif
 
 #ifndef CONFIG_NYABULA_CORE_TIMESYNC_STACKSIZE
-#define CONFIG_NYABULA_CORE_TIMESYNC_STACKSIZE 16384
+#  define CONFIG_NYABULA_CORE_TIMESYNC_STACKSIZE 16384
 #endif
 
 #define NY_TIMESYNC_PERIOD_MS  21600000u /* Six hours between good answers */
@@ -83,7 +83,7 @@
  * that pass between asking them.
  */
 
-#define NY_TIMESYNC_AGREE_MS 5000
+#define NY_TIMESYNC_AGREE_MS   5000
 
 /****************************************************************************
  * Private Types
@@ -91,11 +91,11 @@
 
 struct ny_timesync_s
 {
-  bool online;         /* What the last tick was told */
-  bool busy;           /* A round of questions is in progress */
-  bool stopping;       /* The product is shutting down */
-  bool synced;         /* A server has answered in this boot */
-  uint64_t next_at_ms; /* Monotonic time of the next round */
+  bool online;          /* What the last tick was told */
+  bool busy;            /* A round of questions is in progress */
+  bool stopping;        /* The product is shutting down */
+  bool synced;          /* A server has answered in this boot */
+  uint64_t next_at_ms;  /* Monotonic time of the next round */
   unsigned int failures;
   int last_error;
   char server[NY_TIMESYNC_HOST_MAX];
@@ -120,7 +120,10 @@ static void *ny_timesync_worker(void *argument);
 static mutex_t g_timesync_lock = NXMUTEX_INITIALIZER;
 static struct ny_timesync_s g_timesync;
 
-static const uint32_t g_timesync_backoff_ms[] = { 15000, 60000, 300000 };
+static const uint32_t g_timesync_backoff_ms[] =
+{
+  15000, 60000, 300000
+};
 
 /****************************************************************************
  * Private Functions
@@ -264,7 +267,7 @@ static int ny_timesync_query(const char *host, struct ny_sntp_reply_s *reply,
       return ret;
     }
 
-  for (;;)
+  for (; ; )
     {
       struct pollfd wait;
       ssize_t length;
@@ -342,7 +345,7 @@ static int ny_timesync_round(char *server, size_t size)
   uint64_t doubted_arrived_ms = 0;
   int result = -ENOENT;
 
-  for (unsigned int index = 0;; index++)
+  for (unsigned int index = 0; ; index++)
     {
       struct ny_sntp_reply_s reply;
       uint64_t arrived_ms = 0;
@@ -381,12 +384,11 @@ static int ny_timesync_round(char *server, size_t size)
         }
 
       server_now_ms = ny_sntp_now_ms(&reply, roundtrip_ms);
-      target_ms =
-          server_now_ms + (int64_t)(ny_product_time_ms(true) - arrived_ms);
+      target_ms = server_now_ms +
+                  (int64_t)(ny_product_time_ms(true) - arrived_ms);
       off_ms = target_ms - (int64_t)ny_product_time_ms(false);
       if (ny_product_clock_source() == NY_PRODUCT_CLOCK_SNTP &&
-          (off_ms > NY_TIMESYNC_SUSPECT_MS ||
-           off_ms < -NY_TIMESYNC_SUSPECT_MS))
+          (off_ms > NY_TIMESYNC_SUSPECT_MS || off_ms < -NY_TIMESYNC_SUSPECT_MS))
         {
           /* Two servers tell the same time when the difference between
            * their answers is the time that passed between them.
@@ -397,10 +399,9 @@ static int ny_timesync_round(char *server, size_t size)
           if (!doubted || apart_ms > NY_TIMESYNC_AGREE_MS ||
               apart_ms < -NY_TIMESYNC_AGREE_MS)
             {
-              syslog(LOG_WARNING,
-                     "nytime: %s is %lld s away from a clock "
-                     "that a time server set; asking another\n",
-                     host, (long long)(off_ms / 1000));
+              syslog(LOG_WARNING, "nytime: %s is %lld s away from a clock "
+                     "that a time server set; asking another\n", host,
+                     (long long)(off_ms / 1000));
               doubted = true;
               doubted_now_ms = server_now_ms;
               doubted_arrived_ms = arrived_ms;
@@ -450,16 +451,14 @@ static void *ny_timesync_worker(void *argument)
     }
   else if (result != -ECANCELED)
     {
-      unsigned int last =
-          sizeof(g_timesync_backoff_ms) / sizeof(g_timesync_backoff_ms[0]) - 1;
+      unsigned int last = sizeof(g_timesync_backoff_ms) /
+                          sizeof(g_timesync_backoff_ms[0]) - 1;
       unsigned int step =
           g_timesync.failures < last ? g_timesync.failures : last;
       g_timesync.failures++;
       g_timesync.next_at_ms = now + g_timesync_backoff_ms[step];
-      syslog(LOG_WARNING,
-             "nytime: no usable answer (%d), attempt %u, next "
-             "in %u s\n",
-             result, g_timesync.failures,
+      syslog(LOG_WARNING, "nytime: no usable answer (%d), attempt %u, next "
+             "in %u s\n", result, g_timesync.failures,
              (unsigned int)(g_timesync_backoff_ms[step] / 1000));
     }
 
@@ -602,8 +601,7 @@ bool ny_product_timesync_describe(cJSON *root)
          : state.synced  ? "synced"
                          : "waiting";
   sync = cJSON_AddObjectToObject(root, "sync");
-  return sync != NULL &&
-         cJSON_AddStringToObject(sync, "state", text) != NULL &&
+  return sync != NULL && cJSON_AddStringToObject(sync, "state", text) != NULL &&
          cJSON_AddStringToObject(sync, "server", state.server) != NULL &&
          cJSON_AddNumberToObject(sync, "error", state.last_error) != NULL &&
          cJSON_AddNumberToObject(sync, "failures", state.failures) != NULL &&

@@ -25,15 +25,14 @@
  */
 
 #include "ny_web.h"
-#include "ny_product.h"
 #include "ny_web_auth.h"
+#include "ny_product.h"
 #include "ny_websocket.h"
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
-#include <netinet/tcp.h>
 #include <nuttx/config.h>
 #include <nuttx/mutex.h>
 #include <nyabula_eye_service.h>
@@ -43,6 +42,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
@@ -50,21 +50,21 @@
 #include <time.h>
 #include <unistd.h>
 
-#define NYABULA_WS_TOKEN_SIZE       64
-#define NYABULA_WS_SOURCE           "webui"
-#define NYABULA_WS_PRIORITY         40
-#define NYABULA_WS_LEASE_MS         5000
-#define NYABULA_WS_STATE_MS         50
-#define NYABULA_WS_IDLE_MS          20000
-#define NYABULA_WS_AUTH_MS          30000
-#define NYABULA_WS_MAX_REQUESTS     40
+#define NYABULA_WS_TOKEN_SIZE   64
+#define NYABULA_WS_SOURCE       "webui"
+#define NYABULA_WS_PRIORITY     40
+#define NYABULA_WS_LEASE_MS     5000
+#define NYABULA_WS_STATE_MS     50
+#define NYABULA_WS_IDLE_MS      20000
+#define NYABULA_WS_AUTH_MS      30000
+#define NYABULA_WS_MAX_REQUESTS 40
 
 #define NY_WEB_SEND_TIMEOUT_S       5
 #define NY_WEB_KEEPALIVE_IDLE_S     10
 #define NY_WEB_KEEPALIVE_INTERVAL_S 5
 #define NY_WEB_KEEPALIVE_PROBES     3
-#define NY_WEB_MAX_CLIENTS          8
-#define NY_WEB_STORE_WAIT_MS        15000
+#define NY_WEB_MAX_CLIENTS      8
+#define NY_WEB_STORE_WAIT_MS    15000
 
 static mutex_t g_web_lock = NXMUTEX_INITIALIZER;
 static bool g_web_running;
@@ -250,7 +250,8 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
       uint32_t retry = 0;
       bool locked = ny_web_auth_locked(&retry);
       result = cJSON_CreateObject();
-      cJSON_AddBoolToObject(result, "passwordSet", ny_web_auth_has_password());
+      cJSON_AddBoolToObject(result, "passwordSet",
+                            ny_web_auth_has_password());
       cJSON_AddBoolToObject(result, "locked", locked);
       cJSON_AddNumberToObject(result, "retryAfterMs", retry);
       ret = nyabula_eye_ws_emit(fd, s, "res", id, topic, result);
@@ -334,8 +335,7 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
       result = cJSON_CreateObject();
       cJSON *device = cJSON_AddObjectToObject(result, "device");
       cJSON_AddStringToObject(device, "id", "nyabula-native-eye");
-#if defined(CONFIG_NYABULA_CORE_PRODUCT) && \
-    defined(CONFIG_NYABULA_CORE_NETWORK)
+#if defined(CONFIG_NYABULA_CORE_PRODUCT) && defined(CONFIG_NYABULA_CORE_NETWORK)
       {
         /* The name the owner gave it, which is also what its access point
          * and the router call it.
@@ -356,7 +356,8 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
 #endif
       cJSON_AddBoolToObject(result, "eyeReady", eye_ready);
       cJSON_AddStringToObject(result, "auth", pair ? "pair" : "session");
-      cJSON_AddBoolToObject(result, "passwordSet", ny_web_auth_has_password());
+      cJSON_AddBoolToObject(result, "passwordSet",
+                            ny_web_auth_has_password());
       cJSON *capabilities = cJSON_AddArrayToObject(result, "capabilities");
       cJSON_AddItemToArray(capabilities, cJSON_CreateString("eyes.native-v1"));
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
@@ -844,11 +845,11 @@ static const char *ny_web_error_name(int status)
       case EBADMSG:
         return "EIO";
 
-        /* The refusals of update.apply.  Each asks something different of
-         * the owner, so none of them may fold into EINVAL: acknowledge the
-         * advanced targets, pick another slot, agree to write under a mounted
-         * filesystem, or give up on a target that is never written.
-         */
+      /* The refusals of update.apply.  Each asks something different of
+       * the owner, so none of them may fold into EINVAL: acknowledge the
+       * advanced targets, pick another slot, agree to write under a mounted
+       * filesystem, or give up on a target that is never written.
+       */
 
       case ENOKEY:
         return "EADVANCED";
@@ -1162,8 +1163,7 @@ static int ny_web_token_create(const char *path, char *token)
     {
       fprintf(stderr,
               "nyabula_web: token not stored at %s (%d); it will change on "
-              "the next start\n",
-              path, errno);
+              "the next start\n", path, errno);
       return 0;
     }
 
@@ -1224,7 +1224,8 @@ int ny_web_run(int argc, char **argv)
   else
     {
       port = strtol(argv[1], &end, 10);
-      if (*end != '\0' || port < 1 || port > 65535 || strlen(argv[3]) > 255 ||
+      if (*end != '\0' || port < 1 || port > 65535 ||
+          strlen(argv[3]) > 255 ||
           (strncmp(argv[3], "http://", 7) != 0 &&
            strncmp(argv[3], "https://", 8) != 0))
         {

@@ -38,7 +38,7 @@
  * an AMP image that N-Boot started from RAM (reason NBOOTCTL_REASON_RAM).
  */
 
-#define NBOOTCTL_SLOT_NONE        2u
+#define NBOOTCTL_SLOT_NONE    2u
 
 #define NBOOTCTL_REASON_NORMAL    0u
 #define NBOOTCTL_REASON_REQUESTED 1u
@@ -51,7 +51,7 @@
 
 struct nbootctl_slot_state_s
 {
-  uint8_t priority; /* 0 = not bootable */
+  uint8_t priority;        /* 0 = not bootable */
   bool successful;
   uint64_t image_size;
   uint64_t image_version;

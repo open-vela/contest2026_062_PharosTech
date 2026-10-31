@@ -56,9 +56,9 @@
 #include "ny_light_math.h"
 #include "ny_product_store.h"
 
+#include <nuttx/config.h>
 #include <nuttx/analog/adc.h>
 #include <nuttx/analog/ioctl.h>
-#include <nuttx/config.h>
 #include <nuttx/mutex.h>
 
 #ifdef CONFIG_NYABULA_CORE_EYE
@@ -81,25 +81,25 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NY_PLIGHT_DOMAIN     "light"
-#define NY_PLIGHT_SCHEMA     1
-#define NY_PLIGHT_DEVICE     CONFIG_NYABULA_CORE_LIGHT_DEVICE
-#define NY_PLIGHT_EYE_SOURCE "light"
+#define NY_PLIGHT_DOMAIN          "light"
+#define NY_PLIGHT_SCHEMA          1
+#define NY_PLIGHT_DEVICE          CONFIG_NYABULA_CORE_LIGHT_DEVICE
+#define NY_PLIGHT_EYE_SOURCE      "light"
 
 /* The worker ticks every 100 ms; this lands on every second tick, which is
  * five readings a second.
  */
 
-#define NY_PLIGHT_SAMPLE_MS 180
+#define NY_PLIGHT_SAMPLE_MS       180
 
 /* The ADC nodes are registered by board initialization, which may finish
  * after the product worker starts: ask often at first, then rarely.
  */
 
-#define NY_PLIGHT_OPEN_FAST_MS   2000
-#define NY_PLIGHT_OPEN_SLOW_MS   10000
-#define NY_PLIGHT_OPEN_FAST      15
-#define NY_PLIGHT_STORE_RETRY_MS 5000
+#define NY_PLIGHT_OPEN_FAST_MS    2000
+#define NY_PLIGHT_OPEN_SLOW_MS    10000
+#define NY_PLIGHT_OPEN_FAST       15
+#define NY_PLIGHT_STORE_RETRY_MS  5000
 
 /* What was learnt is written when it moved by this much and not more often
  * than this: the range creeps all day, and the store is flash.
@@ -113,15 +113,15 @@
  * a level that is not ours.  Look this often and put it right.
  */
 
-#define NY_PLIGHT_VERIFY_MS   10000
-#define NY_PLIGHT_VERIFY_STEP 0.005f
+#define NY_PLIGHT_VERIFY_MS       10000
+#define NY_PLIGHT_VERIFY_STEP     0.005f
 
 /* The narrowest range the owner may pin, in counts. */
 
-#define NY_PLIGHT_PIN_SPAN   16.0
+#define NY_PLIGHT_PIN_SPAN        16.0
 
-#define NY_PLIGHT_OFFSET_MIN (-720)
-#define NY_PLIGHT_OFFSET_MAX 840
+#define NY_PLIGHT_OFFSET_MIN      (-720)
+#define NY_PLIGHT_OFFSET_MAX      840
 
 /****************************************************************************
  * Private Types
@@ -132,26 +132,26 @@ struct ny_plight_state_s
   struct ny_light_filter_s filter;
   struct ny_light_calibration_s stored; /* What the store holds */
   bool enabled;
-  bool offset_known;  /* utc_offset holds the owner's time zone */
-  int utc_offset;     /* Minutes east of UTC */
-  int fd;             /* The ADC node, or -1 */
-  int error;          /* Negated errno of the last failure, 0 when fine */
-  const char *failed; /* What failed: "open", "trigger" or "read" */
-  bool loaded;        /* The store was read */
-  bool dirty;         /* A choice of the owner differs from the store */
-  bool saved;         /* The last write to the store succeeded */
-  bool pushed_valid;  /* pushed holds what the eyes were told */
-  bool push_now;      /* Tell the eyes whatever the rate limit says */
+  bool offset_known;      /* utc_offset holds the owner's time zone */
+  int utc_offset;         /* Minutes east of UTC */
+  int fd;                 /* The ADC node, or -1 */
+  int error;              /* Negated errno of the last failure, 0 when fine */
+  const char *failed;     /* What failed: "open", "trigger" or "read" */
+  bool loaded;            /* The store was read */
+  bool dirty;             /* A choice of the owner differs from the store */
+  bool saved;             /* The last write to the store succeeded */
+  bool pushed_valid;      /* pushed holds what the eyes were told */
+  bool push_now;          /* Tell the eyes whatever the rate limit says */
   float pushed;
-  unsigned int attempts; /* Failed opens so far */
+  unsigned int attempts;  /* Failed opens so far */
   uint32_t samples;
-  uint64_t open_after;  /* Monotonic ms before which not to open */
-  uint64_t store_after; /* Monotonic ms before which not to use the store */
-  uint64_t sampled_at;  /* Monotonic ms of the last reading, 0 for none */
+  uint64_t open_after;    /* Monotonic ms before which not to open */
+  uint64_t store_after;   /* Monotonic ms before which not to use the store */
+  uint64_t sampled_at;    /* Monotonic ms of the last reading, 0 for none */
   uint64_t pushed_at;
   uint64_t verify_at;
   uint64_t saved_at;
-  uint64_t revision; /* Store revision of the record */
+  uint64_t revision;      /* Store revision of the record */
 };
 
 /****************************************************************************
@@ -184,10 +184,11 @@ static cJSON *ny_plight_status(void);
  * Private Data
  ****************************************************************************/
 
-static const char *const g_plight_polarity_names[] = {
+static const char *const g_plight_polarity_names[] =
+{
   [NY_LIGHT_POLARITY_AUTO] = "auto",
   [NY_LIGHT_POLARITY_HIGH] = "bright-high",
-  [NY_LIGHT_POLARITY_LOW] = "bright-low",
+  [NY_LIGHT_POLARITY_LOW]  = "bright-low",
 };
 
 #define NY_PLIGHT_POLARITY_NAMES \
@@ -312,9 +313,9 @@ static void ny_plight_fail(const char *what, int error)
       g_plight.attempts++;
     }
 
-  g_plight.open_after =
-      now + (g_plight.attempts < NY_PLIGHT_OPEN_FAST ? NY_PLIGHT_OPEN_FAST_MS
-                                                     : NY_PLIGHT_OPEN_SLOW_MS);
+  g_plight.open_after = now + (g_plight.attempts < NY_PLIGHT_OPEN_FAST
+                                   ? NY_PLIGHT_OPEN_FAST_MS
+                                   : NY_PLIGHT_OPEN_SLOW_MS);
 }
 
 /****************************************************************************
@@ -393,9 +394,10 @@ static int ny_plight_convert(uint16_t *value)
       return error;
     }
 
-  *value = message.am_data < 0                  ? 0
-           : message.am_data > NY_LIGHT_RAW_MAX ? NY_LIGHT_RAW_MAX
-                                                : (uint16_t)message.am_data;
+  *value = message.am_data < 0 ? 0
+           : message.am_data > NY_LIGHT_RAW_MAX
+               ? NY_LIGHT_RAW_MAX
+               : (uint16_t)message.am_data;
   return 0;
 }
 
@@ -435,27 +437,29 @@ static int ny_plight_push(float dilation)
 {
 #ifdef CONFIG_NYABULA_CORE_EYE
   cJSON *command = cJSON_CreateObject();
-  cJSON *params =
-      command != NULL ? cJSON_AddObjectToObject(command, "params") : NULL;
+  cJSON *params = command != NULL
+                      ? cJSON_AddObjectToObject(command, "params")
+                      : NULL;
   char *json = NULL;
   int ret = -ENOMEM;
 
   if (params != NULL &&
       cJSON_AddStringToObject(command, "action", "eyes.ambient") != NULL &&
-      cJSON_AddStringToObject(command, "source", NY_PLIGHT_EYE_SOURCE) !=
-          NULL &&
+      cJSON_AddStringToObject(command, "source",
+                              NY_PLIGHT_EYE_SOURCE) != NULL &&
       cJSON_AddNumberToObject(command, "priority", 0) != NULL &&
       cJSON_AddNumberToObject(command, "lease_ms", 0) != NULL &&
-      cJSON_AddNumberToObject(
-          params, "level", round((1.0 - dilation) * 1000.0) / 1000.0) != NULL)
+      cJSON_AddNumberToObject(params, "level",
+                              round((1.0 - dilation) * 1000.0) / 1000.0) !=
+          NULL)
     {
       json = cJSON_PrintUnformatted(command);
     }
 
   if (json != NULL)
     {
-      ret =
-          nyabula_eye_service_submit(NY_PLIGHT_EYE_SOURCE, json, strlen(json));
+      ret = nyabula_eye_service_submit(NY_PLIGHT_EYE_SOURCE, json,
+                                       strlen(json));
       free(json);
     }
 
@@ -478,9 +482,9 @@ static int ny_plight_push(float dilation)
 static void ny_plight_tell_eyes(uint64_t now)
 {
   float dilation = g_plight.filter.dilation;
-  bool due =
-      !g_plight.pushed_valid || g_plight.push_now ||
-      ny_light_push_due(dilation, g_plight.pushed, now - g_plight.pushed_at);
+  bool due = !g_plight.pushed_valid || g_plight.push_now ||
+             ny_light_push_due(dilation, g_plight.pushed,
+                               now - g_plight.pushed_at);
 
 #ifdef CONFIG_NYABULA_CORE_EYE
   if (!due && now >= g_plight.verify_at)
@@ -576,20 +580,23 @@ static void ny_plight_decode(const cJSON *root)
 
   memset(&cal, 0, sizeof(cal));
   memset(number, 0, sizeof(number));
-  valid =
-      cJSON_IsNumber(schema) && schema->valueint == NY_PLIGHT_SCHEMA &&
-      cJSON_IsBool(enabled) && cJSON_IsBool(pinned) && polarity >= 0 &&
-      detected >= 0 &&
-      ny_plight_number(cJSON_GetObjectItemCaseSensitive(root, "gamma"),
-                       NY_LIGHT_GAMMA_MIN, NY_LIGHT_GAMMA_MAX, &number[0]) &&
-      ny_plight_number(cJSON_GetObjectItemCaseSensitive(root, "dayMean"), 0,
-                       NY_LIGHT_RAW_MAX, &number[1]) &&
-      ny_plight_number(cJSON_GetObjectItemCaseSensitive(root, "daySeconds"), 0,
-                       NY_LIGHT_EVIDENCE_CAP, &number[2]) &&
-      ny_plight_number(cJSON_GetObjectItemCaseSensitive(root, "nightMean"), 0,
-                       NY_LIGHT_RAW_MAX, &number[3]) &&
-      ny_plight_number(cJSON_GetObjectItemCaseSensitive(root, "nightSeconds"),
-                       0, NY_LIGHT_EVIDENCE_CAP, &number[4]);
+  valid = cJSON_IsNumber(schema) && schema->valueint == NY_PLIGHT_SCHEMA &&
+          cJSON_IsBool(enabled) && cJSON_IsBool(pinned) && polarity >= 0 &&
+          detected >= 0 &&
+          ny_plight_number(cJSON_GetObjectItemCaseSensitive(root, "gamma"),
+                           NY_LIGHT_GAMMA_MIN, NY_LIGHT_GAMMA_MAX,
+                           &number[0]) &&
+          ny_plight_number(cJSON_GetObjectItemCaseSensitive(root, "dayMean"),
+                           0, NY_LIGHT_RAW_MAX, &number[1]) &&
+          ny_plight_number(
+              cJSON_GetObjectItemCaseSensitive(root, "daySeconds"), 0,
+              NY_LIGHT_EVIDENCE_CAP, &number[2]) &&
+          ny_plight_number(
+              cJSON_GetObjectItemCaseSensitive(root, "nightMean"), 0,
+              NY_LIGHT_RAW_MAX, &number[3]) &&
+          ny_plight_number(
+              cJSON_GetObjectItemCaseSensitive(root, "nightSeconds"), 0,
+              NY_LIGHT_EVIDENCE_CAP, &number[4]);
 
   /* A range is stored once there is one. */
 
@@ -734,19 +741,19 @@ static void ny_plight_save(uint64_t now)
       root != NULL &&
       cJSON_AddNumberToObject(root, "schema", NY_PLIGHT_SCHEMA) != NULL &&
       cJSON_AddBoolToObject(root, "enabled", g_plight.enabled) != NULL &&
-      cJSON_AddStringToObject(root, "polarity",
-                              ny_plight_polarity_name(cal->polarity, false)) !=
-          NULL &&
-      cJSON_AddStringToObject(root, "detected",
-                              ny_plight_polarity_name(cal->detected, false)) !=
-          NULL &&
+      cJSON_AddStringToObject(
+          root, "polarity",
+          ny_plight_polarity_name(cal->polarity, false)) != NULL &&
+      cJSON_AddStringToObject(
+          root, "detected",
+          ny_plight_polarity_name(cal->detected, false)) != NULL &&
       cJSON_AddBoolToObject(root, "pinned", cal->pinned) != NULL &&
       cJSON_AddNumberToObject(root, "gamma", cal->gamma) != NULL &&
       cJSON_AddNumberToObject(root, "dayMean", cal->day_mean) != NULL &&
       cJSON_AddNumberToObject(root, "daySeconds", cal->day_seconds) != NULL &&
       cJSON_AddNumberToObject(root, "nightMean", cal->night_mean) != NULL &&
-      cJSON_AddNumberToObject(root, "nightSeconds", cal->night_seconds) !=
-          NULL;
+      cJSON_AddNumberToObject(root, "nightSeconds",
+                              cal->night_seconds) != NULL;
   if (valid && cal->ranged)
     {
       valid = cJSON_AddNumberToObject(root, "min", cal->min) != NULL &&
@@ -769,8 +776,8 @@ static void ny_plight_save(uint64_t now)
        */
 
       cJSON *other = NULL;
-      ret =
-          ny_product_store_read(NY_PLIGHT_DOMAIN, &other, &g_plight.revision);
+      ret = ny_product_store_read(NY_PLIGHT_DOMAIN, &other,
+                                  &g_plight.revision);
       cJSON_Delete(other);
       if (ret == 0)
         {
@@ -841,17 +848,18 @@ static int ny_plight_configure(const cJSON *data)
       (max != NULL && !ny_plight_number(max, 0, NY_LIGHT_RAW_MAX, &high)) ||
       (gamma != NULL && !ny_plight_number(gamma, NY_LIGHT_GAMMA_MIN,
                                           NY_LIGHT_GAMMA_MAX, &power)) ||
-      (offset != NULL && (!ny_plight_number(offset, NY_PLIGHT_OFFSET_MIN,
-                                            NY_PLIGHT_OFFSET_MAX, &minutes) ||
-                          floor(minutes) != minutes)))
+      (offset != NULL &&
+       (!ny_plight_number(offset, NY_PLIGHT_OFFSET_MIN, NY_PLIGHT_OFFSET_MAX,
+                          &minutes) ||
+        floor(minutes) != minutes)))
     {
       return -EINVAL;
     }
 
   if (min != NULL || max != NULL)
     {
-      if (pinned != NULL ||
-          ((min == NULL || max == NULL) && (forget || !filter->cal.ranged)) ||
+      if (pinned != NULL || ((min == NULL || max == NULL) &&
+                             (forget || !filter->cal.ranged)) ||
           high - low < NY_PLIGHT_PIN_SPAN)
         {
           return -EINVAL;
@@ -961,15 +969,15 @@ static cJSON *ny_plight_status(void)
                            round(filter->level * 1000.0) / 1000.0) &&
       ny_plight_add_number(root, "dilation", live,
                            round(filter->dilation * 1000.0) / 1000.0) &&
-      cJSON_AddStringToObject(root, "polarity",
-                              ny_plight_polarity_name(cal->polarity, false)) !=
-          NULL &&
+      cJSON_AddStringToObject(
+          root, "polarity",
+          ny_plight_polarity_name(cal->polarity, false)) != NULL &&
       cJSON_AddStringToObject(
           root, "resolved",
           ny_plight_polarity_name(ny_light_resolved(cal), false)) != NULL &&
-      cJSON_AddStringToObject(root, "detected",
-                              ny_plight_polarity_name(cal->detected, true)) !=
-          NULL &&
+      cJSON_AddStringToObject(
+          root, "detected",
+          ny_plight_polarity_name(cal->detected, true)) != NULL &&
       cJSON_AddBoolToObject(root, "pinned", cal->pinned) != NULL &&
       cJSON_AddNumberToObject(root, "gamma",
                               round(cal->gamma * 1000.0) / 1000.0) != NULL &&
@@ -991,9 +999,9 @@ static cJSON *ny_plight_status(void)
       ny_plight_add_number(evidence, "nightMean", cal->night_seconds > 0.0f,
                            round(cal->night_mean)) &&
       cJSON_AddBoolToObject(root, "settingsSaved", g_plight.saved) != NULL &&
-      (g_plight.error == 0
-           ? cJSON_AddNullToObject(root, "error")
-           : cJSON_AddStringToObject(root, "error", error)) != NULL;
+      (g_plight.error == 0 ? cJSON_AddNullToObject(root, "error")
+                           : cJSON_AddStringToObject(root, "error", error)) !=
+          NULL;
   if (!valid)
     {
       cJSON_Delete(root);
@@ -1142,9 +1150,9 @@ bool ny_product_light_describe(cJSON *root)
     {
       cJSON *light = cJSON_AddObjectToObject(root, "light");
       valid = light != NULL &&
-              cJSON_AddNumberToObject(light, "level",
-                                      round(g_plight.filter.level * 1000.0) /
-                                          1000.0) != NULL &&
+              cJSON_AddNumberToObject(
+                  light, "level",
+                  round(g_plight.filter.level * 1000.0) / 1000.0) != NULL &&
               cJSON_AddNumberToObject(
                   light, "dilation",
                   round(g_plight.filter.dilation * 1000.0) / 1000.0) != NULL;

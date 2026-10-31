@@ -43,10 +43,11 @@
 #include "generated/fonts/nyabula_eye_fonts.h"
 #include "generated/nyabula_eye_icons.h"
 #include "nyabula_eye_internal.h"
+#include "nyabula_eye_mirror.h"
 
-#define W 360
-#define H 360
-#define R 178.0f
+#define W                360
+#define H                360
+#define R                178.0f
 
 /* A version 6 symbol is 41 modules; with the quiet zone that is a little
  * over five pixels a module on this panel, which a phone still reads at
@@ -62,7 +63,7 @@
  * phone up to the device, and the tinted greys are dim on these panels.
  */
 
-#define SCENE_QR_INK     0xffffff
+#define SCENE_QR_INK         0xffffff
 #define CY               180.0f
 #define PI               3.14159265358979323846f
 #define FIBERS           48
@@ -261,7 +262,8 @@ static void text_center_at(struct nyabula_eye_renderer_s *r,
                            const struct eye_s *e, const lv_font_t *font,
                            const char *text, float center_x, float center_y,
                            uint32_t color, float opacity);
-static const lv_font_t *font_for_text(const lv_font_t *font, const char *text);
+static const lv_font_t *font_for_text(const lv_font_t *font,
+                                      const char *text);
 static void labels_flush(struct nyabula_eye_renderer_s *r);
 static float eye_globe_radius(void);
 static void clamp_to_eye_globe(float *x, float *y, float inset);
@@ -786,9 +788,9 @@ static const lv_font_t *font_for_text(const lv_font_t *font, const char *text)
            * the chain and always find something.
            */
 
-          complete =
-              codepoint < 0x20 ||
-              candidate->get_glyph_dsc(candidate, &descriptor, codepoint, 0);
+          complete = codepoint < 0x20 ||
+                     candidate->get_glyph_dsc(candidate, &descriptor,
+                                              codepoint, 0);
         }
 
       if (complete)
@@ -3347,10 +3349,10 @@ static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
 
       if (payload->title[0] != '\0')
         {
-          text_center(
-              r, e,
-              scene_font(r, FONT_FAMILY_TITLE, 39, &nyabula_font_title_42),
-              payload->title, -R * 0.13f, SCENE_QR_INK, opacity);
+          text_center(r, e,
+                      scene_font(r, FONT_FAMILY_TITLE, 39,
+                                 &nyabula_font_title_42),
+                      payload->title, -R * 0.13f, SCENE_QR_INK, opacity);
         }
 
       /* The detail line is for an address, so it is set in the Latin face:
@@ -3360,10 +3362,11 @@ static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
 
       if (payload->detail[0] != '\0')
         {
-          text_center(
-              r, e,
-              scene_font(r, FONT_FAMILY_ENGLISH, 18, &nyabula_font_english_18),
-              payload->detail, R * 0.16f, SCENE_QR_INK, opacity * 0.86f);
+          text_center(r, e,
+                      scene_font(r, FONT_FAMILY_ENGLISH, 18,
+                                 &nyabula_font_english_18),
+                      payload->detail, R * 0.16f, SCENE_QR_INK,
+                      opacity * 0.86f);
         }
 
       return;
@@ -3400,7 +3403,8 @@ static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
   if (label[0] != '\0')
     {
       text_center(r, e,
-                  scene_font(r, FONT_FAMILY_TITLE, 19, &nyabula_font_title_20),
+                  scene_font(r, FONT_FAMILY_TITLE, 19,
+                             &nyabula_font_title_20),
                   label, shift - plate - R * 0.12f, SCENE_QR_INK, opacity);
     }
 
@@ -5201,6 +5205,13 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
     }
 
   debug_dump_poll(r, id);
+  if (nyabula_eye_mirror_wants(id))
+    {
+      /* A viewer just attached and has nothing to show for this eye. */
+
+      r->last_frame_valid[id] = false;
+    }
+
   if (frame_pixels_unchanged(r, frame, id))
     {
       r->reused_eyes++;
@@ -5333,6 +5344,8 @@ void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *r, int id,
   graphics_trace_endex("raster");
   r->raster_total += lv_tick_elaps(stage_start);
   debug_dump(r->draw, id);
+  nyabula_eye_mirror_publish(id, r->draw->data, r->draw->header.w,
+                             r->draw->header.h, r->draw->header.stride);
   stage_start = lv_tick_get();
   lv_obj_invalidate(r->canvas[id]);
   r->flush_total += lv_tick_elaps(stage_start);

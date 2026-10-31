@@ -151,8 +151,9 @@ public:
 
   static std::unique_ptr<MeloFrontend> Load(const std::string &dir,
                                             std::string *error);
-  static std::unique_ptr<MeloFrontend>
-  Load(const std::string &dir, std::string *error, const Options &options);
+  static std::unique_ptr<MeloFrontend> Load(const std::string &dir,
+                                            std::string *error,
+                                            const Options &options);
 
   /* max_frames_hint is the latent frame capacity of the synthesis bucket
    * (512 for the masked vocoder); 0 disables the budget.  Thread safe.

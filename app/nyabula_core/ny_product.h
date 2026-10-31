@@ -125,9 +125,7 @@ void ny_product_media_shutdown(void);
 
 #define NY_PRODUCT_MEDIA_ALERT_OFF  0 /* Silence an alert that is sounding */
 #define NY_PRODUCT_MEDIA_ALERT_ONCE 1 /* One chime: a countdown ran out */
-#define NY_PRODUCT_MEDIA_ALERT_LOOP       \
-  2 /* Chime until switched off: an alarm \
-     */
+#define NY_PRODUCT_MEDIA_ALERT_LOOP 2 /* Chime until switched off: an alarm */
 
 void ny_product_media_alert(int mode);
 void ny_product_media_sleep(void);
@@ -152,12 +150,6 @@ int ny_product_audio_request(const struct ny_product_caller_s *caller,
                              const char *topic, const cJSON *data,
                              cJSON **result);
 int ny_product_audio_tick(void);
-#endif
-#ifdef CONFIG_NYABULA_CORE_BT
-/* The rest of the Bluetooth interface is in ny_product_bt.h. */
-int ny_product_bt_request(const struct ny_product_caller_s *caller,
-                          const char *topic, const cJSON *data,
-                          cJSON **result);
 #endif
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
 /* Implemented in ny_compute.c; the rest of that interface is ny_compute.h. */

@@ -20,18 +20,18 @@
 
 #define COUNT(list) (sizeof(list) / sizeof((list)[0]))
 
-#define CHECK(condition, ...)                             \
-  do                                                      \
-    {                                                     \
-      g_checks++;                                         \
-      if (!(condition))                                   \
-        {                                                 \
-          g_failures++;                                   \
-          fprintf(stderr, "%s:%d: ", __FILE__, __LINE__); \
-          fprintf(stderr, __VA_ARGS__);                   \
-          fprintf(stderr, "\n");                          \
-        }                                                 \
-    }                                                     \
+#define CHECK(condition, ...)                                   \
+  do                                                            \
+    {                                                           \
+      g_checks++;                                               \
+      if (!(condition))                                         \
+        {                                                       \
+          g_failures++;                                         \
+          fprintf(stderr, "%s:%d: ", __FILE__, __LINE__);       \
+          fprintf(stderr, __VA_ARGS__);                         \
+          fprintf(stderr, "\n");                                \
+        }                                                       \
+    }                                                           \
   while (0)
 
 static unsigned long g_checks;
@@ -69,8 +69,8 @@ static void test_formats(void)
       if (back[index] != all[index] || floats[index] < -1.0f ||
           floats[index] >= 1.0f)
         {
-          CHECK(false, "s16 %d -> %f -> %d", all[index], (double)floats[index],
-                back[index]);
+          CHECK(false, "s16 %d -> %f -> %d", all[index],
+                (double)floats[index], back[index]);
           break;
         }
     }
@@ -93,8 +93,7 @@ static void test_formats(void)
   for (index = 0; index < 6; index++)
     {
       CHECK(stereo[2 * index] == clipped[index] &&
-                stereo[2 * index + 1] == clipped[index],
-            "stereo %d", index);
+            stereo[2 * index + 1] == clipped[index], "stereo %d", index);
     }
 
   /* In place: the widened copy overlaps its own source. */
@@ -129,7 +128,7 @@ static void test_formats(void)
   ny_voice_wav_header(header, 44100, 2, 176400);
   CHECK(ny_voice_wav_parse(header, sizeof(header), &rate, &channels, &offset,
                            &bytes) == 0 &&
-            rate == 44100 && channels == 2 && offset == 44 && bytes == 176400,
+        rate == 44100 && channels == 2 && offset == 44 && bytes == 176400,
         "canonical header");
   CHECK(header[28] == 0x10 && header[29] == 0xb1 && header[30] == 0x02,
         "byte rate");
@@ -137,34 +136,26 @@ static void test_formats(void)
 
   ny_voice_wav_header(header, 16000, 1, 0);
   CHECK(ny_voice_wav_parse(header, sizeof(header), &rate, &channels, &offset,
-                           &bytes) == 0 &&
-            rate == 16000 && channels == 1 && bytes == 0xffffffffU - 36U,
-        "streaming header");
+                           &bytes) == 0 && rate == 16000 && channels == 1 &&
+        bytes == 0xffffffffU - 36U, "streaming header");
 
   /* fmt, an odd-sized LIST chunk, then data. */
 
   ny_voice_wav_header(header, 16000, 1, 3200);
   memcpy(listed, header, 36);
-  memcpy(listed + 36,
-         "LIST\x05\x00\x00\x00"
-         "abcde\x00",
-         14);
+  memcpy(listed + 36, "LIST\x05\x00\x00\x00" "abcde\x00", 14);
   memcpy(listed + 50, header + 36, 8);
   CHECK(ny_voice_wav_parse(listed, 58, &rate, &channels, &offset, &bytes) ==
-                0 &&
-            offset == 58 && bytes == 3200,
-        "header with a LIST chunk");
+        0 && offset == 58 && bytes == 3200, "header with a LIST chunk");
   CHECK(ny_voice_wav_parse(listed, 40, &rate, &channels, &offset, &bytes) < 0,
         "truncated before data");
   header[20] = 3; /* IEEE float */
   CHECK(ny_voice_wav_parse(header, sizeof(header), &rate, &channels, &offset,
-                           &bytes) < 0,
-        "float wav refused");
+                           &bytes) < 0, "float wav refused");
   header[20] = 1;
   header[34] = 24;
   CHECK(ny_voice_wav_parse(header, sizeof(header), &rate, &channels, &offset,
-                           &bytes) < 0,
-        "24 bit wav refused");
+                           &bytes) < 0, "24 bit wav refused");
   memset(listed + 40, 0xff, 4); /* A chunk length that would wrap. */
   CHECK(ny_voice_wav_parse(listed, 58, &rate, &channels, &offset, &bytes) < 0,
         "absurd chunk length");
@@ -238,8 +229,7 @@ static void test_ring(void)
   cursor = written - 300;
   got = ny_voice_ring_read(&ring, &cursor, out, 100, &gap);
   CHECK(got == 100 && !gap && out[0] == sample_at(written - 300) &&
-            out[99] == sample_at(written - 201),
-        "second reader");
+        out[99] == sample_at(written - 201), "second reader");
   CHECK(cursor == written - 200, "second reader cursor");
 
   /* Older than the ring: moved to the oldest sample, and told. */
@@ -268,9 +258,8 @@ static void test_ring(void)
   cursor = 0;
   got = ny_voice_ring_read(&ring, &cursor, out, COUNT(storage), &gap);
   CHECK(ring.total == written && got == COUNT(storage) && gap &&
-            out[0] == sample_at(written - COUNT(storage)) &&
-            out[999] == sample_at(written - 1),
-        "oversized write");
+        out[0] == sample_at(written - COUNT(storage)) &&
+        out[999] == sample_at(written - 1), "oversized write");
 
   /* The read that straddles the physical end of the storage. */
 
@@ -298,15 +287,13 @@ static void test_attach(void)
   attach.trigger_sample = 133000;
   attach.stream_next = 136000;
   CHECK(ny_voice_attach_sample(&attach, &trigger, &clamped) == 127000 &&
-            !trigger && !clamped,
-        "trusted offsets");
+        !trigger && !clamped, "trusted offsets");
 
   /* No offsets: half a second before the trigger. */
 
   attach.has_offsets = false;
   CHECK(ny_voice_attach_sample(&attach, &trigger, &clamped) == 125000 &&
-            trigger && !clamped,
-        "trigger fallback");
+        trigger && !clamped, "trigger fallback");
 
   /* Offsets that contradict each other are not used even if flagged. */
 
@@ -334,8 +321,7 @@ static void test_attach(void)
   attach.trigger_sample = 133000;
   attach.stream_next = 400000;
   CHECK(ny_voice_attach_sample(&attach, &trigger, &clamped) == 248000 &&
-            clamped && !trigger,
-        "older than the compute ring");
+        clamped && !trigger, "older than the compute ring");
 
   /* Capture paused (the robot spoke): the ring restarts at stream_base. */
 
@@ -358,9 +344,8 @@ static void test_attach(void)
   attach.end_sample = 5000020000ULL;
   attach.trigger_sample = 5000026000ULL;
   attach.stream_next = 5000030000ULL;
-  CHECK(ny_voice_attach_sample(&attach, &trigger, &clamped) == 5000020000ULL &&
-            !clamped && !trigger,
-        "64 bit positions");
+  CHECK(ny_voice_attach_sample(&attach, &trigger, &clamped) ==
+        5000020000ULL && !clamped && !trigger, "64 bit positions");
 }
 
 /****************************************************************************
@@ -538,10 +523,10 @@ static void test_resample(void)
   ny_voice_resample_init(&blocks);
   pieces_count = ny_voice_resample(&blocks, in, 10000, pieces, 100);
   CHECK(pieces_count == 100 && position > 3600, "capacity respected");
-  pieces_count =
-      ny_voice_resample(&blocks, in + 10000, 10000, pieces, COUNT(pieces));
-  CHECK(pieces_count > 3600 && memcmp(pieces, whole + position,
-                                      pieces_count * sizeof(float)) == 0,
+  pieces_count = ny_voice_resample(&blocks, in + 10000, 10000, pieces,
+                                   COUNT(pieces));
+  CHECK(pieces_count > 3600 &&
+        memcmp(pieces, whole + position, pieces_count * sizeof(float)) == 0,
         "stream stays aligned after an overflow");
 }
 
@@ -555,11 +540,8 @@ static bool utf8_valid(const char *text)
 
   while (*bytes != 0)
     {
-      int more = *bytes < 0x80    ? 0
-                 : *bytes >= 0xf0 ? 3
-                 : *bytes >= 0xe0 ? 2
-                 : *bytes >= 0xc2 ? 1
-                                  : -1;
+      int more = *bytes < 0x80 ? 0 : *bytes >= 0xf0 ? 3 : *bytes >= 0xe0 ? 2
+                 : *bytes >= 0xc2 ? 1 : -1;
 
       if (more < 0)
         {
@@ -591,7 +573,7 @@ static void expect_pieces(const char *text, size_t size,
       size_t length = ny_voice_sentence_next(text, &position, piece, size);
 
       CHECK(length == strlen(expected[index]) &&
-                strcmp(piece, expected[index]) == 0,
+            strcmp(piece, expected[index]) == 0,
             "piece %zu of \"%s\": got \"%s\", want \"%s\"", index, text,
             length != 0 ? piece : "", expected[index]);
     }
@@ -602,23 +584,35 @@ static void expect_pieces(const char *text, size_t size,
 
 static void test_sentences(void)
 {
-  static const char *const plain[] = { "你好，我是星喵。",
-                                       "忙了一天，辛苦啦。",
-                                       "要不要休息一会儿？" };
+  static const char *const plain[] =
+  {
+    "你好，我是星喵。", "忙了一天，辛苦啦。", "要不要休息一会儿？"
+  };
 
-  static const char *const mixed[] = { "Room is 23.5 degrees.", "Pi is 3.14!",
-                                       "OK?!", "好的……", "再见" };
+  static const char *const mixed[] =
+  {
+    "Room is 23.5 degrees.", "Pi is 3.14!", "OK?!", "好的……", "再见"
+  };
 
-  static const char *const markdown[] = { "今日天气", "晴，最高 26 度。",
-                                          "记得带伞" };
+  static const char *const markdown[] =
+  {
+    "今日天气", "晴，最高 26 度。", "记得带伞"
+  };
 
-  static const char *const clauses[] = { "第一段比较长的话，",
-                                         "第二段也不短的话，", "第三段。" };
+  static const char *const clauses[] =
+  {
+    "第一段比较长的话，", "第二段也不短的话，", "第三段。"
+  };
 
-  static const char *const uncut[] = { "一二三四五六七八九",
-                                       "十一二三四五六七八", "九十。" };
+  static const char *const uncut[] =
+  {
+    "一二三四五六七八九", "十一二三四五六七八", "九十。"
+  };
 
-  static const char *const dirty[] = { "坏字节被丢掉。", "后面照常。" };
+  static const char *const dirty[] =
+  {
+    "坏字节被丢掉。", "后面照常。"
+  };
 
   char piece[64];
   char noise[300];
@@ -654,10 +648,11 @@ static void test_sentences(void)
 
   for (round = 0; round < 3000; round++)
     {
-      static const char *const alphabet[] = { "好", "。",   "，",   "a",
-                                              " ",  ".",    "5",    "\n",
-                                              "*",  "\xff", "\xe4", "！",
-                                              "😀",  "\x01", "?",    "、" };
+      static const char *const alphabet[] =
+      {
+        "好", "。", "，", "a", " ", ".", "5", "\n", "*", "\xff", "\xe4",
+        "！", "😀", "\x01", "?", "、"
+      };
 
       size_t length = 0;
       size_t size;
@@ -681,7 +676,7 @@ static void test_sentences(void)
       seed = seed * 1664525U + 1013904223U;
       size = 8 + (seed >> 16) % 56;
       position = 0;
-      for (;;)
+      for (; ; )
         {
           size_t got = ny_voice_sentence_next(noise, &position, piece, size);
 
@@ -694,8 +689,8 @@ static void test_sentences(void)
           if (got >= size || piece[got] != '\0' || !utf8_valid(piece) ||
               position > length || pieces > 400)
             {
-              CHECK(false, "fuzz round %d: piece %zu bytes of %zu", round, got,
-                    size);
+              CHECK(false, "fuzz round %d: piece %zu bytes of %zu", round,
+                    got, size);
               break;
             }
         }
@@ -712,7 +707,7 @@ static void test_sentences(void)
 struct step_s
 {
   enum ny_voice_event_e type;
-  uint32_t after_ms; /* Time added before the event. */
+  uint32_t after_ms;         /* Time added before the event. */
   bool ok;
   bool empty;
   bool heard;
@@ -790,25 +785,20 @@ static void run_script(const char *name, const struct step_s *steps,
 
       got[result.count] = '\0';
       CHECK(sm.state == steps[index].state &&
-                strcmp(got, steps[index].actions) == 0,
+            strcmp(got, steps[index].actions) == 0,
             "%s step %zu: state %s actions \"%s\", want %s \"%s\"", name,
             index, ny_voice_sm_state_name(sm.state), got,
-            ny_voice_sm_state_name(steps[index].state), steps[index].actions);
+            ny_voice_sm_state_name(steps[index].state),
+            steps[index].actions);
     }
 }
 
-#define EV(type, after, state, actions)                \
-  {                                                    \
-    type, after, true, false, false, 0, state, actions \
-  }
-#define TICK(after, heard, silence, state, actions)                      \
-  {                                                                      \
-    NY_VOICE_EV_TICK, after, true, false, heard, silence, state, actions \
-  }
+#define EV(type, after, state, actions) \
+  { type, after, true, false, false, 0, state, actions }
+#define TICK(after, heard, silence, state, actions) \
+  { NY_VOICE_EV_TICK, after, true, false, heard, silence, state, actions }
 #define DONE(type, after, ok, empty, state, actions) \
-  {                                                  \
-    type, after, ok, empty, false, 0, state, actions \
-  }
+  { type, after, ok, empty, false, 0, state, actions }
 
 static void test_machine(void)
 {
@@ -818,38 +808,49 @@ static void test_machine(void)
    * 0..3 eyes restore / curious / processing / happy.
    */
 
-  static const struct step_s turn[] = {
+  static const struct step_s turn[] =
+  {
     EV(NY_VOICE_EV_WAKE, 0, NY_VOICE_OFF, ""),
     EV(NY_VOICE_EV_ENABLE, 0, NY_VOICE_IDLE, ""),
     EV(NY_VOICE_EV_WAKE, 100, NY_VOICE_LISTENING, "1A"),
     EV(NY_VOICE_EV_ASR_STARTED, 50, NY_VOICE_LISTENING, ""),
     TICK(1000, true, 0, NY_VOICE_LISTENING, ""),
     TICK(1000, true, 900, NY_VOICE_LISTENING, ""),
-    TICK(300, true, 1200, NY_VOICE_LISTENING, "E"),
-    TICK(100, true, 1300, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 200, true, false, NY_VOICE_THINKING, "2G"),
+    TICK(300, true, 1200, NY_VOICE_LISTENING, ""),
+    TICK(399, true, 1599, NY_VOICE_LISTENING, ""),
+    TICK(1, true, 1600, NY_VOICE_LISTENING, "E"),
+    TICK(100, true, 1700, NY_VOICE_LISTENING, ""),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 200, true, false, NY_VOICE_THINKING,
+         "2G"),
     TICK(20000, false, 0, NY_VOICE_THINKING, ""),
-    DONE(NY_VOICE_EV_AGENT_REPLY, 5000, true, false, NY_VOICE_SPEAKING, "3R"),
+    DONE(NY_VOICE_EV_AGENT_REPLY, 5000, true, false, NY_VOICE_SPEAKING,
+         "3R"),
     DONE(NY_VOICE_EV_SPEAK_DONE, 6000, true, false, NY_VOICE_IDLE, "0"),
   };
 
-  static const struct step_s endpoint[] = {
+  static const struct step_s endpoint[] =
+  {
     EV(NY_VOICE_EV_ENABLE, 0, NY_VOICE_IDLE, ""),
     EV(NY_VOICE_EV_LISTEN, 0, NY_VOICE_LISTENING, "1a"),
 
-    /* The decoder's opinion arrives before the request is even confirmed:
-     * END waits for the request, and is sent once.
+    /* An empty decoder endpoint does not end the command. Once text
+     * exists, the endpoint ends it exactly once.
      */
 
     EV(NY_VOICE_EV_ASR_ENDPOINT, 10, NY_VOICE_LISTENING, ""),
-    EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, "E"),
+    EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
     EV(NY_VOICE_EV_ASR_ENDPOINT, 10, NY_VOICE_LISTENING, ""),
+    { NY_VOICE_EV_ASR_ENDPOINT, 10, true, false, true, 0,
+      NY_VOICE_LISTENING, "E" },
+    { NY_VOICE_EV_ASR_ENDPOINT, 10, true, false, true, 0,
+      NY_VOICE_LISTENING, "" },
     TICK(100, true, 5000, NY_VOICE_LISTENING, ""),
     DONE(NY_VOICE_EV_ASR_FINISHED, 100, true, true, NY_VOICE_SPEAKING, "N"),
     DONE(NY_VOICE_EV_SPEAK_DONE, 900, true, false, NY_VOICE_IDLE, "0"),
   };
 
-  static const struct step_s limits[] = {
+  static const struct step_s limits[] =
+  {
     EV(NY_VOICE_EV_ENABLE, 0, NY_VOICE_IDLE, ""),
 
     /* Nothing is said at all. */
@@ -895,18 +896,21 @@ static void test_machine(void)
 
     EV(NY_VOICE_EV_LISTEN, 0, NY_VOICE_LISTENING, "1a"),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
     TICK(119999, false, 0, NY_VOICE_THINKING, ""),
     TICK(1, false, 0, NY_VOICE_SPEAKING, "ge"),
     TICK(179999, false, 0, NY_VOICE_SPEAKING, ""),
     TICK(1, false, 0, NY_VOICE_IDLE, "x0"),
   };
 
-  static const struct step_s approval[] = {
+  static const struct step_s approval[] =
+  {
     EV(NY_VOICE_EV_ENABLE, 0, NY_VOICE_IDLE, ""),
     EV(NY_VOICE_EV_WAKE, 0, NY_VOICE_LISTENING, "1A"),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
     EV(NY_VOICE_EV_AGENT_PENDING, 2000, NY_VOICE_SPEAKING, "3P"),
     DONE(NY_VOICE_EV_SPEAK_DONE, 4000, true, false, NY_VOICE_IDLE, "0"),
 
@@ -926,7 +930,8 @@ static void test_machine(void)
 
     EV(NY_VOICE_EV_WAKE, 0, NY_VOICE_LISTENING, "1A"),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
     EV(NY_VOICE_EV_AGENT_PENDING, 2000, NY_VOICE_SPEAKING, "3P"),
     DONE(NY_VOICE_EV_SPEAK_DONE, 4000, true, false, NY_VOICE_IDLE, "0"),
     TICK(595999, false, 0, NY_VOICE_IDLE, ""),
@@ -939,12 +944,14 @@ static void test_machine(void)
 
     EV(NY_VOICE_EV_WAKE, 0, NY_VOICE_LISTENING, "1A"),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
     EV(NY_VOICE_EV_AGENT_PENDING, 2000, NY_VOICE_SPEAKING, "3P"),
     DONE(NY_VOICE_EV_SPEAK_DONE, 4000, true, false, NY_VOICE_IDLE, "0"),
     EV(NY_VOICE_EV_WAKE, 1000, NY_VOICE_LISTENING, "f1A"),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
     EV(NY_VOICE_EV_AGENT_BUSY, 100, NY_VOICE_SPEAKING, "B"),
     DONE(NY_VOICE_EV_SPEAK_DONE, 900, true, false, NY_VOICE_IDLE, "0"),
 
@@ -952,14 +959,16 @@ static void test_machine(void)
 
     EV(NY_VOICE_EV_WAKE, 0, NY_VOICE_LISTENING, "1A"),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
     EV(NY_VOICE_EV_AGENT_PENDING, 2000, NY_VOICE_SPEAKING, "3P"),
     DONE(NY_VOICE_EV_AGENT_REPLY, 500, true, false, NY_VOICE_SPEAKING, ""),
     DONE(NY_VOICE_EV_SPEAK_DONE, 4000, true, false, NY_VOICE_IDLE, "0"),
     TICK(700000, false, 0, NY_VOICE_IDLE, ""),
   };
 
-  static const struct step_s barge[] = {
+  static const struct step_s barge[] =
+  {
     EV(NY_VOICE_EV_ENABLE, 0, NY_VOICE_IDLE, ""),
     EV(NY_VOICE_EV_SAY, 0, NY_VOICE_SPEAKING, "3T"),
     EV(NY_VOICE_EV_SAY, 10, NY_VOICE_SPEAKING, ""),
@@ -973,7 +982,8 @@ static void test_machine(void)
     DONE(NY_VOICE_EV_SPEAK_DONE, 50, false, false, NY_VOICE_LISTENING, ""),
     EV(NY_VOICE_EV_WAKE, 10, NY_VOICE_LISTENING, ""),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
 
     /* Asking again instead of waiting for the answer. */
 
@@ -985,7 +995,8 @@ static void test_machine(void)
 
     EV(NY_VOICE_EV_LISTEN, 0, NY_VOICE_LISTENING, "1a"),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
     EV(NY_VOICE_EV_CANCEL, 500, NY_VOICE_IDLE, "g0"),
     EV(NY_VOICE_EV_SAY, 0, NY_VOICE_SPEAKING, "3T"),
     EV(NY_VOICE_EV_CANCEL, 500, NY_VOICE_IDLE, "x0"),
@@ -994,7 +1005,8 @@ static void test_machine(void)
 
     EV(NY_VOICE_EV_WAKE, 0, NY_VOICE_LISTENING, "1A"),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
     EV(NY_VOICE_EV_AGENT_PENDING, 2000, NY_VOICE_SPEAKING, "3P"),
     EV(NY_VOICE_EV_DISABLE, 100, NY_VOICE_OFF, "xf0"),
     EV(NY_VOICE_EV_DISABLE, 100, NY_VOICE_OFF, ""),
@@ -1004,7 +1016,8 @@ static void test_machine(void)
     EV(NY_VOICE_EV_DISABLE, 100, NY_VOICE_OFF, ""),
   };
 
-  static const struct step_s restart[] = {
+  static const struct step_s restart[] =
+  {
     EV(NY_VOICE_EV_ENABLE, 0, NY_VOICE_IDLE, ""),
     EV(NY_VOICE_EV_LINK_LOST, 10, NY_VOICE_IDLE, ""),
 
@@ -1021,9 +1034,11 @@ static void test_machine(void)
 
     EV(NY_VOICE_EV_WAKE, 0, NY_VOICE_LISTENING, "1A"),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
     EV(NY_VOICE_EV_LINK_LOST, 1000, NY_VOICE_THINKING, ""),
-    DONE(NY_VOICE_EV_AGENT_REPLY, 1000, false, false, NY_VOICE_SPEAKING, "e"),
+    DONE(NY_VOICE_EV_AGENT_REPLY, 1000, false, false, NY_VOICE_SPEAKING,
+         "e"),
     DONE(NY_VOICE_EV_SPEAK_DONE, 900, true, false, NY_VOICE_IDLE, "0"),
 
     /* ... and while the reply is spoken: the window in the shared arena is
@@ -1038,12 +1053,14 @@ static void test_machine(void)
 
     EV(NY_VOICE_EV_LISTEN, 0, NY_VOICE_LISTENING, "1a"),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
     DONE(NY_VOICE_EV_AGENT_REPLY, 1000, true, true, NY_VOICE_SPEAKING, "e"),
     DONE(NY_VOICE_EV_SPEAK_DONE, 900, true, false, NY_VOICE_IDLE, "0"),
     EV(NY_VOICE_EV_LISTEN, 0, NY_VOICE_LISTENING, "1a"),
     EV(NY_VOICE_EV_ASR_STARTED, 10, NY_VOICE_LISTENING, ""),
-    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING, "2G"),
+    DONE(NY_VOICE_EV_ASR_FINISHED, 3000, true, false, NY_VOICE_THINKING,
+         "2G"),
     EV(NY_VOICE_EV_AGENT_FAILED, 10, NY_VOICE_SPEAKING, "e"),
   };
 

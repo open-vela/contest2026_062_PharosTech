@@ -1,0 +1,448 @@
+{
+  "schema_version": "1.0",
+  "team_id": "contest2026_062_PharosTech",
+  "github_login": "BeaconCat",
+  "generator": "nyabula-merged-exports@2026-09-20",
+  "updated_at": "2026-09-20T10:24:43.814220+00:00",
+  "sessions": [
+    {
+      "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "tool": "codex",
+      "started_at": "2026-07-29T11:08:41.418Z",
+      "last_event_at": "2026-09-16T03:03:13.772Z",
+      "event_count": 2785,
+      "file_path": "logs/BeaconCat/2026-07-29/codex__019fad8f-e5af-7383-970c-0a7699f47cde.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "source_integrity": {
+        "main_sha256": "58437453f65af6c7d296afd48ddb044b8fe151bf61d8d91c393edbc7efc107d4",
+        "main_size": 24054380,
+        "captured_at": "2026-09-20T09:46:40.930785+00:00",
+        "fragments": [
+          {
+            "file": "rollout-2026-07-29T19-08-36-019fad8f-e5af-7383-970c-0a7699f47cde.jsonl",
+            "sha256": "9d89d72c0ed037494a08d60f6f2b33c01c06c1fe0c0cbd8dd54e96ff63dd3f34",
+            "bytes": 135052869
+          },
+          {
+            "file": "rollout-2026-09-05T21-44-59-019fad8f-e5af-7383-970c-0a7699f47cde_01a071d0-b8ae-7262-bc55-b1afe5d3b6d8.jsonl",
+            "sha256": "750555003a20e8a6067615299d0f4e7a489ad1c1151e5dff304f387bac269b48",
+            "bytes": 309676
+          },
+          {
+            "file": "rollout-2026-09-05T21-53-10-019fad8f-e5af-7383-970c-0a7699f47cde_01a071d8-38fe-7ea1-a178-346ef9ac5b00.jsonl",
+            "sha256": "570be349c565bbcce3229ceef7cb02b026201adba46845031fa8b2ef7d6dcd1f",
+            "bytes": 9242713
+          },
+          {
+            "file": "rollout-2026-09-06T00-44-29-019fad8f-e5af-7383-970c-0a7699f47cde_01a07275-0f63-7363-ac50-175d3accd20d.jsonl",
+            "sha256": "cfe2c38b3ac76462a8a5f1c5b03136545c34cb64685591a01a3ac08c35e4f59f",
+            "bytes": 1355005
+          },
+          {
+            "file": "rollout-2026-09-06T13-25-11-019fad8f-e5af-7383-970c-0a7699f47cde_01a0752d-8275-7033-9c7e-c5ac4aba49d6.jsonl",
+            "sha256": "3ad784200755e5afa099a5678229f0ad396eb3cefca05049576a7e282cd63edf",
+            "bytes": 12082640
+          },
+          {
+            "file": "rollout-2026-09-06T23-46-07-019fad8f-e5af-7383-970c-0a7699f47cde_01a07765-fc56-7743-b352-85c9edb5532a.jsonl",
+            "sha256": "8b188c0c0bbdafaa8ef2f95fd6d8e6a39b51ce794783f47554032a12fcea6211",
+            "bytes": 16949706
+          },
+          {
+            "file": "rollout-2026-09-08T14-16-32-019fad8f-e5af-7383-970c-0a7699f47cde_01a07fa9-3d77-7921-b5cf-6acf3e0c7175.jsonl",
+            "sha256": "0771c32b585b24b9e9d8c9216b2dcfd83cb5d7d7037e00bf247e2baa6954779f",
+            "bytes": 22031167
+          },
+          {
+            "file": "rollout-2026-09-09T23-31-32-019fad8f-e5af-7383-970c-0a7699f47cde_01a086cb-b726-7e93-a89d-4a1e4e3d0fdc.jsonl",
+            "sha256": "58437453f65af6c7d296afd48ddb044b8fe151bf61d8d91c393edbc7efc107d4",
+            "bytes": 24054380
+          }
+        ]
+      },
+      "display_title": "Nyabula 总研发空间",
+      "redacted_count_total": 7,
+      "source_format": "codex-rollout-jsonl",
+      "explicit_session_selection": true,
+      "data_completeness_warning": "PR52 text-only parser; tools/non-text are separate supplements; system/developer/reasoning omitted. collection_mode spelling is inherited from PR52.",
+      "exact_cross_fragment_duplicates": 0,
+      "source_generator": "codex-pr52-explicit-selection@1f4d1b1d6992",
+      "source_export_sha256": "2ff3da312e2426848835a208433c3c814fe9a15d3c8bedb12275fea4fa8747ce",
+      "publication_export_sha256": "150f8496c67f6f5c38b07a968a22bdd99781544bdc0532acd6709b1f93efb3f3",
+      "publication_redaction": {
+        "engine": "official snapshot_core.redact_value",
+        "collector_commit": "1f4d1b1d6992f0fcd8201e7808a773482e6ac02c",
+        "policy": "VNC and wireless credentials; literal values kept out of the repository",
+        "additional_substitutions": 7,
+        "changed_event_count": 7
+      }
+    },
+    {
+      "session_id": "01a00f21-7931-7452-b86d-03a20c83cf3a",
+      "tool": "codex",
+      "started_at": "2026-08-17T09:50:48.514Z",
+      "last_event_at": "2026-08-20T16:16:03.879Z",
+      "event_count": 2922,
+      "file_path": "logs/BeaconCat/2026-08-17/codex__01a00f21-7931-7452-b86d-03a20c83cf3a.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "source_integrity": {
+        "main_sha256": "36d693afb047ddc341c41e12d7d2378cc6bad8ac00d901a293412ab8e73f03fd",
+        "main_size": 208478435,
+        "captured_at": "2026-09-20T09:46:53.837371+00:00",
+        "fragments": [
+          {
+            "file": "rollout-2026-08-17T17-50-47-01a00f21-7931-7452-b86d-03a20c83cf3a.jsonl",
+            "sha256": "36d693afb047ddc341c41e12d7d2378cc6bad8ac00d901a293412ab8e73f03fd",
+            "bytes": 208478435
+          }
+        ]
+      },
+      "display_title": "Nyabula 硬件坠机者",
+      "redacted_count_total": 40,
+      "source_format": "codex-rollout-jsonl",
+      "explicit_session_selection": true,
+      "data_completeness_warning": "PR52 text-only parser; tools/non-text are separate supplements; system/developer/reasoning omitted. collection_mode spelling is inherited from PR52.",
+      "exact_cross_fragment_duplicates": 0,
+      "source_generator": "codex-pr52-explicit-selection@1f4d1b1d6992",
+      "source_export_sha256": "79c5646133fcd9a40745d0292aa6542fc80f45b78db169edc97af50d4f276e4d",
+      "publication_export_sha256": "9ca3da28fe493458c41bef5d930f6f09ad75d276186b52bb9d1a95dbd08f9028",
+      "publication_redaction": {
+        "engine": "official snapshot_core.redact_value",
+        "collector_commit": "1f4d1b1d6992f0fcd8201e7808a773482e6ac02c",
+        "policy": "VNC and wireless credentials; literal values kept out of the repository",
+        "additional_substitutions": 40,
+        "changed_event_count": 31
+      }
+    },
+    {
+      "session_id": "01a015b7-117e-70e3-8e7c-9f316d7ea5d6",
+      "tool": "codex",
+      "started_at": "2026-08-18T16:33:55.404Z",
+      "last_event_at": "2026-08-26T14:50:29.861Z",
+      "event_count": 130,
+      "file_path": "logs/BeaconCat/2026-08-18/codex__01a015b7-117e-70e3-8e7c-9f316d7ea5d6.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "source_integrity": {
+        "main_sha256": "9340ccccf8abfc9798b1f6dc5fb11442e7ddccf2f707fd3e1c10ac7e5b2afed0",
+        "main_size": 7112904,
+        "captured_at": "2026-09-20T09:47:03.528342+00:00",
+        "fragments": [
+          {
+            "file": "rollout-2026-08-19T00-31-54-01a015b7-117e-70e3-8e7c-9f316d7ea5d6.jsonl",
+            "sha256": "9340ccccf8abfc9798b1f6dc5fb11442e7ddccf2f707fd3e1c10ac7e5b2afed0",
+            "bytes": 7112904
+          }
+        ]
+      },
+      "display_title": "Nyabula 喵卡贝拉",
+      "redacted_count_total": 0,
+      "source_format": "codex-rollout-jsonl",
+      "explicit_session_selection": true,
+      "data_completeness_warning": "PR52 text-only parser; tools/non-text are separate supplements; system/developer/reasoning omitted. collection_mode spelling is inherited from PR52.",
+      "exact_cross_fragment_duplicates": 0,
+      "source_generator": "codex-pr52-explicit-selection@1f4d1b1d6992",
+      "source_export_sha256": "94bba64c166da76837b48f63783e7341ab5c128595a66862258fc0ee59fbc55c",
+      "publication_export_sha256": "94bba64c166da76837b48f63783e7341ab5c128595a66862258fc0ee59fbc55c",
+      "publication_redaction": {
+        "engine": "official snapshot_core.redact_value",
+        "collector_commit": "1f4d1b1d6992f0fcd8201e7808a773482e6ac02c",
+        "policy": "VNC and wireless credentials; literal values kept out of the repository",
+        "additional_substitutions": 0,
+        "changed_event_count": 0
+      }
+    },
+    {
+      "session_id": "01a01ff8-3713-7b73-bc99-76802baeee07",
+      "tool": "codex",
+      "started_at": "2026-08-20T16:19:51.944Z",
+      "last_event_at": "2026-09-16T02:48:21.537Z",
+      "event_count": 2132,
+      "file_path": "logs/BeaconCat/2026-08-20/codex__01a01ff8-3713-7b73-bc99-76802baeee07.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "source_integrity": {
+        "main_sha256": "cdae7e7f1cc3ac96afe772eb791159a8fa18be691af28b2c24886c4f31c217ea",
+        "main_size": 170559662,
+        "captured_at": "2026-09-20T09:47:07.666178+00:00",
+        "fragments": [
+          {
+            "file": "rollout-2026-08-21T00-19-15-01a01ff8-3713-7b73-bc99-76802baeee07.jsonl",
+            "sha256": "cdae7e7f1cc3ac96afe772eb791159a8fa18be691af28b2c24886c4f31c217ea",
+            "bytes": 170559662
+          }
+        ]
+      },
+      "display_title": "Nyabula 硬件探索者",
+      "redacted_count_total": 6,
+      "source_format": "codex-rollout-jsonl",
+      "explicit_session_selection": true,
+      "data_completeness_warning": "PR52 text-only parser; tools/non-text are separate supplements; system/developer/reasoning omitted. collection_mode spelling is inherited from PR52.",
+      "exact_cross_fragment_duplicates": 0,
+      "source_generator": "codex-pr52-explicit-selection@1f4d1b1d6992",
+      "source_export_sha256": "7b2be794ad8f758cb08b82e22dc7e1de5296af15e290230481f49fd0eb7f1da5",
+      "publication_export_sha256": "9a3fdf83a708fba13ef5c9cc47b4816c9991a8fd69ec59f5d5fef29cac48f596",
+      "publication_redaction": {
+        "engine": "official snapshot_core.redact_value",
+        "collector_commit": "1f4d1b1d6992f0fcd8201e7808a773482e6ac02c",
+        "policy": "VNC and wireless credentials; literal values kept out of the repository",
+        "additional_substitutions": 6,
+        "changed_event_count": 6
+      }
+    },
+    {
+      "session_id": "01a031c6-3dbe-7b02-b577-68b8f0e35043",
+      "tool": "codex",
+      "started_at": "2026-08-24T03:17:50.978Z",
+      "last_event_at": "2026-09-06T03:17:01.996Z",
+      "event_count": 1054,
+      "file_path": "logs/BeaconCat/2026-08-24/codex__01a031c6-3dbe-7b02-b577-68b8f0e35043.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "source_integrity": {
+        "main_sha256": "4cf3eeba06a9ab48bace6dca10f024738d7d269c0a554e7cbed1a51ac0b771e1",
+        "main_size": 61745,
+        "captured_at": "2026-09-20T09:47:15.495226+00:00",
+        "fragments": [
+          {
+            "file": "rollout-2026-08-24T11-17-50-01a031c6-3dbe-7b02-b577-68b8f0e35043.jsonl",
+            "sha256": "e2f16c064deef8979d7c34e30b50c924b3c0e50cff7825610668b1dba24ad675",
+            "bytes": 70907782
+          },
+          {
+            "file": "rollout-2026-09-06T11-16-53-01a031c6-3dbe-7b02-b577-68b8f0e35043_01a074b8-09c8-7091-8f0e-e80dd38a6720.jsonl",
+            "sha256": "4cf3eeba06a9ab48bace6dca10f024738d7d269c0a554e7cbed1a51ac0b771e1",
+            "bytes": 61745
+          }
+        ]
+      },
+      "display_title": "Nyabula 赛博坠机者",
+      "redacted_count_total": 6,
+      "source_format": "codex-rollout-jsonl",
+      "explicit_session_selection": true,
+      "data_completeness_warning": "PR52 text-only parser; tools/non-text are separate supplements; system/developer/reasoning omitted. collection_mode spelling is inherited from PR52.",
+      "exact_cross_fragment_duplicates": 0,
+      "source_generator": "codex-pr52-explicit-selection@1f4d1b1d6992",
+      "source_export_sha256": "161350506edeaa42ee9377d26c66e4f5fa88f9b94107ce41a1e50fddaf6734db",
+      "publication_export_sha256": "2721371b6f02503bc0df1e57f6dc407e49b75aa471444ad533d0cf5d061f2944",
+      "publication_redaction": {
+        "engine": "official snapshot_core.redact_value",
+        "collector_commit": "1f4d1b1d6992f0fcd8201e7808a773482e6ac02c",
+        "policy": "VNC and wireless credentials; literal values kept out of the repository",
+        "additional_substitutions": 6,
+        "changed_event_count": 6
+      }
+    },
+    {
+      "session_id": "01a06d90-366c-7453-8d7b-4ac82a5fd104",
+      "tool": "codex",
+      "started_at": "2026-09-04T17:57:44.430Z",
+      "last_event_at": "2026-09-16T03:09:41.548Z",
+      "event_count": 629,
+      "file_path": "logs/BeaconCat/2026-09-04/codex__01a06d90-366c-7453-8d7b-4ac82a5fd104.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "source_integrity": {
+        "main_sha256": "862e3629fe07f732acbe791d504dc7f111737f319ba2574f21b3aa0991dae831",
+        "main_size": 11895271,
+        "captured_at": "2026-09-20T09:47:21.822871+00:00",
+        "fragments": [
+          {
+            "file": "rollout-2026-09-05T01-56-02-01a06d90-366c-7453-8d7b-4ac82a5fd104.jsonl",
+            "sha256": "f1bdbc38f0ff75f2f3012f5279640b48f369976af065ff54e0ea0620215ccfdc",
+            "bytes": 47605821
+          },
+          {
+            "file": "rollout-2026-09-12T19-18-02-01a06d90-366c-7453-8d7b-4ac82a5fd104_01a09556-b425-75c1-89d1-e82d8d369f6f.jsonl",
+            "sha256": "bc1a871d474bcb32203927561e50eb21651bba1d5ec5195499b12dea649c8c1c",
+            "bytes": 53593428
+          },
+          {
+            "file": "rollout-2026-09-13T13-21-36-01a06d90-366c-7453-8d7b-4ac82a5fd104_01a09936-bb32-7172-b849-7c6868ee3ad9.jsonl",
+            "sha256": "2aeca1062debd8b031db79c5ac65a2fcdd38f05cedf0379601985d2109084ea5",
+            "bytes": 13698503
+          },
+          {
+            "file": "rollout-2026-09-13T15-55-26-01a06d90-366c-7453-8d7b-4ac82a5fd104_01a099c3-9333-7323-8f07-5d631e514fd1.jsonl",
+            "sha256": "c6887676526f2e6d93b3f378b2268cac310724da3bff1fe6f16e45d84b75ffd4",
+            "bytes": 369632
+          },
+          {
+            "file": "rollout-2026-09-13T16-03-49-01a06d90-366c-7453-8d7b-4ac82a5fd104_01a099cb-4122-7321-8169-daa1c6f588f2.jsonl",
+            "sha256": "bceeb38eda2ff07cb1b5e5159c95b3dc0da649e062d950f885266670308fa47e",
+            "bytes": 288626
+          },
+          {
+            "file": "rollout-2026-09-13T16-34-29-01a06d90-366c-7453-8d7b-4ac82a5fd104_01a099e7-54a0-72f1-bd06-c15276e126ab.jsonl",
+            "sha256": "a420a6d758382270be836a81696a884e972c0625c0c9b248769d335306d8773e",
+            "bytes": 109262
+          },
+          {
+            "file": "rollout-2026-09-13T16-39-08-01a06d90-366c-7453-8d7b-4ac82a5fd104_01a099eb-94b5-7453-9763-8ed414d153bd.jsonl",
+            "sha256": "830277a97391a4a8c74d3aa8a4a4952952684108adbc326b6e934d461abdf083",
+            "bytes": 111332
+          },
+          {
+            "file": "rollout-2026-09-13T16-59-52-01a06d90-366c-7453-8d7b-4ac82a5fd104_01a099fe-90bd-7b53-b928-c5b728e86e7c.jsonl",
+            "sha256": "81c6df56b9da9d318d76718704d663fd90fd33688b59a675c57075b8bbbd92ce",
+            "bytes": 12638812
+          },
+          {
+            "file": "rollout-2026-09-13T22-43-18-01a06d90-366c-7453-8d7b-4ac82a5fd104_01a09b38-fd6c-75d2-a23b-d9dc6bcf77eb.jsonl",
+            "sha256": "862e3629fe07f732acbe791d504dc7f111737f319ba2574f21b3aa0991dae831",
+            "bytes": 11895271
+          }
+        ]
+      },
+      "display_title": "Nyabula 一门双至尊",
+      "redacted_count_total": 0,
+      "source_format": "codex-rollout-jsonl",
+      "explicit_session_selection": true,
+      "data_completeness_warning": "PR52 text-only parser; tools/non-text are separate supplements; system/developer/reasoning omitted. collection_mode spelling is inherited from PR52.",
+      "exact_cross_fragment_duplicates": 0,
+      "source_generator": "codex-pr52-explicit-selection@1f4d1b1d6992",
+      "source_export_sha256": "258835681151788318b2fd52e1ae2b79ffebefad295fc4991f711481bffe9c30",
+      "publication_export_sha256": "258835681151788318b2fd52e1ae2b79ffebefad295fc4991f711481bffe9c30",
+      "publication_redaction": {
+        "engine": "official snapshot_core.redact_value",
+        "collector_commit": "1f4d1b1d6992f0fcd8201e7808a773482e6ac02c",
+        "policy": "VNC and wireless credentials; literal values kept out of the repository",
+        "additional_substitutions": 0,
+        "changed_event_count": 0
+      }
+    },
+    {
+      "session_id": "01a074b8-da34-77f0-92ad-410f1bc25625",
+      "tool": "codex",
+      "started_at": "2026-09-06T03:18:33.515Z",
+      "last_event_at": "2026-09-16T03:10:35.211Z",
+      "event_count": 421,
+      "file_path": "logs/BeaconCat/2026-09-06/codex__01a074b8-da34-77f0-92ad-410f1bc25625.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "source_integrity": {
+        "main_sha256": "6df6f5cc116eb5881069813be4dc5733d75320da3bb3d1a83f2b1ad640fe04d0",
+        "main_size": 89502284,
+        "captured_at": "2026-09-20T09:47:27.016268+00:00",
+        "fragments": [
+          {
+            "file": "rollout-2026-09-06T11-17-46-01a074b8-da34-77f0-92ad-410f1bc25625.jsonl",
+            "sha256": "d21e26bd85d4f515cd32d67630d9449f7fa13453666c4f6450661e755aca82b0",
+            "bytes": 169485
+          },
+          {
+            "file": "rollout-2026-09-06T11-24-19-01a074b8-da34-77f0-92ad-410f1bc25625_01a074be-d82d-7fc0-99e3-50f4abe4db96.jsonl",
+            "sha256": "6df6f5cc116eb5881069813be4dc5733d75320da3bb3d1a83f2b1ad640fe04d0",
+            "bytes": 89502284
+          }
+        ]
+      },
+      "display_title": "Nyabula 内核研究者",
+      "redacted_count_total": 0,
+      "source_format": "codex-rollout-jsonl",
+      "explicit_session_selection": true,
+      "data_completeness_warning": "PR52 text-only parser; tools/non-text are separate supplements; system/developer/reasoning omitted. collection_mode spelling is inherited from PR52.",
+      "exact_cross_fragment_duplicates": 0,
+      "source_generator": "codex-pr52-explicit-selection@1f4d1b1d6992",
+      "source_export_sha256": "39611b72200f8b240855e34542df2c5fde29f8e543bc04fabf655e4a28ed8644",
+      "publication_export_sha256": "39611b72200f8b240855e34542df2c5fde29f8e543bc04fabf655e4a28ed8644",
+      "publication_redaction": {
+        "engine": "official snapshot_core.redact_value",
+        "collector_commit": "1f4d1b1d6992f0fcd8201e7808a773482e6ac02c",
+        "policy": "VNC and wireless credentials; literal values kept out of the repository",
+        "additional_substitutions": 0,
+        "changed_event_count": 0
+      }
+    },
+    {
+      "session_id": "53149ad7-206f-4cc7-98ea-be54f9b18bbc",
+      "tool": "claude-code",
+      "started_at": "2026-09-16T01:04:20.185Z",
+      "last_event_at": "2026-09-16T01:04:20.185Z",
+      "event_count": 438,
+      "raw_event_count": 864,
+      "file_path": "logs/BeaconCat/2026-09-16/claude-code__53149ad7-206f-4cc7-98ea-be54f9b18bbc.jsonl",
+      "collection_mode": "cli",
+      "health": "ok",
+      "model": "claude-fable-5",
+      "source_generator": "claude-code-collector@1.3.0",
+      "source_export_sha256": "edc98886a2b833fede080b23f1ddc8e64510311dcb865efa91018e192a79d973",
+      "publication_export_sha256": "edc98886a2b833fede080b23f1ddc8e64510311dcb865efa91018e192a79d973",
+      "publication_redaction": {
+        "engine": "official snapshot_core.redact_value",
+        "collector_commit": "1f4d1b1d6992f0fcd8201e7808a773482e6ac02c",
+        "policy": "VNC and wireless credentials; literal values kept out of the repository",
+        "additional_substitutions": 0,
+        "changed_event_count": 0
+      }
+    },
+    {
+      "session_id": "7e740137-333b-4fce-ab1e-14965b5f883e",
+      "tool": "claude-code",
+      "started_at": "2026-09-16T01:04:21.497Z",
+      "last_event_at": "2026-09-16T01:04:21.497Z",
+      "event_count": 302,
+      "raw_event_count": 567,
+      "file_path": "logs/BeaconCat/2026-09-16/claude-code__7e740137-333b-4fce-ab1e-14965b5f883e.jsonl",
+      "collection_mode": "cli",
+      "health": "ok",
+      "model": "claude-fable-5",
+      "source_generator": "claude-code-collector@1.3.0",
+      "source_export_sha256": "30b7fd4e851cf3dcb8cba5df457847028defb047885cd0e04fad19ddbaa530e5",
+      "publication_export_sha256": "30b7fd4e851cf3dcb8cba5df457847028defb047885cd0e04fad19ddbaa530e5",
+      "publication_redaction": {
+        "engine": "official snapshot_core.redact_value",
+        "collector_commit": "1f4d1b1d6992f0fcd8201e7808a773482e6ac02c",
+        "policy": "VNC and wireless credentials; literal values kept out of the repository",
+        "additional_substitutions": 0,
+        "changed_event_count": 0
+      }
+    },
+    {
+      "session_id": "d92287fc-5656-4959-bc0b-971e5b3938aa",
+      "tool": "claude-code",
+      "started_at": "2026-09-16T01:04:22.901Z",
+      "last_event_at": "2026-09-16T01:04:22.901Z",
+      "event_count": 910,
+      "raw_event_count": 2194,
+      "file_path": "logs/BeaconCat/2026-09-16/claude-code__d92287fc-5656-4959-bc0b-971e5b3938aa.jsonl",
+      "collection_mode": "cli",
+      "health": "ok",
+      "model": "claude-fable-5-1",
+      "source_generator": "claude-code-collector@1.3.0",
+      "source_export_sha256": "bb2da47a1e0959fb15f18a71a9533617477bb180fc40ed8e0cf9500a328ae23c",
+      "publication_export_sha256": "bb2da47a1e0959fb15f18a71a9533617477bb180fc40ed8e0cf9500a328ae23c",
+      "publication_redaction": {
+        "engine": "official snapshot_core.redact_value",
+        "collector_commit": "1f4d1b1d6992f0fcd8201e7808a773482e6ac02c",
+        "policy": "VNC and wireless credentials; literal values kept out of the repository",
+        "additional_substitutions": 0,
+        "changed_event_count": 0
+      }
+    },
+    {
+      "session_id": "eb4b3d82-cf5c-4753-b0ca-7c505f992c6f",
+      "tool": "claude-code",
+      "started_at": "2026-09-16T01:04:24.202Z",
+      "last_event_at": "2026-09-16T01:04:24.202Z",
+      "event_count": 125,
+      "raw_event_count": 280,
+      "file_path": "logs/BeaconCat/2026-09-16/claude-code__eb4b3d82-cf5c-4753-b0ca-7c505f992c6f.jsonl",
+      "collection_mode": "cli",
+      "health": "ok",
+      "model": "<synthetic>",
+      "source_generator": "claude-code-collector@1.3.0",
+      "source_export_sha256": "c8aff32f865a43a4884a5d387900203f2c0762ebf864e4bd3fc06de9e9001492",
+      "publication_export_sha256": "c8aff32f865a43a4884a5d387900203f2c0762ebf864e4bd3fc06de9e9001492",
+      "publication_redaction": {
+        "engine": "official snapshot_core.redact_value",
+        "collector_commit": "1f4d1b1d6992f0fcd8201e7808a773482e6ac02c",
+        "policy": "VNC and wireless credentials; literal values kept out of the repository",
+        "additional_substitutions": 0,
+        "changed_event_count": 0
+      }
+    }
+  ]
+}

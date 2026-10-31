@@ -35,7 +35,7 @@
 #include <nuttx/audio/es8388.h>
 
 #ifdef CONFIG_NYABULA_CORE_AUDIO
-#include "ny_product_audio.h"
+#  include "ny_product_audio.h"
 #endif
 
 #define AUDIOCTL_DEVICE       "/dev/audio/pcm0"
@@ -44,17 +44,17 @@
 /* A level that a command does not change. */
 
 #ifdef CONFIG_NYABULA_CORE_AUDIO
-#define AUDIOCTL_KEEP NY_PRODUCT_AUDIO_KEEP
+#  define AUDIOCTL_KEEP       NY_PRODUCT_AUDIO_KEEP
 #else
-#define AUDIOCTL_KEEP         (-1)
+#  define AUDIOCTL_KEEP       (-1)
 
 /* AUDIO_FU_VOLUME runs 0..1000; the driver takes the microphone gain in dB,
  * 0..24 in 3 dB steps.
  */
 
-#define AUDIOCTL_VOLUME_SCALE 10
-#define AUDIOCTL_GAIN_DB_MAX  24
-#define AUDIOCTL_GAIN_DB_STEP 3
+#  define AUDIOCTL_VOLUME_SCALE 10
+#  define AUDIOCTL_GAIN_DB_MAX  24
+#  define AUDIOCTL_GAIN_DB_STEP 3
 #endif
 
 struct audioctl_mode_s

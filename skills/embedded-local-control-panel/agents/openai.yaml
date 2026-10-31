@@ -1,0 +1,4 @@
+interface:
+  display_name: "嵌入式配网与本地控制面板"
+  short_description: "把 SoftAP配网、QR入口、自托管HTTP/WebSocket面板和设备状态接成真实嵌入式产品闭环，定位"
+  default_prompt: "使用 $embedded-local-control-panel，根据现有版本和证据完成本次任务，给出可复现结果与未验证边界。"

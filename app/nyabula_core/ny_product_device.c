@@ -180,13 +180,14 @@ static cJSON *ny_product_device_network(void)
        */
 
       struct iwreq probe = { 0 };
-      snprintf(probe.ifr_name, sizeof(probe.ifr_name), "%s", names[i].if_name);
+      snprintf(probe.ifr_name, sizeof(probe.ifr_name), "%s",
+               names[i].if_name);
       if (ioctl(fd, SIOCGIWNAME, (unsigned long)(uintptr_t)&probe) == 0)
         {
           wireless.u.essid.pointer = ssid;
           wireless.u.essid.length = sizeof(ssid) - 1;
-          if (ioctl(fd, SIOCGIWESSID, (unsigned long)(uintptr_t)&wireless) ==
-              0)
+          if (ioctl(fd, SIOCGIWESSID,
+                    (unsigned long)(uintptr_t)&wireless) == 0)
             cJSON_AddStringToObject(item, "ssid", ssid);
         }
       cJSON_AddItemToArray(items, item);

@@ -91,56 +91,56 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NY_MODELS_TARGET    "/models/upload"
-#define NY_MODELS_PREFIX    "/models"
-#define NY_MODELS_QUERY_KEY "path"
+#define NY_MODELS_TARGET        "/models/upload"
+#define NY_MODELS_PREFIX        "/models"
+#define NY_MODELS_QUERY_KEY     "path"
 
 /* A path is "<kind>/<up to three more names>".  A name leaves room for the
  * longest suffix that is put behind it (".part.json") within the 64
  * characters the volume stores of a long file name.
  */
 
-#define NY_MODELS_LEVELS      3
-#define NY_MODELS_SEGMENT_MAX 48
-#define NY_MODELS_SUFFIX_ROOM 10
-#define NY_MODELS_FILE_MAX                                   \
-  (sizeof(NY_WEB_MODELS_ROOT) + 1 + NY_WEB_MODELS_PATH_MAX + \
-   NY_MODELS_SUFFIX_ROOM)
+#define NY_MODELS_LEVELS        3
+#define NY_MODELS_SEGMENT_MAX   48
+#define NY_MODELS_SUFFIX_ROOM   10
+#define NY_MODELS_FILE_MAX      (sizeof(NY_WEB_MODELS_ROOT) + 1 + \
+                                 NY_WEB_MODELS_PATH_MAX + \
+                                 NY_MODELS_SUFFIX_ROOM)
 
-#define NY_MODELS_PART    ".part"
-#define NY_MODELS_SIDECAR ".part.json"
-#define NY_MODELS_DIGEST  ".sha256"
+#define NY_MODELS_PART          ".part"
+#define NY_MODELS_SIDECAR       ".part.json"
+#define NY_MODELS_DIGEST        ".sha256"
 
 /* How far below the root listing looks: the kind and three more names. */
 
-#define NY_MODELS_WALK_DEPTH 4
+#define NY_MODELS_WALK_DEPTH    4
 
 /* A reply has to fit one 32 KiB message of the socket, envelope included. */
 
-#define NY_MODELS_LIST_BUDGET 24000u
-#define NY_MODELS_ITEM_COST   160u
+#define NY_MODELS_LIST_BUDGET   24000u
+#define NY_MODELS_ITEM_COST     160u
 
 /* The largest piece a client may send at once.  It is not buffered: this
  * bounds how much a broken piece can cost and how long one request holds a
  * client slot.
  */
 
-#define NY_MODELS_PIECE_MAX (8ull * 1024ull * 1024ull)
+#define NY_MODELS_PIECE_MAX     (8ull * 1024ull * 1024ull)
 
 /* FAT stores the size of a file in 32 bits. */
 
-#define NY_MODELS_FILE_LIMIT 0xffffffffull
+#define NY_MODELS_FILE_LIMIT    0xffffffffull
 
 /* Kept free on the volume once a model is stored: the product database, the
  * logs and a staged firmware image share it.
  */
 
-#define NY_MODELS_SPACE_MARGIN (64ull * 1024ull * 1024ull)
+#define NY_MODELS_SPACE_MARGIN  (64ull * 1024ull * 1024ull)
 
-#define NY_MODELS_RECV         16384
-#define NY_MODELS_HASH_READ    65536
-#define NY_MODELS_STALL_MS     60000
-#define NY_MODELS_WORKER_STACK 16384
+#define NY_MODELS_RECV          16384
+#define NY_MODELS_HASH_READ     65536
+#define NY_MODELS_STALL_MS      60000
+#define NY_MODELS_WORKER_STACK  16384
 
 /* What is still read from a request that has already been refused, so that
  * the refusal arrives as a response and not as a connection reset: one
@@ -162,10 +162,10 @@
 
 struct ny_models_paths_s
 {
-  char target[NY_MODELS_FILE_MAX];  /* the file under its real name */
-  char part[NY_MODELS_FILE_MAX];    /* what has arrived of it so far */
-  char sidecar[NY_MODELS_FILE_MAX]; /* which file the part belongs to */
-  char digest[NY_MODELS_FILE_MAX];  /* sha256 of the finished file */
+  char target[NY_MODELS_FILE_MAX];   /* the file under its real name */
+  char part[NY_MODELS_FILE_MAX];     /* what has arrived of it so far */
+  char sidecar[NY_MODELS_FILE_MAX];  /* which file the part belongs to */
+  char digest[NY_MODELS_FILE_MAX];   /* sha256 of the finished file */
 };
 
 struct ny_models_sidecar_s
@@ -187,9 +187,9 @@ struct ny_models_job_s
   char wanted[NY_MODELS_SHA256_HEX + 1];
   uint64_t start;
   uint64_t total;
-  uint64_t length;   /* Content-Length */
-  uint64_t received; /* stored of the whole file */
-  bool probe;        /* "bytes * / total": no piece */
+  uint64_t length;                   /* Content-Length */
+  uint64_t received;                 /* stored of the whole file */
+  bool probe;                        /* "bytes * / total": no piece */
 };
 
 enum ny_models_verify_e
@@ -207,10 +207,10 @@ enum ny_models_verify_e
 struct ny_models_verify_s
 {
   enum ny_models_verify_e state;
-  const char *reason; /* short word for the panel, or "" */
+  const char *reason;                /* short word for the panel, or "" */
   char path[NY_WEB_MODELS_PATH_MAX + 1];
   char sha256[NY_MODELS_SHA256_HEX + 1];
-  char expected[NY_MODELS_SHA256_HEX + 1]; /* from the sidecar, or "" */
+  char expected[NY_MODELS_SHA256_HEX + 1];  /* from the sidecar, or "" */
   uint64_t done;
   uint64_t total;
 };
@@ -260,7 +260,8 @@ static bool ny_models_ends_with(const char *name, size_t length,
                                 const char *suffix);
 static bool ny_models_path_ok(const char *path);
 static int ny_models_query_path(const char *query, char *path, size_t size);
-static void ny_models_paths(const char *path, struct ny_models_paths_s *paths);
+static void ny_models_paths(const char *path,
+                            struct ny_models_paths_s *paths);
 static int ny_models_parents(char *file);
 static void ny_models_prune(char *file);
 static int ny_models_number(const char **at, uint64_t *value);
@@ -287,8 +288,8 @@ static int ny_models_finish(int fd, struct ny_models_job_s *job);
 static int ny_models_upload(int fd, const char *head, const char *query,
                             const void *body, size_t body_length);
 static int ny_models_state(int fd, const char *query);
-static void ny_models_walk_file(struct ny_models_walk_s *walk, size_t length,
-                                const struct stat *status);
+static void ny_models_walk_file(struct ny_models_walk_s *walk,
+                                size_t length, const struct stat *status);
 static void ny_models_walk(struct ny_models_walk_s *walk, size_t length,
                            int depth);
 static cJSON *ny_models_list(void);
@@ -305,7 +306,8 @@ static int ny_models_verify(const cJSON *data, cJSON **result);
  * be uploaded, listed or deleted, whatever a client sends.
  */
 
-static const char *const g_models_kinds[] = {
+static const char *const g_models_kinds[] =
+{
   "llm", "asr", "tts", "kws", "speaker", "face",
 };
 
@@ -316,7 +318,8 @@ static const char *const g_models_kinds[] = {
 static mutex_t g_models_lock = NXMUTEX_INITIALIZER;
 static bool g_models_claimed;
 static struct ny_models_progress_s g_models_progress;
-static struct ny_models_verify_s g_models_verify = {
+static struct ny_models_verify_s g_models_verify =
+{
   .reason = "",
 };
 
@@ -402,7 +405,10 @@ static void ny_models_drain(int fd)
   while (drained < NY_MODELS_DRAIN_BYTES)
     {
       uint64_t now = nyabula_eye_ws_now();
-      struct pollfd pfd = { fd, POLLIN, 0 };
+      struct pollfd pfd =
+      {
+        fd, POLLIN, 0
+      };
 
       ssize_t count;
 
@@ -583,7 +589,8 @@ static bool ny_models_ends_with(const char *name, size_t length,
 {
   size_t size = strlen(suffix);
 
-  return length > size && strncasecmp(name + length - size, suffix, size) == 0;
+  return length > size &&
+         strncasecmp(name + length - size, suffix, size) == 0;
 }
 
 /****************************************************************************
@@ -614,7 +621,7 @@ static bool ny_models_path_ok(const char *path)
       return false;
     }
 
-  for (;;)
+  for (; ; )
     {
       span = strcspn(segment, "/");
       if (span == 0 || span > NY_MODELS_SEGMENT_MAX || segment[0] == '.' ||
@@ -753,14 +760,14 @@ static int ny_models_query_path(const char *query, char *path, size_t size)
 
 static void ny_models_paths(const char *path, struct ny_models_paths_s *paths)
 {
-  snprintf(paths->target, sizeof(paths->target), "%s/%s", NY_WEB_MODELS_ROOT,
-           path);
-  snprintf(paths->part, sizeof(paths->part), "%s/%s%s", NY_WEB_MODELS_ROOT,
-           path, NY_MODELS_PART);
+  snprintf(paths->target, sizeof(paths->target), "%s/%s",
+           NY_WEB_MODELS_ROOT, path);
+  snprintf(paths->part, sizeof(paths->part), "%s/%s%s",
+           NY_WEB_MODELS_ROOT, path, NY_MODELS_PART);
   snprintf(paths->sidecar, sizeof(paths->sidecar), "%s/%s%s",
            NY_WEB_MODELS_ROOT, path, NY_MODELS_SIDECAR);
-  snprintf(paths->digest, sizeof(paths->digest), "%s/%s%s", NY_WEB_MODELS_ROOT,
-           path, NY_MODELS_DIGEST);
+  snprintf(paths->digest, sizeof(paths->digest), "%s/%s%s",
+           NY_WEB_MODELS_ROOT, path, NY_MODELS_DIGEST);
 }
 
 /****************************************************************************
@@ -995,9 +1002,7 @@ static int ny_models_range(const char *head, struct ny_models_job_s *job)
     }
 
   return end >= job->start && end < job->total &&
-                 end - job->start + 1 == job->length
-             ? 0
-             : -EINVAL;
+         end - job->start + 1 == job->length ? 0 : -EINVAL;
 }
 
 /****************************************************************************
@@ -1289,7 +1294,7 @@ static int ny_models_digest(const char *file, char *hex, uint64_t *size,
     }
 
   sha256init(&hash);
-  for (;;)
+  for (; ; )
     {
       ssize_t count = read(descriptor, chunk, NY_MODELS_HASH_READ);
       if (count < 0 && errno == EINTR)
@@ -1408,7 +1413,10 @@ static int ny_models_receive(int fd, int file, uint64_t expected,
     {
       uint64_t left = expected - *stored;
       uint64_t now = nyabula_eye_ws_now();
-      struct pollfd pfd = { fd, POLLIN, 0 };
+      struct pollfd pfd =
+      {
+        fd, POLLIN, 0
+      };
 
       ssize_t count;
       size_t want;
@@ -1680,10 +1688,10 @@ static int ny_models_upload(int fd, const char *head, const char *query,
        * by a file: no retry changes that.
        */
 
-      ret =
-          ret == -ENOTDIR
-              ? ny_models_refuse(fd, 409, "Conflict", "EPATHTYPE")
-              : ny_models_refuse(fd, 500, "Internal Server Error", "ESTORAGE");
+      ret = ret == -ENOTDIR
+                ? ny_models_refuse(fd, 409, "Conflict", "EPATHTYPE")
+                : ny_models_refuse(fd, 500, "Internal Server Error",
+                                   "ESTORAGE");
       goto out;
     }
 
@@ -1696,12 +1704,14 @@ static int ny_models_upload(int fd, const char *head, const char *query,
   held = ny_models_file_size(job->paths.part);
   fresh = ny_models_sidecar_load(job->paths.sidecar, &job->sidecar) < 0 ||
           job->sidecar.total != job->total ||
-          memcmp(job->sidecar.sha256, job->wanted, NY_MODELS_SHA256_HEX) != 0;
-  job->received = fresh                          ? 0
+          memcmp(job->sidecar.sha256, job->wanted,
+                 NY_MODELS_SHA256_HEX) != 0;
+  job->received = fresh ? 0
                   : job->sidecar.received < held ? job->sidecar.received
                                                  : held;
 
-  if (job->probe ? job->received != job->total : job->start != job->received)
+  if (job->probe ? job->received != job->total
+                 : job->start != job->received)
     {
       /* Not where this file stands.  The answer says where that is, and
        * the client goes on from there; a different file that was left
@@ -1767,7 +1777,8 @@ static int ny_models_upload(int fd, const char *head, const char *query,
       strlcpy(job->sidecar.sha256, job->wanted, sizeof(job->sidecar.sha256));
       if (ny_models_sidecar_save(job->paths.sidecar, &job->sidecar) < 0)
         {
-          ret = ny_models_refuse(fd, 500, "Internal Server Error", "ESTORAGE");
+          ret = ny_models_refuse(fd, 500, "Internal Server Error",
+                                 "ESTORAGE");
           goto out;
         }
     }
@@ -1800,8 +1811,8 @@ static int ny_models_upload(int fd, const char *head, const char *query,
 
   if (ret == 0)
     {
-      ret =
-          ny_models_receive(fd, file, job->length, body, body_length, &stored);
+      ret = ny_models_receive(fd, file, job->length, body, body_length,
+                              &stored);
     }
 
   /* What is kept is what reached the medium.  If that cannot be said, the
@@ -2026,9 +2037,10 @@ static void ny_models_walk_file(struct ny_models_walk_s *walk, size_t length,
   if (partial && known)
     {
       uint64_t held = status->st_size > 0 ? (uint64_t)status->st_size : 0;
-      cJSON_AddNumberToObject(
-          row, "received",
-          (double)(sidecar.received < held ? sidecar.received : held));
+      cJSON_AddNumberToObject(row, "received",
+                              (double)(sidecar.received < held
+                                           ? sidecar.received
+                                           : held));
       cJSON_AddNumberToObject(row, "total", (double)sidecar.total);
       cJSON_AddStringToObject(row, "sha256", sidecar.sha256);
     }
@@ -2129,8 +2141,9 @@ static cJSON *ny_models_list(void)
   cJSON_AddNumberToObject(root, "free", (double)ny_models_space());
   if (statfs(NY_WEB_MODELS_VOLUME, &volume) == 0)
     {
-      cJSON_AddNumberToObject(
-          root, "volume", (double)volume.f_blocks * (double)volume.f_bsize);
+      cJSON_AddNumberToObject(root, "volume",
+                              (double)volume.f_blocks *
+                              (double)volume.f_bsize);
     }
 
   /* What an upload will be held to, so that the panel can say no before a
@@ -2167,11 +2180,9 @@ static cJSON *ny_models_list(void)
 
 static cJSON *ny_models_status(void)
 {
-  static const char *const states[] = {
-    "idle",
-    "running",
-    "done",
-    "failed",
+  static const char *const states[] =
+  {
+    "idle", "running", "done", "failed",
   };
 
   cJSON *root = cJSON_CreateObject();
@@ -2360,7 +2371,8 @@ static int ny_models_verify(const cJSON *data, cJSON **result)
       return ret;
     }
 
-  snprintf(file, sizeof(file), "%s/%s", NY_WEB_MODELS_ROOT, path->valuestring);
+  snprintf(file, sizeof(file), "%s/%s", NY_WEB_MODELS_ROOT,
+           path->valuestring);
   size = ny_models_file_size(file);
 
   nxmutex_lock(&g_models_lock);
@@ -2369,8 +2381,8 @@ static int ny_models_verify(const cJSON *data, cJSON **result)
           sizeof(g_models_verify.path));
   g_models_verify.total = size;
   g_models_verify.reason = size > 0 ? "" : "missing";
-  g_models_verify.state =
-      size > 0 ? NY_MODELS_VERIFY_RUNNING : NY_MODELS_VERIFY_FAILED;
+  g_models_verify.state = size > 0 ? NY_MODELS_VERIFY_RUNNING
+                                   : NY_MODELS_VERIFY_FAILED;
   nxmutex_unlock(&g_models_lock);
 
   if (size > 0)

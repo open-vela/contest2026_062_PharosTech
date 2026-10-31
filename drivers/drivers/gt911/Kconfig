@@ -1,0 +1,101 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config INPUT_GT911
+    bool "Goodix GT911 touch controller"
+    default n
+    depends on I2C
+    select INPUT_TOUCHSCREEN
+    ---help---
+        Enable the Goodix GT911 (and GT9-family compatible) capacitive touch
+        controller driver.
+
+        The driver is a lower half of the generic NuttX touchscreen framework
+        (CONFIG_INPUT_TOUCHSCREEN, /dev/inputN), so it can be consumed by
+        LVGL through CONFIG_LV_USE_NUTTX_TOUCHSCREEN or read directly.  It
+        reports every contact in the controller's frame (up to
+        INPUT_GT911_MAX_POINTS) with the track id the controller assigns.
+
+        Nothing that belongs to a specific module is compiled into the driver:
+        the reset and interrupt lines come in through struct gt911_board_s,
+        the configuration table for a module that arrived without one comes in
+        through struct gt911_config_s, and the coordinate orientation -- how
+        the module is mounted relative to the framebuffer, which is a property
+        of the product rather than of the chip -- is passed to
+        gt911_register().  That keeps one driver usable by several boards
+        whose panels are mounted differently, and lets a board derive the
+        touch orientation and the display orientation from one setting so the
+        two cannot disagree.
+
+        See boards/rk3576/drivers/include/gt911.h for all three.
+
+if INPUT_GT911
+
+config INPUT_GT911_I2C_FREQUENCY
+    int "I2C frequency (Hz)"
+    default 400000
+    range 0 400000
+    ---help---
+        I2C bus frequency used to talk to the controller.  400 kHz is the
+        controller's maximum and needs adequate external pull-ups on SCL/SDA;
+        drop to 100000 if the bus wiring is long or the pull-ups are weak.
+
+config INPUT_GT911_MAX_POINTS
+    int "Number of touch points reported per sample"
+    default 5
+    range 1 10
+    ---help---
+        Number of contact slots in every sample the driver publishes.  This
+        value is what the framework reports through TSIOC_GETMAXPOINTS and it
+        sizes every sample, so LVGL reads exactly this many points per
+        read().
+
+        The GT911 supports up to 5 contacts, but the module's configuration
+        may cap it lower; slots with no contact are reported with no flags.
+        LVGL uses only the first point unless gesture recognition is enabled.
+        Slots beyond the controller's own maximum are simply never used.
+
+config INPUT_GT911_SAMPLE_CACHES
+    int "Number of samples buffered by the framework"
+    default 4
+    range 1 16
+    ---help---
+        Depth of the touchscreen framework's sample queue.  A deeper queue
+        keeps fast bursts of samples from overwriting each other when the
+        reader (LVGL) is slower than the controller's scan rate.
+
+config INPUT_GT911_POLL_MS
+    int "Fallback polling interval (ms)"
+    default 20
+    range 0 1000
+    ---help---
+        The controller raises INT once per scan period while a read frame is
+        waiting; with the INT line wired, the interrupt path does the work and
+        this poll is only a safety net that repairs a missed edge.
+
+        Set it to 0 for pure interrupt-driven operation (a board without a
+        poll still needs the INT line), or to a few tens of milliseconds to
+        run interrupt-free.  Interrupts, when wired, always take priority over
+        this interval.
+
+config INPUT_GT911_CONFIG_FORCE
+    bool "Overwrite the module configuration even if it is already valid"
+    default n
+    ---help---
+        The driver only writes the board's configuration table when the
+        controller reports no usable configuration: a module that already
+        carries one -- programmed at the factory, or by the vendor's own
+        driver -- is left alone, because sensing parameters are a property of
+        the touch sensor and a wrong guess senses poorly or not at all.
+
+        Enable this to force a rewrite, which is what trying a different
+        table on a module that has already been programmed needs.  Note that
+        the controller keeps one configuration: a forced write replaces
+        whatever is in there.
+
+        This is a bring-up option, not something a product should ship with
+        unless its own table is known to be correct.
+
+endif # INPUT_GT911

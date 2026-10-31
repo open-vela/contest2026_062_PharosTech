@@ -65,7 +65,7 @@ enum ny_voice_state_e
 
 enum ny_voice_event_e
 {
-  NY_VOICE_EV_TICK = 0, /* Time passed; carries the VAD's view.       */
+  NY_VOICE_EV_TICK = 0,      /* Time passed; carries the VAD's view.       */
   NY_VOICE_EV_ENABLE,
   NY_VOICE_EV_DISABLE,
   NY_VOICE_EV_WAKE,          /* KWS DETECTED.                              */
@@ -87,7 +87,7 @@ enum ny_voice_event_e
 enum ny_voice_action_e
 {
   NY_VOICE_ACT_NONE = 0,
-  NY_VOICE_ACT_ASR_START, /* `attach` tells whether a wake word led.    */
+  NY_VOICE_ACT_ASR_START,    /* `attach` tells whether a wake word led.    */
   NY_VOICE_ACT_ASR_END,
   NY_VOICE_ACT_ASR_CANCEL,
   NY_VOICE_ACT_AGENT_SUBMIT,
@@ -95,7 +95,7 @@ enum ny_voice_action_e
   NY_VOICE_ACT_AGENT_FORGET, /* Stop following a run awaiting approval.    */
   NY_VOICE_ACT_SPEAK,        /* `speech` tells what.                       */
   NY_VOICE_ACT_SPEAK_CANCEL,
-  NY_VOICE_ACT_EYES /* `eyes` tells which expression.             */
+  NY_VOICE_ACT_EYES          /* `eyes` tells which expression.             */
 };
 
 enum ny_voice_speech_e
@@ -118,24 +118,24 @@ enum ny_voice_eyes_e
 
 struct ny_voice_sm_config_s
 {
-  uint32_t max_listen_ms; /* A command is cut off after this long.     */
-  uint32_t trailing_ms;   /* Silence that ends a command.              */
-  uint32_t no_speech_ms;  /* Nothing at all was said.                  */
-  uint32_t asr_start_ms;  /* ASR start (incl. a first load) must end.  */
-  uint32_t asr_finish_ms; /* FINISH must follow END within this.       */
-  uint32_t think_ms;      /* The agent's time for a turn.              */
-  uint32_t approval_ms;   /* How long a pending run is followed.       */
-  uint32_t speak_ms;      /* Playback must end within this.            */
+  uint32_t max_listen_ms;     /* A command is cut off after this long.     */
+  uint32_t trailing_ms;       /* Silence that ends a command.              */
+  uint32_t no_speech_ms;      /* Nothing at all was said.                  */
+  uint32_t asr_start_ms;      /* ASR start (incl. a first load) must end.  */
+  uint32_t asr_finish_ms;     /* FINISH must follow END within this.       */
+  uint32_t think_ms;          /* The agent's time for a turn.              */
+  uint32_t approval_ms;       /* How long a pending run is followed.       */
+  uint32_t speak_ms;          /* Playback must end within this.            */
 };
 
 struct ny_voice_sm_event_s
 {
   enum ny_voice_event_e type;
   uint64_t now_ms;
-  bool ok;             /* ASR_FINISHED, AGENT_REPLY, SPEAK_DONE.        */
-  bool empty;          /* ASR_FINISHED, AGENT_REPLY: no text.           */
-  bool heard_speech;   /* The recognizer has produced text.             */
-  uint32_t silence_ms; /* TICK: since that text last changed.           */
+  bool ok;                /* ASR_FINISHED, AGENT_REPLY, SPEAK_DONE.        */
+  bool empty;             /* ASR_FINISHED, AGENT_REPLY: no text.           */
+  bool heard_speech;      /* The recognizer has produced text.             */
+  uint32_t silence_ms;    /* TICK: since that text last changed.           */
 };
 
 struct ny_voice_sm_action_s
@@ -150,18 +150,18 @@ struct ny_voice_sm_s
 {
   struct ny_voice_sm_config_s config;
   enum ny_voice_state_e state;
-  uint64_t since_ms;    /* When the state was entered.                   */
-  uint64_t end_sent_ms; /* LISTENING: when ASR_END went out, else 0.     */
-  uint64_t pending_ms;  /* When a run began to wait for approval.        */
-  bool asr_started;     /* LISTENING: the request exists.                */
-  bool end_wanted;      /* LISTENING: END is due once it exists.         */
-  bool pending;         /* A run awaiting approval is being followed.    */
+  uint64_t since_ms;      /* When the state was entered.                   */
+  uint64_t end_sent_ms;   /* LISTENING: when ASR_END went out, else 0.     */
+  uint64_t pending_ms;    /* When a run began to wait for approval.        */
+  bool asr_started;       /* LISTENING: the request exists.                */
+  bool end_wanted;        /* LISTENING: END is due once it exists.         */
+  bool pending;           /* A run awaiting approval is being followed.    */
   enum ny_voice_speech_e speech; /* SPEAKING: what.                        */
 };
 
 struct ny_voice_sm_result_s
 {
-  bool accepted; /* False: the event had no meaning in this state. */
+  bool accepted;          /* False: the event had no meaning in this state. */
   unsigned int count;
   struct ny_voice_sm_action_s actions[NY_VOICE_SM_MAX_ACTIONS];
 };
@@ -171,7 +171,8 @@ struct ny_voice_sm_result_s
  ****************************************************************************/
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
 void ny_voice_sm_defaults(struct ny_voice_sm_config_s *config);

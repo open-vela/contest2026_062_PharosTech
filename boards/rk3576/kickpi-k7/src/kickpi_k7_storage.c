@@ -69,8 +69,8 @@
  * mount the configuration in its place, and the device would look
  * provisioned while having nowhere to put a model.
  */
-#define KICKPI_K7_STORAGE_CONFIG_PART "config"
-#define KICKPI_K7_STORAGE_DATA_SCORE  100
+#define KICKPI_K7_STORAGE_CONFIG_PART   "config"
+#define KICKPI_K7_STORAGE_DATA_SCORE    100
 
 /****************************************************************************
  * Private Types
@@ -325,7 +325,8 @@ static bool kickpi_k7_storage_partition_is_blank(FAR const char *path)
  *
  ****************************************************************************/
 
-int __attribute__((weak)) kickpi_k7_storage_format_hook(FAR const char *path)
+int __attribute__((weak))
+kickpi_k7_storage_format_hook(FAR const char *path)
 {
   (void)path;
   return -ENOSYS;
@@ -446,10 +447,8 @@ static int kickpi_k7_storage_config_mount(void)
 
   if (kickpi_k7_storage_partition_is_blank(path))
     {
-      syslog(LOG_INFO,
-             "INFO: storage: %s is unformatted, creating a "
-             "filesystem\n",
-             KICKPI_K7_STORAGE_CONFIG_PART);
+      syslog(LOG_INFO, "INFO: storage: %s is unformatted, creating a "
+             "filesystem\n", KICKPI_K7_STORAGE_CONFIG_PART);
 
       if (kickpi_k7_storage_format(path) == 0 &&
           mount(path, KICKPI_K7_STORAGE_CONFIG_MOUNT, "vfat", 0, NULL) == 0)
@@ -461,10 +460,8 @@ static int kickpi_k7_storage_config_mount(void)
       return -EIO;
     }
 
-  syslog(LOG_WARNING,
-         "WARNING: storage: /config mount failed: %d "
-         "(partition is not blank; refusing to reformat)\n",
-         errno);
+  syslog(LOG_WARNING, "WARNING: storage: /config mount failed: %d "
+         "(partition is not blank; refusing to reformat)\n", errno);
   return -errno;
 }
 
@@ -527,10 +524,8 @@ static int kickpi_k7_storage_mount(FAR struct kickpi_k7_storage_media_s *media)
       if (labelled_data && !media->removable &&
           kickpi_k7_storage_partition_is_blank(candidate->path))
         {
-          syslog(LOG_INFO,
-                 "INFO: storage: %s is unformatted, creating a "
-                 "filesystem\n",
-                 candidate->path);
+          syslog(LOG_INFO, "INFO: storage: %s is unformatted, creating a "
+                 "filesystem\n", candidate->path);
           if (kickpi_k7_storage_format(candidate->path) == 0 &&
               mount(candidate->path, mountpoint, fstype, 0, NULL) == 0)
             {
@@ -538,10 +533,8 @@ static int kickpi_k7_storage_mount(FAR struct kickpi_k7_storage_media_s *media)
               goto mounted;
             }
 
-          syslog(LOG_WARNING,
-                 "WARNING: storage: could not create a "
-                 "filesystem on %s\n",
-                 candidate->path);
+          syslog(LOG_WARNING, "WARNING: storage: could not create a "
+                 "filesystem on %s\n", candidate->path);
         }
     }
 

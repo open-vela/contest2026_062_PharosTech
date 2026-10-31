@@ -449,8 +449,9 @@ static int ny_agent_tool_execute(const char *name, const char *input,
     "alarm.list"
   };
   static const char *const writes[] = {
-    "memory.create", "task.create",        "calendar.create", "timer.create",
-    "alarm.create",  "agent.mcp.out.call", "agent.tools.call"
+    "memory.create", "task.create",        "calendar.create",
+    "timer.create",  "alarm.create",       "agent.mcp.out.call",
+    "agent.tools.call"
   };
   static const char *const media_topics[] = { "music.play",   "music.pause",
                                               "music.resume", "music.stop",

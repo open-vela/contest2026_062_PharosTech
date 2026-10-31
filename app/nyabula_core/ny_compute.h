@@ -61,20 +61,20 @@
 
 /* Blob names resolve strictly under this directory. */
 
-#define NY_COMPUTE_BLOB_ROOT "/data/models"
+#define NY_COMPUTE_BLOB_ROOT   "/data/models"
 
-#define NY_COMPUTE_NAME_MAX  255
-#define NY_COMPUTE_ERROR_MAX 64
+#define NY_COMPUTE_NAME_MAX    255
+#define NY_COMPUTE_ERROR_MAX   64
 
 /* Bits of the capability mask the compute domain reports in HEALTH. */
 
-#define NY_COMPUTE_CAP_HEALTH (1U << 0)
-#define NY_COMPUTE_CAP_LLM    (1U << 1)
-#define NY_COMPUTE_CAP_BLOB   (1U << 2)
-#define NY_COMPUTE_CAP_CHAT   (1U << 3)
-#define NY_COMPUTE_CAP_ASR    (1U << 4)
-#define NY_COMPUTE_CAP_TTS    (1U << 5)
-#define NY_COMPUTE_CAP_KWS    (1U << 6)
+#define NY_COMPUTE_CAP_HEALTH  (1U << 0)
+#define NY_COMPUTE_CAP_LLM     (1U << 1)
+#define NY_COMPUTE_CAP_BLOB    (1U << 2)
+#define NY_COMPUTE_CAP_CHAT    (1U << 3)
+#define NY_COMPUTE_CAP_ASR     (1U << 4)
+#define NY_COMPUTE_CAP_TTS     (1U << 5)
+#define NY_COMPUTE_CAP_KWS     (1U << 6)
 
 /* ny_compute_chat() flags; the values are the wire's NYAMP_LLM_CHAT_*. */
 
@@ -123,10 +123,10 @@ struct ny_compute_status_s
   uint32_t generation;   /* Compute-domain generation, 0 when unknown.    */
   uint32_t capabilities; /* From the last HEALTH response.                */
 
-  bool blob_active;  /* A blob is open or being hashed.               */
-  bool blob_hashing; /* OPEN is still computing the digest.           */
+  bool blob_active;      /* A blob is open or being hashed.               */
+  bool blob_hashing;     /* OPEN is still computing the digest.           */
   char blob_name[NY_COMPUTE_NAME_MAX + 1];
-  uint64_t blob_offset; /* End of the last window served (or hashed).    */
+  uint64_t blob_offset;  /* End of the last window served (or hashed).    */
   uint64_t blob_size;
   uint32_t blob_bytes_per_sec;
 
@@ -148,7 +148,8 @@ struct ny_compute_status_s
  ****************************************************************************/
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
 /****************************************************************************

@@ -30,7 +30,10 @@ for tool in mkimage fdtget gzip python3; do
   fi
 done
 
-python3 "$script_dir/../validate_amp_layout.py" --config "$config" --dtb "$fdt" \
+python3 "$script_dir/../linux/camera_ownership.py" check-dtb "$fdt"
+
+python3 "$script_dir/../validate_amp_layout.py" --profile "${NYAMP_PROFILE:-minimal}" \
+  --config "$config" --dtb "$fdt" \
   --linux-image "$kernel" --nuttx-image "$openvela"
 
 if [[ $(od -An -tx1 -j56 -N4 "$kernel" | tr -d ' \n') != 41524d64 ]]; then

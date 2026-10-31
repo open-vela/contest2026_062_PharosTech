@@ -51,7 +51,7 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NYAMPCTL_BLOB_POLL_MS 1000
+#define NYAMPCTL_BLOB_POLL_MS    1000
 
 /* 200 round trips and 32 one-megabyte fills finish in well under this. */
 
@@ -59,15 +59,16 @@
 
 /* An 875 MB pull that also has to hash the file first. */
 
-#define NYAMPCTL_PULL_TIMEOUT_MS 900000
+#define NYAMPCTL_PULL_TIMEOUT_MS  900000
 
 /****************************************************************************
  * Private Function Prototypes
  ****************************************************************************/
 
 static int nyampctl_blob_run(int fd, uint16_t opcode, const uint8_t *body,
-                             size_t body_size, int timeout_ms, uint8_t *answer,
-                             size_t answer_capacity, size_t *answer_size);
+                             size_t body_size, int timeout_ms,
+                             uint8_t *answer, size_t answer_capacity,
+                             size_t *answer_size);
 
 /****************************************************************************
  * Private Functions
@@ -84,8 +85,9 @@ static int nyampctl_blob_run(int fd, uint16_t opcode, const uint8_t *body,
  ****************************************************************************/
 
 static int nyampctl_blob_run(int fd, uint16_t opcode, const uint8_t *body,
-                             size_t body_size, int timeout_ms, uint8_t *answer,
-                             size_t answer_capacity, size_t *answer_size)
+                             size_t body_size, int timeout_ms,
+                             uint8_t *answer, size_t answer_capacity,
+                             size_t *answer_size)
 {
   uint8_t wire[NYAMP_RPMSG_MTU];
   struct nyamp_header_s request;
@@ -166,8 +168,8 @@ static int nyampctl_blob_run(int fd, uint16_t opcode, const uint8_t *body,
 
       if (status != NYAMP_MODEL_OK)
         {
-          fprintf(stderr,
-                  "nyampctl: blob opcode 0x%x failed: status=%" PRId32 "\n",
+          fprintf(stderr, "nyampctl: blob opcode 0x%x failed: status=%" PRId32
+                          "\n",
                   opcode, status);
           return -EREMOTEIO;
         }
@@ -213,7 +215,8 @@ int nyampctl_blob_bench(int fd, uint32_t rounds, uint32_t window_bytes)
       return ret;
     }
 
-  if (nyamp_blob_bench_report_decode(&report, answer, answer_size) != NYAMP_OK)
+  if (nyamp_blob_bench_report_decode(&report, answer, answer_size) !=
+      NYAMP_OK)
     {
       return -EPROTO;
     }
@@ -295,8 +298,10 @@ int nyampctl_blob_pull(int fd, const char *name)
 int nyampctl_status(void)
 {
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
-  static const char *const states[] = { "unloaded", "provisioning", "loading",
-                                        "ready",    "busy",         "error" };
+  static const char *const states[] =
+  {
+    "unloaded", "provisioning", "loading", "ready", "busy", "error"
+  };
 
   struct ny_compute_status_s status;
   int ret = ny_compute_status(&status);

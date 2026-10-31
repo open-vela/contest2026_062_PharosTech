@@ -638,7 +638,8 @@ int ny_product_weather_tick(void)
   if (ret < 0)
     return ret;
   ret = ny_weather_load();
-  if (!ret && !g_weather_running && ny_product_clock_valid() &&
+  if (!ret && !g_weather_running &&
+      ny_product_clock_valid() &&
       ny_product_time_ms(true) >= g_weather_next &&
       cJSON_IsTrue(
           cJSON_GetObjectItemCaseSensitive(g_weather_config, "enabled")))

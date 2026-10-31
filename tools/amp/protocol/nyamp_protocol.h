@@ -129,11 +129,11 @@ extern "C" {
  * CANCEL works as for GENERATE: opcode CANCEL with the CHAT's request_id.
  */
 
-#define NYAMP_LLM_CHAT                 5U
-#define NYAMP_LLM_EVENT_RESULT         0x82U
+#define NYAMP_LLM_CHAT               5U
+#define NYAMP_LLM_EVENT_RESULT       0x82U
 
-#define NYAMP_LLM_CHAT_MAX_BODY        65536U
-#define NYAMP_LLM_RESULT_MAX_BODY      65536U
+#define NYAMP_LLM_CHAT_MAX_BODY      65536U
+#define NYAMP_LLM_RESULT_MAX_BODY    65536U
 
 #define NYAMP_LLM_CHAT_GUARD_UNTRUSTED (1U << 0)
 #define NYAMP_LLM_CHAT_STREAM_TOKENS   (1U << 1)
@@ -195,10 +195,10 @@ extern "C" {
 enum nyamp_format_e
 {
   NYAMP_FORMAT_NONE = 0,
-  NYAMP_FORMAT_F32 = 1,   /* Normalized mono PCM, [-1, 1].          */
-  NYAMP_FORMAT_S16 = 2,   /* Signed 16-bit mono PCM.                */
-  NYAMP_FORMAT_I64 = 3,   /* Phoneme and tone id vectors.           */
-  NYAMP_FORMAT_UTF8 = 4,  /* Text.                                  */
+  NYAMP_FORMAT_F32 = 1,  /* Normalized mono PCM, [-1, 1].          */
+  NYAMP_FORMAT_S16 = 2,  /* Signed 16-bit mono PCM.                */
+  NYAMP_FORMAT_I64 = 3,  /* Phoneme and tone id vectors.           */
+  NYAMP_FORMAT_UTF8 = 4, /* Text.                                  */
   NYAMP_FORMAT_BYTES = 5, /* Opaque file bytes (blob windows).     */
 };
 
@@ -294,9 +294,9 @@ struct nyamp_buffer_s
  * is always a RESYNC, and the final text is always sent as one.
  */
 #define NYAMP_ASR_PARTIAL_RESYNC   (1U << 0)
-#define NYAMP_ASR_PARTIAL_ENDPOINT (1U << 1) /* Decoder saw an endpoint. */
+#define NYAMP_ASR_PARTIAL_ENDPOINT (1U << 1) /* Decoder saw an endpoint.    */
 #define NYAMP_ASR_PARTIAL_FINAL    (1U << 2) /* Last text frame of request. */
-#define NYAMP_ASR_PARTIAL_ALL                              \
+#define NYAMP_ASR_PARTIAL_ALL                               \
   (NYAMP_ASR_PARTIAL_RESYNC | NYAMP_ASR_PARTIAL_ENDPOINT | \
    NYAMP_ASR_PARTIAL_FINAL)
 
@@ -413,14 +413,14 @@ struct nyamp_buffer_s
  * layout) is sent once when the stream ends.
  */
 
-#define NYAMP_KWS_LOAD               1U
-#define NYAMP_KWS_UNLOAD             2U
-#define NYAMP_KWS_BEGIN              3U
-#define NYAMP_KWS_PUSH               4U
-#define NYAMP_KWS_END                6U
-#define NYAMP_KWS_LIST               7U
-#define NYAMP_KWS_EVENT_DETECTED     0x80U
-#define NYAMP_KWS_EVENT_FINISH       0x81U
+#define NYAMP_KWS_LOAD           1U
+#define NYAMP_KWS_UNLOAD         2U
+#define NYAMP_KWS_BEGIN          3U
+#define NYAMP_KWS_PUSH           4U
+#define NYAMP_KWS_END            6U
+#define NYAMP_KWS_LIST           7U
+#define NYAMP_KWS_EVENT_DETECTED 0x80U
+#define NYAMP_KWS_EVENT_FINISH   0x81U
 
 #define NYAMP_KWS_RING_SECONDS       10U
 #define NYAMP_KWS_WINDOW_SAMPLES_MIN 1600U
@@ -446,7 +446,8 @@ struct nyamp_buffer_s
  * start_sample, end_sample, trigger_sample; then the label.
  */
 #define NYAMP_KWS_DETECTED_HEADER_SIZE 40U
-#define NYAMP_KWS_MAX_LABEL            (NYAMP_INLINE_MAX - NYAMP_KWS_DETECTED_HEADER_SIZE)
+#define NYAMP_KWS_MAX_LABEL \
+  (NYAMP_INLINE_MAX - NYAMP_KWS_DETECTED_HEADER_SIZE)
 #define NYAMP_KWS_DETECTED_HAS_OFFSETS (1U << 0)
 #define NYAMP_KWS_DETECTED_HAS_SCORE   (1U << 1)
 #define NYAMP_KWS_KEYWORD_UNKNOWN      0xffffU
@@ -683,9 +684,9 @@ struct nyamp_llm_chat_finish_s
 
 struct nyamp_tts_text_s
 {
-  uint32_t total;  /* Bytes in the whole text.                 */
-  uint32_t offset; /* Position of this chunk within it.        */
-  uint32_t length; /* Bytes carried by this chunk.             */
+  uint32_t total;          /* Bytes in the whole text.                 */
+  uint32_t offset;         /* Position of this chunk within it.        */
+  uint32_t length;         /* Bytes carried by this chunk.             */
   uint32_t speaker_id;
   float speed;             /* 1.0 = the model's own pace.              */
   uint32_t window_samples; /* Zero selects the service default.        */
@@ -983,7 +984,8 @@ int nyamp_kws_labels_next(const char **label, uint16_t *label_length,
  */
 
 int nyamp_status_encode(uint8_t *payload, size_t payload_capacity,
-                        int32_t status, uint8_t **body, size_t *body_capacity);
+                        int32_t status, uint8_t **body,
+                        size_t *body_capacity);
 int nyamp_status_decode(int32_t *status, const uint8_t **body,
                         size_t *body_size, const uint8_t *payload,
                         size_t payload_size);
@@ -1074,7 +1076,8 @@ int nyamp_blob_pull_report_encode(
     uint8_t *payload, size_t payload_capacity, size_t *payload_size,
     const struct nyamp_blob_pull_report_s *report);
 int nyamp_blob_pull_report_decode(struct nyamp_blob_pull_report_s *report,
-                                  const uint8_t *payload, size_t payload_size);
+                                  const uint8_t *payload,
+                                  size_t payload_size);
 
 int nyamp_blob_progress_encode(uint8_t *payload, size_t payload_capacity,
                                size_t *payload_size,

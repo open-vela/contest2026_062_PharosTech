@@ -33,8 +33,8 @@
  * tools/amp/test_shmem_layout.py compares the two and fails on drift.
  */
 
-#define NYAMP_SHMEM_MAGIC             0x414d594eU /* "NYMA" in little endian */
-#define NYAMP_SHMEM_VERSION           1U
+#define NYAMP_SHMEM_MAGIC   0x414d594eU /* "NYMA" in little endian */
+#define NYAMP_SHMEM_VERSION 1U
 
 #define NYAMP_ARENA_MAGIC_OFFSET      0U
 #define NYAMP_ARENA_VERSION_OFFSET    4U

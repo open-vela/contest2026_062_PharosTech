@@ -1,0 +1,4 @@
+interface:
+  display_name: "嵌入式模型独立交付"
+  short_description: "将模型、运行库与固件分开版本化，制作和验证带来源/兼容性/哈希的模型包，并处理断点上传、跨域按需拉取及缓存复"
+  default_prompt: "使用 $embedded-model-delivery，根据现有版本和证据完成本次任务，给出可复现结果与未验证边界。"

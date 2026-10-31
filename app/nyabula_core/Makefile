@@ -76,6 +76,7 @@ CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/netutils/cjson/cJSON
 endif
 ifeq ($(CONFIG_NYABULA_CORE_WEB),y)
 CSRCS += ny_web.c ny_web_auth.c ny_web_http.c ny_websocket.c
+CSRCS += ny_web_mirror.c
 endif
 
 ifeq ($(CONFIG_NYABULA_CORE_PRODUCT),y)
@@ -88,13 +89,6 @@ CSRCS += ny_product_audio.c
 endif
 ifeq ($(CONFIG_NYABULA_CORE_LIGHT),y)
 CSRCS += ny_product_light.c ny_light_math.c
-endif
-ifeq ($(CONFIG_NYABULA_CORE_BT),y)
-# The Bluetooth host exports no include path of its own; these are the ones
-# its public headers need.  The SBC library adds its own through Make.defs.
-CSRCS += ny_product_bt.c ny_product_bt_audio.c ny_audio_stream.c ny_pcm.c ny_sbc.c
-CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/external/zblue/zblue/port/include
-CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/external/zblue/zblue/port/include/zephyr
 endif
 ifeq ($(CONFIG_NYABULA_CORE_NETWORK),y)
 CSRCS += ny_product_network.c

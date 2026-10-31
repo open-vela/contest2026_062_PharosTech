@@ -41,13 +41,13 @@
  * slot.  A transfer that fails here costs a temporary file and nothing else.
  */
 
-#define NY_WEB_OTA_FILE "/data/tmp/ota.bin"
+#define NY_WEB_OTA_FILE       "/data/tmp/ota.bin"
 
 /* The volume that file lives on.  A partition that backs it can never be
  * written from it.
  */
 
-#define NY_WEB_OTA_VOLUME "/data"
+#define NY_WEB_OTA_VOLUME     "/data"
 
 /* What an upload and an apply mean when they name no target: what they
  * meant before there was more than one.
@@ -55,7 +55,7 @@
 
 #define NY_WEB_OTA_TARGET_DEFAULT "nuttx"
 
-#define NY_WEB_OTA_SHA256_HEX     64
+#define NY_WEB_OTA_SHA256_HEX 64
 
 /****************************************************************************
  * Public Types
@@ -65,10 +65,10 @@
 
 enum ny_web_ota_kind_e
 {
-  NY_WEB_OTA_KIND_SLOT = 0,  /* staged into the inactive A/B slot, with its
-                              * bootctrl record */
-  NY_WEB_OTA_KIND_NBOOT,     /* the boot loader, in place */
-  NY_WEB_OTA_KIND_PARTITION, /* raw, no bootctrl record */
+  NY_WEB_OTA_KIND_SLOT = 0,   /* staged into the inactive A/B slot, with its
+                               * bootctrl record */
+  NY_WEB_OTA_KIND_NBOOT,      /* the boot loader, in place */
+  NY_WEB_OTA_KIND_PARTITION,  /* raw, no bootctrl record */
 };
 
 /* The cheap test that tells the right kind of file from a wrong one. */
@@ -76,10 +76,10 @@ enum ny_web_ota_kind_e
 enum ny_web_ota_magic_e
 {
   NY_WEB_OTA_MAGIC_NONE = 0,
-  NY_WEB_OTA_MAGIC_ARM64,    /* "ARM\x64" at offset 56 */
-  NY_WEB_OTA_MAGIC_FIT,      /* d00dfeed at offset 0 */
-  NY_WEB_OTA_MAGIC_BOOTCTRL, /* "K7ABCTRL" at offset 0 */
-  NY_WEB_OTA_MAGIC_FAT,      /* 55 aa at offset 510 */
+  NY_WEB_OTA_MAGIC_ARM64,     /* "ARM\x64" at offset 56 */
+  NY_WEB_OTA_MAGIC_FIT,       /* d00dfeed at offset 0 */
+  NY_WEB_OTA_MAGIC_BOOTCTRL,  /* "K7ABCTRL" at offset 0 */
+  NY_WEB_OTA_MAGIC_FAT,       /* 55 aa at offset 510 */
 };
 
 /* One thing the panel can update.  The table is the device's, and the panel
@@ -89,19 +89,19 @@ enum ny_web_ota_magic_e
 
 struct ny_web_ota_target_s
 {
-  const char *id;          /* what the client names it by */
-  const char *label;       /* for people, shown by the panel */
-  const char *description; /* one paragraph, shown before the upload */
+  const char *id;             /* what the client names it by */
+  const char *label;          /* for people, shown by the panel */
+  const char *description;    /* one paragraph, shown before the upload */
   enum ny_web_ota_kind_e kind;
   enum ny_web_ota_magic_e magic;
-  const char *domain;       /* bootctrl domain of a slot target, or NULL */
-  const char *partition;    /* partition that is written, or whose size
-                             * bounds the image */
-  const char *const *nodes; /* image nodes a FIT must have, or NULL */
-  const char *mount;        /* where its filesystem is mounted, or NULL */
-  bool advanced;            /* can leave the device unbootable */
-  bool blocked;             /* listed so the panel can say why, never
-                             * written */
+  const char *domain;         /* bootctrl domain of a slot target, or NULL */
+  const char *partition;      /* partition that is written, or whose size
+                               * bounds the image */
+  const char *const *nodes;   /* image nodes a FIT must have, or NULL */
+  const char *mount;          /* where its filesystem is mounted, or NULL */
+  bool advanced;              /* can leave the device unbootable */
+  bool blocked;               /* listed so the panel can say why, never
+                               * written */
 };
 
 /****************************************************************************
@@ -143,7 +143,8 @@ const struct ny_web_ota_target_s *ny_web_ota_target_find(const char *id,
  * is unknown, which is never an invitation to write.
  */
 
-uint64_t ny_web_ota_target_capacity(const struct ny_web_ota_target_s *target);
+uint64_t ny_web_ota_target_capacity(
+    const struct ny_web_ota_target_s *target);
 
 /* What the staging volume can hold right now, the safety margin taken off.
  * An image has to fit here before it can fit anywhere else.

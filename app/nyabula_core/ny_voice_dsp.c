@@ -30,7 +30,7 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NY_VOICE_PI 3.14159265358979323846
+#define NY_VOICE_PI            3.14159265358979323846
 
 /* The resampler's pass band ends here; see NY_VOICE_RESAMPLE_TAPS. */
 
@@ -67,44 +67,35 @@ static bool ny_voice_is_dropped(const char *text, size_t length);
 
 /* A piece ends after one of these ... */
 
-static const char *const g_voice_terminators[] = {
+static const char *const g_voice_terminators[] =
+{
   "\xe3\x80\x82", /* Ideographic full stop */
   "\xef\xbc\x81", /* Fullwidth exclamation mark */
   "\xef\xbc\x9f", /* Fullwidth question mark */
   "\xef\xbc\x9b", /* Fullwidth semicolon */
   "\xe2\x80\xa6", /* Horizontal ellipsis */
-  "!",
-  "?",
-  ";",
-  "\n",
-  NULL
+  "!", "?", ";", "\n", NULL
 };
 
 /* ... and an overlong one is cut after one of these. */
 
-static const char *const g_voice_breaks[] = {
+static const char *const g_voice_breaks[] =
+{
   "\xef\xbc\x8c", /* Fullwidth comma */
   "\xe3\x80\x81", /* Ideographic comma */
   "\xef\xbc\x9a", /* Fullwidth colon */
-  ",",
-  ":",
-  " ",
-  NULL
+  ",", ":", " ", NULL
 };
 
 /* Punctuation that alone is not worth a synthesis request. */
 
-static const char *const g_voice_silent[] = {
-  "\xe2\x80\x9c",
-  "\xe2\x80\x9d", /* Double quotation marks */
-  "\xe2\x80\x98",
-  "\xe2\x80\x99", /* Single quotation marks */
-  "\xef\xbc\x88",
-  "\xef\xbc\x89", /* Fullwidth parentheses */
-  "\xe3\x80\x8a",
-  "\xe3\x80\x8b", /* Double angle brackets */
-  "\xe2\x80\x94",
-  "\xef\xbd\x9e", /* Em dash, fullwidth tilde */
+static const char *const g_voice_silent[] =
+{
+  "\xe2\x80\x9c", "\xe2\x80\x9d", /* Double quotation marks */
+  "\xe2\x80\x98", "\xe2\x80\x99", /* Single quotation marks */
+  "\xef\xbc\x88", "\xef\xbc\x89", /* Fullwidth parentheses */
+  "\xe3\x80\x8a", "\xe3\x80\x8b", /* Double angle brackets */
+  "\xe2\x80\x94", "\xef\xbd\x9e", /* Em dash, fullwidth tilde */
   NULL
 };
 
@@ -210,11 +201,10 @@ static bool ny_voice_is_dropped(const char *text, size_t length)
    * them, a speaker should not read them.
    */
 
-  return length == 1 &&
-         (text[0] == '*' || text[0] == '#' || text[0] == '`' ||
-          text[0] == '\r' || text[0] == '\t' ||
-          (unsigned char)text[0] < 0x20) &&
-         text[0] != '\n';
+  return length == 1 && (text[0] == '*' || text[0] == '#' ||
+                         text[0] == '`' || text[0] == '\r' ||
+                         text[0] == '\t' || (unsigned char)text[0] < 0x20)
+         && text[0] != '\n';
 }
 
 /****************************************************************************
@@ -359,8 +349,8 @@ int ny_voice_wav_parse(const uint8_t *prefix, size_t size, uint32_t *rate,
               return -1;
             }
 
-          *channels =
-              (uint16_t)(prefix[position + 10] | prefix[position + 11] << 8);
+          *channels = (uint16_t)(prefix[position + 10] |
+                                 prefix[position + 11] << 8);
           *rate = ny_voice_le32(prefix + position + 12);
           format = *channels >= 1 && *channels <= 2 && *rate != 0;
           if (!format)
@@ -435,8 +425,9 @@ uint64_t ny_voice_ring_oldest(const struct ny_voice_ring_s *ring)
   return ring->total > ring->capacity ? ring->total - ring->capacity : 0;
 }
 
-size_t ny_voice_ring_read(const struct ny_voice_ring_s *ring, uint64_t *cursor,
-                          int16_t *out, size_t count, bool *gap)
+size_t ny_voice_ring_read(const struct ny_voice_ring_s *ring,
+                          uint64_t *cursor, int16_t *out, size_t count,
+                          bool *gap)
 {
   uint64_t oldest = ny_voice_ring_oldest(ring);
   size_t at;
@@ -516,9 +507,9 @@ bool ny_voice_gate_feed(struct ny_voice_gate_s *gate, uint32_t rms,
     }
   else
     {
-      gate->floor_x16 +=
-          (level - gate->floor_x16) >>
-          (rms >= threshold ? NY_VOICE_FLOOR_RISE_LOUD : NY_VOICE_FLOOR_RISE);
+      gate->floor_x16 += (level - gate->floor_x16) >>
+                         (rms >= threshold ? NY_VOICE_FLOOR_RISE_LOUD
+                                           : NY_VOICE_FLOOR_RISE);
     }
 
   gate->loud = rms >= threshold;
@@ -547,7 +538,8 @@ uint64_t ny_voice_attach_sample(const struct ny_voice_attach_s *attach,
    * the whole command.
    */
 
-  trusted = attach->has_offsets && attach->start_sample < attach->end_sample &&
+  trusted = attach->has_offsets &&
+            attach->start_sample < attach->end_sample &&
             attach->end_sample <= attach->trigger_sample;
   if (trusted)
     {
@@ -622,10 +614,12 @@ void ny_voice_resample_init(struct ny_voice_resample_s *state)
                       NY_VOICE_RESAMPLE_TAPS / 2.0 - 1.0 - (double)tap;
           double angle = 2.0 * NY_VOICE_PI * cutoff * at;
           double sinc = fabs(at) < 1e-9 ? 1.0 : sin(angle) / angle;
-          double window = 0.5 * (1.0 + cos(2.0 * NY_VOICE_PI * at /
-                                           (double)NY_VOICE_RESAMPLE_TAPS));
-          double value =
-              fabs(at) >= NY_VOICE_RESAMPLE_TAPS / 2.0 ? 0.0 : sinc * window;
+          double window =
+              0.5 * (1.0 + cos(2.0 * NY_VOICE_PI * at /
+                               (double)NY_VOICE_RESAMPLE_TAPS));
+          double value = fabs(at) >= NY_VOICE_RESAMPLE_TAPS / 2.0
+                             ? 0.0
+                             : sinc * window;
 
           state->taps[phase][tap] = (float)value;
           sum += value;
@@ -652,8 +646,8 @@ size_t ny_voice_resample(struct ny_voice_resample_s *state, const float *in,
 
   while (count > 0)
     {
-      size_t take =
-          count < NY_VOICE_RESAMPLE_BLOCK ? count : NY_VOICE_RESAMPLE_BLOCK;
+      size_t take = count < NY_VOICE_RESAMPLE_BLOCK ? count
+                                                    : NY_VOICE_RESAMPLE_BLOCK;
       size_t length = NY_VOICE_RESAMPLE_TAPS + take;
 
       /* block[b] is the input sample TAPS - b positions before the first
@@ -663,7 +657,7 @@ size_t ny_voice_resample(struct ny_voice_resample_s *state, const float *in,
       memcpy(block, state->history, sizeof(state->history));
       memcpy(block + NY_VOICE_RESAMPLE_TAPS, in, take * sizeof(float));
 
-      for (;;)
+      for (; ; )
         {
           size_t centre = state->phase / NY_VOICE_RESAMPLE_UP;
           const float *taps = state->taps[state->phase % NY_VOICE_RESAMPLE_UP];
@@ -715,7 +709,7 @@ size_t ny_voice_sentence_next(const char *text, size_t *position, char *out,
       return 0;
     }
 
-  for (;;)
+  for (; ; )
     {
       size_t length = 0;
       size_t break_in = 0;  /* Input position just past the last break. */
@@ -786,10 +780,9 @@ size_t ny_voice_sentence_next(const char *text, size_t *position, char *out,
               break_in = at;
               break_out = length;
             }
-          else if (!ny_voice_is_mark(text + at - bytes, bytes,
-                                     g_voice_silent) &&
-                   !(bytes == 1 &&
-                     strchr(".-\"'()[]<>/\\|~=+", text[at - 1]) != NULL))
+          else if (!ny_voice_is_mark(text + at - bytes, bytes, g_voice_silent)
+                   && !(bytes == 1 && strchr(".-\"'()[]<>/\\|~=+", text[at - 1])
+                        != NULL))
             {
               speakable = true;
             }

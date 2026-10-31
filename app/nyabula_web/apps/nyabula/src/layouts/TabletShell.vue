@@ -7,6 +7,7 @@ import { StatusPill, ThemeSwitcher, UiIcon, NyabulaLogo } from '@nyabula/ui';
 import { useShell } from '../composables/useShell';
 import type { useFormFactor } from '../composables/useFormFactor';
 import ConnectionBanner from '../components/ConnectionBanner.vue';
+import PanelUpdateBanner from '../components/PanelUpdateBanner.vue';
 import DeviceSwitcher from '../components/DeviceSwitcher.vue';
 
 const shell = useShell();
@@ -46,6 +47,7 @@ const portrait = computed(() => ff.orientation.value === 'portrait');
         <RouterLink v-if="portrait" class="bar-icon" to="/settings" title="客户端设置"><UiIcon name="computer" :size="22" /></RouterLink>
       </header>
       <ConnectionBanner />
+      <PanelUpdateBanner />
       <main class="main">
         <RouterView v-slot="{ Component }">
           <Transition name="page" mode="out-in">

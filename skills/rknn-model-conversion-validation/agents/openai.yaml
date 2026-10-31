@@ -1,0 +1,4 @@
+interface:
+  display_name: "RKNN 转换与数值验证"
+  short_description: "把ONNX模型或可拆分子图转换到RKNN，验证预处理、布局、动态长度、量化/FP16和CPU/NPU数值一致"
+  default_prompt: "使用 $rknn-model-conversion-validation，根据现有版本和证据完成本次任务，给出可复现结果与未验证边界。"

@@ -44,7 +44,7 @@
  */
 
 #define NYABULA_WS_COALESCE_MAX 1024
-#define NYABULA_WS_GUID         "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+#define NYABULA_WS_GUID       "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 static int nyabula_eye_ws_io(int fd, void *data, size_t length, bool writing,
                              uint64_t deadline);

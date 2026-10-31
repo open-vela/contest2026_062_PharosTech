@@ -1,5 +1,7 @@
 # 板载 LLM、ASR、TTS 与摄像头对接说明（Draft）
 
+> 当前计算服务与摄像头所有权以 [COMPUTE_CURRENT.md](COMPUTE_CURRENT.md) 为准。下文保留当时的实验记录；Linux 摄像头服务不再属于本次交付。
+
 更新：2026-09-14。面向 Nyabula Core 与 Linux 计算域的接入开发。
 本文区分团队仓已实现代码、隔离镜像板测能力、拟议接口；接口名称不是已发布 ABI。
 本 Draft 不另建 Agent，不实现 Core 的产品编排，也不宣称 Core 跨OS业务接口已经交付。

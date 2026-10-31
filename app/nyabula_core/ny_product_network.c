@@ -14,7 +14,10 @@
  *   network.status            any role, current state + interfaces + QR text
  *   network.provision.start   {ssid?, psk?, channel?} -> start SoftAP
  *   network.provision.stop    tear down SoftAP, back to IDLE
- *   network.wifi.scan         STA scan (list of {ssid, rssi, freq, encode})
+ *   network.wifi.scan         STA scan (list of {ssid, rssi, freq, encode});
+ *                             {"background": true} starts it and answers at
+ *                             once, because the scan itself can drop the link
+ *   network.wifi.scan.result  {scanning, seq, error, ageSeconds, networks}
  *   network.name.set          {"name": "..."}; "" goes back to the default
  *   network.wifi.set          {ssid, psk} -> persist + connect as station
  *   network.wifi.forget       clear stored credentials
@@ -26,8 +29,8 @@
  * WEXT API in apps/include/wireless/wapi.h:
  *   AP : wapi mode wlan0 3; wapi freq wlan0 <ch> 1; wapi psk wlan0 <pw> 3 3;
  *        wapi essid wlan0 <ssid> 1; ifconfig wlan0 192.168.4.1; dhcpd
- *   STA: wapi mode wlan0 2; wapi psk wlan0 <pw> 3 3; wapi essid wlan0 <ssid>
- *1; ifconfig wlan0 dhcp
+ *   STA: wapi mode wlan0 2; wapi psk wlan0 <pw> 3 3; wapi essid wlan0 <ssid> 1;
+ *        ifconfig wlan0 dhcp
  ****************************************************************************/
 
 #include "ny_product.h"
@@ -39,34 +42,37 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
 #if defined(CONFIG_NYABULA_CORE_EYE) && defined(CONFIG_NYABULA_CORE_WEB)
-#include <nyabula_eye_engine.h>
-#include <nyabula_eye_service.h>
+#  include <nyabula_eye_engine.h>
+#  include <nyabula_eye_service.h>
 #endif
 
 #ifdef CONFIG_WIRELESS_WAPI
-#include <wireless/wapi.h>
+#  include <wireless/wapi.h>
 #endif
 #ifdef CONFIG_NETUTILS_DHCPD
-#include <netutils/dhcpd.h>
+#  include <netutils/dhcpd.h>
 #endif
 #ifdef CONFIG_NETUTILS_DHCPC
-#include <netutils/dhcpc.h>
+#  include <netutils/dhcpc.h>
 #endif
 #ifdef CONFIG_NETUTILS_NETLIB
-#include <netutils/netlib.h>
+#  include <netutils/netlib.h>
 #endif
 
 /****************************************************************************
@@ -74,7 +80,7 @@
  ****************************************************************************/
 
 #ifndef CONFIG_NYABULA_CORE_NETWORK_IFNAME
-#define CONFIG_NYABULA_CORE_NETWORK_IFNAME "wlan0"
+#  define CONFIG_NYABULA_CORE_NETWORK_IFNAME "wlan0"
 #endif
 
 #define NY_NET_IFNAME        CONFIG_NYABULA_CORE_NETWORK_IFNAME
@@ -89,7 +95,9 @@
 #define NY_NET_STA_RETRIES   3
 #define NY_NET_STA_RETRY_S   5
 #define NY_NET_RSSI_PERIOD_S 10
-#define NY_NET_LOAD_RETRIES  150 /* worker ticks, about 15 s */
+#define NY_NET_LINK_MISSES   2  /* polls without carrier before rejoining */
+#define NY_NET_LINK_RECHECK_S 3 /* the second look comes sooner */
+#define NY_NET_LOAD_RETRIES  150  /* worker ticks, about 15 s */
 #define NY_NET_SSID_MAX      32
 #define NY_NET_PSK_MAX       64
 #define NY_NET_SCAN_MAX      24
@@ -126,24 +134,25 @@ enum ny_net_state_e
 struct ny_net_s
 {
   enum ny_net_state_e state;
-  char name[NY_NET_SSID_MAX + 1]; /* what the owner calls it; "" = default */
+  char name[NY_NET_SSID_MAX + 1];  /* what the owner calls it; "" = default */
   char ap_ssid[NY_NET_SSID_MAX + 1];
   char ap_psk[NY_NET_PSK_MAX + 1];
-  int ap_channel;
+  int  ap_channel;
   char sta_ssid[NY_NET_SSID_MAX + 1];
   char sta_psk[NY_NET_PSK_MAX + 1];
   char sta_ipv4[INET_ADDRSTRLEN];
   time_t sta_started;
-  time_t sta_retry_at; /* no station attempt before this */
-  time_t rejoin_at;    /* when to try the stored network again; 0 = never */
-  time_t rssi_at;      /* when the signal level is read next */
-  int sta_rssi;        /* dBm, 0 = not known */
+  time_t sta_retry_at;  /* no station attempt before this */
+  time_t rejoin_at;     /* when to try the stored network again; 0 = never */
+  time_t rssi_at;       /* when the signal level is read next */
+  int  sta_rssi;        /* dBm, 0 = not known */
+  int  link_misses;     /* consecutive polls that found the carrier down */
   unsigned int rejoin_step;
-  int sta_attempt;
-  int last_error;
-  bool pending_sta;  /* wifi.set arrived, worker must (re)connect */
-  bool pending_ap;   /* provision.start arrived, worker must bring AP up */
-  bool pending_stop; /* provision.stop arrived */
+  int  sta_attempt;
+  int  last_error;
+  bool pending_sta;   /* wifi.set arrived, worker must (re)connect */
+  bool pending_ap;    /* provision.start arrived, worker must bring AP up */
+  bool pending_stop;  /* provision.stop arrived */
   uint64_t revision;
 };
 
@@ -157,9 +166,10 @@ static bool g_net_loaded;
 static bool g_net_boot_decided;
 static int g_net_load_attempts;
 
-static const char *g_net_state_names[] = { "idle", "ap_provision",
-                                           "sta_connecting", "sta_online",
-                                           "sta_failed" };
+static const char *g_net_state_names[] =
+{
+  "idle", "ap_provision", "sta_connecting", "sta_online", "sta_failed"
+};
 
 /****************************************************************************
  * Private Functions
@@ -286,8 +296,8 @@ static void ny_net_load(void)
    * and only after a bounded wait settle for what can be had.
    */
 
-  int ret =
-      ny_product_store_read(NY_NET_STORE_DOMAIN, &value, &g_net.revision);
+  int ret = ny_product_store_read(NY_NET_STORE_DOMAIN, &value,
+                                  &g_net.revision);
   if (ret < 0 && g_net_load_attempts++ < NY_NET_LOAD_RETRIES)
     return;
   g_net_loaded = true;
@@ -307,7 +317,7 @@ static void ny_net_load(void)
   cJSON *automatic = cJSON_GetObjectItemCaseSensitive(value, "auto");
   if (g_net.sta_ssid[0] != '\0' &&
       (automatic == NULL || cJSON_IsTrue(automatic)))
-    g_net.pending_sta = true; /* auto-connect on boot */
+    g_net.pending_sta = true;   /* auto-connect on boot */
   cJSON_Delete(value);
 }
 
@@ -376,19 +386,22 @@ static int ny_net_apply_security(int sock, const char *psk)
 {
   /* Mirrors `wapi psk wlan0 <pw> 3 3`: CCMP + WPA2 */
 
-  int ret = wpa_driver_wext_set_key_ext(sock, NY_NET_IFNAME, WPA_ALG_CCMP, psk,
-                                        strlen(psk));
+  int ret = wpa_driver_wext_set_key_ext(sock, NY_NET_IFNAME, WPA_ALG_CCMP,
+                                        psk, strlen(psk));
   if (ret < 0)
     return ret;
-  ret = wpa_driver_wext_set_auth_param(
-      sock, NY_NET_IFNAME, IW_AUTH_WPA_VERSION, IW_AUTH_WPA_VERSION_WPA2);
+  ret = wpa_driver_wext_set_auth_param(sock, NY_NET_IFNAME,
+                                       IW_AUTH_WPA_VERSION,
+                                       IW_AUTH_WPA_VERSION_WPA2);
   if (ret < 0)
     return ret;
-  ret = wpa_driver_wext_set_auth_param(
-      sock, NY_NET_IFNAME, IW_AUTH_CIPHER_PAIRWISE, IW_AUTH_CIPHER_CCMP);
+  ret = wpa_driver_wext_set_auth_param(sock, NY_NET_IFNAME,
+                                       IW_AUTH_CIPHER_PAIRWISE,
+                                       IW_AUTH_CIPHER_CCMP);
   if (ret < 0)
     return ret;
-  return wpa_driver_wext_set_auth_param(sock, NY_NET_IFNAME, IW_AUTH_KEY_MGMT,
+  return wpa_driver_wext_set_auth_param(sock, NY_NET_IFNAME,
+                                        IW_AUTH_KEY_MGMT,
                                         IW_AUTH_KEY_MGMT_PSK);
 }
 #endif
@@ -416,11 +429,11 @@ static int ny_net_hw_ap_start(const char *ssid, const char *psk, int channel)
         ret = wapi_set_netmask(sock, NY_NET_IFNAME, &addr);
     }
   close(sock);
-#ifdef CONFIG_NETUTILS_NETLIB
+#  ifdef CONFIG_NETUTILS_NETLIB
   if (ret == 0)
     ret = netlib_ifup(NY_NET_IFNAME);
-#endif
-#ifdef CONFIG_NETUTILS_DHCPD
+#  endif
+#  ifdef CONFIG_NETUTILS_DHCPD
   if (ret == 0)
     {
       struct in_addr addr;
@@ -440,12 +453,10 @@ static int ny_net_hw_ap_start(const char *ssid, const char *psk, int channel)
       dhcpd_set_netmask(ntohl(addr.s_addr));
       ret = dhcpd_start(NY_NET_IFNAME);
     }
-#endif
+#  endif
   return ret;
 #else
-  (void)ssid;
-  (void)psk;
-  (void)channel;
+  (void)ssid; (void)psk; (void)channel;
   return -ENOSYS;
 #endif
 }
@@ -481,14 +492,13 @@ static int ny_net_hw_sta_connect(const char *ssid, const char *psk)
   if (ret == 0)
     ret = wapi_set_essid(sock, NY_NET_IFNAME, ssid, WAPI_ESSID_ON);
   close(sock);
-#ifdef CONFIG_NETUTILS_NETLIB
+#  ifdef CONFIG_NETUTILS_NETLIB
   if (ret == 0)
     ret = netlib_ifup(NY_NET_IFNAME);
-#endif
+#  endif
   return ret;
 #else
-  (void)ssid;
-  (void)psk;
+  (void)ssid; (void)psk;
   return -ENOSYS;
 #endif
 }
@@ -611,6 +621,99 @@ static cJSON *ny_net_hw_scan(int *error)
   return list;
 }
 
+/* A scan that outlives the connection it was asked over.
+ *
+ * The radio has one receiver.  While it listens on the other channels the
+ * access point is silent on its own, the phone that asked for the scan
+ * loses the beacons and drops the link, and the answer -- which the panel
+ * used to wait for on that very link -- has nowhere to go.  So the scan runs
+ * on a thread of its own and its result is kept: the panel starts it, is
+ * told at once that it is running, and collects the list when its link is
+ * back.  `seq` tells a new list from the one it already has.
+ */
+
+static mutex_t g_scan_lock = NXMUTEX_INITIALIZER;
+static cJSON *g_scan_list;     /* The last list, owned here. */
+static int g_scan_error;
+static uint32_t g_scan_seq;    /* Completed scans. */
+static time_t g_scan_at;
+static bool g_scan_running;
+
+static void ny_net_scan_keep(cJSON *list, int error)
+{
+  nxmutex_lock(&g_scan_lock);
+  cJSON_Delete(g_scan_list);
+  g_scan_list = list;
+  g_scan_error = error;
+  g_scan_at = time(NULL);
+  g_scan_seq++;
+  g_scan_running = false;
+  nxmutex_unlock(&g_scan_lock);
+}
+
+static void *ny_net_scan_thread(void *arg)
+{
+  int error = 0;
+  cJSON *list;
+
+  (void)arg;
+  list = ny_net_hw_scan(&error);
+  ny_net_scan_keep(list, list == NULL ? -ENOMEM : error);
+  return NULL;
+}
+
+static int ny_net_scan_start(void)
+{
+  pthread_attr_t attr;
+  pthread_t thread;
+  int ret = 0;
+
+  nxmutex_lock(&g_scan_lock);
+  if (!g_scan_running)
+    {
+      pthread_attr_init(&attr);
+      pthread_attr_setstacksize(&attr, 16384);
+      pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+      ret = -pthread_create(&thread, &attr, ny_net_scan_thread, NULL);
+      pthread_attr_destroy(&attr);
+      g_scan_running = ret == 0;
+    }
+
+  nxmutex_unlock(&g_scan_lock);
+  return ret;
+}
+
+static cJSON *ny_net_scan_json(void)
+{
+  cJSON *root = cJSON_CreateObject();
+  cJSON *list;
+
+  if (root == NULL)
+    return NULL;
+  nxmutex_lock(&g_scan_lock);
+  list = g_scan_list != NULL ? cJSON_Duplicate(g_scan_list, true)
+                             : cJSON_CreateArray();
+  if (list == NULL || !cJSON_AddItemToObject(root, "networks", list))
+    {
+      cJSON_Delete(list);
+      cJSON_Delete(root);
+      root = NULL;
+    }
+  else
+    {
+      cJSON_AddBoolToObject(root, "scanning", g_scan_running);
+      cJSON_AddNumberToObject(root, "seq", g_scan_seq);
+      cJSON_AddNumberToObject(root, "error", g_scan_error);
+      cJSON_AddNumberToObject(root, "ageSeconds",
+                              g_scan_seq == 0
+                                  ? -1
+                                  : (double)(time(NULL) - g_scan_at));
+    }
+
+  nxmutex_unlock(&g_scan_lock);
+  return root;
+}
+
 /* The signal level costs a firmware query, so it is read from the product
  * worker every few seconds and handed out from here.  Panels ask for it on
  * every page, from their own threads, and must not queue up behind the
@@ -621,6 +724,7 @@ static void ny_net_rssi_poll(void)
 {
   time_t now = time(NULL);
   int rssi = 0;
+  bool carrier = true; /* Unknown is not down. */
   bool online;
 
   if (nxmutex_lock(&g_net_lock) < 0)
@@ -647,6 +751,14 @@ static void ny_net_rssi_poll(void)
       if (ioctl(sock, SIOCGIWSENS, (unsigned long)&request) >= 0 &&
           request.u.sens.value < 0)
         rssi = request.u.sens.value;
+
+      /* The driver drops the carrier when the access point is gone. */
+
+      struct ifreq flags;
+      memset(&flags, 0, sizeof(flags));
+      strlcpy(flags.ifr_name, NY_NET_IFNAME, IFNAMSIZ);
+      if (ioctl(sock, SIOCGIFFLAGS, (unsigned long)&flags) >= 0)
+        carrier = (flags.ifr_flags & IFF_RUNNING) != 0;
       close(sock);
     }
 #endif
@@ -654,7 +766,46 @@ static void ny_net_rssi_poll(void)
   if (nxmutex_lock(&g_net_lock) < 0)
     return;
   if (g_net.state == NY_NET_STA_ONLINE)
-    g_net.sta_rssi = rssi;
+    {
+      g_net.sta_rssi = carrier ? rssi : 0;
+      if (carrier)
+        {
+          g_net.link_misses = 0;
+        }
+      else if (++g_net.link_misses < NY_NET_LINK_MISSES)
+        {
+          /* Roaming drops the carrier for a moment too: look again soon
+           * rather than tearing down a link that is about to come back.
+           */
+
+          g_net.rssi_at = time(NULL) + NY_NET_LINK_RECHECK_S;
+        }
+      else
+        {
+          /* Nothing looked at the link once the device was online, so a
+           * router that restarted, or a walk out of range and back, left
+           * it "online" and unreachable until somebody power-cycled it.
+           * The stored network is joined again through the same ladder a
+           * boot uses: a few attempts, then the access point with the
+           * network retried at growing intervals.
+           */
+
+          g_net.link_misses = 0;
+          g_net.state = NY_NET_STA_FAILED;
+          g_net.last_error = -ENETDOWN;
+          g_net.sta_ipv4[0] = '\0';
+          g_net.sta_attempt = 0;
+          g_net.sta_retry_at = 0;
+          g_net.pending_sta = true;
+          syslog(LOG_WARNING, "nynet: link to the stored network lost, "
+                              "joining it again\n");
+        }
+    }
+  else
+    {
+      g_net.link_misses = 0;
+    }
+
   nxmutex_unlock(&g_net_lock);
 }
 
@@ -747,8 +898,7 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
       const char *ssid = ny_net_text(data, "ssid");
       const char *psk = ny_net_text(data, "psk");
       const cJSON *channel = cJSON_GetObjectItemCaseSensitive(data, "channel");
-      if (ssid == NULL ||
-          !ny_net_copy(g_net.ap_ssid, sizeof(g_net.ap_ssid), ssid))
+      if (ssid == NULL || !ny_net_copy(g_net.ap_ssid, sizeof(g_net.ap_ssid), ssid))
         {
           if (ny_net_name_is_ssid(g_net.name))
             strlcpy(g_net.ap_ssid, g_net.name, sizeof(g_net.ap_ssid));
@@ -781,8 +931,7 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
           ret = -EINVAL;
           goto out;
         }
-      if (psk == NULL ||
-          !ny_net_copy(g_net.sta_psk, sizeof(g_net.sta_psk), psk))
+      if (psk == NULL || !ny_net_copy(g_net.sta_psk, sizeof(g_net.sta_psk), psk))
         g_net.sta_psk[0] = '\0';
       ret = ny_net_save();
       if (ret < 0)
@@ -843,21 +992,46 @@ int ny_product_network_request(const struct ny_product_caller_s *caller,
           ret = *result ? 0 : -ENOMEM;
         }
     }
+  else if (strcmp(topic, "network.wifi.scan.result") == 0)
+    {
+      nxmutex_unlock(&g_net_lock);
+      *result = ny_net_scan_json();
+      return *result ? 0 : -ENOMEM;
+    }
   else if (strcmp(topic, "network.wifi.scan") == 0)
     {
-      /* Scanning blocks up to ~6 s; release the lock while it runs. */
-
       nxmutex_unlock(&g_net_lock);
+      if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "background")))
+        {
+          /* Start it and answer at once; the list is collected with
+           * network.wifi.scan.result, over whatever link there is by then.
+           */
+
+          ret = ny_net_scan_start();
+          if (ret < 0)
+            return ret;
+          *result = ny_net_scan_json();
+          return *result ? 0 : -ENOMEM;
+        }
+
+      /* Without the flag the caller waits, up to ~6 s, as it always did;
+       * the list is kept all the same.
+       */
+
       int error;
       cJSON *list = ny_net_hw_scan(&error);
       if (list == NULL)
         return -ENOMEM;
       cJSON *root = cJSON_CreateObject();
+      cJSON *kept = cJSON_Duplicate(list, true);
       if (root == NULL)
         {
           cJSON_Delete(list);
+          cJSON_Delete(kept);
           return -ENOMEM;
         }
+      if (kept != NULL)
+        ny_net_scan_keep(kept, error);
       cJSON_AddItemToObject(root, "networks", list);
       cJSON_AddNumberToObject(root, "error", error);
       *result = root;
@@ -942,7 +1116,7 @@ static int ny_net_step(void)
   nxmutex_unlock(&g_net_lock);
 
   int error = 0;
-  enum ny_net_state_e next = (enum ny_net_state_e) - 1;
+  enum ny_net_state_e next = (enum ny_net_state_e)-1;
   char ipv4[INET_ADDRSTRLEN] = { 0 };
 
   if (do_stop)
@@ -1007,7 +1181,7 @@ static int ny_net_step(void)
   if (do_sta)
     g_net.sta_attempt++;
 
-  if (next != (enum ny_net_state_e) - 1)
+  if (next != (enum ny_net_state_e)-1)
     {
       if (next == NY_NET_STA_CONNECTING)
         {
@@ -1156,11 +1330,10 @@ static cJSON *ny_net_eye_pairing(const char *ssid, const char *psk)
   memset(pass, 0, sizeof(pass));
   if (ny_web_product_token(token, sizeof(token)) == 0)
     {
-      snprintf(text, sizeof(text),
-               "http://" NY_NET_AP_ADDR "/#/provision?token=%s", token);
+      snprintf(text, sizeof(text), "http://" NY_NET_AP_ADDR
+               "/#/provision?token=%s", token);
       cJSON_AddStringToObject(payload, "qr_right", text);
-      cJSON_AddStringToObject(payload, "qr_right_label",
-                              NY_NET_EYE_STEP_SETUP);
+      cJSON_AddStringToObject(payload, "qr_right_label", NY_NET_EYE_STEP_SETUP);
       memset(token, 0, sizeof(token));
     }
   memset(text, 0, sizeof(text));
@@ -1174,6 +1347,73 @@ static cJSON *ny_net_eye_pairing(const char *ssid, const char *psk)
  * by itself instead of being burnt into the face of a device that is no
  * longer listening.
  */
+
+/* Say on the console what the eyes say with their codes.
+ *
+ * A board without its panels has no other way to tell the person in front
+ * of it which network to join and which address to open.  The console is
+ * a wire into the board, the same physical access the panels stand for, so
+ * the link carries the token as the code on the eyes does.  It goes to the
+ * console only: the system log is kept and can be read back later.
+ */
+
+static void ny_net_console_announce(enum ny_net_state_e state,
+                                    const char *ssid, const char *psk,
+                                    const char *ipv4)
+{
+  static enum ny_net_state_e announced = NY_NET_IDLE;
+  static char announced_ipv4[INET_ADDRSTRLEN];
+  const char *host = state == NY_NET_AP_PROVISION ? NY_NET_AP_ADDR : ipv4;
+  char token[80];
+  int fd;
+
+  if (state != NY_NET_AP_PROVISION && state != NY_NET_STA_ONLINE)
+    {
+      announced = NY_NET_IDLE;
+      return;
+    }
+
+  if (state == announced && strcmp(announced_ipv4, host) == 0)
+    {
+      return;
+    }
+
+  if (host[0] == '\0' || ny_web_product_token(token, sizeof(token)) != 0)
+    {
+      return;                   /* Not known yet: the next pass will do */
+    }
+
+  fd = open("/dev/console", O_WRONLY | O_CLOEXEC);
+  if (fd >= 0)
+    {
+      dprintf(fd, "\n==== Nyabula ====\n");
+      if (state == NY_NET_AP_PROVISION)
+        {
+          dprintf(fd,
+                  "  Wi-Fi hotspot : %s\n"
+                  "  Password      : %s\n"
+                  "  Set up        : http://%s/#/provision?token=%s\n",
+                  ssid, psk, host, token);
+        }
+      else
+        {
+          dprintf(fd,
+                  "  Address       : %s\n"
+                  "  Control panel : http://%s/#/?token=%s\n",
+                  host, host, token);
+        }
+
+#ifdef CONFIG_NYABULA_CORE_WEB_EYEPROBE
+      dprintf(fd, "  Eye screens   : http://%s/eyeprobe\n", host);
+#endif
+      dprintf(fd, "=================\n");
+      close(fd);
+      announced = state;
+      strlcpy(announced_ipv4, host, sizeof(announced_ipv4));
+    }
+
+  memset(token, 0, sizeof(token));
+}
 
 static void ny_net_eye_sync(void)
 {
@@ -1195,6 +1435,7 @@ static void ny_net_eye_sync(void)
   strcpy(psk, g_net.ap_psk);
   strcpy(ipv4, g_net.sta_ipv4);
   nxmutex_unlock(&g_net_lock);
+  ny_net_console_announce(state, ssid, psk, ipv4);
 
   /* The codes are an invitation, and once somebody has a panel open the
    * invitation has been taken up: the eyes go back to being eyes.  On the
@@ -1293,15 +1534,14 @@ static void ny_net_eye_sync(void)
         memset(text, 0, sizeof(text));
       }
 
-      cJSON_AddStringToObject(payload, "qr_right_label",
-                              NY_NET_EYE_OPEN_PANEL);
+      cJSON_AddStringToObject(payload, "qr_right_label", NY_NET_EYE_OPEN_PANEL);
       cJSON_AddStringToObject(payload, "title", "网络已连接");
       cJSON_AddStringToObject(payload, "detail", ipv4);
       cJSON_AddStringToObject(params, "scene", "qr");
       cJSON_AddStringToObject(params, "style", "full");
       cJSON_AddItemToObject(params, "payload", payload);
-      if (ny_net_eye_submit("eyes.scene.show", params, NY_NET_EYE_ONLINE_MS) ==
-          0)
+      if (ny_net_eye_submit("eyes.scene.show", params,
+                            NY_NET_EYE_ONLINE_MS) == 0)
         {
           shown = NY_NET_STA_ONLINE;
           visible = true;

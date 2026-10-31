@@ -1,33 +1,51 @@
-# configs/product — Nyabula 产品全功能配置
+# Nyabula 产品配置
 
-主域（A72 侧运行 Linux 时，本固件运行于 A53 簇之外的主 openvela 域；单域时独占整机）
-的**交付配置**。它是以下切片的并集，并把 Core 的所有持久化目录从 `/tmp` 改到 `/data`：
+在已按 manifest 准备好的 openvela 工作区内构建。`configs/product` 是普通
+openvela 产品固件，不是 AMP 地址布局；两种二进制不能互换。
 
-| 切片 | 提供 |
-|---|---|
-| `configs/dev` | SV6621 WiFi/BT、SAI+ES8388 音频、USB Host/ADB、RTC/WDT/ADC |
-| `configs/core_eye` | 双 GC9B72 圆屏、LVGL、Eye Engine、Nyabula Core（WAMR/QuickJS） |
-| 本配置新增 | Core 产品服务（SQLite 状态、计时/闹钟、媒体、天气、简报、Web）、官方 `ai_agent`（Nyabot）、`dhcpd`（SoftAP 配网）、`webclient`、RPTUN/mailbox（AMP 计算域） |
+| 配置 | openvela 入口 | 用途 |
+|---|---|---|
+| product | 0x40200000 | 普通固件，硬 TE，免登录 eyeprobe 关闭 |
+| product_amp | 0x4a400000 | 产品计算域配套，openvela 四 A53、Linux 四 A72 |
+| product_judge | 0x40200000 | 无屏演示，软件 TE、免登录 eyeprobe |
+| product_amp_judge | 0x4a400000 | 无屏 AMP 演示，软件 TE、免登录 eyeprobe |
+| boards/rk3576/kickpi-k7/configs/amp | 0x4a400000 | 原有四 A53 最小 AMP 验证配置，非产品 |
 
-ADB 在产品固件中**默认开启**（团队决定 2026-09-18）。
-
-## 构建
+AMP/评委配置由 `tools/generate_product_profiles.py` 从普通产品配置生成。
+修改普通 defconfig 或生成器后重新生成，用 `--check` 检查是否同步。
+产品 AMP 强制 SMP4（A53 MPIDR 0..3），Linux 仅保留 A72 MPIDR 0x100..0x103；
+第二堆为 `0x70000000 / 256 MiB`。旧产品工作区的 UP 配置不再满足验收。蓝牙音频仍待真手机验收，已隔离到本地 `organize/hold-bluetooth-20261017`，不纳入本轮产品候选。
 
 ```sh
-# openvela 工作区根目录
-python3 contest2026_062_PharosTech/app/nyabula/tools/generate_fonts.py --download-fallback
-./build.sh contest2026_062_PharosTech/configs/product -j8
+TEAM=contest2026_062_PharosTech
+bash "$TEAM/tools/setup_workspace.sh"
+python3 "$TEAM/app/nyabula/tools/generate_fonts.py" --download-fallback
+# 普通构建
+./build.sh "$TEAM/configs/product" --cmake -b out/product -j4
+# AMP 构建：只在独立工作区应用通用 GIC 依赖
+bash "$TEAM/tools/amp/nuttx/apply.sh" nuttx
+./build.sh "$TEAM/configs/product_amp" --cmake -b out/product-amp -j4
 ```
 
-Makefile 模式需要 `Make.defs` 软链（已随本目录提交）。
+用 `readelf -h` 核对 ELF 入口；检查展开配置中的 GIC、RAM/第二堆和 Core
+语音选项。不同配置不要共享 Make 的源目录旁对象文件。构建通过不代表板测通过。
 
-## 与 AMP 的关系
+## 产品 AMP 打包
 
-AMP 域固件仍使用 `boards/rk3576/kickpi-k7/configs/amp`；本配置只包含主域侧的
-RPTUN 链路。是否启用 AMP 由 N-Boot bootctrl 的 `amp_a/amp_b` 槽决定，主域固件不变。
+使用 `tools/amp/linux/amp_product_dtb.py` 生成产品 DTB；除了通用 AMP
+窗口，还须保留 DMA 堆和第二堆。生成器同时移交 Linux 摄像头所有权。
+调用 `tools/amp/nboot/build_amp_fit.sh` 时显式设置 `NYAMP_PROFILE=product`；
+未设置时继续使用原有 minimal/SMP4 校验，不能静默放宽。
 
-## 已知取舍（2026-09-18）
+顶层 Makefile 的 `amp` 目标仍是最小诊断链，不是完整模型资源发行包。
+完整语音镜像还需 `build_compute_initramfs.sh` 的外部运行库和模型资源；
+它们不随源码提交。发行前应按资源清单补齐许可与来源。
 
-- 音频留在主域（板上实测通过）；AMP 域音频尚未验证。
-- BLE ISO/LE Audio/HID 未纳入，减小 ZBlue 栈占用；需要时从 `configs/dev` 取回。
-- `TESTING_OSTEST/GETPRIME/EXAMPLES_HELLO` 未纳入。
+## eyeprobe 与 UI 边界
+
+生产固件保持硬 TE，`/eyeprobe` 关闭；认证的 `/eyes/stream` 可供面板观看。
+无屏配置才开启 `/eyeprobe`：它可能展示配对信息，仅用于受控演示网络；不能
+为了让无屏机器显示而更改所有生产固件的认证边界。
+
+本轮使用 `app/nyabula_web` 的设备面板。根工作区 Web 中的 Nebula/Instrument
+新皮肤和 design-lab 尚未完成设备联调，未纳入此产品配置或候选提交。

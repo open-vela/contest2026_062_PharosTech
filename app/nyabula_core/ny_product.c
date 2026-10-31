@@ -105,8 +105,7 @@ static int ny_product_system(const struct ny_product_caller_s *caller,
 
       if (ny_product_clock_source() == NY_PRODUCT_CLOCK_SNTP)
         {
-          syslog(LOG_INFO,
-                 "nyclock: panel time from %s not applied, "
+          syslog(LOG_INFO, "nyclock: panel time from %s not applied, "
                  "a time server has set the clock (it differs by %lld ms)\n",
                  caller->id,
                  (long long)((int64_t)value->valuedouble -
@@ -179,8 +178,7 @@ static int ny_product_system(const struct ny_product_caller_s *caller,
        */
 
       cJSON *power = cJSON_AddObjectToObject(root, "power");
-      if (power == NULL ||
-          !cJSON_AddStringToObject(power, "source", "external"))
+      if (power == NULL || !cJSON_AddStringToObject(power, "source", "external"))
         {
           cJSON_Delete(root);
           return -ENOMEM;
@@ -301,11 +299,6 @@ int ny_product_request(const struct ny_product_caller_s *caller,
     return ret;
 #endif
 
-#ifdef CONFIG_NYABULA_CORE_BT
-  ret = ny_product_bt_request(caller, topic, data, result);
-  if (ret != -ENOSYS)
-    return ret;
-#endif
 
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
   ret = ny_compute_request(caller, topic, data, result);

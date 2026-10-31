@@ -578,7 +578,8 @@ int nyabula_eye_json_parse_command(cJSON *json,
       if (scene_value == NYABULA_EYE_SCENE_QR)
         {
           const char *left = nyabula_eye_json_string(payload, "qr_left", "");
-          const char *right = nyabula_eye_json_string(payload, "qr_right", "");
+          const char *right =
+              nyabula_eye_json_string(payload, "qr_right", "");
           if ((left[0] == '\0' && right[0] == '\0') ||
               strlen(left) >= NYABULA_EYE_TEXT_QR ||
               strlen(right) >= NYABULA_EYE_TEXT_QR)

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rockchip 时钟与引脚排错"
+  short_description: "定位 Rockchip 外设的时钟、门控、复位、电源域或 pinmux 故障，包括冷启动可用但热重启失效、频"
+  default_prompt: "使用 $rockchip-clock-pinctrl-debug，根据现有版本和证据完成本次任务，给出可复现结果与未验证边界。"

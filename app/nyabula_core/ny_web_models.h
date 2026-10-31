@@ -38,7 +38,7 @@
  * firmware ships none, and nothing outside this directory is ever touched.
  */
 
-#define NY_WEB_MODELS_ROOT "/data/models"
+#define NY_WEB_MODELS_ROOT   "/data/models"
 
 /* The volume that directory is on, for the space that is left. */
 

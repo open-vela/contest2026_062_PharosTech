@@ -45,7 +45,8 @@ enum nbootctl_target_e
 
 static const char *nbootctl_medium_name(unsigned int medium);
 static const char *nbootctl_reason_name(unsigned int reason);
-static int nbootctl_handoff(unsigned int *medium_out, unsigned int *domain_out,
+static int nbootctl_handoff(unsigned int *medium_out,
+                            unsigned int *domain_out,
                             unsigned int *slot_out);
 static int nbootctl_status(void);
 static int nbootctl_parse_slot(const char *value, unsigned int *slot);
@@ -79,7 +80,8 @@ static const char *nbootctl_reason_name(unsigned int reason)
  * Name: nbootctl_handoff
  ****************************************************************************/
 
-static int nbootctl_handoff(unsigned int *medium_out, unsigned int *domain_out,
+static int nbootctl_handoff(unsigned int *medium_out,
+                            unsigned int *domain_out,
                             unsigned int *slot_out)
 {
   uint64_t generation;
@@ -109,9 +111,7 @@ static int nbootctl_handoff(unsigned int *medium_out, unsigned int *domain_out,
   printf("medium=%s\ndomain=%s\nslot=%s\ngeneration=%llu\nreason=%s\n",
          nbootctl_medium_name(medium),
          domain == NBOOTCTL_DOMAIN_AMP ? "amp" : "nuttx",
-         slot == 0   ? "a"
-         : slot == 1 ? "b"
-                     : "none",
+         slot == 0 ? "a" : slot == 1 ? "b" : "none",
          (unsigned long long)generation, nbootctl_reason_name(reason));
   *medium_out = medium;
   *domain_out = domain;

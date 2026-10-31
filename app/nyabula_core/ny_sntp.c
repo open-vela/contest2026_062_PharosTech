@@ -27,7 +27,7 @@
 
 /* Byte offsets in the NTP header. */
 
-#define NY_SNTP_AT_FLAGS    0 /* LI:2 | VN:3 | Mode:3 */
+#define NY_SNTP_AT_FLAGS    0  /* LI:2 | VN:3 | Mode:3 */
 #define NY_SNTP_AT_STRATUM  1
 #define NY_SNTP_AT_REFID    12
 #define NY_SNTP_AT_ORIGIN   24
@@ -37,7 +37,7 @@
 #define NY_SNTP_VERSION     4
 #define NY_SNTP_MODE_CLIENT 3
 #define NY_SNTP_MODE_SERVER 4
-#define NY_SNTP_LEAP_ALARM  3 /* "clock not synchronised" */
+#define NY_SNTP_LEAP_ALARM  3  /* "clock not synchronised" */
 #define NY_SNTP_STRATUM_MAX 15
 
 /* Seconds from the NTP epoch (1900) to the Unix one (1970), and the length
@@ -296,7 +296,7 @@ int ny_sntp_server(const char *list, unsigned int index, char *out,
       return -EINVAL;
     }
 
-  for (;;)
+  for (; ; )
     {
       size_t length = 0;
       while (ny_sntp_separator(*at))

@@ -54,26 +54,26 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "nyamp_protocol.h"
+#include "nyampctl.h"
+#include "nyampctl_io.h"
 #include "ny_voice.h"
 #include "ny_voice_audio.h"
 #include "ny_voice_dsp.h"
 #include "ny_voice_wire.h"
-#include "nyamp_protocol.h"
-#include "nyampctl.h"
-#include "nyampctl_io.h"
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
 #ifndef CONFIG_NYABULA_CORE_VOICE_SPEAKER
-#define CONFIG_NYABULA_CORE_VOICE_SPEAKER 1
+#  define CONFIG_NYABULA_CORE_VOICE_SPEAKER 1
 #endif
 
-#define NYAMPCTL_VOICE_WINDOW   3200U /* 200 ms at 16 kHz.            */
+#define NYAMPCTL_VOICE_WINDOW   3200U   /* 200 ms at 16 kHz.            */
 #define NYAMPCTL_VOICE_LOAD_MS  300000
 #define NYAMPCTL_VOICE_TEXT_MAX 512
-#define NYAMPCTL_VOICE_TTS_MAX  44100U /* The service's default window. */
+#define NYAMPCTL_VOICE_TTS_MAX  44100U  /* The service's default window. */
 
 /****************************************************************************
  * Private Function Prototypes
@@ -237,7 +237,7 @@ static int nyampctl_voice_transcribe(bool wait)
   struct ny_voice_wire_event_s event;
   int ret;
 
-  for (;;)
+  for (; ; )
     {
       ret = ny_voice_wire_event(&g_nyampctl_wire, &g_nyampctl_frame, &event,
                                 wait ? 20000 : 0);
@@ -291,8 +291,9 @@ int nyampctl_kws_listen(int fd, unsigned int seconds)
       ret = nyampctl_voice_load(NYAMP_SERVICE_KWS, "kws");
     }
 
-  if (ret == 0 && ny_voice_wire_kws_labels(&g_nyampctl_wire, g_nyampctl_text,
-                                           sizeof(g_nyampctl_text)) > 0)
+  if (ret == 0 &&
+      ny_voice_wire_kws_labels(&g_nyampctl_wire, g_nyampctl_text,
+                               sizeof(g_nyampctl_text)) > 0)
     {
       printf("keywords: %s\n", g_nyampctl_text);
     }
@@ -311,9 +312,8 @@ int nyampctl_kws_listen(int fd, unsigned int seconds)
 
   if (ret == 0)
     {
-      printf("grant: offset 0x%" PRIx32 " capacity %" PRIu32
-             " lease 0x%" PRIx64 "\n",
-             grant.offset, grant.capacity, grant.lease);
+      printf("grant: offset 0x%" PRIx32 " capacity %" PRIu32 " lease 0x%"
+             PRIx64 "\n", grant.offset, grant.capacity, grant.lease);
       ret = nyampctl_voice_microphone(&audio);
     }
 
@@ -342,8 +342,7 @@ int nyampctl_kws_listen(int fd, unsigned int seconds)
       if (next != position)
         {
           printf("service expects sample %" PRIu64 ", sent up to %" PRIu64
-                 "\n",
-                 next, position);
+                 "\n", next, position);
         }
 
       if (sequence % 5 == 0)
@@ -381,8 +380,7 @@ int nyampctl_kws_listen(int fd, unsigned int seconds)
           event.kind == NY_VOICE_WIRE_FINISH)
         {
           printf("\nstream finished: status %" PRId32 ", %" PRIu32
-                 " detections\n",
-                 event.status, event.sequence);
+                 " detections\n", event.status, event.sequence);
         }
     }
 
@@ -461,8 +459,8 @@ int nyampctl_asr(int fd, const char *wav, unsigned int seconds)
   begin = nyampctl_voice_now_ms();
   while (ret == 0 && done == 0)
     {
-      size_t want =
-          wav != NULL ? NY_VOICE_CAPTURE_RATE : NYAMPCTL_VOICE_WINDOW;
+      size_t want = wav != NULL ? NY_VOICE_CAPTURE_RATE
+                                : NYAMPCTL_VOICE_WINDOW;
       ssize_t got;
 
       if (wav != NULL)
@@ -483,9 +481,9 @@ int nyampctl_asr(int fd, const char *wav, unsigned int seconds)
           break; /* End of the recording, or of the time. */
         }
 
-      ret =
-          ny_voice_wire_asr_push(&g_nyampctl_wire, &grant, g_nyampctl_samples,
-                                 (size_t)got / 2, sequence++);
+      ret = ny_voice_wire_asr_push(&g_nyampctl_wire, &grant,
+                                   g_nyampctl_samples, (size_t)got / 2,
+                                   sequence++);
       pushed += (uint32_t)got / 2;
       if (ret < 0)
         {
@@ -607,9 +605,9 @@ int nyampctl_tts_say(int fd, const char *text, const char *out)
       if (event.kind == NY_VOICE_WIRE_FINISH)
         {
           printf("finish: status %" PRId32 ", %" PRIu32 " windows, %" PRIu32
-                 " samples (%.2f s) in %" PRIu64
-                 " ms, first window after %" PRIu64 " ms\n",
-                 event.status, event.sequence, event.total_samples,
+                 " samples (%.2f s) in %" PRIu64 " ms, first window after %"
+                 PRIu64 " ms\n", event.status, event.sequence,
+                 event.total_samples,
                  (double)event.total_samples / NY_VOICE_TTS_RATE,
                  nyampctl_voice_now_ms() - begin, first);
           ret = ny_voice_wire_errno(event.status);

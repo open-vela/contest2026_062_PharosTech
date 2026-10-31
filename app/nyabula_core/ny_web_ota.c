@@ -73,32 +73,32 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NY_OTA_TARGET        "/ota/upload"
-#define NY_OTA_DIRECTORY     "/data/tmp"
-#define NY_OTA_QUERY_KEY     "target"
-#define NY_OTA_TARGET_ID_MAX 32
+#define NY_OTA_TARGET         "/ota/upload"
+#define NY_OTA_DIRECTORY      "/data/tmp"
+#define NY_OTA_QUERY_KEY      "target"
+#define NY_OTA_TARGET_ID_MAX  32
 
 /* Kept free on the volume after the image is stored: the product database
  * and the logs share it, and a full volume breaks them first.
  */
 
-#define NY_OTA_SPACE_MARGIN (4ul * 1024ul * 1024ul)
+#define NY_OTA_SPACE_MARGIN   (4ul * 1024ul * 1024ul)
 
-#define NY_OTA_CHUNK        16384
-#define NY_OTA_STALL_MS     30000
+#define NY_OTA_CHUNK          16384
+#define NY_OTA_STALL_MS       30000
 
 /* What is still read from a request that has already been refused, so that
  * the refusal arrives as a response and not as a connection reset.
  */
 
-#define NY_OTA_DRAIN_BYTES (4ul * 1024ul * 1024ul)
-#define NY_OTA_DRAIN_MS    2000
+#define NY_OTA_DRAIN_BYTES    (4ul * 1024ul * 1024ul)
+#define NY_OTA_DRAIN_MS       2000
 
 /* The start of an image that is kept for the magic: up to the end of the
  * furthest one, the FAT signature that closes the first sector.
  */
 
-#define NY_OTA_HEAD_SIZE 512
+#define NY_OTA_HEAD_SIZE      512
 
 /* A FIT is a flattened device tree.  Its header says where the structure
  * block is; the image nodes are looked for in the first part of it, which
@@ -130,9 +130,9 @@ struct ny_ota_upload_s
   int file;
   SHA2_CTX hash;
   const struct ny_ota_magic_s *magic;
-  uint64_t expected; /* Content-Length */
+  uint64_t expected;                /* Content-Length */
   uint64_t received;
-  uint8_t first[NY_OTA_HEAD_SIZE]; /* start of the image, for the magic */
+  uint8_t first[NY_OTA_HEAD_SIZE];  /* start of the image, for the magic */
 };
 
 /****************************************************************************
@@ -152,9 +152,10 @@ static int ny_ota_hex_value(char c);
 static int ny_ota_query_target(const char *query, char *id, size_t size);
 static int ny_ota_read_full(int file, uint8_t *data, size_t length);
 static uint32_t ny_ota_be32(const uint8_t *value);
-static int ny_ota_fit_check(int file, uint64_t size, const char *const *nodes);
-static int ny_ota_consume(struct ny_ota_upload_s *upload, const uint8_t *data,
-                          size_t length);
+static int ny_ota_fit_check(int file, uint64_t size,
+                            const char *const *nodes);
+static int ny_ota_consume(struct ny_ota_upload_s *upload,
+                          const uint8_t *data, size_t length);
 static int ny_ota_receive(int fd, struct ny_ota_upload_s *upload,
                           const void *body, size_t body_length);
 static int ny_ota_upload(int fd, const char *head, const char *query,
@@ -173,12 +174,13 @@ static bool g_ota_claimed;
  * image of another target, picked by mistake.
  */
 
-static const struct ny_ota_magic_s g_ota_magics[] = {
+static const struct ny_ota_magic_s g_ota_magics[] =
+{
   { 0, 0, "" },
-  { 56, 4, "ARMd" },            /* arm64 Image header, "ARM\x64" */
-  { 0, 4, "\xd0\x0d\xfe\xed" }, /* flattened device tree */
-  { 0, 8, "K7ABCTRL" },         /* first bootctrl record */
-  { 510, 2, "\x55\xaa" },       /* boot sector signature */
+  { 56, 4, "ARMd" },                /* arm64 Image header, "ARM\x64" */
+  { 0, 4, "\xd0\x0d\xfe\xed" },     /* flattened device tree */
+  { 0, 8, "K7ABCTRL" },             /* first bootctrl record */
+  { 510, 2, "\x55\xaa" },           /* boot sector signature */
 };
 
 /* What N-Boot requires of the two kinds of FIT, as far as it can be seen
@@ -186,11 +188,13 @@ static const struct ny_ota_magic_s g_ota_magics[] = {
  * which the magic they share cannot.
  */
 
-static const char *const g_ota_nodes_amp[] = {
+static const char *const g_ota_nodes_amp[] =
+{
   "linux", "fdt", "ramdisk", "openvela", NULL,
 };
 
-static const char *const g_ota_nodes_nboot[] = {
+static const char *const g_ota_nodes_nboot[] =
+{
   "atf-1", "atf-2", "atf-3", "optee", "fdt", "uboot", NULL,
 };
 
@@ -198,129 +202,130 @@ static const char *const g_ota_nodes_nboot[] = {
  * the nboot target is the way to it that looks at the image first.
  */
 
-static const struct ny_web_ota_target_s g_ota_targets[] = {
+static const struct ny_web_ota_target_s g_ota_targets[] =
+{
   {
-      .id = "nuttx",
-      .label = "openvela 固件",
-      .description = "openvela（NuttX）主域固件 nuttx.bin。写入没有在运行的"
-                     "槽位，从存储回读校验通过后设为下次启动的槽位。",
-      .kind = NY_WEB_OTA_KIND_SLOT,
-      .magic = NY_WEB_OTA_MAGIC_ARM64,
-      .domain = "nuttx",
-      .partition = "nuttx_a",
+    .id = "nuttx",
+    .label = "openvela 固件",
+    .description = "openvela（NuttX）主域固件 nuttx.bin。写入没有在运行的"
+                   "槽位，从存储回读校验通过后设为下次启动的槽位。",
+    .kind = NY_WEB_OTA_KIND_SLOT,
+    .magic = NY_WEB_OTA_MAGIC_ARM64,
+    .domain = "nuttx",
+    .partition = "nuttx_a",
   },
   {
-      .id = "amp",
-      .label = "AMP 计算域镜像",
-      .description = "AMP FIT 镜像（Linux、设备树、initramfs 与 A53 侧 "
-                     "openvela）。写入非活动的 AMP 槽位，回读校验通过后激活；"
-                     "AMP 槽位处于激活状态时，N-Boot 下次启动会先尝试它。",
-      .kind = NY_WEB_OTA_KIND_SLOT,
-      .magic = NY_WEB_OTA_MAGIC_FIT,
-      .domain = "amp",
-      .partition = "amp_a",
-      .nodes = g_ota_nodes_amp,
+    .id = "amp",
+    .label = "AMP 计算域镜像",
+    .description = "AMP FIT 镜像（Linux、设备树、initramfs 与 A53 侧 "
+                   "openvela）。写入非活动的 AMP 槽位，回读校验通过后激活；"
+                   "AMP 槽位处于激活状态时，N-Boot 下次启动会先尝试它。",
+    .kind = NY_WEB_OTA_KIND_SLOT,
+    .magic = NY_WEB_OTA_MAGIC_FIT,
+    .domain = "amp",
+    .partition = "amp_a",
+    .nodes = g_ota_nodes_amp,
   },
   {
-      .id = "nboot",
-      .label = "N-Boot 引导程序",
-      .description = "4 MiB 的 N-Boot FIT。原位覆盖，没有备份区，不具备断电"
-                     "安全：写入中途断电，或镜像本身有问题，设备将无法启动，"
-                     "只能经 USB（MaskROM）恢复。",
-      .kind = NY_WEB_OTA_KIND_NBOOT,
-      .magic = NY_WEB_OTA_MAGIC_FIT,
-      .partition = "uboot",
-      .nodes = g_ota_nodes_nboot,
-      .advanced = true,
+    .id = "nboot",
+    .label = "N-Boot 引导程序",
+    .description = "4 MiB 的 N-Boot FIT。原位覆盖，没有备份区，不具备断电"
+                   "安全：写入中途断电，或镜像本身有问题，设备将无法启动，"
+                   "只能经 USB（MaskROM）恢复。",
+    .kind = NY_WEB_OTA_KIND_NBOOT,
+    .magic = NY_WEB_OTA_MAGIC_FIT,
+    .partition = "uboot",
+    .nodes = g_ota_nodes_nboot,
+    .advanced = true,
   },
   {
-      .id = "partition:trust",
-      .label = "trust 分区",
-      .description = "原样写入 trust 分区。设备无法判断内容是否正确，写错"
-                     "可能导致无法启动。",
-      .kind = NY_WEB_OTA_KIND_PARTITION,
-      .magic = NY_WEB_OTA_MAGIC_NONE,
-      .partition = "trust",
-      .advanced = true,
+    .id = "partition:trust",
+    .label = "trust 分区",
+    .description = "原样写入 trust 分区。设备无法判断内容是否正确，写错"
+                   "可能导致无法启动。",
+    .kind = NY_WEB_OTA_KIND_PARTITION,
+    .magic = NY_WEB_OTA_MAGIC_NONE,
+    .partition = "trust",
+    .advanced = true,
   },
   {
-      .id = "partition:bootctrl",
-      .label = "bootctrl 分区",
-      .description = "原样覆盖 A/B 启动记录。记录与槽位内容不符时，N-Boot "
-                     "会把对应槽位判为不可启动。",
-      .kind = NY_WEB_OTA_KIND_PARTITION,
-      .magic = NY_WEB_OTA_MAGIC_BOOTCTRL,
-      .partition = "bootctrl",
-      .advanced = true,
+    .id = "partition:bootctrl",
+    .label = "bootctrl 分区",
+    .description = "原样覆盖 A/B 启动记录。记录与槽位内容不符时，N-Boot "
+                   "会把对应槽位判为不可启动。",
+    .kind = NY_WEB_OTA_KIND_PARTITION,
+    .magic = NY_WEB_OTA_MAGIC_BOOTCTRL,
+    .partition = "bootctrl",
+    .advanced = true,
   },
   {
-      .id = "partition:nuttx_a",
-      .label = "nuttx_a 分区（原样）",
-      .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
-                     "校验会失败并把该槽位标为不可启动。正常升级请用"
-                     "「openvela 固件」。正在运行的槽位不可写。",
-      .kind = NY_WEB_OTA_KIND_PARTITION,
-      .magic = NY_WEB_OTA_MAGIC_ARM64,
-      .partition = "nuttx_a",
-      .advanced = true,
+    .id = "partition:nuttx_a",
+    .label = "nuttx_a 分区（原样）",
+    .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
+                   "校验会失败并把该槽位标为不可启动。正常升级请用"
+                   "「openvela 固件」。正在运行的槽位不可写。",
+    .kind = NY_WEB_OTA_KIND_PARTITION,
+    .magic = NY_WEB_OTA_MAGIC_ARM64,
+    .partition = "nuttx_a",
+    .advanced = true,
   },
   {
-      .id = "partition:nuttx_b",
-      .label = "nuttx_b 分区（原样）",
-      .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
-                     "校验会失败并把该槽位标为不可启动。正常升级请用"
-                     "「openvela 固件」。正在运行的槽位不可写。",
-      .kind = NY_WEB_OTA_KIND_PARTITION,
-      .magic = NY_WEB_OTA_MAGIC_ARM64,
-      .partition = "nuttx_b",
-      .advanced = true,
+    .id = "partition:nuttx_b",
+    .label = "nuttx_b 分区（原样）",
+    .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
+                   "校验会失败并把该槽位标为不可启动。正常升级请用"
+                   "「openvela 固件」。正在运行的槽位不可写。",
+    .kind = NY_WEB_OTA_KIND_PARTITION,
+    .magic = NY_WEB_OTA_MAGIC_ARM64,
+    .partition = "nuttx_b",
+    .advanced = true,
   },
   {
-      .id = "partition:amp_a",
-      .label = "amp_a 分区（原样）",
-      .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
-                     "校验会失败并把该槽位标为不可启动。正常升级请用"
-                     "「AMP 计算域镜像」。",
-      .kind = NY_WEB_OTA_KIND_PARTITION,
-      .magic = NY_WEB_OTA_MAGIC_FIT,
-      .partition = "amp_a",
-      .nodes = g_ota_nodes_amp,
-      .advanced = true,
+    .id = "partition:amp_a",
+    .label = "amp_a 分区（原样）",
+    .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
+                   "校验会失败并把该槽位标为不可启动。正常升级请用"
+                   "「AMP 计算域镜像」。",
+    .kind = NY_WEB_OTA_KIND_PARTITION,
+    .magic = NY_WEB_OTA_MAGIC_FIT,
+    .partition = "amp_a",
+    .nodes = g_ota_nodes_amp,
+    .advanced = true,
   },
   {
-      .id = "partition:amp_b",
-      .label = "amp_b 分区（原样）",
-      .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
-                     "校验会失败并把该槽位标为不可启动。正常升级请用"
-                     "「AMP 计算域镜像」。",
-      .kind = NY_WEB_OTA_KIND_PARTITION,
-      .magic = NY_WEB_OTA_MAGIC_FIT,
-      .partition = "amp_b",
-      .nodes = g_ota_nodes_amp,
-      .advanced = true,
+    .id = "partition:amp_b",
+    .label = "amp_b 分区（原样）",
+    .description = "原样写入，不更新 bootctrl 里记录的大小与摘要：N-Boot "
+                   "校验会失败并把该槽位标为不可启动。正常升级请用"
+                   "「AMP 计算域镜像」。",
+    .kind = NY_WEB_OTA_KIND_PARTITION,
+    .magic = NY_WEB_OTA_MAGIC_FIT,
+    .partition = "amp_b",
+    .nodes = g_ota_nodes_amp,
+    .advanced = true,
   },
   {
-      .id = "partition:config",
-      .label = "config 分区",
-      .description = "用一个 FAT 镜像原样覆盖配置分区，其中的配网与设备身份"
-                     "会被替换。分区已挂载时只能强制写入，写完必须立即重启。",
-      .kind = NY_WEB_OTA_KIND_PARTITION,
-      .magic = NY_WEB_OTA_MAGIC_FAT,
-      .partition = "config",
-      .mount = "/config",
-      .advanced = true,
+    .id = "partition:config",
+    .label = "config 分区",
+    .description = "用一个 FAT 镜像原样覆盖配置分区，其中的配网与设备身份"
+                   "会被替换。分区已挂载时只能强制写入，写完必须立即重启。",
+    .kind = NY_WEB_OTA_KIND_PARTITION,
+    .magic = NY_WEB_OTA_MAGIC_FAT,
+    .partition = "config",
+    .mount = "/config",
+    .advanced = true,
   },
   {
-      .id = "partition:data",
-      .label = "data 分区",
-      .description = "上传的文件就暂存在这个分区上，不能用它覆盖自己。"
-                     "请经 USB 刷写。",
-      .kind = NY_WEB_OTA_KIND_PARTITION,
-      .magic = NY_WEB_OTA_MAGIC_FAT,
-      .partition = "data",
-      .mount = NY_WEB_OTA_VOLUME,
-      .advanced = true,
-      .blocked = true,
+    .id = "partition:data",
+    .label = "data 分区",
+    .description = "上传的文件就暂存在这个分区上，不能用它覆盖自己。"
+                   "请经 USB 刷写。",
+    .kind = NY_WEB_OTA_KIND_PARTITION,
+    .magic = NY_WEB_OTA_MAGIC_FAT,
+    .partition = "data",
+    .mount = NY_WEB_OTA_VOLUME,
+    .advanced = true,
+    .blocked = true,
   },
 };
 
@@ -332,7 +337,8 @@ static const struct ny_web_ota_target_s g_ota_targets[] = {
  * Name: ny_ota_reply
  ****************************************************************************/
 
-static int ny_ota_reply(int fd, int code, const char *reason, const char *json)
+static int ny_ota_reply(int fd, int code, const char *reason,
+                        const char *json)
 {
   char buffer[512];
   int count = snprintf(buffer, sizeof(buffer),
@@ -717,7 +723,8 @@ static uint32_t ny_ota_be32(const uint8_t *value)
  *
  ****************************************************************************/
 
-static int ny_ota_fit_check(int file, uint64_t size, const char *const *nodes)
+static int ny_ota_fit_check(int file, uint64_t size,
+                            const char *const *nodes)
 {
   uint8_t header[NY_OTA_FDT_HEADER];
   uint8_t *block;
@@ -743,7 +750,8 @@ static int ny_ota_fit_check(int file, uint64_t size, const char *const *nodes)
   length = ny_ota_be32(header + 36);
   if (ny_ota_be32(header + 20) < NY_OTA_FDT_VERSION ||
       total < NY_OTA_FDT_HEADER || total > size ||
-      offset < NY_OTA_FDT_HEADER || offset >= total || length > total - offset)
+      offset < NY_OTA_FDT_HEADER || offset >= total ||
+      length > total - offset)
     {
       return -ENOEXEC;
     }
@@ -770,7 +778,7 @@ static int ny_ota_fit_check(int file, uint64_t size, const char *const *nodes)
 
   for (i = 0; ret == 0 && nodes[i] != NULL; i++)
     {
-      size_t name = strlen(nodes[i]) + 1; /* with its terminator */
+      size_t name = strlen(nodes[i]) + 1;  /* with its terminator */
       bool found = false;
       uint32_t at;
 
@@ -799,8 +807,8 @@ static int ny_ota_fit_check(int file, uint64_t size, const char *const *nodes)
  *
  ****************************************************************************/
 
-static int ny_ota_consume(struct ny_ota_upload_s *upload, const uint8_t *data,
-                          size_t length)
+static int ny_ota_consume(struct ny_ota_upload_s *upload,
+                          const uint8_t *data, size_t length)
 {
   size_t magic_end = upload->magic->offset + upload->magic->size;
   size_t written = 0;
@@ -1018,8 +1026,8 @@ static int ny_ota_upload(int fd, const char *head, const char *query,
 
   for (i = 0; i < NY_WEB_OTA_SHA256_HEX; i++)
     {
-      wanted[i] =
-          value[i] >= 'A' && value[i] <= 'F' ? value[i] - 'A' + 'a' : value[i];
+      wanted[i] = value[i] >= 'A' && value[i] <= 'F' ? value[i] - 'A' + 'a'
+                                                     : value[i];
     }
 
   wanted[NY_WEB_OTA_SHA256_HEX] = '\0';
@@ -1055,8 +1063,8 @@ static int ny_ota_upload(int fd, const char *head, const char *query,
       goto out;
     }
 
-  upload->file =
-      open(NY_WEB_OTA_FILE, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  upload->file = open(NY_WEB_OTA_FILE,
+                      O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
   if (upload->file < 0)
     {
       ret = ny_ota_refuse(fd, 500, "Internal Server Error", "ESTORAGE");
@@ -1098,7 +1106,8 @@ static int ny_ota_upload(int fd, const char *head, const char *query,
       unlink(NY_WEB_OTA_FILE);
       if (status == -ENOEXEC)
         {
-          ret = ny_ota_refuse(fd, 415, "Unsupported Media Type", "ENOTIMAGE");
+          ret = ny_ota_refuse(fd, 415, "Unsupported Media Type",
+                              "ENOTIMAGE");
         }
       else if (status == -ENOSPC)
         {
@@ -1150,10 +1159,11 @@ static int ny_ota_upload(int fd, const char *head, const char *query,
       /* The body has been read to its end: there is nothing to drain. */
 
       unlink(NY_WEB_OTA_FILE);
-      ret = ret == -ENOEXEC ? ny_ota_reply(fd, 415, "Unsupported Media Type",
-                                           "{\"error\":\"ENOTIMAGE\"}")
-                            : ny_ota_reply(fd, 500, "Internal Server Error",
-                                           "{\"error\":\"ESTORAGE\"}");
+      ret = ret == -ENOEXEC
+                ? ny_ota_reply(fd, 415, "Unsupported Media Type",
+                               "{\"error\":\"ENOTIMAGE\"}")
+                : ny_ota_reply(fd, 500, "Internal Server Error",
+                               "{\"error\":\"ESTORAGE\"}");
       goto out;
     }
 
@@ -1161,8 +1171,8 @@ static int ny_ota_upload(int fd, const char *head, const char *query,
    * escaping.
    */
 
-  fprintf(stderr, "nyabula_web: image for %s staged, %llu bytes\n", target->id,
-          (unsigned long long)upload->received);
+  fprintf(stderr, "nyabula_web: image for %s staged, %llu bytes\n",
+          target->id, (unsigned long long)upload->received);
   snprintf(json, sizeof(json),
            "{\"received\":%llu,\"sha256\":\"%s\",\"target\":\"%s\"}",
            (unsigned long long)upload->received, actual, target->id);
@@ -1519,7 +1529,7 @@ int ny_web_ota_file_digest(const char *path, char *hex, uint64_t *size)
     }
 
   sha256init(&hash);
-  for (;;)
+  for (; ; )
     {
       ssize_t count = read(file, chunk, NY_OTA_CHUNK);
       if (count < 0 && errno == EINTR)

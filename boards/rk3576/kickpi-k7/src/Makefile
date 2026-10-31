@@ -47,6 +47,22 @@ ifeq ($(CONFIG_KICKPI_K7_AUDIO),y)
 CSRCS += kickpi_k7_audio.c
 endif
 
+ifeq ($(CONFIG_KICKPI_K7_VIDEO),y)
+CSRCS += kickpi_k7_video.c
+endif
+
+ifeq ($(CONFIG_KICKPI_K7_MIPI_DSI),y)
+CSRCS += kickpi_k7_mipi_dsi.c
+endif
+
+ifeq ($(CONFIG_KICKPI_K7_TOUCH),y)
+CSRCS += kickpi_k7_touch.c
+endif
+
+ifeq ($(CONFIG_KICKPI_K7_HDMI),y)
+CSRCS += kickpi_k7_hdmi.c
+endif
+
 ifeq ($(CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT),y)
 CSRCS += kickpi_k7_storage.c
 endif
@@ -65,6 +81,10 @@ endif
 
 ifeq ($(CONFIG_KICKPI_K7_USBHOST),y)
 CSRCS += kickpi_k7_usbhost.c
+endif
+
+ifeq ($(CONFIG_KICKPI_K7_CAMERA),y)
+CSRCS += kickpi_k7_camera.c
 endif
 
 ifeq ($(CONFIG_ETC_ROMFS),y)

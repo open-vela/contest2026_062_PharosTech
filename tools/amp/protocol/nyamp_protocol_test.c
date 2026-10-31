@@ -471,23 +471,12 @@ static int test_status_prefix(void)
 static int test_blob_names(void)
 {
   static const char *const good[] = {
-    "llm/model.rkllm",   "asr", "asr/ENC.ONX", "a/b/c/d.bin",
-    "tts/zh_en v2.onnx", "..a", "a..",         "...",
+    "llm/model.rkllm", "asr", "asr/ENC.ONX", "a/b/c/d.bin", "tts/zh_en v2.onnx",
+    "..a", "a..", "...",
   };
   static const char *const bad[] = {
-    "",
-    "/abs",
-    "a//b",
-    "a/",
-    ".",
-    "..",
-    "../x",
-    "a/../b",
-    "a/./b",
-    "a/..",
-    "a\\b",
-    "a/\x01"
-    "b",
+    "",       "/abs",      "a//b",   "a/",   ".",         "..",
+    "../x",   "a/../b",    "a/./b",  "a/..", "a\\b",      "a/\x01" "b",
     "a\x7f",
   };
   char longest[NYAMP_BLOB_MAX_NAME + 2];
@@ -631,8 +620,7 @@ static int test_blob_read_close(void)
   CHECK(nyamp_blob_read_decode(&decoded, payload, size) == NYAMP_OK);
   CHECK(decoded.blob_id == 7 && decoded.flags == 0 &&
         decoded.file_offset == 0x100000000ULL + 4096);
-  CHECK(decoded.buffer.offset == 0x1000 &&
-        decoded.buffer.capacity == 0x100000 &&
+  CHECK(decoded.buffer.offset == 0x1000 && decoded.buffer.capacity == 0x100000 &&
         decoded.buffer.lease == 0x0000002a00000001ULL &&
         decoded.buffer.generation == 42 &&
         decoded.buffer.format == NYAMP_FORMAT_BYTES);
@@ -683,7 +671,8 @@ static int test_blob_read_close(void)
   payload[16] ^= 1;
   payload[16 + 6] = 0;
   CHECK(nyamp_blob_read_decode(&decoded, payload, size) == NYAMP_EPROTO);
-  CHECK(nyamp_blob_read_decode(&decoded, payload, size - 1) == NYAMP_EMSGSIZE);
+  CHECK(nyamp_blob_read_decode(&decoded, payload, size - 1) ==
+        NYAMP_EMSGSIZE);
 
   CHECK(nyamp_blob_close_encode(payload, sizeof(payload), &size, 7) ==
         NYAMP_OK);
@@ -820,9 +809,9 @@ static int test_blob_bench_and_reports(void)
     .bytes = 875760324ULL, .elapsed_ms = 21000, .files = 1, .reused = 0
   };
   struct nyamp_blob_pull_report_s pull_out;
-  struct nyamp_blob_progress_s progress = { .done = 1048576,
-                                            .total = 875760324ULL,
-                                            .bytes_per_second = 41943040 };
+  struct nyamp_blob_progress_s progress = {
+    .done = 1048576, .total = 875760324ULL, .bytes_per_second = 41943040
+  };
   struct nyamp_blob_progress_s progress_out;
 
   CHECK(nyamp_blob_bench_encode(payload, sizeof(payload), &size, &bench) ==
@@ -895,8 +884,10 @@ static int test_blob_bench_and_reports(void)
   CHECK(nyamp_blob_progress_encode(payload, sizeof(payload), &size,
                                    &progress) == NYAMP_OK);
   CHECK(size == NYAMP_BLOB_PROGRESS_SIZE);
-  CHECK(nyamp_blob_progress_decode(&progress_out, payload, size) == NYAMP_OK);
-  CHECK(progress_out.done == 1048576 && progress_out.total == 875760324ULL &&
+  CHECK(nyamp_blob_progress_decode(&progress_out, payload, size) ==
+        NYAMP_OK);
+  CHECK(progress_out.done == 1048576 &&
+        progress_out.total == 875760324ULL &&
         progress_out.bytes_per_second == 41943040);
 
   /* Progress past the total would render as more than 100 percent. */
@@ -1037,8 +1028,7 @@ static int test_llm_chat_result_and_finish(void)
   uint8_t body[NYAMP_LLM_RESULT_MAX_CHUNK];
   size_t size = 0;
   const uint8_t *bytes = NULL;
-  struct nyamp_llm_result_s chunk = { .total = 2000,
-                                      .offset = 1556,
+  struct nyamp_llm_result_s chunk = { .total = 2000, .offset = 1556,
                                       .length = 444 };
   struct nyamp_llm_result_s out;
   struct nyamp_llm_chat_finish_s finish = {
@@ -1100,7 +1090,8 @@ static int test_llm_chat_result_and_finish(void)
   CHECK(nyamp_llm_finish_decode(&generate_status, &sequence, payload, size) ==
         NYAMP_EPROTO);
   CHECK(nyamp_llm_chat_finish_decode(&finish_out, payload,
-                                     NYAMP_LLM_FINISH_SIZE) == NYAMP_EMSGSIZE);
+                                     NYAMP_LLM_FINISH_SIZE) ==
+        NYAMP_EMSGSIZE);
   CHECK(nyamp_llm_chat_finish_decode(&finish_out, payload, size + 1) ==
         NYAMP_EPROTO);
   return 0;
@@ -1183,8 +1174,8 @@ static int test_tts_text_chunks(void)
 
   memset(text, 'x', sizeof(text));
   CHECK(NYAMP_TTS_TEXT_MAX_CHUNK == 428U);
-  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk, text) ==
-        NYAMP_OK);
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_OK);
   CHECK(size == NYAMP_INLINE_MAX);
   CHECK(nyamp_tts_text_decode(&decoded, &bytes, payload, size) == NYAMP_OK);
   CHECK(decoded.total == 1000 && decoded.offset == 0 &&
@@ -1205,8 +1196,8 @@ static int test_tts_text_chunks(void)
   chunk.offset = 856;
   chunk.length = 144;
   chunk.window_samples = 0;
-  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk, text) ==
-        NYAMP_OK);
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_OK);
   CHECK(nyamp_tts_text_decode(&decoded, &bytes, payload, size) == NYAMP_OK);
   CHECK(decoded.offset == 856 && decoded.length == 144);
 
@@ -1214,30 +1205,30 @@ static int test_tts_text_chunks(void)
    * slot cannot hold, and a reserved flag are all refused by both sides.
    */
   chunk.length = 145;
-  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk, text) ==
-        NYAMP_EINVAL);
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
   chunk.length = 144;
   chunk.total = NYAMP_TTS_TEXT_MAX_BODY + 1;
-  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk, text) ==
-        NYAMP_EINVAL);
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
   chunk.total = 1000;
   chunk.speed = 0.0f;
-  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk, text) ==
-        NYAMP_EINVAL);
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
   chunk.speed = 1.0f;
   chunk.window_samples = NYAMP_TTS_WINDOW_SAMPLES_MAX + 1;
-  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk, text) ==
-        NYAMP_EINVAL);
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
   chunk.window_samples = NYAMP_TTS_WINDOW_SAMPLES_MIN - 1;
-  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk, text) ==
-        NYAMP_EINVAL);
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
   chunk.window_samples = 0;
   chunk.flags = 1;
-  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk, text) ==
-        NYAMP_EINVAL);
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_EINVAL);
   chunk.flags = 0;
-  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk, text) ==
-        NYAMP_OK);
+  CHECK(nyamp_tts_text_encode(payload, sizeof(payload), &size, &chunk,
+                              text) == NYAMP_OK);
   payload[24] = 1;
   CHECK(nyamp_tts_text_decode(&decoded, &bytes, payload, size) ==
         NYAMP_EPROTO);
@@ -1386,7 +1377,8 @@ static int test_kws_messages(void)
         seen.trigger_sample == 190720);
   CHECK(seen.label_length == 14 &&
         memcmp(seen.label, "nihao_openvela", 14) == 0);
-  CHECK(nyamp_kws_detected_decode(&seen, payload, size - 1) == NYAMP_EMSGSIZE);
+  CHECK(nyamp_kws_detected_decode(&seen, payload, size - 1) ==
+        NYAMP_EMSGSIZE);
 
   /* Offsets that run backwards cannot have come from a decoder. */
   detected.start_sample = detected.end_sample + 1;
@@ -1442,8 +1434,8 @@ static int test_kws_labels(void)
 
   /* A label that does not fit is reported, and the body stays valid. */
   CHECK(nyamp_kws_labels_append(body, sizeof(body), &size,
-                                "a_label_that_is_far_too_long_for_it",
-                                35) == NYAMP_EMSGSIZE);
+                                "a_label_that_is_far_too_long_for_it", 35) ==
+        NYAMP_EMSGSIZE);
   CHECK(nyamp_kws_labels_decode(&count, body, size) == NYAMP_OK);
   CHECK(count == 2);
 
