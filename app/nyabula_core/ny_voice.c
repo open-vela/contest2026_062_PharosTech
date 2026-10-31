@@ -3222,6 +3222,21 @@ static int ny_voice_task(int argc, char **argv)
             }
         }
 
+      /* Cloud ASR has no partial transcript. Its endpoint uses the existing
+       * capture energy gate after the listening cue, not stale KWS offsets.
+       */
+
+      if (turn.cloud_asr && turn.asr_open && turn.cloud_pcm)
+        {
+          turn.cloud_heard |=
+              loud > turn.asr_start + NY_VOICE_CAPTURE_RATE / 5;
+          event.heard_speech = turn.cloud_heard;
+          event.silence_ms =
+              event.heard_speech && total >= loud
+                  ? (uint32_t)((total - loud) / (NY_VOICE_CAPTURE_RATE / 1000))
+                  : 0;
+        }
+
       if (event.type == NY_VOICE_EV_LINK_LOST && turn.asr_open &&
           !turn.cloud_asr)
         {
