@@ -147,7 +147,7 @@ endif
 ifeq ($(CONFIG_NYABULA_CORE_VOICE),y)
 # The voice chain: wake word, recognition and speech run on the compute
 # domain; these own the microphone, the speaker and the turn.
-CSRCS += ny_voice.c ny_voice_audio.c ny_voice_dsp.c ny_voice_sm.c ny_voice_wire.c
+CSRCS += ny_voice.c ny_voice_audio.c ny_voice_dsp.c ny_voice_sm.c ny_voice_wire.c ny_voice_cloud.c
 endif
 endif
 

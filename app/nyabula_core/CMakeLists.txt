@@ -116,7 +116,7 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
       # The voice chain: wake word, recognition and speech run on the compute
       # domain; these own the microphone, the speaker and the turn.
       list(APPEND NYABULA_CORE_SRCS ny_voice.c ny_voice_audio.c ny_voice_dsp.c
-           ny_voice_sm.c ny_voice_wire.c)
+           ny_voice_sm.c ny_voice_wire.c ny_voice_cloud.c)
     endif()
   endif()
 
