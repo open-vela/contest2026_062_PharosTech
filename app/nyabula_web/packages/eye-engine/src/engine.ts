@@ -173,6 +173,13 @@ export interface EyeEngineOptions {
   background?: string | 'transparent';
 }
 
+export interface EyePresentation {
+  params: EyeParams;
+  irisLeft: string;
+  irisRight: string;
+  blink?: [number, number];
+}
+
 export class EyeEngine {
   readonly canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D | null;
@@ -268,6 +275,63 @@ export class EyeEngine {
   private zzzMask = 0;
 
   private rafId = 0;
+  private static readonly instances = new WeakMap<HTMLCanvasElement, EyeEngine>();
+
+  /** Local presentation only: reuse the destination renderer without changing remote state. */
+  static forCanvas(canvas: HTMLCanvasElement): EyeEngine | undefined {
+    return EyeEngine.instances.get(canvas);
+  }
+
+  /** Snapshot the displayed pose so a handoff starts from the exact last frame. */
+  capturePresentation(): EyePresentation {
+    return { params: { ...this.cur }, irisLeft: this.irisHexL, irisRight: this.irisHexR,
+      blink: [this.blinkEyes & 1 ? this.presentationBlink : 0, this.blinkEyes & 2 ? this.presentationBlink : 0] };
+  }
+
+  /** Draw a local intro pose, then interpolate it into the live state. */
+  copyPresentationFrame(destination: HTMLCanvasElement, closure: number, bare = 0, from?: EyePresentation, progress = 1): void {
+    const previousBare = this.bare;
+    const previousParams = from ? { ...this.cur } : null;
+    const previousLeft = this.irisHexL, previousRight = this.irisHexR;
+    const mix = from ? clamp(progress, 0, 1) : 1;
+    if (from) {
+      for (const key of Object.keys(from.params) as (keyof EyeParams)[]) this.cur[key] = lerp(from.params[key], this.cur[key], mix);
+      const blendColor = (a: string, b: string) => {
+        const left = hexRgb(a), right = hexRgb(b);
+        return '#' + left.map((v, i) => Math.round(lerp(v, right[i], mix)).toString(16).padStart(2, '0')).join('');
+      };
+      this.irisHexL = blendColor(from.irisLeft, previousLeft);
+      this.irisHexR = blendColor(from.irisRight, previousRight);
+    }
+    this.bare = clamp(bare, 0, 1);
+    try {
+      const blink = ([1, 2] as const).map((mask, index) => Math.max(clamp(closure, 0, 1),
+        lerp(from?.blink?.[index] ?? 0, this.blinkEyes & mask ? this.presentationBlink : 0, mix))) as [number, number];
+      this.render(0, 3, blink);
+    } finally {
+      this.bare = previousBare;
+      if (previousParams) Object.assign(this.cur, previousParams);
+      this.irisHexL = previousLeft; this.irisHexR = previousRight;
+    }
+    if (destination.width !== this.canvas.width) destination.width = this.canvas.width;
+    if (destination.height !== this.canvas.height) destination.height = this.canvas.height;
+    const ctx = destination.getContext('2d');
+    ctx?.clearRect(0, 0, destination.width, destination.height);
+    ctx?.drawImage(this.canvas, 0, 0);
+  }
+
+  private bare = 0;
+  private zzzEnabled = true;
+
+  startAsleep(): void {
+    this.cur.lidTop = this.tgt.lidTop = this.sleepEndTop = 0.86;
+    this.cur.lidBot = this.tgt.lidBot = this.sleepEndBot = 0.14;
+    this.setMode('sleep');
+  }
+  setBare(value: number): void { this.bare = clamp(value, 0, 1); }
+  setZzzEnabled(on: boolean): void { this.zzzEnabled = on; if (!on) this.zzz.length = 0; }
+
+  private presentationBlink = 0;
   private running = false;
   private clockOffsetMs = 0;
   private lastOneShotAt = 0;
@@ -281,6 +345,7 @@ export class EyeEngine {
 
   constructor(canvas: HTMLCanvasElement, opts: EyeEngineOptions = {}) {
     this.canvas = canvas;
+    EyeEngine.instances.set(canvas, this);
     this.opts = opts;
     this.ctx = typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
     this.tPrev = this.now();
@@ -532,6 +597,7 @@ export class EyeEngine {
   }
 
   destroy(): void {
+    EyeEngine.instances.delete(this.canvas);
     this.stop();
     for (const fn of this.detachFns) fn();
     this.detachFns = [];
@@ -775,6 +841,7 @@ export class EyeEngine {
       this.mode === 'sleep' ? clamp(this.cur.lidTop + this.cur.lidBot, 0, 1) : 0;
     this.zzzMask = lerp(this.zzzMask, zzzMaskTarget, 1 - Math.exp(-SPEED.lidTop * dt));
     if (this.mode !== 'sleep' && this.zzzMask < 0.002) this.zzz.length = 0;
+    this.presentationBlink = blink;
     this.render(blink);
   }
 
@@ -982,7 +1049,7 @@ export class EyeEngine {
     // update_z() sizes every particle quantity from R.
     const R = this.panelRadius() * EYE_RADIUS_RATIO;
     const CR = R;
-    if (this.mode === 'sleep' && this.cur.lidTop + this.cur.lidBot > 0.92) {
+    if (this.zzzEnabled && this.mode === 'sleep' && this.cur.lidTop + this.cur.lidBot > 0.92) {
       this.zNext -= dt;
       if (this.zNext <= 0) {
         this.zNext = 0.8 + Math.random() * 1.2;
@@ -1012,7 +1079,7 @@ export class EyeEngine {
   }
 
   /* ---------- rendering ---------- */
-  private render(blink: number): void {
+  private render(blink: number, blinkEyes = this.blinkEyes, pair?: [number, number]): void {
     const ctx = this.ctx;
     if (!ctx) return;
     this.resize();
@@ -1039,12 +1106,14 @@ export class EyeEngine {
       ctx.clip();
       // The eye interior stays black regardless of the page background.
       ctx.fillStyle = '#000';
+      ctx.globalAlpha = 1 - this.bare;
       ctx.fillRect(ex - CR, cy - CR, CR * 2, CR * 2);
-      this.drawEye(ctx, ex, cy, R, side, this.blinkEyes & (side < 0 ? 1 : 2) ? blink : 0);
-      this.drawZzz(ctx, side, ex, cy, R, R);
+      ctx.globalAlpha = 1;
+      this.drawEye(ctx, ex, cy, R, side, pair ? pair[side < 0 ? 0 : 1] : blinkEyes & (side < 0 ? 1 : 2) ? blink : 0);
+      if (this.zzzEnabled) this.drawZzz(ctx, side, ex, cy, R, R);
       ctx.restore();
       // bezel ring
-      ctx.strokeStyle = 'rgba(60,70,85,.45)';
+      ctx.strokeStyle = `rgba(60,70,85,${0.45 * (1 - this.bare)})`;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(ex, cy, CR, 0, 7);
@@ -1118,7 +1187,7 @@ export class EyeEngine {
     // squint, the dizzy wobble, irisScale and gaze: the globe never moves.
     const G = R * GLOBE_RATIO;
     let g = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
-    g.addColorStop(0, rgba(IC, clamp(S.glow, 0, 1) * 0.175));
+    g.addColorStop(0, rgba(IC, clamp(S.glow, 0, 1) * 0.175 * (1 - this.bare)));
     g.addColorStop(1, rgba(IC, 0));
     ctx.fillStyle = g;
     ctx.beginPath();
@@ -1206,7 +1275,16 @@ export class EyeEngine {
     const E = IR * 1.04;
     const slant = S.lidSlant * side * -1 * open;
     const lidPath = this.makeLidPath(E, lidT, lidB, slant, S.botCurve * open);
-    ctx.fill(lidPath);
+    if (this.bare > 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.globalAlpha = this.bare;
+      ctx.fill(lidPath);
+      ctx.restore();
+      ctx.globalAlpha = 1 - this.bare;
+      ctx.fill(lidPath);
+      ctx.globalAlpha = 1;
+    } else ctx.fill(lidPath);
     if (minimalSceneExit) {
       ctx.save();
       ctx.clip(lidPath);
