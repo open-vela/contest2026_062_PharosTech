@@ -1,5 +1,5 @@
---- a/port/include/zephyr/arch/arch_interface.h
-+++ b/port/include/zephyr/arch/arch_interface.h
+--- a/include/zephyr/arch/arch_interface.h
++++ b/include/zephyr/arch/arch_interface.h
 @@ -38,7 +38,7 @@
  extern "C" {
  #endif
@@ -18,8 +18,8 @@
  /** Return the CPU struct for the currently executing CPU */
  static inline struct _cpu *arch_curr_cpu(void);
  
---- a/port/include/zephyr/irq.h
-+++ b/port/include/zephyr/irq.h
+--- a/include/zephyr/irq.h
++++ b/include/zephyr/irq.h
 @@ -22,7 +22,7 @@
  extern "C" {
  #endif
@@ -47,8 +47,8 @@
  void z_smp_global_unlock(unsigned int key);
  #define irq_unlock(key) z_smp_global_unlock(key)
  #else
---- a/port/include/zephyr/spinlock.h
-+++ b/port/include/zephyr/spinlock.h
+--- a/include/zephyr/spinlock.h
++++ b/include/zephyr/spinlock.h
 @@ -24,7 +24,7 @@
  extern "C" {
  #endif
