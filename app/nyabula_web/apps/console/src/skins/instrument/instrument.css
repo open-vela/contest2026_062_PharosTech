@@ -1,0 +1,114 @@
+/* Instrument console skin: flat panels, hairline grid, mono labels,
+ * hardware keys, LED signal color. Local tokens derive from --md-* so
+ * light/dark and every palette hold. Scoped under .insc / .insc-portal. */
+.insc,
+.insc-portal {
+  --c-bg: var(--md-surface);
+  --c-panel: var(--md-surface-container);
+  --c-panel-2: var(--md-surface-container-high);
+  --c-key: var(--md-surface-container-high);
+  --c-line: var(--md-outline-variant);
+  --c-line-2: var(--md-outline);
+  --c-fg: var(--md-on-surface);
+  --c-dim: var(--md-on-surface-variant);
+  --c-mute: color-mix(in srgb, var(--md-on-surface-variant) 55%, var(--md-surface));
+  --c-sig: var(--md-primary);
+  --c-sig-rgb: var(--md-primary-rgb);
+  --c-sig-dim: rgba(var(--md-primary-rgb), 0.16);
+  --c-warn: var(--md-error);
+  --c-warn-dim: color-mix(in srgb, var(--md-error) 16%, transparent);
+  --c-grid: color-mix(in srgb, var(--md-on-surface) 3.5%, transparent);
+  --c-mono: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  --c-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --c-fast: 160ms;
+  color: var(--c-fg);
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+.insc {
+  min-height: 100dvh;
+  background-color: var(--c-bg);
+  background-image: linear-gradient(var(--c-grid) 1px, transparent 1px), linear-gradient(90deg, var(--c-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+:is(.insc, .insc-portal) ::selection { background: var(--c-sig); color: var(--md-on-primary); }
+:is(.insc, .insc-portal) .ins-label { font: 600 10.5px/1.2 var(--c-mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--c-dim); }
+:is(.insc, .insc-portal) .ins-num { font: 600 13px var(--c-mono); letter-spacing: 0.04em; }
+:is(.insc, .insc-portal) .ins-dim { color: var(--c-dim); }
+:is(.insc, .insc-portal) .ins-sig { color: var(--c-sig); }
+:is(.insc, .insc-portal) .ins-warn { color: var(--c-warn); }
+:is(.insc, .insc-portal) .ins-idx { color: var(--c-mute); }
+:is(.insc, .insc-portal) .ins-panel { position: relative; background: var(--c-panel); border: 1px solid var(--c-line); border-radius: 4px; padding: 14px; min-width: 0; }
+:is(.insc, .insc-portal) .ins-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+:is(.insc, .insc-portal) .ins-led { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c-line-2); flex: none; }
+:is(.insc, .insc-portal) .ins-led.on { background: var(--c-sig); box-shadow: 0 0 0 3px var(--c-sig-dim), 0 0 8px var(--c-sig); }
+:is(.insc, .insc-portal) .ins-led.warn { background: var(--c-warn); box-shadow: 0 0 0 3px var(--c-warn-dim); }
+:is(.insc, .insc-portal) .ins-led.blink { animation: insc-blink 1.4s steps(2, jump-none) infinite; }
+@keyframes insc-blink { 50% { opacity: 0.25; } }
+:is(.insc, .insc-portal) .ins-key {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--c-line-2);
+  border-bottom-width: 3px;
+  border-radius: 4px;
+  background: var(--c-key);
+  color: var(--c-fg);
+  font: 600 11px var(--c-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 120ms var(--c-ease), border-color var(--c-fast), background var(--c-fast), color var(--c-fast);
+}
+:is(.insc, .insc-portal) .ins-key:hover { border-color: var(--c-dim); }
+:is(.insc, .insc-portal) .ins-key:active:not(:disabled) { transform: translateY(2px); border-bottom-width: 1px; margin-bottom: 2px; }
+:is(.insc, .insc-portal) .ins-key:disabled { opacity: 0.45; cursor: default; }
+:is(.insc, .insc-portal) .ins-key.on { color: var(--c-sig); border-color: var(--c-sig); }
+:is(.insc, .insc-portal) .ins-key.solid { background: var(--c-fg); color: var(--c-bg); border-color: var(--c-fg); }
+:is(.insc, .insc-portal) .ins-key.danger { color: var(--c-warn); border-color: color-mix(in srgb, var(--c-warn) 50%, transparent); }
+:is(.insc, .insc-portal) .ins-key:focus-visible { outline: 1px solid var(--c-sig); outline-offset: 2px; }
+:is(.insc, .insc-portal) .ins-input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  background: var(--c-bg);
+  color: var(--c-fg);
+  border: 1px solid var(--c-line-2);
+  border-radius: 3px;
+  font: 500 13px var(--c-mono);
+  outline: none;
+  transition: border-color var(--c-fast);
+}
+:is(.insc, .insc-portal) .ins-input:focus { border-color: var(--c-sig); }
+:is(.insc, .insc-portal) .ins-input::placeholder { color: var(--c-mute); }
+:is(.insc, .insc-portal) .ins-seg { display: inline-flex; border: 1px solid var(--c-line-2); border-radius: 4px; overflow: hidden; }
+:is(.insc, .insc-portal) .ins-seg button { border: none; border-right: 1px solid var(--c-line-2); background: transparent; color: var(--c-dim); padding: 7px 12px; font: 600 11px var(--c-mono); letter-spacing: 0.08em; cursor: pointer; transition: background var(--c-fast), color var(--c-fast); }
+:is(.insc, .insc-portal) .ins-seg button:last-child { border-right: none; }
+:is(.insc, .insc-portal) .ins-seg button:hover { color: var(--c-fg); }
+:is(.insc, .insc-portal) .ins-seg button.on { background: var(--c-fg); color: var(--c-bg); }
+:is(.insc, .insc-portal) .ins-err { margin: 0; font: 600 12px var(--c-mono); color: var(--c-warn); }
+:is(.insc, .insc-portal) .ins-page-enter-active { transition: opacity 220ms var(--c-ease), transform 220ms var(--c-ease); }
+:is(.insc, .insc-portal) .ins-page-leave-active { transition: opacity 120ms linear; }
+:is(.insc, .insc-portal) .ins-page-enter-from { opacity: 0; transform: translateY(8px); }
+:is(.insc, .insc-portal) .ins-page-leave-to { opacity: 0; }
+/* Staggered panel boot-in with a stepped flicker. */
+:is(.insc, .insc-portal) .ins-boot > * { animation: insc-boot 420ms var(--c-ease) both; }
+:is(.insc, .insc-portal) .ins-boot > *:nth-child(2) { animation-delay: 40ms; }
+:is(.insc, .insc-portal) .ins-boot > *:nth-child(3) { animation-delay: 80ms; }
+:is(.insc, .insc-portal) .ins-boot > *:nth-child(4) { animation-delay: 120ms; }
+:is(.insc, .insc-portal) .ins-boot > *:nth-child(5) { animation-delay: 160ms; }
+:is(.insc, .insc-portal) .ins-boot > *:nth-child(n + 6) { animation-delay: 200ms; }
+@keyframes insc-boot {
+  0% { opacity: 0; transform: translateY(6px); }
+  40% { opacity: 0.6; }
+  55% { opacity: 0.2; }
+  100% { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.insc, .insc-portal) *, :is(.insc, .insc-portal) *::before, :is(.insc, .insc-portal) *::after { animation: none !important; transition: none !important; }
+}
