@@ -119,6 +119,10 @@ export function authMe() {
   return req<{ user: User }>('GET', '/auth/me');
 }
 
+export function authLogout() {
+  return req<{ ok: boolean }>('POST', '/auth/logout');
+}
+
 /* ---------------- devices ---------------- */
 
 export function listDevices() {
