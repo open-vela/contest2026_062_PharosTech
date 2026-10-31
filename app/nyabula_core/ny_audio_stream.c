@@ -402,6 +402,12 @@ int ny_audio_stream_open(struct ny_audio_stream_s **result,
       stream->count = NY_AUDIO_STREAM_BUFFERS_MAX;
     }
 
+  if (config->prefill > stream->count)
+    {
+      ret = -EINVAL;
+      goto failed;
+    }
+
   snprintf(stream->mqname, sizeof(stream->mqname), "/tmp/nyas%lx",
            (unsigned long)(uintptr_t)stream);
   memset(&attr, 0, sizeof(attr));
@@ -559,7 +565,11 @@ ssize_t ny_audio_stream_write(struct ny_audio_stream_s *stream,
             }
 
           stream->header_sent = true;
-          ret = ny_audio_stream_start(stream);
+          ret = 0;
+          if (stream->queued >= stream->config.prefill * stream->config.chunk)
+            {
+              ret = ny_audio_stream_start(stream);
+            }
           if (ret < 0)
             {
               return ret;
