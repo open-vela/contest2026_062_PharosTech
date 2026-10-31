@@ -2598,6 +2598,16 @@ static cJSON *ny_bt_status(void)
   ok = ok &&
        cJSON_AddNumberToObject(sound, "mediaUnderruns", audio.media_underruns);
   ok = ok &&
+       cJSON_AddNumberToObject(sound, "mediaSbcRate", audio.media_sbc_rate);
+  ok = ok && cJSON_AddNumberToObject(sound, "mediaSbcChannels",
+                                     audio.media_sbc_channels);
+  ok = ok && cJSON_AddNumberToObject(sound, "mediaSbcBitpool",
+                                     audio.media_sbc_bitpool);
+  ok = ok && cJSON_AddNumberToObject(sound, "mediaSbcBlocks",
+                                     audio.media_sbc_blocks);
+  ok = ok && cJSON_AddNumberToObject(sound, "mediaSbcSubbands",
+                                     audio.media_sbc_subbands);
+  ok = ok &&
        cJSON_AddNumberToObject(sound, "scoRxPackets", audio.sco_rx_packets);
   ok = ok && cJSON_AddNumberToObject(sound, "scoRxBad", audio.sco_rx_bad);
   ok = ok &&

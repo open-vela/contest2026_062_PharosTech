@@ -74,6 +74,11 @@ struct ny_bt_audio_status_s
   uint32_t media_bad;     /* Frames that did not decode */
   uint32_t media_dropped; /* Packets dropped: ring full or speaker held */
   uint32_t media_underruns;
+  uint32_t media_sbc_rate;
+  uint8_t media_sbc_channels;
+  uint8_t media_sbc_bitpool;
+  uint8_t media_sbc_blocks;
+  uint8_t media_sbc_subbands;
   uint32_t media_buffer_ms;
   uint32_t sco_rx_packets;
   uint32_t sco_rx_bad; /* Packets the controller flagged, frames lost */
