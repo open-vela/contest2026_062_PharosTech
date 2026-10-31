@@ -53,6 +53,9 @@ importers:
       '@nyabula/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      fflate:
+        specifier: 0.8.2
+        version: 0.8.2
       pinia:
         specifier: ^2.2.8
         version: 2.3.1(typescript@5.9.3)(vue@3.5.42(typescript@5.9.3))
@@ -62,6 +65,46 @@ importers:
       vue-router:
         specifier: ^4.4.5
         version: 4.6.4(vue@3.5.42(typescript@5.9.3))
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^5.2.1
+        version: 5.2.4(vite@5.4.21)(vue@3.5.42(typescript@5.9.3))
+      happy-dom:
+        specifier: ^15.11.7
+        version: 15.11.7
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vite:
+        specifier: ^5.4.19
+        version: 5.4.21
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(happy-dom@15.11.7)
+      vue-tsc:
+        specifier: ^2.1.10
+        version: 2.2.12(typescript@5.9.3)
+
+  apps/panel:
+    dependencies:
+      '@nyabula/eye-engine':
+        specifier: workspace:*
+        version: link:../../packages/eye-engine
+      '@nyabula/nyalink':
+        specifier: workspace:*
+        version: link:../../packages/nyalink
+      '@nyabula/nyaui-vue':
+        specifier: workspace:*
+        version: link:../../packages/nyaui-vue
+      '@nyabula/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
+      pinia:
+        specifier: ^2.2.8
+        version: 2.3.1(typescript@5.9.3)(vue@3.5.42(typescript@5.9.3))
+      vue:
+        specifier: ^3.5.13
+        version: 3.5.42(typescript@5.9.3)
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^5.2.1
@@ -76,14 +119,11 @@ importers:
         specifier: ^2.1.10
         version: 2.2.12(typescript@5.9.3)
 
-  apps/panel:
+  apps/simulator:
     dependencies:
       '@nyabula/eye-engine':
         specifier: workspace:*
         version: link:../../packages/eye-engine
-      '@nyabula/nyalink':
-        specifier: workspace:*
-        version: link:../../packages/nyalink
       '@nyabula/nyaui-vue':
         specifier: workspace:*
         version: link:../../packages/nyaui-vue
@@ -670,6 +710,9 @@ packages:
   expect-type@1.4.0:
     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
     engines: {node: '>=12.0.0'}
+
+  fflate@0.8.2:
+    resolution: {integrity: sha512-cPJU47OaAoCbg0pBvzsgpTPhmhqI5eJjh/JIu8tPj5q+T7iLvW/JAYUqmE7KOB4R1ZyEhzBaIQpQpardBF5z8A==}
 
   fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
@@ -1327,6 +1370,8 @@ snapshots:
       '@types/estree': 1.0.9
 
   expect-type@1.4.0: {}
+
+  fflate@0.8.2: {}
 
   fsevents@2.3.3:
     optional: true
