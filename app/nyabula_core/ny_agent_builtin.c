@@ -47,6 +47,9 @@ struct ny_agent_builtin_s
   int (*execute)(const char *, char *, size_t);
 };
 
+static int ny_agent_builtin_weather(const char *input, char *output,
+                                    size_t capacity);
+
 static const struct ny_agent_builtin_s g_builtin[] = {
   { "read_file", "Read a workspace file", "{\"path\":\"notes.txt\"}", false,
     true, tool_read_file_execute },
@@ -66,8 +69,11 @@ static const struct ny_agent_builtin_s g_builtin[] = {
   { "news_search", "Search using configured NewsAPI",
     "{\"query\":\"technology\",\"top_headlines\":false}", false, false,
     tool_news_search_execute },
-  { "get_weather", "Read current weather using wttr.in",
-    "{\"location\":\"Hong Kong\"}", false, false, tool_get_weather_execute },
+  { "get_weather",
+    "Query Open-Meteo weather for an explicit city; section now, daily or "
+    "hourly",
+    "{\"location\":\"Hong Kong\",\"section\":\"now\"}", false, false,
+    ny_agent_builtin_weather },
   { "fetch_url", "Fetch a public HTTPS text URL",
     "{\"url\":\"https://example.com/\"}", false, false,
     tool_fetch_url_execute }
@@ -85,6 +91,34 @@ static int ny_agent_builtin_providers(const char *topic, const cJSON *data,
                                       cJSON **result);
 static int ny_agent_builtin_request(const char *topic, const cJSON *data,
                                     cJSON **result);
+
+/****************************************************************************
+ * Name: ny_agent_builtin_weather
+ ****************************************************************************/
+
+static int ny_agent_builtin_weather(const char *input, char *output,
+                                    size_t capacity)
+{
+#ifdef CONFIG_NYABULA_CORE_WEATHER
+  const struct ny_product_caller_s caller = { "agent-weather",
+                                              NY_PRODUCT_OWNER };
+  cJSON *data = cJSON_Parse(input);
+  cJSON *result = NULL;
+  int ret =
+      cJSON_IsObject(data)
+          ? ny_product_weather_request(&caller, "weather.query", data, &result)
+          : -EINVAL;
+  if (ret == 0 && !cJSON_PrintPreallocated(result, output, capacity, false))
+    ret = -E2BIG;
+  if (ret < 0)
+    snprintf(output, capacity, "Weather query failed: %d", ret);
+  cJSON_Delete(data);
+  cJSON_Delete(result);
+  return ret;
+#else
+  return tool_get_weather_execute(input, output, capacity);
+#endif
+}
 
 /****************************************************************************
  * Name: ny_agent_builtin_string
