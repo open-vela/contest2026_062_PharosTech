@@ -116,7 +116,8 @@ jobs:
   build:
     name: Build (${{ matrix.config }})
     needs: scan_configs
-    runs-on: ubuntu-latest
+    # Keep the host compiler compatible with the pinned libc++ tree.
+    runs-on: ubuntu-24.04
 
     strategy:
       fail-fast: false
