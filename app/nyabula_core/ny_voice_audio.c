@@ -39,6 +39,9 @@
 #include <unistd.h>
 
 #include "ny_voice_audio.h"
+#ifdef CONFIG_NYABULA_CORE_DSP
+#include "ny_audio_stream.h"
+#endif
 #include "ny_voice_dsp.h"
 
 /****************************************************************************
@@ -70,6 +73,9 @@ struct ny_voice_audio_buffer_s
 struct ny_voice_audio_s
 {
   struct ny_voice_audio_config_s config;
+#ifdef CONFIG_NYABULA_CORE_DSP
+  struct ny_audio_stream_s *output;
+#endif
   struct ny_voice_audio_buffer_s buffers[NY_VOICE_AUDIO_BUFFERS];
   unsigned int count;
   int current; /* Playback: the chunk being filled, or -1. */
@@ -347,6 +353,29 @@ int ny_voice_audio_open(struct ny_voice_audio_s **result,
   audio->config = *config;
   audio->current = -1;
   audio->mq = (mqd_t)-1;
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (!config->capture)
+    {
+      struct ny_audio_stream_config_s stream = {
+        .dsp_source = "tts",
+        .path = config->path,
+        .wav = config->wav,
+        .rate = config->rate,
+        .channels = config->channels,
+        .chunk = config->chunk,
+        .buffers = NY_VOICE_AUDIO_BUFFERS,
+      };
+      ret = ny_audio_stream_open(&audio->output, &stream);
+      if (ret < 0)
+        {
+          free(audio);
+          return ret;
+        }
+
+      *result = audio;
+      return 0;
+    }
+#endif
   audio->fd = open(config->path, O_RDWR | O_CLOEXEC);
   if (audio->fd < 0)
     {
@@ -511,6 +540,12 @@ ssize_t ny_voice_audio_write(struct ny_voice_audio_s *audio, const void *pcm,
       return -EINVAL;
     }
 
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (audio->output != NULL)
+    {
+      return ny_audio_stream_write(audio->output, pcm, bytes, timeout_ms);
+    }
+#endif
   while (done < bytes)
     {
       struct ap_buffer_s *apb;
@@ -583,6 +618,12 @@ size_t ny_voice_audio_queued(struct ny_voice_audio_s *audio)
       return 0;
     }
 
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (audio->output != NULL)
+    {
+      return ny_audio_stream_queued(audio->output);
+    }
+#endif
   ny_voice_audio_pump(audio, 0);
   return audio->queued;
 }
@@ -597,6 +638,12 @@ int ny_voice_audio_drain(struct ny_voice_audio_s *audio, int timeout_ms)
       return -EINVAL;
     }
 
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (audio->output != NULL)
+    {
+      return ny_audio_stream_drain(audio->output, timeout_ms);
+    }
+#endif
   if (audio->current >= 0)
     {
       struct ap_buffer_s *apb = audio->buffers[audio->current].apb;
@@ -646,6 +693,14 @@ void ny_voice_audio_close(struct ny_voice_audio_s *audio)
       return;
     }
 
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (audio->output != NULL)
+    {
+      ny_audio_stream_close(audio->output);
+      free(audio);
+      return;
+    }
+#endif
   if (audio->started)
     {
       struct timespec begin;
