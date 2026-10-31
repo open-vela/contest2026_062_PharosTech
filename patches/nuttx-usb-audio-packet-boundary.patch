@@ -1,0 +1,199 @@
+diff --git a/drivers/usbhost/usbhost_audio.c b/drivers/usbhost/usbhost_audio.c
+index d0f4d4c8d04..55c7badf557 100644
+--- a/drivers/usbhost/usbhost_audio.c
++++ b/drivers/usbhost/usbhost_audio.c
+@@ -119,6 +119,8 @@ struct usbhost_audio_stream_s
+   size_t packetsize;
+   size_t captureused;
+   size_t captureoffset;
++  size_t playbackused;
++  size_t playbacksize;
+   uint32_t rate;
+   uint32_t accumulator;
+   volatile uint32_t feedbackrate;
+@@ -166,6 +168,7 @@ static int usbhost_audio_addsource(FAR struct usbhost_audio_s *audio,
+ static int usbhost_audio_setchannelvolume(
+   FAR struct usbhost_audio_stream_s *stream, uint8_t channel,
+   uint16_t volume);
++static bool usbhost_audio_pending(FAR struct usbhost_audio_stream_s *stream);
+ 
+ static FAR struct usbhost_class_s *
+   usbhost_audio_create(FAR struct usbhost_hubport_s *hport,
+@@ -1212,6 +1215,25 @@ usbhost_audio_dequeue(FAR struct usbhost_audio_stream_s *stream)
+          container_of(entry, struct ap_buffer_s, dq_entry);
+ }
+ 
++/****************************************************************************
++ * Name: usbhost_audio_pending
++ ****************************************************************************/
++
++static bool usbhost_audio_pending(FAR struct usbhost_audio_stream_s *stream)
++{
++  irqstate_t flags;
++  bool pending;
++
++  flags = spin_lock_irqsave(&stream->queuelock);
++  pending = dq_peek(&stream->pendq) != NULL;
++  spin_unlock_irqrestore(&stream->queuelock, flags);
++  return pending;
++}
++
++/****************************************************************************
++ * Name: usbhost_audio_transfer
++ ****************************************************************************/
++
+ static int usbhost_audio_transfer(FAR struct usbhost_audio_stream_s *stream,
+                                   FAR struct ap_buffer_s *apb)
+ {
+@@ -1222,10 +1244,12 @@ static int usbhost_audio_transfer(FAR struct usbhost_audio_stream_s *stream,
+   size_t packet;
+   size_t maxpayload;
+   size_t offset;
++  size_t copied;
+   uint32_t service;
+   uint32_t frames;
+   uint32_t framebytes;
+   ssize_t nbytes;
++  int ret;
+ 
+   maxpayload = (format->epdesc.mxpacketsize & USB_EP_MAX_PACKET_MASK) *
+                (USB_EP_MAX_PACKET_MULT(format->epdesc.mxpacketsize) + 1) *
+@@ -1273,8 +1297,24 @@ static int usbhost_audio_transfer(FAR struct usbhost_audio_stream_s *stream,
+           return -ENOSPC;
+         }
+     }
++  else if (stream->packetbuf == NULL)
++    {
++      /* Playback packets span application buffers. Own the carried bytes
++       * before returning an application buffer to its producer.
++       */
++
++      ret = DRVR_IOALLOC(hport->drvr, &stream->packetbuf, maxpayload);
++      if (ret < 0)
++        {
++          return ret;
++        }
++
++      stream->packetsize = maxpayload;
++    }
+ 
+-  while (remaining > 0 && !stream->terminate &&
++  while ((remaining > 0 ||
++          (stream->direction == USBHOST_AUDIO_PLAYBACK &&
++           stream->playbackused > 0)) && !stream->terminate &&
+          !stream->audio->disconnected)
+     {
+       if (stream->direction == USBHOST_AUDIO_CAPTURE)
+@@ -1318,45 +1358,68 @@ static int usbhost_audio_transfer(FAR struct usbhost_audio_stream_s *stream,
+           continue;
+         }
+ 
+-      stream->accumulator += stream->feedbackrate != 0 ?
+-                             stream->feedbackrate : stream->rate;
+-      frames = stream->accumulator / service;
+-      stream->accumulator %= service;
+-      packet = frames * framebytes;
+-      if (packet == 0)
++      if (stream->playbacksize == 0)
+         {
+-          packet = framebytes;
+-        }
++          stream->accumulator += stream->feedbackrate != 0 ?
++                                 stream->feedbackrate : stream->rate;
++          frames = stream->accumulator / service;
++          stream->accumulator %= service;
++          packet = frames * framebytes;
++          if (packet == 0)
++            {
++              packet = framebytes;
++            }
+ 
+-      if (packet > maxpayload)
+-        {
+-          return -ERANGE;
+-        }
++          if (packet > maxpayload)
++            {
++              return -ERANGE;
++            }
+ 
+-      if (packet > remaining)
+-        {
+-          packet = remaining;
++          stream->playbacksize = packet;
+         }
+ 
+-      nbytes = DRVR_TRANSFER(hport->drvr, stream->ep,
+-                            &apb->samp[offset], packet);
+-      if (nbytes < 0)
++      copied = stream->playbacksize - stream->playbackused;
++      if (copied > remaining)
+         {
+-          return nbytes;
++          copied = remaining;
+         }
+ 
+-      if (nbytes == 0)
++      memcpy(stream->packetbuf + stream->playbackused,
++             apb->samp + offset, copied);
++      stream->playbackused += copied;
++      offset += copied;
++      remaining -= copied;
++      if (stream->playbackused < stream->playbacksize)
+         {
+-          return -EIO;
++          if ((apb->flags & AUDIO_APB_FINAL) == 0 &&
++              usbhost_audio_pending(stream))
++            {
++              /* Another queued buffer supplies this service interval's
++               * tail. A buffer boundary must not consume a USB interval.
++               */
++
++              break;
++            }
++
++          /* At EOF or a real queue underrun, transmit every remaining
++           * sample and pad only the rest of this final service interval.
++           */
++
++          memset(stream->packetbuf + stream->playbackused, 0,
++                 stream->playbacksize - stream->playbackused);
+         }
+ 
+-      if ((size_t)nbytes > remaining)
++      packet = stream->playbacksize;
++      nbytes = DRVR_TRANSFER(hport->drvr, stream->ep,
++                            stream->packetbuf, packet);
++      stream->playbackused = 0;
++      stream->playbacksize = 0;
++      if (nbytes != (ssize_t)packet)
+         {
+-          return -EOVERFLOW;
++          apb->curbyte = offset;
++          return nbytes < 0 ? nbytes :
++                 (size_t)nbytes > packet ? -EOVERFLOW : -EIO;
+         }
+-
+-      offset += nbytes;
+-      remaining -= nbytes;
+     }
+ 
+   if (stream->direction == USBHOST_AUDIO_PLAYBACK)
+@@ -1702,6 +1765,8 @@ static int usbhost_audio_start_locked(
+   stream->accumulator = 0;
+   stream->captureoffset = 0;
+   stream->captureused = 0;
++  stream->playbackused = 0;
++  stream->playbacksize = 0;
+   if (stream->direction == USBHOST_AUDIO_CAPTURE &&
+       stream->packetbuf == NULL)
+     {
+@@ -1875,6 +1940,8 @@ static int usbhost_audio_stop_locked(
+       stream->packetbuf = NULL;
+       stream->captureused = 0;
+       stream->captureoffset = 0;
++      stream->playbackused = 0;
++      stream->playbacksize = 0;
+     }
+ 
+   nxmutex_unlock(&stream->lock);
