@@ -1,0 +1,70 @@
+--- a/src/llm/llm_internal.h
++++ b/src/llm/llm_internal.h
+@@ -62,6 +62,8 @@
+ 
+ const char* model_name_for_api(const char* model, const char* host);
+ bool is_openai_compat_host(const char* host);
++const char* llm_mimo_thinking_type(const char* host);
++int llm_mimo_apply_options(cJSON* body, const char* host);
+ 
+ /* ── JSON text extraction ─────────────────────────────────── */
+ 
+--- a/src/llm/llm_proxy.c
++++ b/src/llm/llm_proxy.c
+@@ -66,6 +66,32 @@
+         || strstr(host, "xiaomimimo.com");
+ }
+ 
++/* MiMo Chat exposes an on/off switch, not distinct reasoning intensities.
++ * Keep the requested level in configuration; send only the supported switch.
++ * Other providers must not receive MiMo-specific request fields.
++ */
++const char* llm_mimo_thinking_type(const char* host)
++{
++    if (strcmp(host, "api.xiaomimimo.com") != 0
++        && strcmp(host, "token-plan-cn.xiaomimimo.com") != 0
++        && strcmp(host, "token-plan-sgp.xiaomimimo.com") != 0
++        && strcmp(host, "token-plan-ams.xiaomimimo.com") != 0)
++        return NULL;
++    char level[16] = "enabled";
++    claw_config_get("mimo_thinking", level, sizeof(level));
++    return strcmp(level, "none") == 0 ? "disabled" : "enabled";
++}
++
++int llm_mimo_apply_options(cJSON* body, const char* host)
++{
++    const char* type = llm_mimo_thinking_type(host);
++    if (!type)
++        return OK;
++    cJSON* thinking = cJSON_AddObjectToObject(body, "thinking");
++    return thinking && cJSON_AddStringToObject(thinking, "type", type)
++        ? OK : ERROR;
++}
++
+ 
+ int resp_buf_init(resp_buf_t* rb, size_t initial_cap)
+ {
+@@ -679,6 +705,11 @@
+ 
+     cJSON_AddItemToObject(body, "messages", messages);
+ 
++    if (llm_mimo_apply_options(body, llm_host) != OK) {
++        cJSON_Delete(body);
++        return ERROR;
++    }
++
+     char* post_data = cJSON_PrintUnformatted(body);
+     cJSON_Delete(body);
+     if (!post_data) {
+@@ -793,6 +824,11 @@
+     cJSON_AddStringToObject(sys_msg, "content", system_prompt);
+     cJSON_InsertItemInArray(msgs, 0, sys_msg);
+     cJSON_AddItemToObject(body, "messages", msgs);
++
++    if (llm_mimo_apply_options(body, llm_host) != OK) {
++        cJSON_Delete(body);
++        return ERROR;
++    }
+ 
+     /* Convert tools to OpenAI format */
+     cJSON* tools_arr = build_openai_tools_array(tools_json);
