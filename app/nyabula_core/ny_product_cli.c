@@ -26,7 +26,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define NY_PRODUCT_CLI_LIMIT 4096
+#define NY_PRODUCT_CLI_LIMIT        4096
+#define NY_PRODUCT_CLI_SOURCE_LIMIT 24576
 
 /****************************************************************************
  * Name: ny_product_cli
@@ -35,7 +36,11 @@
 int ny_product_cli(const char *topic, const char *path)
 {
   const struct ny_product_caller_s caller = { "nsh", NY_PRODUCT_OWNER, true };
-  char input[NY_PRODUCT_CLI_LIMIT + 1];
+  size_t limit = strcmp(topic, "agent.skills.save") == 0 ||
+                         strcmp(topic, "plugin.author.deploy") == 0
+                     ? NY_PRODUCT_CLI_SOURCE_LIMIT
+                     : NY_PRODUCT_CLI_LIMIT;
+  char *input;
   FILE *stream = fopen(path, "rb");
   cJSON *data;
   cJSON *result = NULL;
@@ -48,22 +53,32 @@ int ny_product_cli(const char *topic, const char *path)
       return -errno;
     }
 
-  length = fread(input, 1, sizeof(input), stream);
+  input = malloc(limit + 1);
+  if (input == NULL)
+    {
+      fclose(stream);
+      return -ENOMEM;
+    }
+
+  length = fread(input, 1, limit + 1, stream);
   ret = ferror(stream) ? -EIO : 0;
   fclose(stream);
-  if (ret < 0 || length > NY_PRODUCT_CLI_LIMIT)
+  if (ret < 0 || length > limit)
     {
+      free(input);
       return ret < 0 ? ret : -E2BIG;
     }
 
   ret = ny_product_json_check(input, length);
   if (ret < 0)
     {
+      free(input);
       return ret;
     }
 
   input[length] = '\0';
   data = cJSON_ParseWithOpts(input, NULL, true);
+  free(input);
   if (data == NULL)
     {
       return -EINVAL;
