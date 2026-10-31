@@ -1,0 +1,500 @@
+/* Instrument skin: component and global-class styling, scoped under
+ * :root[data-skin='instrument']. Flat anodised panels, hairline borders,
+ * small radii, monospace uppercase labels; the palette primary is the
+ * signal LED color. No gradients, no glass. */
+
+:root[data-skin='instrument'] {
+  --ins-mono: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  --ins-line: var(--md-outline-variant);
+  --ins-line-2: var(--md-outline);
+  --ins-led-glow: 0 0 0 3px rgba(var(--md-primary-rgb), 0.16), 0 0 8px rgba(var(--md-primary-rgb), 0.9);
+  --ins-grid: rgba(255, 255, 255, 0.028);
+  --ins-key: var(--md-surface-container-high);
+  --ins-key-edge: rgba(0, 0, 0, 0.55);
+  --ins-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --radius-s: 2px;
+  --radius-m: 4px;
+  --radius-l: 6px;
+  --md-elev-1: none;
+  --md-elev-2: 0 0 0 1px var(--md-outline-variant), 0 18px 40px -18px rgba(0, 0, 0, 0.6);
+  --dur-fast: 0.14s;
+  --dur: 0.24s;
+  --dur-slow: 0.42s;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+}
+:root[data-skin='instrument'][data-mode='light'] {
+  --ins-grid: rgba(0, 0, 0, 0.045);
+  --ins-key-edge: rgba(0, 0, 0, 0.18);
+  --ins-led-glow: 0 0 0 3px rgba(var(--md-primary-rgb), 0.2), 0 0 6px rgba(var(--md-primary-rgb), 0.6);
+}
+
+:root[data-skin='instrument'] body {
+  background-color: var(--md-surface);
+  background-image:
+    linear-gradient(var(--ins-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--ins-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+:root[data-skin='instrument'] ::selection { background: var(--md-primary); color: var(--md-on-primary); }
+:root[data-skin='instrument'] *::-webkit-scrollbar-thumb { border-radius: 0; background: var(--md-outline); }
+
+/* The route curtain is mechanical: no zoom-out of the page behind it. */
+:root[data-skin='instrument'] .app-shell.shrunk { transform: none; }
+
+/* ---------- global app classes ---------- */
+:root[data-skin='instrument'] .page-title {
+  font: 400 24px var(--font-title);
+  letter-spacing: 0.02em;
+}
+:root[data-skin='instrument'] .page-sub { font-family: var(--font-body); }
+:root[data-skin='instrument'] .section-title {
+  font: 600 10.5px/1.2 var(--ins-mono);
+  letter-spacing: 0.16em;
+  color: var(--md-on-surface-variant);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+:root[data-skin='instrument'] .section-title::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: var(--md-primary);
+  flex: none;
+}
+:root[data-skin='instrument'] .section-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--ins-line);
+}
+:root[data-skin='instrument'] .tag {
+  border-radius: 2px;
+  font: 600 10.5px var(--ins-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--ins-line-2);
+}
+:root[data-skin='instrument'] .tag.ok,
+:root[data-skin='instrument'] .tag.warn,
+:root[data-skin='instrument'] .tag.err,
+:root[data-skin='instrument'] .tag.info {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+:root[data-skin='instrument'] .mono { font-family: var(--ins-mono); }
+:root[data-skin='instrument'] .kv dt {
+  font: 600 10.5px var(--ins-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+:root[data-skin='instrument'] .kv dd { font-family: var(--ins-mono); font-size: 13px; }
+:root[data-skin='instrument'] .kv > div { border-bottom: 1px dashed var(--ins-line); padding-bottom: 8px; }
+:root[data-skin='instrument'] .kv > div:last-child { border-bottom: none; padding-bottom: 0; }
+:root[data-skin='instrument'] .list-tile {
+  border-radius: 3px;
+  background: var(--md-surface-container);
+  box-shadow: inset 0 0 0 1px var(--ins-line);
+}
+:root[data-skin='instrument'] .list-tile:hover { background: var(--md-surface-container-high); box-shadow: inset 0 0 0 1px var(--ins-line-2); }
+:root[data-skin='instrument'] .list-tile:active { transform: translateY(1px); }
+:root[data-skin='instrument'] .list-tile .tile-icon {
+  border-radius: 2px;
+  background: transparent;
+  color: var(--md-on-surface);
+  box-shadow: inset 0 0 0 1px var(--ins-line-2);
+}
+:root[data-skin='instrument'] .list-tile .tile-sub { font-size: 12px; }
+:root[data-skin='instrument'] .contract-only { border-radius: 2px; font-family: var(--ins-mono); letter-spacing: 0.06em; }
+:root[data-skin='instrument'] .hover-lift:hover { transform: translateY(-1px); box-shadow: inset 0 0 0 1px var(--md-primary); }
+
+/* ---------- MdCard: flat panel with hairline + corner ticks ---------- */
+:root[data-skin='instrument'] .md-card {
+  position: relative;
+  background: var(--md-surface-container);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px var(--ins-line);
+  padding: 16px 16px 16px;
+}
+:root[data-skin='instrument'] .md-card::before,
+:root[data-skin='instrument'] .md-card::after {
+  content: '';
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  pointer-events: none;
+  border-color: var(--md-on-surface-variant);
+  border-style: solid;
+  opacity: 0.7;
+}
+:root[data-skin='instrument'] .md-card::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; }
+:root[data-skin='instrument'] .md-card::after { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; }
+:root[data-skin='instrument'] .md-card .card-title {
+  font: 600 10.5px/1.2 var(--ins-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--md-on-surface-variant);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--ins-line);
+}
+:root[data-skin='instrument'] .md-card .card-title::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--md-primary);
+  box-shadow: var(--ins-led-glow);
+  flex: none;
+}
+
+/* ---------- MdButton: hardware keys ---------- */
+:root[data-skin='instrument'] .md-btn {
+  border-radius: 3px;
+  font: 600 12.5px var(--ins-mono);
+  letter-spacing: 0.08em;
+  padding: 9px 16px;
+  box-shadow: inset 0 -2px 0 var(--ins-key-edge);
+  transition: transform 0.1s var(--ins-ease), filter 0.14s, background 0.14s, box-shadow 0.14s;
+}
+:root[data-skin='instrument'] .md-btn:not(:disabled):active { transform: translateY(1px); box-shadow: inset 0 0 0 var(--ins-key-edge); }
+:root[data-skin='instrument'] .md-btn.tonal {
+  background: var(--ins-key);
+  color: var(--md-on-surface);
+  box-shadow: inset 0 0 0 1px var(--ins-line), inset 0 -2px 0 var(--ins-key-edge);
+}
+:root[data-skin='instrument'] .md-btn.outlined {
+  border: none;
+  color: var(--md-on-surface);
+  box-shadow: inset 0 0 0 1px var(--ins-line-2);
+}
+:root[data-skin='instrument'] .md-btn.outlined:not(:disabled):hover { box-shadow: inset 0 0 0 1px var(--md-primary); filter: none; }
+:root[data-skin='instrument'] .md-btn.text { box-shadow: none; }
+:root[data-skin='instrument'] .md-btn.icon {
+  border-radius: 3px;
+  box-shadow: none;
+}
+:root[data-skin='instrument'] .md-btn.icon:not(:disabled):hover { box-shadow: inset 0 0 0 1px var(--ins-line-2); }
+
+/* ---------- MdChip: small keys with LED ---------- */
+:root[data-skin='instrument'] .md-chip {
+  border-radius: 3px;
+  border-color: var(--ins-line-2);
+  font: 600 12px var(--font-body);
+  padding: 6px 11px;
+  background: var(--md-surface-container);
+  transition: background 0.14s, color 0.14s, border-color 0.14s, transform 0.1s;
+}
+:root[data-skin='instrument'] .md-chip:active { transform: translateY(1px); }
+:root[data-skin='instrument'] .md-chip.selected {
+  background: var(--md-on-surface);
+  color: var(--md-surface);
+  border-color: var(--md-on-surface);
+}
+:root[data-skin='instrument'] .md-chip:disabled { opacity: 0.4; cursor: default; }
+
+/* ---------- MdSwitch: physical toggle ---------- */
+:root[data-skin='instrument'] .md-switch .track {
+  width: 46px;
+  height: 24px;
+  border-radius: 3px;
+  border: 1px solid var(--ins-line-2);
+  background: var(--md-surface-container-highest);
+}
+:root[data-skin='instrument'] .md-switch .thumb {
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 18px;
+  border-radius: 2px;
+  background: var(--md-on-surface-variant);
+  box-shadow: inset -3px 0 0 rgba(0, 0, 0, 0.25);
+  transition: transform 0.16s var(--ins-ease), background 0.14s;
+}
+:root[data-skin='instrument'] .md-switch.on .track { background: var(--md-surface-container-highest); border-color: var(--md-primary); }
+:root[data-skin='instrument'] .md-switch.on .thumb {
+  width: 20px;
+  height: 18px;
+  top: 2px;
+  transform: translateX(22px);
+  background: var(--md-primary);
+  box-shadow: inset 3px 0 0 rgba(0, 0, 0, 0.2), 0 0 8px rgba(var(--md-primary-rgb), 0.55);
+}
+
+/* ---------- MdSlider: ruler track + square thumb ---------- */
+:root[data-skin='instrument'] .md-slider {
+  height: 14px;
+  border-radius: 0;
+  background:
+    repeating-linear-gradient(90deg, var(--md-outline) 0 1px, transparent 1px 10%) center / 100% 6px no-repeat,
+    linear-gradient(var(--ins-line), var(--ins-line)) center / 100% 2px no-repeat;
+}
+:root[data-skin='instrument'] .md-slider::-webkit-slider-thumb {
+  width: 12px;
+  height: 20px;
+  border-radius: 2px;
+  background: var(--md-on-surface);
+  box-shadow: inset 0 0 0 2px var(--md-surface), 0 0 0 1px var(--md-on-surface);
+}
+:root[data-skin='instrument'] .md-slider::-moz-range-thumb {
+  width: 12px;
+  height: 20px;
+  border-radius: 2px;
+  background: var(--md-on-surface);
+}
+
+/* ---------- MdTextField ---------- */
+:root[data-skin='instrument'] .tf-label {
+  font: 600 10.5px var(--ins-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+:root[data-skin='instrument'] .tf-box {
+  border-radius: 3px;
+  background: var(--md-surface-container-lowest, var(--md-surface));
+  border-color: var(--ins-line-2);
+}
+:root[data-skin='instrument'] .tf-box:focus-within { border-color: var(--md-primary); box-shadow: inset 0 0 0 1px var(--md-primary); }
+:root[data-skin='instrument'] .tf-box input { font-family: var(--ins-mono); font-size: 14px; }
+:root[data-skin='instrument'] input[type='text'] { border-radius: 3px; font-family: var(--ins-mono); }
+
+/* ---------- SegmentedTabs: segmented hardware keys ---------- */
+:root[data-skin='instrument'] .seg {
+  border-radius: 3px;
+  padding: 2px;
+  background: var(--md-surface-container);
+  box-shadow: inset 0 0 0 1px var(--ins-line-2);
+}
+:root[data-skin='instrument'] .seg .indicator {
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc((100% - 4px) / var(--n));
+  border-radius: 2px;
+  background: var(--md-on-surface);
+  transition: transform 0.2s var(--ins-ease);
+}
+:root[data-skin='instrument'] .seg .seg-btn {
+  border-radius: 2px;
+  font: 600 12px var(--ins-mono);
+  letter-spacing: 0.08em;
+  padding: 7px 12px;
+}
+:root[data-skin='instrument'] .seg .seg-btn.active { color: var(--md-surface); }
+:root[data-skin='instrument'] .seg .badge { border-radius: 2px; font-family: var(--ins-mono); }
+
+/* ---------- StatusPill: LED readout ---------- */
+:root[data-skin='instrument'] .pill {
+  border-radius: 3px;
+  font: 600 11px var(--ins-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--ins-line-2);
+  padding: 5px 10px;
+}
+:root[data-skin='instrument'] .pill .dot { width: 7px; height: 7px; }
+:root[data-skin='instrument'] .pill.ok .dot { background: var(--md-primary); box-shadow: var(--ins-led-glow); }
+:root[data-skin='instrument'] .pill.busy .dot { background: var(--md-warning); animation: ins-led-blink 0.9s steps(2, jump-none) infinite; }
+:root[data-skin='instrument'] .pill.off .dot { background: var(--md-error); }
+
+/* ---------- Sheets / modal / toast / palette ---------- */
+:root[data-skin='instrument'] .sheet {
+  border-radius: 4px 4px 0 0;
+  box-shadow: 0 0 0 1px var(--ins-line-2), 0 -20px 40px -20px rgba(0, 0, 0, 0.6);
+}
+:root[data-skin='instrument'] .side .sheet { border-radius: 0; }
+:root[data-skin='instrument'] .handle { border-radius: 0; width: 32px; height: 3px; }
+:root[data-skin='instrument'] .sheet-title,
+:root[data-skin='instrument'] .modal-title { font: 600 14px var(--ins-mono); letter-spacing: 0.1em; text-transform: uppercase; }
+:root[data-skin='instrument'] .sheet-head { border-bottom: 1px solid var(--ins-line); padding-bottom: 10px; margin-bottom: 6px; }
+:root[data-skin='instrument'] .modal-root { backdrop-filter: none; -webkit-backdrop-filter: none; }
+:root[data-skin='instrument'] .modal-card {
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px var(--ins-line-2), 0 30px 60px -20px rgba(0, 0, 0, 0.7);
+  border-top: 3px solid var(--md-primary);
+}
+:root[data-skin='instrument'] .modal-root.sheet .modal-card { border-radius: 4px 4px 0 0; }
+:root[data-skin='instrument'] .toast {
+  border-radius: 3px;
+  border-left-width: 4px;
+  font-size: 13.5px;
+  box-shadow: 0 0 0 1px var(--ins-line-2), 0 12px 30px -12px rgba(0, 0, 0, 0.6);
+}
+:root[data-skin='instrument'] .cp {
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px var(--ins-line-2), 0 30px 80px -20px rgba(0, 0, 0, 0.7);
+}
+:root[data-skin='instrument'] .cp-input input { font-family: var(--ins-mono); }
+:root[data-skin='instrument'] .cp-item { border-radius: 2px; }
+:root[data-skin='instrument'] .cp-item.on { background: var(--md-on-surface); color: var(--md-surface); }
+:root[data-skin='instrument'] .cp-group { border-radius: 2px; font-family: var(--ins-mono); letter-spacing: 0.06em; }
+
+/* Theme switcher: flat key cluster */
+:root[data-skin='instrument'] .switcher:has(.mode-btn) {
+  border-radius: 3px;
+  background: var(--md-surface-container);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid var(--ins-line-2);
+  box-shadow: none;
+}
+:root[data-skin='instrument'] .switcher .dot { border-radius: 1px; }
+:root[data-skin='instrument'] .switcher .dot.active { box-shadow: 0 0 0 1.5px var(--md-on-surface); border-color: var(--md-surface); }
+
+/* Device switcher trigger + menu */
+:root[data-skin='instrument'] .switcher .trigger {
+  border-radius: 3px;
+  font-family: var(--ins-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  border-color: var(--ins-line-2);
+}
+:root[data-skin='instrument'] .switcher .menu { border-radius: 4px; box-shadow: 0 0 0 1px var(--ins-line-2), 0 20px 40px -16px rgba(0, 0, 0, 0.6); }
+:root[data-skin='instrument'] .switcher .menu-item { border-radius: 2px; }
+
+/* Connection banner: hazard strip */
+:root[data-skin='instrument'] .banner {
+  font-family: var(--ins-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  border-bottom-width: 1px;
+}
+:root[data-skin='instrument'] .banner .retry { border-radius: 2px; }
+
+/* Pairing overlay cells */
+:root[data-skin='instrument'] .pair-box { border-radius: 4px; box-shadow: 0 0 0 1px var(--ins-line-2), 0 20px 40px -16px rgba(0, 0, 0, 0.6); }
+:root[data-skin='instrument'] .pair-title { font: 600 13px var(--ins-mono); letter-spacing: 0.12em; text-transform: uppercase; }
+:root[data-skin='instrument'] .pair-box .cell { border-radius: 2px; font-family: var(--ins-mono); }
+
+/* Empty / skeleton */
+:root[data-skin='instrument'] .empty .orb {
+  border-radius: 3px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--ins-line-2);
+}
+:root[data-skin='instrument'] .empty .title { font-family: var(--font-title); }
+:root[data-skin='instrument'] .sk {
+  border-radius: 1px !important;
+  background:
+    radial-gradient(circle, var(--md-outline) 1.1px, transparent 1.4px) 0 50% / 6px 6px repeat-x,
+    var(--md-surface-container-high);
+  animation: ins-sk-scan 1.1s steps(8, jump-none) infinite;
+}
+@keyframes ins-sk-scan { from { background-position: 0 50%, 0 0; } to { background-position: 48px 50%, 0 0; } }
+
+/* Eye stage + known devices */
+:root[data-skin='instrument'] .stage { border-radius: 4px; }
+:root[data-skin='instrument'] .toy-toggle,
+:root[data-skin='instrument'] .stage-hint { border-radius: 2px; font-family: var(--ins-mono); font-size: 11px; letter-spacing: 0.06em; backdrop-filter: none; }
+:root[data-skin='instrument'] .known-card { border-radius: 4px; box-shadow: inset 0 0 0 1px var(--ins-line); }
+:root[data-skin='instrument'] .known-card.current { box-shadow: inset 0 0 0 1px var(--md-primary); }
+:root[data-skin='instrument'] .known-icon { border-radius: 2px; }
+
+/* Quick actions / mode buttons */
+:root[data-skin='instrument'] .qa-item { border-radius: 3px; box-shadow: inset 0 0 0 1px var(--ins-line); }
+:root[data-skin='instrument'] .qa-icon { border-radius: 2px; background: transparent; color: var(--md-primary); box-shadow: inset 0 0 0 1px var(--ins-line-2); }
+:root[data-skin='instrument'] .mode { border-radius: 3px; }
+:root[data-skin='instrument'] .mode.on { background: var(--md-on-surface); color: var(--md-surface); }
+:root[data-skin='instrument'] .mode-dot { border-radius: 50%; }
+
+/* ---------- Feature Kit (Nk*) ---------- */
+:root[data-skin='instrument'] .nk-tile,
+:root[data-skin='instrument'] .nk-stat,
+:root[data-skin='instrument'] .nk-weather { border-radius: 4px; box-shadow: inset 0 0 0 1px var(--ins-line); }
+:root[data-skin='instrument'] .nk-weather { background: var(--md-surface-container); }
+:root[data-skin='instrument'] .nk-tile-icon { border-radius: 2px; }
+:root[data-skin='instrument'] .nk-stat-label,
+:root[data-skin='instrument'] .nk-slider-title,
+:root[data-skin='instrument'] .nk-seg-title {
+  font-family: var(--ins-mono);
+  letter-spacing: 0.08em;
+}
+:root[data-skin='instrument'] .nk-stat-num,
+:root[data-skin='instrument'] .nk-tile-value,
+:root[data-skin='instrument'] .nk-slider-val,
+:root[data-skin='instrument'] .nk-dial-num,
+:root[data-skin='instrument'] .nk-weather-temp { font-family: var(--ins-mono); letter-spacing: -0.02em; }
+/* The fixed bar is a flat strip; its buttons keep their own variant colours. */
+:root[data-skin='instrument'] .nk-actionbar.fixed { background: var(--md-surface-container); backdrop-filter: none; -webkit-backdrop-filter: none; }
+:root[data-skin='instrument'] .nk-action { border-radius: 3px; }
+:root[data-skin='instrument'] .nk-player-btn,
+:root[data-skin='instrument'] .nk-dial-btn,
+:root[data-skin='instrument'] .nk-swatch-dot { border-radius: 3px; }
+:root[data-skin='instrument'] .nk-wheel-highlight { border-radius: 2px; }
+
+@keyframes ins-led-blink { 50% { opacity: 0.25; } }
+
+/* ---------- theme-switch motion (see transition.ts) ---------- */
+html.vt-scan:not(.vt-scan-contract)::view-transition-new(root) {
+  clip-path: inset(var(--vt-y, 50%) calc(100% - var(--vt-x, 50%)) calc(100% - var(--vt-y, 50%)) var(--vt-x, 50%));
+}
+html.vt-scan.vt-scan-contract::view-transition-old(root) { z-index: 2; }
+html.vt-scan.vt-scan-contract::view-transition-new(root) { z-index: 1; }
+
+/* ---------- phone stack transitions: short mechanical slides ---------- */
+:root[data-skin='instrument'] .stack-push-enter-active,
+:root[data-skin='instrument'] .stack-push-leave-active,
+:root[data-skin='instrument'] .stack-pop-enter-active,
+:root[data-skin='instrument'] .stack-pop-leave-active {
+  transition: transform 0.26s var(--ins-ease), opacity 0.2s steps(3, jump-none);
+}
+
+/* ---------- App surface roles (apps/nyabula styles/app.css) ---------- */
+:where(:root[data-skin='instrument']) .ui-panel {
+  position: relative;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px var(--ins-line);
+}
+:where(:root[data-skin='instrument']) .ui-panel::before,
+:where(:root[data-skin='instrument']) .ui-panel::after {
+  content: '';
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  pointer-events: none;
+  border: 0 solid var(--md-on-surface-variant);
+  opacity: 0.7;
+}
+:where(:root[data-skin='instrument']) .ui-panel::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; }
+:where(:root[data-skin='instrument']) .ui-panel::after { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; }
+:where(:root[data-skin='instrument']) .ui-panel-inset { border-radius: 2px; background: var(--md-surface); box-shadow: inset 0 0 0 1px var(--ins-line); }
+/* Section headings inside panels read as engraved labels. */
+:where(:root[data-skin='instrument']) .ui-panel > h3,
+:where(:root[data-skin='instrument']) .ui-panel > .section-title { font: 600 10.5px/1.2 var(--ins-mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--md-on-surface-variant); }
+
+/* Native controls: square, mono, recessed. */
+:root[data-skin='instrument'] :where(select, textarea, input[type='number'], input[type='email'], input[type='password'], input[type='url'], input[type='search'], input[type='time'], input[type='date'], input[type='datetime-local'], input.field):not(:where(.tf-box *)) {
+  border-radius: 3px;
+  border-color: var(--ins-line-2);
+  background-color: var(--md-surface);
+  font-family: var(--ins-mono);
+  font-size: 13px;
+}
+:root[data-skin='instrument'] :where(select, textarea, input, input.field):not(:where(.tf-box *)):focus-visible { box-shadow: inset 0 0 0 1px var(--md-primary); }
+
+/* Side directory: a column of keys, the active one lit. */
+:root[data-skin='instrument'] .side-nav { gap: 0; border-left: 1px solid var(--ins-line); }
+:root[data-skin='instrument'] .side-nav-item {
+  border-radius: 0;
+  min-height: 38px;
+  margin-left: -1px;
+  border-left: 2px solid transparent;
+  font: 600 12.5px var(--font-body);
+  letter-spacing: 0.02em;
+}
+:root[data-skin='instrument'] .side-nav-item:hover { background: var(--md-surface-container); }
+:root[data-skin='instrument'] .side-nav-item.on {
+  background: var(--md-surface-container);
+  color: var(--md-on-surface);
+  border-left-color: var(--md-primary);
+  box-shadow: inset 0 0 0 1px var(--ins-line);
+}
+:root[data-skin='instrument'] .side-nav-item.on .ui-icon { color: var(--md-primary); filter: drop-shadow(0 0 4px rgba(var(--md-primary-rgb), 0.6)); }
+:root[data-skin='instrument'] .side-nav-group { font: 600 10px var(--ins-mono); letter-spacing: 0.18em; text-transform: uppercase; }

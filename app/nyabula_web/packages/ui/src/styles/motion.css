@@ -94,7 +94,7 @@
   animation: none;
   mix-blend-mode: normal;
 }
-html:not(.vt-contract)::view-transition-new(root) {
+html.vt-circle:not(.vt-contract)::view-transition-new(root) {
   clip-path: circle(0px at var(--vt-x, 50%) var(--vt-y, 50%));
 }
 html.vt-contract::view-transition-old(root) {
