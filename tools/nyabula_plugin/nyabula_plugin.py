@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
@@ -44,6 +45,7 @@ API_VERSION = 1
 MAX_ARCHIVE_FILES = 128
 MAX_ARCHIVE_SIZE = 8 * 1024 * 1024
 MAX_MANIFEST_SIZE = 16 * 1024
+MAX_ICON_SIZE = 16 * 1024
 KNOWN_PERMISSIONS = {
     "core.log",
     "storage.read",
@@ -51,6 +53,22 @@ KNOWN_PERMISSIONS = {
     "network.request",
     "ui.notify",
     "ai.invoke",
+    "ui.page",
+    "ui.html",
+    "bluetooth.read",
+    "bluetooth.connect",
+    "bluetooth.call",
+    "audio.read",
+    "audio.control",
+    "audio.play",
+    "audio.capture",
+    "usb.access",
+    "camera.capture",
+    "weather.read",
+    "device.read",
+    "nas.read",
+    "nas.write",
+    "nas.manage",
 }
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 SIGNATURE_SIZE = 64
@@ -192,6 +210,32 @@ def validate_manifest(path: Path) -> dict[str, object]:
     ):
         raise PluginError(f"invalid plugin id: {plugin_id!r}")
 
+    name = manifest.get("name", plugin_id)
+    if not isinstance(name, str) or not name or len(name.encode("utf-8")) > 128:
+        raise PluginError("name must contain 1..128 UTF-8 bytes")
+
+    if "icon" in manifest:
+        icon = manifest["icon"]
+        if isinstance(icon, str):
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", icon):
+                raise PluginError("icon name must contain 1..64 letters, digits, '_' or '-'")
+        elif isinstance(icon, dict) and icon.get("type") in ("image", "iconfont"):
+            icon_path = icon.get("path")
+            if (not isinstance(icon_path, str) or not icon_path.startswith("assets/")
+                or len(icon_path.encode("utf-8")) >= 160
+                or any(part in ("", ".", "..") for part in icon_path.split("/"))
+                or any(ord(char) < 32 or char in "\\:" for char in icon_path)):
+                raise PluginError("icon path must be a safe package-relative assets path")
+            if icon["type"] == "iconfont":
+                cp = icon.get("codepoint")
+                if not isinstance(cp, str) or not re.fullmatch(r"[0-9a-fA-F]{1,6}", cp):
+                    raise PluginError("iconfont requires a hexadecimal Unicode codepoint")
+                value = int(cp, 16)
+                if value < 32 or value > 0x10ffff or 0xd800 <= value <= 0xdfff:
+                    raise PluginError("invalid iconfont Unicode scalar")
+        else:
+            raise PluginError("icon must be a built-in name or image/iconfont asset")
+
     version = manifest["version"]
     if not isinstance(version, str) or not version or len(version) >= 32:
         raise PluginError("version must be a non-empty string shorter than 32 bytes")
@@ -268,7 +312,12 @@ def build_plugin(project: Path, esbuild: str | None) -> Path:
     wrapper.write_text(
         "import plugin from " + json.dumps(source_import) + ";\n"
         "export async function ny_on_start() { return plugin.onStart?.(); }\n"
-        "export async function ny_on_event(event: string) { return plugin.onEvent?.(event); }\n"
+        "export async function ny_on_event(event: string) {\n"
+        "  let msg; try { msg = JSON.parse(event); } catch {}\n"
+        "  if (msg?.type === 'ui.event' && typeof plugin.onCommand === 'function')\n"
+        "    return plugin.onCommand(msg.command, msg.args ?? {}, msg.values ?? {}, msg);\n"
+        "  return plugin.onEvent?.(event);\n"
+        "}\n"
         "export async function ny_on_stop() { return plugin.onStop?.(); }\n",
         encoding="utf-8",
         newline="\n",
@@ -286,6 +335,7 @@ def build_plugin(project: Path, esbuild: str | None) -> Path:
         "--external:@nyabula/network",
         "--external:@nyabula/ui",
         "--external:@nyabula/ai",
+        "--external:@nyabula/hardware",
         f"--outfile={output}",
     ]
     try:
@@ -323,6 +373,8 @@ def _collect_package_files(project: Path, manifest: dict[str, object]) -> dict[s
     files[entry_name] = entry_path.read_bytes()
 
     assets = project / "assets"
+    if assets.is_symlink():
+        raise PluginError("assets directory must not be a symlink")
     if assets.exists():
         for path in sorted(assets.rglob("*")):
             if path.is_symlink():
@@ -334,7 +386,24 @@ def _collect_package_files(project: Path, manifest: dict[str, object]) -> dict[s
         raise PluginError("package contains too many files")
     if sum(len(value) for value in files.values()) > MAX_ARCHIVE_SIZE:
         raise PluginError("package exceeds the uncompressed size limit")
+    _validate_icon_asset(manifest, files)
     return files
+
+
+def _validate_icon_asset(manifest: dict[str, object], files: dict[str, bytes]) -> None:
+    icon = manifest.get("icon")
+    if not isinstance(icon, dict):
+        return
+    content = files.get(str(icon["path"]), b"")
+    if not 12 <= len(content) <= MAX_ICON_SIZE:
+        raise PluginError("declared icon asset is missing or exceeds 16 KiB")
+    if icon["type"] == "iconfont":
+        valid = len(content) >= 48 and content.startswith(b"wOF2")
+    else:
+        valid = (content.startswith(b"\x89PNG\r\n\x1a\n") or content.startswith(b"\xff\xd8\xff")
+                 or content.startswith(b"RIFF") and content[8:12] == b"WEBP")
+    if not valid:
+        raise PluginError("icon asset requires PNG/JPEG/WebP or WOFF2 bytes")
 
 
 def pack_plugin(
@@ -469,6 +538,7 @@ def verify_archive(
                 raise PluginError(f"invalid trusted public key: {key_id}") from exc
             except InvalidSignature as exc:
                 raise PluginError("Ed25519 signature verification failed") from exc
+    _validate_icon_asset(manifest, files)
     return manifest, files
 
 
