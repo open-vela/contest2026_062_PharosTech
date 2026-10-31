@@ -23,8 +23,10 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <poll.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <time.h>
@@ -33,6 +35,7 @@
 #include <nuttx/rpmsg/rpmsg.h>
 
 #include "nyamp_protocol.h"
+#include "nyampctl.h"
 
 #define NYAMPCTL_CTRL_PATH       "/dev/rpmsg/linux"
 #define NYAMPCTL_ENDPOINT_NAME   "rpmsg-raw"
@@ -46,7 +49,6 @@
 
 static uint32_t nyampctl_get_le32(const uint8_t *source);
 static int nyampctl_open_endpoint(void);
-static int nyampctl_query(int fd, uint16_t opcode);
 
 static uint32_t nyampctl_get_le32(const uint8_t *source)
 {
@@ -80,7 +82,7 @@ static int nyampctl_open_endpoint(void)
   return -errno;
 }
 
-static int nyampctl_query(int fd, uint16_t opcode)
+int nyampctl_query(int fd, uint16_t opcode)
 {
   struct nyamp_header_s request = {
     .service = NYAMP_SERVICE_HEALTH,
@@ -227,11 +229,47 @@ int main(int argc, char *argv[])
   int ret;
   uint16_t opcode;
 
-  if (argc != 2 ||
-      (strcmp(argv[1], "health") != 0 && strcmp(argv[1], "info") != 0))
+  if (argc < 2)
     {
-      fprintf(stderr, "usage: %s health|info\n", argv[0]);
+      fprintf(stderr,
+              "usage: %s health|info\n"
+              "       %s llm load <model-directory-or-file>\n"
+              "       %s llm unload\n"
+              "       %s llm generate <token-ids-file> [max-new-tokens]\n"
+              "       %s llm generate --inline <id,id,...> [max-new-tokens]\n"
+              "       %s shmem test [keep]\n",
+              argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
       return 2;
+    }
+
+  if (strcmp(argv[1], "health") != 0 && strcmp(argv[1], "info") != 0 &&
+      strcmp(argv[1], "llm") != 0 && strcmp(argv[1], "shmem") != 0)
+    {
+      fprintf(stderr, "nyampctl: unknown command: %s\n", argv[1]);
+      return 2;
+    }
+
+  if (strcmp(argv[1], "llm") == 0 && argc < 3)
+    {
+      fprintf(stderr, "nyampctl: llm needs load|unload|generate\n");
+      return 2;
+    }
+
+  /* The shared region is reached directly, not through the RPMsg endpoint,
+   * so it needs no control channel and no peer to be up.
+   */
+
+  if (strcmp(argv[1], "shmem") == 0)
+    {
+      if (argc < 3 || strcmp(argv[2], "test") != 0)
+        {
+          fprintf(stderr, "nyampctl: shmem needs test [keep]\n");
+          return 2;
+        }
+
+      return nyampctl_shmem_test(argc > 3 && strcmp(argv[3], "keep") == 0) < 0
+                 ? 1
+                 : 0;
     }
 
   opcode = strcmp(argv[1], "info") == 0 ? NYAMPCTL_INFO_OPCODE
@@ -266,7 +304,48 @@ int main(int argc, char *argv[])
     }
   else
     {
-      ret = nyampctl_query(fd, opcode);
+      if (strcmp(argv[1], "llm") == 0)
+        {
+          if (strcmp(argv[2], "load") == 0 && argc == 4)
+            {
+              ret = nyampctl_llm_load(fd, argv[3]);
+            }
+          else if (strcmp(argv[2], "unload") == 0 && argc == 3)
+            {
+              ret = nyampctl_llm_unload(fd);
+            }
+          else if (strcmp(argv[2], "generate") == 0 && argc >= 4)
+            {
+              bool inline_ids = strcmp(argv[3], "--inline") == 0;
+              const char *source = inline_ids ? argv[4] : argv[3];
+              int value_index = inline_ids ? 5 : 4;
+              uint32_t max_new_tokens =
+                  argc > value_index
+                      ? (uint32_t)strtoul(argv[value_index], NULL, 10)
+                      : 128;
+
+              if (inline_ids && argc < 5)
+                {
+                  fprintf(stderr, "nyampctl: --inline needs token ids\n");
+                  ret = -EINVAL;
+                }
+              else
+                {
+                  ret = nyampctl_llm_generate(fd, source, max_new_tokens,
+                                              inline_ids);
+                }
+            }
+          else
+            {
+              fprintf(stderr, "nyampctl: bad llm arguments\n");
+              ret = -EINVAL;
+            }
+        }
+      else
+        {
+          ret = nyampctl_query(fd, opcode);
+        }
+
       close(fd);
     }
 
@@ -274,7 +353,7 @@ int main(int argc, char *argv[])
 
   if (ret < 0)
     {
-      fprintf(stderr, "nyampctl: query failed: %d\n", ret);
+      fprintf(stderr, "nyampctl: command failed: %d\n", ret);
       return 1;
     }
 

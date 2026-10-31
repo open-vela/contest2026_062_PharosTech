@@ -9,9 +9,10 @@ STACKSIZE = $(CONFIG_EXAMPLES_NYAMPCTL_STACKSIZE)
 MODULE    = $(CONFIG_EXAMPLES_NYAMPCTL)
 
 MAINSRC = nyampctl_main.c
-CSRCS   = nyamp_protocol.c
+CSRCS   = nyampctl_llm.c nyampctl_shmem.c nyamp_protocol.c
 
 VPATH += $(NYAMP_PROTOCOL_DIR)
+CFLAGS += ${INCDIR_PREFIX}$(NYAMPCTL_SOURCE_DIR)
 CFLAGS += ${INCDIR_PREFIX}$(NYAMP_PROTOCOL_DIR)
 
 include $(APPDIR)/Application.mk

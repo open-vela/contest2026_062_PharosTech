@@ -62,10 +62,16 @@ jobs:
         run: |
           python3 tools/amp/test_amp_topology.py
           python3 tools/amp/test_manifest_layout.py
+          python3 tools/amp/test_shmem_layout.py
           cmake -S tools/amp/nyampd -B out/nyampd
           cmake --build out/nyampd -j2
           ctest --test-dir out/nyampd --output-on-failure
           python3 tools/amp/test_application_pty.py . out/nyampd/nyampd
+          python3 tools/amp/test_llm_flow.py .
+          python3 -m unittest discover -s tools/amp/resources -p 'test_*.py'
+          cmake -S tools/amp/models -B out/models
+          cmake --build out/models -j2
+          ctest --test-dir out/models --output-on-failure
 
   core_build_contract:
     name: Core dependency configuration
@@ -106,7 +112,8 @@ jobs:
   build:
     name: Build (${{ matrix.config }})
     needs: scan_configs
-    runs-on: ubuntu-latest
+    # Keep the host compiler compatible with the pinned libc++ tree.
+    runs-on: ubuntu-24.04
 
     strategy:
       fail-fast: false
@@ -134,6 +141,12 @@ jobs:
           curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Reserve disk space for openvela
+        run: |
+          # This disposable runner builds neither Android, .NET nor Haskell.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h "$GITHUB_WORKSPACE"
 
       # 拉取 openvela 全量源码
       - name: Repo init & sync

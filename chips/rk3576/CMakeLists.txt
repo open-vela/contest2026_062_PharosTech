@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-set(SRCS rk3576_boot.c rk3576_serial.c rk3576_clk_tree.c rk3576_addrenv.c)
+set(SRCS rk3576_boot.c rk3576_serial.c rk3576_clk_tree.c)
 
 if(CONFIG_PM)
   list(APPEND SRCS rk3576_pminitialize.c)
@@ -37,7 +37,11 @@ if(CONFIG_RK3576_EMMC)
   list(APPEND SRCS rk3576_emmc.c)
 endif()
 
-if(CONFIG_RK3576_DMA OR CONFIG_RK3576_USBHOST)
+# drivers/misc/addrenv.c defines the same up_addrenv_va_to_pa when
+# DEV_SIMPLE_ADDRENV is selected, and the two collide at link time.  Prefer
+# the generic copy where it is enabled: it is the maintained one, and this
+# file is a fork of an older revision of it.
+if(NOT CONFIG_DEV_SIMPLE_ADDRENV)
   list(APPEND SRCS rk3576_addrenv.c)
 endif()
 
@@ -83,6 +87,9 @@ endif()
 
 if(CONFIG_RK3576_RPTUN)
   list(APPEND SRCS rk3576_rptun.c)
+endif()
+if(CONFIG_RK3576_SHMEM)
+  list(APPEND SRCS rk3576_shmem.c)
 endif()
 
 if(CONFIG_RK3576_SPI)

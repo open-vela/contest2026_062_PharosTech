@@ -8,12 +8,54 @@ mount -t devtmpfs devtmpfs /dev
 mkdir -p /dev/pts /run /tmp
 mount -t devpts devpts /dev/pts
 mount -t tmpfs tmpfs /run
-mount -t tmpfs tmpfs /tmp
+
+# /tmp is where the blob service stages the model files it receives from the
+# control domain (/tmp/models), because this domain owns no storage in the
+# product split.  The cap is explicit instead of the tmpfs default of half of
+# RAM so the budget is a decision rather than an accident:
+#
+#   RKLLM model              ~835 MiB
+#   ASR + TTS models         ~200 MiB
+#   one speech model staged
+#   next to its predecessor  ~100 MiB
+#
+# Linux measured 3.76 GiB total and 3.65 GiB available in the minimal AMP
+# layout.  The product layout hands another 272 MiB to openvela (heap and DMA
+# pool), so about 3.38 GiB should be available there; that figure is derived,
+# not yet measured.  The three model runtimes peaked at 1.64 GiB while loading
+# on the board, so 1536 MiB of files still leaves them room, while a runaway
+# transfer hits ENOSPC instead of the OOM killer.
+# tmpfs pages are only allocated when written, so the cap costs nothing up
+# front.  A second full copy of the LLM does not fit; replace it by deleting
+# the old file first.
+mount -t tmpfs -o size=1536m,mode=1777 tmpfs /tmp
+
+# nyampd reports the tail of the previous boot's kernel console through the
+# info query, which is the only view of a failed probe this domain offers:
+# it has no UART.  That file only exists once pstore is mounted.
+if [ -d /sys/fs/pstore ]; then
+  mount -t pstore pstore /sys/fs/pstore
+fi
 
 if [ -w /proc/sys/kernel/hotplug ]; then
   echo /sbin/mdev > /proc/sys/kernel/hotplug
 fi
 mdev -s
+
+# With the default NPU governor the same model decoded at 18.7 tok/s on the
+# board; with the NPU held at "performance" (950 MHz) it reached 26.3 tok/s
+# and the first token arrived about a quarter sooner, while pinning the A72s
+# gained under one percent.  So only the NPU is pinned and the CPUs stay on
+# schedutil.  The probe scripts switched the governor around each run and
+# restored it afterwards; nyampd is the only NPU client in this image and
+# keeps its model resident, so the policy is applied once here instead.  What
+# this costs while idle has not been measured.  The glob stays unexpanded, and
+# the loop does nothing, on a kernel or device tree without the NPU.
+for governor in /sys/class/devfreq/*npu*/governor; do
+  if [ -w "$governor" ]; then
+    echo performance > "$governor"
+  fi
+done
 
 echo "Nyabula AMP compute domain ready"
 exec /sbin/init
