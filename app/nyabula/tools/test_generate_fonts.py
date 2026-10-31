@@ -33,6 +33,22 @@ class FontSelectionTest(unittest.TestCase):
             with self.assertRaisesRegex(FileNotFoundError, "download-fallback"):
                 generate_fonts.select_font(root, "MiSans.ttf", root / "NotoSans.otf")
 
+    def test_product_captions_join_fixed_glyph_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            eye = root / "nyabula"
+            (eye / "src").mkdir(parents=True)
+            (eye / "src/scene.c").write_text("猫", encoding="utf-8")
+            self.assertEqual(generate_fonts.collect_symbols(
+                generate_fonts.source_paths(eye)), "猫")
+            core = root / "nyabula_core"
+            core.mkdir()
+            caption = core / "ny_product_network.c"
+            caption.write_text("登录面板 扫码打开控制面板", encoding="utf-8")
+            symbols = generate_fonts.collect_symbols(generate_fonts.source_paths(eye))
+            for char in "登录面板扫码打开控制":
+                self.assertIn(char, symbols)
+
     def test_symbols_are_deterministic(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "scene.c"

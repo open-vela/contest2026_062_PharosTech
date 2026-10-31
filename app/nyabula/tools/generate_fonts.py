@@ -117,11 +117,21 @@ def sanitize_metadata(output):
                       encoding="utf-8", newline="\n")
 
 
-def generate(font_dir, output_dir, fallback, html=None):
-    app_dir = Path(__file__).resolve().parents[1]
+def source_paths(app_dir, html=None):
     sources = [html] if html else []
     sources.extend(sorted((app_dir / "src").glob("*.c")))
     sources.extend(sorted((app_dir / "include").rglob("*.h")))
+    # Product networking supplies the physical login/provisioning captions.
+    # Include them in fixed-size title subsets as well as runtime fallbacks.
+    network_source = app_dir.parent / "nyabula_core/ny_product_network.c"
+    if network_source.is_file():
+        sources.append(network_source)
+    return sources
+
+
+def generate(font_dir, output_dir, fallback, html=None):
+    app_dir = Path(__file__).resolve().parents[1]
+    sources = source_paths(app_dir, html)
     symbols = collect_symbols(sources)
     selected = {
         family: select_font(font_dir, filename, fallback)
