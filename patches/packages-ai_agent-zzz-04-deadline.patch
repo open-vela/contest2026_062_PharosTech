@@ -1,0 +1,43 @@
+--- a/Kconfig
++++ b/Kconfig
+@@ -323,6 +323,16 @@
+ 	default 10
+ 	range 1 128
+ 
++config AI_AGENT_LLM_TIMEOUT
++	int "Model call completion deadline (seconds)"
++	default 60
++	range 30 600
++
++config AI_AGENT_SOCKET_TIMEOUT
++	int "Model socket read timeout (seconds)"
++	default 120
++	range AI_AGENT_LLM_TIMEOUT 600
++
+ config AI_AGENT_TLS_CONN_POOL_SIZE
+ 	int "TLS connection pool size"
+ 	default 2
+--- a/include/agent_config.h
++++ b/include/agent_config.h
+@@ -124,13 +124,21 @@
+  * a timeout and replies with a user-friendly error message.
+  * The socket-level SO_RCVTIMEO (AGENT_LLM_SOCKET_TIMEOUT_SEC)
+  * acts as the hard backstop that actually unblocks the read. */
++#ifdef CONFIG_AI_AGENT_LLM_TIMEOUT
++#define AGENT_LLM_TIMEOUT_SEC CONFIG_AI_AGENT_LLM_TIMEOUT
++#else
+ #define AGENT_LLM_TIMEOUT_SEC 60
++#endif
+ 
+ /* Socket-level read timeout applied via SO_RCVTIMEO in vela_tls.
+  * Must be >= AGENT_LLM_TIMEOUT_SEC to allow the agent-level
+  * watchdog to fire first on normal slow responses.  Set higher
+  * to cover TLS handshake + full response read. */
++#ifdef CONFIG_AI_AGENT_SOCKET_TIMEOUT
++#define AGENT_LLM_SOCKET_TIMEOUT_SEC CONFIG_AI_AGENT_SOCKET_TIMEOUT
++#else
+ #define AGENT_LLM_SOCKET_TIMEOUT_SEC 120
++#endif
+ 
+ /* ── Timezone (POSIX TZ format) ────────────────────────────── */
+ #define AGENT_TIMEZONE "CST-8"
