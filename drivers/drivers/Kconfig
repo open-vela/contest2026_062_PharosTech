@@ -14,5 +14,6 @@ source "$BINDIR/drivers/platform/drivers/pcf8563/Kconfig"
 source "$BINDIR/drivers/platform/drivers/sv6621/Kconfig"
 source "$BINDIR/drivers/platform/drivers/gt911/Kconfig"
 source "$BINDIR/drivers/platform/drivers/ov5647/Kconfig"
+source "$BINDIR/drivers/platform/drivers/rk806/Kconfig"
 
 endif

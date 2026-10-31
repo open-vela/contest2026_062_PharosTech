@@ -214,5 +214,9 @@ int kickpi_k7_camera_initialize(void);
 int kickpi_k7_camera_set_mode(unsigned int index);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_REGULATOR
+int kickpi_k7_regulator_initialize(void);
+#endif
+
 #endif /* __ASSEMBLY__ */
 #endif /* __BOARDS_ARM64_RK3576_KICKPI_K7_SRC_KICKPI_K7_H */

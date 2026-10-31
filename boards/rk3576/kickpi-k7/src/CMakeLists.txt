@@ -53,6 +53,10 @@ if(CONFIG_KICKPI_K7_CAMERA)
   list(APPEND SRCS kickpi_k7_camera.c)
 endif()
 
+if(CONFIG_KICKPI_K7_REGULATOR)
+  list(APPEND SRCS kickpi_k7_regulator.c)
+endif()
+
 target_sources(board PRIVATE ${SRCS})
 
 if(CONFIG_ETC_ROMFS)
