@@ -62,6 +62,7 @@ enum ny_voice_audio_state_e
 struct ny_voice_audio_buffer_s
 {
   struct ap_buffer_s *apb;
+  size_t submitted; /* Upper half clears nbytes before DEQUEUE. */
   enum ny_voice_audio_state_e state;
   uint32_t order; /* Capture: arrival order. */
 };
@@ -71,7 +72,7 @@ struct ny_voice_audio_s
   struct ny_voice_audio_config_s config;
   struct ny_voice_audio_buffer_s buffers[NY_VOICE_AUDIO_BUFFERS];
   unsigned int count;
-  int current;        /* Playback: the chunk being filled, or -1. */
+  int current; /* Playback: the chunk being filled, or -1. */
   int fd;
   mqd_t mq;
   char mqname[32];
@@ -79,9 +80,9 @@ struct ny_voice_audio_s
   bool registered;
   bool started;
   bool header_sent;
-  bool complete;      /* The driver ended the stream. */
+  bool complete; /* The driver ended the stream. */
   uint32_t arrivals;
-  size_t queued;      /* Playback bytes with the driver. */
+  size_t queued; /* Playback bytes with the driver. */
 };
 
 /****************************************************************************
@@ -91,8 +92,7 @@ struct ny_voice_audio_s
 static int ny_voice_audio_configure(struct ny_voice_audio_s *audio);
 static int ny_voice_audio_enqueue(struct ny_voice_audio_s *audio, int index);
 static int ny_voice_audio_start(struct ny_voice_audio_s *audio);
-static int ny_voice_audio_pump(struct ny_voice_audio_s *audio,
-                               int timeout_ms);
+static int ny_voice_audio_pump(struct ny_voice_audio_s *audio, int timeout_ms);
 static int ny_voice_audio_find(struct ny_voice_audio_s *audio,
                                enum ny_voice_audio_state_e state);
 static size_t ny_voice_audio_target(const struct ny_voice_audio_s *audio);
@@ -139,7 +139,8 @@ static int ny_voice_audio_enqueue(struct ny_voice_audio_s *audio, int index)
   buffer->state = NY_VOICE_AUDIO_QUEUED;
   if (!audio->config.capture)
     {
-      audio->queued += buffer->apb->nbytes;
+      buffer->submitted = desc.numbytes;
+      audio->queued += buffer->submitted;
     }
 
   return 0;
@@ -175,7 +176,7 @@ static int ny_voice_audio_pump(struct ny_voice_audio_s *audio, int timeout_ms)
 {
   int handled = 0;
 
-  for (; ; )
+  for (;;)
     {
       struct audio_msg_s msg;
       struct timespec until;
@@ -243,7 +244,8 @@ static int ny_voice_audio_pump(struct ny_voice_audio_s *audio, int timeout_ms)
           else
             {
               buffer->state = NY_VOICE_AUDIO_FREE;
-              audio->queued -= buffer->apb->nbytes;
+              audio->queued -= buffer->submitted;
+              buffer->submitted = 0;
               buffer->apb->nbytes = 0;
             }
 
@@ -534,8 +536,7 @@ ssize_t ny_voice_audio_write(struct ny_voice_audio_s *audio, const void *pcm,
                   return ret;
                 }
 
-              audio->current = ny_voice_audio_find(audio,
-                                                   NY_VOICE_AUDIO_FREE);
+              audio->current = ny_voice_audio_find(audio, NY_VOICE_AUDIO_FREE);
               if (audio->current < 0)
                 {
                   break;
@@ -626,7 +627,8 @@ int ny_voice_audio_drain(struct ny_voice_audio_s *audio, int timeout_ms)
 
       clock_gettime(CLOCK_MONOTONIC, &now);
       if ((now.tv_sec - begin.tv_sec) * 1000 +
-              (now.tv_nsec - begin.tv_nsec) / 1000000 > timeout_ms)
+              (now.tv_nsec - begin.tv_nsec) / 1000000 >
+          timeout_ms)
         {
           return -ETIMEDOUT;
         }
