@@ -28,7 +28,7 @@ names = ['ny_web_stop', 'ny_web_stop_requested', 'ny_web_monotonic_ms',
          'ny_web_recovery_wait', 'ny_web_accept_retryable', 'ny_web_listen', 'ny_web_run']
 constants = '\n'.join(line for line in source.splitlines() if re.match(
     r'#define (NYABULA_WS_TOKEN_SIZE|NY_WEB_(?:MAX_CLIENTS|ACCEPT_RETRY_MS|ACCEPT_MAX_MS|RESTART_MIN_MS|RESTART_MAX_MS|STABLE_MS|STOP_POLL_MS))\s', line))
-assert '#define NY_WEB_RESTART_MAX_MS   30000' in constants
+assert re.search(r'^#define\s+NY_WEB_RESTART_MAX_MS\s+30000\s*$', constants, re.M)
 struct = re.search(r'struct ny_web_client_args_s\n\{.*?\n\};', source, re.S).group()
 fixture = r'''
 #define _GNU_SOURCE
