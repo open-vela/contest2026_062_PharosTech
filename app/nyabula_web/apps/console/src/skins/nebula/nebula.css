@@ -1,0 +1,98 @@
+/* Nebula console skin: glass over an aurora. Local tokens derive from the
+ * shared --md-* palette so every mode x palette combination holds. Scoped
+ * under .nbc (shell) and .nbc-portal (teleported drawers / dialogs). */
+.nbc,
+.nbc-portal {
+  --fg: var(--md-on-surface);
+  --sub: var(--md-on-surface-variant);
+  --dim: color-mix(in srgb, var(--md-on-surface-variant) 70%, var(--md-surface));
+  --acc: var(--md-primary);
+  --acc-rgb: var(--md-primary-rgb);
+  --acc2: var(--md-tertiary);
+  --line: color-mix(in srgb, var(--md-on-surface) 9%, transparent);
+  --hi: color-mix(in srgb, var(--md-on-surface) 15%, transparent);
+  --wash: color-mix(in srgb, var(--md-on-surface) 5%, transparent);
+  --wash-2: color-mix(in srgb, var(--md-on-surface) 9%, transparent);
+  --panel: var(--md-glass);
+  --panel-strong: color-mix(in srgb, var(--md-surface-container) 88%, transparent);
+  --shadow: 0 24px 60px -28px rgba(0, 0, 0, 0.55);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+:root[data-mode='light'] :is(.nbc, .nbc-portal) {
+  --shadow: 0 24px 50px -30px rgba(40, 50, 110, 0.35);
+}
+.nbc {
+  position: relative;
+  min-height: 100dvh;
+  background: var(--md-surface);
+  isolation: isolate;
+  overflow-x: hidden;
+}
+:is(.nbc, .nbc-portal) .nb-glass {
+  background: var(--panel);
+  -webkit-backdrop-filter: blur(26px) saturate(150%);
+  backdrop-filter: blur(26px) saturate(150%);
+  border: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 var(--hi), var(--shadow);
+  border-radius: 26px;
+}
+:is(.nbc, .nbc-portal) .nb-title { font-family: var(--font-title); font-weight: 400; letter-spacing: 0.02em; }
+:is(.nbc, .nbc-portal) .nb-kicker { font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--sub); margin: 0; }
+:is(.nbc, .nbc-portal) .nb-in { animation: nbc-rise 0.8s var(--ease) both; animation-delay: var(--d, 0ms); }
+:is(.nbc, .nbc-portal) .nb-btn {
+  border: 1px solid var(--line);
+  background: var(--wash);
+  color: var(--fg);
+  border-radius: 999px;
+  padding: 9px 16px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: 600 13.5px var(--font-body);
+  transition: transform 0.35s var(--spring), background 0.2s, border-color 0.2s, opacity 0.2s;
+}
+:is(.nbc, .nbc-portal) .nb-btn:hover { background: var(--wash-2); border-color: var(--hi); }
+:is(.nbc, .nbc-portal) .nb-btn:active { transform: scale(0.95); }
+:is(.nbc, .nbc-portal) .nb-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
+:is(.nbc, .nbc-portal) .nb-btn.primary { background: var(--acc); color: var(--md-on-primary); border-color: transparent; box-shadow: 0 8px 28px -10px rgba(var(--acc-rgb), 0.8); }
+:is(.nbc, .nbc-portal) .nb-btn.primary:hover { filter: brightness(1.08); }
+:is(.nbc, .nbc-portal) .nb-btn.danger { color: var(--md-error); border-color: color-mix(in srgb, var(--md-error) 40%, transparent); }
+:is(.nbc, .nbc-portal) .nb-btn.danger.solid { background: var(--md-error); color: var(--md-on-error); border-color: transparent; }
+:is(.nbc, .nbc-portal) .nb-input {
+  width: 100%;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--fg);
+  padding: 12px 14px;
+  font: 600 14px var(--font-body);
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.3s, background 0.2s;
+}
+:is(.nbc, .nbc-portal) .nb-input::placeholder { color: var(--dim); font-weight: 400; }
+:is(.nbc, .nbc-portal) .nb-input:focus { border-color: rgba(var(--acc-rgb), 0.6); box-shadow: 0 0 0 4px rgba(var(--acc-rgb), 0.14); background: var(--wash-2); }
+:is(.nbc, .nbc-portal) .nb-seg { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; padding: 4px; border-radius: 999px; background: var(--wash); border: 1px solid var(--line); }
+:is(.nbc, .nbc-portal) .nb-seg-light { position: absolute; top: 4px; left: 4px; bottom: 4px; border-radius: 999px; background: var(--panel-strong); box-shadow: 0 2px 10px -4px rgba(0, 0, 0, 0.4), inset 0 1px 0 var(--hi); transition: transform 0.5s var(--spring); }
+:is(.nbc, .nbc-portal) .nb-seg button { position: relative; border: none; background: transparent; color: var(--sub); padding: 7px 12px; cursor: pointer; font: 600 13px var(--font-body); transition: color 0.2s; }
+:is(.nbc, .nbc-portal) .nb-seg button.on { color: var(--fg); }
+:is(.nbc, .nbc-portal) .nb-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+:is(.nbc, .nbc-portal) .nb-dot.on { background: var(--acc); box-shadow: 0 0 10px var(--acc); animation: nbc-pulse 2.4s ease-out infinite; }
+:is(.nbc, .nbc-portal) .nb-empty { color: var(--sub); text-align: center; padding: 26px 12px; margin: 0; font-size: 13px; line-height: 1.7; }
+:is(.nbc, .nbc-portal) .nb-err { color: var(--md-error); font-size: 12.5px; margin: 0; display: flex; align-items: center; gap: 6px; }
+:is(.nbc, .nbc-portal) .nb-mono { font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; }
+@keyframes nbc-rise { from { opacity: 0; transform: translateY(18px) scale(0.985); filter: blur(6px); } }
+@keyframes nbc-pulse { 0% { box-shadow: 0 0 0 0 rgba(var(--acc-rgb), 0.55); } 70%, 100% { box-shadow: 0 0 0 8px rgba(var(--acc-rgb), 0); } }
+:is(.nbc, .nbc-portal) .nb-page-enter-active { transition: opacity 0.5s var(--ease), transform 0.6s var(--ease), filter 0.5s var(--ease); }
+:is(.nbc, .nbc-portal) .nb-page-leave-active { transition: opacity 0.22s ease, transform 0.25s ease, filter 0.22s ease; }
+:is(.nbc, .nbc-portal) .nb-page-enter-from { opacity: 0; transform: translateY(14px) scale(0.99); filter: blur(8px); }
+:is(.nbc, .nbc-portal) .nb-page-leave-to { opacity: 0; transform: scale(0.985); filter: blur(4px); }
+:is(.nbc, .nbc-portal) .nb-fade-enter-active, :is(.nbc, .nbc-portal) .nb-fade-leave-active { transition: opacity 0.3s ease; }
+:is(.nbc, .nbc-portal) .nb-fade-enter-from, :is(.nbc, .nbc-portal) .nb-fade-leave-to { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  :is(.nbc, .nbc-portal) *, :is(.nbc, .nbc-portal) *::before, :is(.nbc, .nbc-portal) *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
