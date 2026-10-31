@@ -3185,14 +3185,19 @@ static void scene_task(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
                        const struct nyabula_eye_scene_payload_s *payload,
                        float seconds, float opacity, float reveal)
 {
-  static const float progress[] = { 0.62f, 0.14f, 0.46f, 1.0f, 0.68f };
-  static const char *values[] = { "3/5", "1/5", "2/5", "5/5", "3/5" };
+  static const char *values[] = { "...", "...", "...", "OK", "--" };
   static const char *labels[] = { "执行中", "排队中", "等待确认", "已完成",
                                   "执行失败" };
   uint32_t color = scene_color(e);
-  float task_progress = payload->progress > 0.0f
+  bool terminal = payload->task_state == NYABULA_EYE_TASK_DONE ||
+                  payload->task_state == NYABULA_EYE_TASK_FAILED;
+  bool indeterminate =
+      !terminal &&
+      (payload->active || (!payload->value[0] && payload->progress <= 0.0f));
+  float task_progress = payload->value[0] || payload->progress > 0.0f
                             ? clampf(payload->progress, 0.0f, 1.0f)
-                            : progress[payload->task_state];
+                        : payload->task_state == NYABULA_EYE_TASK_DONE ? 1.0f
+                                                                       : 0.0f;
 
   if (e->id == NYABULA_EYE_LEFT)
     {
@@ -3298,14 +3303,19 @@ static void scene_task(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
 
       arc(r, e, 0.0f, 0.0f, R * 0.55f, -PI * 0.5f, PI * 2.0f, R * 0.05f, color,
           opacity * 0.18f);
-      arc(r, e, 0.0f, 0.0f, R * 0.55f, -PI * 0.5f, task_progress * PI * 2.0f,
-          R * 0.05f, color, opacity * 0.88f);
+      arc(r, e, 0.0f, 0.0f, R * 0.55f,
+          indeterminate ? seconds * 1.8f : -PI * 0.5f,
+          indeterminate ? PI * 0.55f : task_progress * PI * 2.0f, R * 0.05f,
+          color, opacity * 0.88f);
       text_center(r, e, &nyabula_font_english_72,
-                  scene_text(payload->value, values[state]), -R * 0.04f, color,
+                  scene_text(payload->value, values[state]), -R * 0.08f, color,
                   opacity * 0.98f);
       text_center(r, e, &nyabula_font_title_20,
-                  scene_text(payload->title, labels[state]), R * 0.29f, color,
+                  scene_text(payload->title, labels[state]), R * 0.24f, color,
                   opacity * 0.52f);
+      if (payload->detail[0])
+        text_center(r, e, &nyabula_font_body_18, payload->detail, R * 0.44f,
+                    color, opacity * 0.52f);
     }
 }
 
