@@ -44,22 +44,21 @@ void nyadsp_clock_init(struct nyadsp_clock_s *clock)
  ****************************************************************************/
 
 size_t nyadsp_clock_process(struct nyadsp_clock_s *clock,
-                           const float *interleaved, size_t frames,
-                           float *mono, size_t capacity,
-                           size_t queued_frames, size_t target_frames)
+                            const float *interleaved, size_t frames,
+                            float *mono, size_t capacity, size_t queued_frames,
+                            size_t target_frames)
 {
   double correction;
   size_t count = 0;
 
-  if (clock == NULL || interleaved == NULL || mono == NULL ||
-      frames == 0 || frames > 4096 || target_frames == 0 ||
+  if (clock == NULL || interleaved == NULL || mono == NULL || frames == 0 ||
+      frames > 4096 || target_frames == 0 ||
       capacity < (size_t)ceil(frames * 1.005) + 2)
     {
       return 0;
     }
 
-  correction = ((double)target_frames - queued_frames) /
-               512.0 * 0.005;
+  correction = ((double)target_frames - queued_frames) / 512.0 * 0.005;
   correction = fmin(0.005, fmax(-0.005, correction));
   clock->ratio += (1.0 + correction - clock->ratio) * 0.02;
   if (!clock->initialized)
