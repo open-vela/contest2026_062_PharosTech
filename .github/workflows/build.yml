@@ -26,6 +26,18 @@ env:
   OPENVELA_DIR: openvela
 
 jobs:
+  audio_dsp:
+    name: Offline audio DSP
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build portable DSP and run regression tests
+        run: |
+          cmake -S app/nyabula_dsp -B out/audio-dsp \
+            -DCMAKE_BUILD_TYPE=Debug -DNYADSP_SANITIZE_TEST=ON
+          cmake --build out/audio-dsp -j2
+          ctest --test-dir out/audio-dsp --output-on-failure
+
   release_tools:
     name: Release tooling
     runs-on: ubuntu-latest
@@ -106,7 +118,8 @@ jobs:
   build:
     name: Build (${{ matrix.config }})
     needs: scan_configs
-    runs-on: ubuntu-latest
+    # Keep the host compiler compatible with the pinned libc++ tree.
+    runs-on: ubuntu-24.04
 
     strategy:
       fail-fast: false
@@ -134,6 +147,12 @@ jobs:
           curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Reserve disk space for openvela
+        run: |
+          # This disposable runner builds neither Android, .NET nor Haskell.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h "$GITHUB_WORKSPACE"
 
       # 拉取 openvela 全量源码
       - name: Repo init & sync
@@ -220,6 +239,12 @@ jobs:
             ${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}/app/nyabula/res/fonts/LICENSE-NOTO-SANS.txt
             ${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}/app/nyabula/src/generated/fonts/font-manifest.json
           if-no-files-found: error
+
+      - name: Release uploaded CMake build tree
+        run: |
+          cd ${{ env.OPENVELA_DIR }}
+          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} --cmake distclean
+          df -h .
 
       # Makefile 构建
       - name: Build (Makefile)
