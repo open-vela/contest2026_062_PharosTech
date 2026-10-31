@@ -1,0 +1,24 @@
+{
+  "id": "hardware-panel",
+  "name": "硬件小助手",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "runtime": "quickjs",
+  "entry": "main.js",
+  "icon": {
+    "type": "image",
+    "path": "assets/icon.png"
+  },
+  "permissions": [
+    "ui.page",
+    "audio.read",
+    "audio.control",
+    "audio.play",
+    "audio.capture",
+    "bluetooth.read",
+    "bluetooth.connect",
+    "bluetooth.call",
+    "usb.access",
+    "camera.capture"
+  ]
+}
