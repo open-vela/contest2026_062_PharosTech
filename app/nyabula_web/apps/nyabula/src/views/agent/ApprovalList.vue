@@ -14,7 +14,7 @@ const labels: Record<string, string> = { 'memory.create': '记住一条信息', 
 </script>
 
 <template>
-  <section v-for="item in pending" :key="`${item.run.id}:${item.index}`" class="approval" aria-label="待批准操作">
+  <section v-for="item in pending" :key="`${item.run.id}:${item.index}`" class="ui-panel approval" aria-label="待批准操作">
     <h3>{{ labels[item.step.topic] ?? item.step.topic }}</h3>
     <p v-if="item.step.topic === 'agent.mcp.out.call'">Nyabot 提议 · 外部服务 {{ item.step.arguments?.server }} · {{ item.step.arguments?.kind }} / {{ item.step.arguments?.name }}</p>
     <p v-else>Nyabot 提议 · 执行目标：当前设备 Core</p>
@@ -32,7 +32,7 @@ const labels: Record<string, string> = { 'memory.create': '记住一条信息', 
 </template>
 
 <style scoped>
-.approval { border: 1px solid var(--md-outline); border-radius: 16px; padding: 16px; margin: 8px 0; background: var(--md-surface-container); }
+.approval { padding: 16px; margin: 8px 0; box-shadow: inset 3px 0 0 var(--md-warning); }
 h3 { margin: 0; font: 600 18px var(--font-title); }
 p { font-size: 14px; overflow-wrap: anywhere; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; max-height: 240px; overflow: auto; }
