@@ -34,6 +34,7 @@ extern "C" {
 #define NYADSP_SAMPLE_RATE      48000
 #define NYADSP_OUTPUTS          3
 #define NYADSP_EQ_BANDS         4
+#define NYADSP_INPUT_EQ_BANDS   16
 #define NYADSP_MAX_DELAY_FRAMES 4800
 #define NYADSP_MAX_BLOCK_FRAMES 4096
 
@@ -77,7 +78,31 @@ struct nyadsp_stats_s
   float output_peak;
 };
 
+enum nyadsp_filter_e
+{
+  NYADSP_FILTER_OFF = 0,
+  NYADSP_FILTER_PEAK,
+  NYADSP_FILTER_LOW_SHELF,
+  NYADSP_FILTER_HIGH_SHELF
+};
+
 struct nyadsp_s;
+
+/* Additive constructor: existing config layout and constructors remain
+ * unchanged. NULL kinds means four enabled peaking filters. Shelf Q uses
+ * alpha = sin(w0) / (2 Q), including resonant shelves when Q is high.
+ */
+struct nyadsp_s *
+nyadsp_create_eq(const struct nyadsp_config_s *config,
+                 const enum nyadsp_filter_e kinds[NYADSP_EQ_BANDS],
+                 int fullrange, int *error);
+
+/* Extended input bank; legacy config/output layout remains ABI v1. */
+struct nyadsp_s *nyadsp_create_input_eq(const struct nyadsp_config_s *config,
+                                        const struct nyadsp_eq_s *bands,
+                                        const enum nyadsp_filter_e *kinds,
+                                        size_t count, int fullrange,
+                                        int *error);
 
 uint32_t nyadsp_api_version(void);
 void nyadsp_default_config(struct nyadsp_config_s *config);
@@ -89,7 +114,9 @@ void nyadsp_default_config(struct nyadsp_config_s *config);
 
 struct nyadsp_s *nyadsp_create(const struct nyadsp_config_s *config,
                                int *error);
-/* Full-range stereo keeps the existing 2.1 config ABI and mutes bass. */
+/* Stereo EQ mode preserves full-range L/R and mutes bass. The config ABI
+ * and the existing 2.1 constructor retain their original contract.
+ */
 struct nyadsp_s *nyadsp_create_stereo(const struct nyadsp_config_s *config,
                                       int *error);
 void nyadsp_reset(struct nyadsp_s *dsp);

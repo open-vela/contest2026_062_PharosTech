@@ -19,6 +19,7 @@
 # under the License.
 """Independent response checks and offline file-contract regression tests."""
 
+import ctypes as ct
 import json
 import math
 from pathlib import Path
@@ -87,6 +88,59 @@ def write_wave(path, rate=48000, channels=2, width=2, frames=3001):
 
 
 class ResponseTests(unittest.TestCase):
+
+    def test_extended_input_bank_and_legacy_abi(self):
+        LIB.nyadsp_create_input_eq.argtypes = [ct.POINTER(render.Config), ct.POINTER(render.Equalizer), ct.POINTER(ct.c_int), ct.c_size_t, ct.c_int, ct.POINTER(ct.c_int)]
+        LIB.nyadsp_create_input_eq.restype = ct.c_void_p
+        config = render.make_config(LIB, base())
+        bands = (render.Equalizer * 16)(*[render.Equalizer(1000, 1, 0) for _ in range(16)])
+        bands[15].gain_db = 6
+        for count in (0, 17):
+            self.assertFalse(LIB.nyadsp_create_input_eq(ct.byref(config), bands, None, count, 1, None))
+        instance = engine()
+        instance.close()
+        instance.handle = LIB.nyadsp_create_input_eq(ct.byref(config), bands, None, 16, 1, None)
+        self.assertTrue(instance.handle)
+        try:
+            samples = tone(1000)
+            result = process(instance, samples)
+            self.assertAlmostEqual(abs(component(result[::3], 1000)) / .02, 10**.3, delta=.003)
+            self.assertTrue(all(v == 0 for v in result[2::3]))
+            instance.reset()
+            self.assertEqual(process(instance, samples[:2048]), result[:3072])
+        finally:
+            instance.close()
+
+    def test_typed_eq_shelves_and_disabled_band(self):
+        LIB.nyadsp_create_eq.argtypes = [ct.POINTER(render.Config), ct.POINTER(ct.c_int), ct.c_int, ct.POINTER(ct.c_int)]
+        LIB.nyadsp_create_eq.restype = ct.c_void_p
+        for kind in (0, 1, 2, 3):
+            for gain in (-12, 12):
+                for frequency in (40, 1000, 12000):
+                    config = render.make_config(LIB, base(eq=[{"frequency_hz": 1000, "q": 2**-.5, "gain_db": gain}]))
+                    instance = engine()
+                    instance.close()
+                    instance.handle = LIB.nyadsp_create_eq(ct.byref(config), (ct.c_int * 4)(kind, 0, 0, 0), 1, None)
+                    self.assertTrue(instance.handle)
+                    try:
+                        result = process(instance, tone(frequency))
+                        measured = 20 * math.log10(abs(component(result[::3], frequency)) / .02)
+                        if kind == 0:
+                            expected = 0
+                        elif frequency == 1000:
+                            expected = gain if kind == 1 else gain / 2
+                        elif kind == 2:
+                            expected = gain if frequency == 40 else 0
+                        elif kind == 3:
+                            expected = 0 if frequency == 40 else gain
+                        else:
+                            continue
+                        self.assertAlmostEqual(measured, expected, delta=.03)
+                        self.assertEqual(result[::3], result[1::3])
+                        self.assertTrue(all(v == 0 for v in result[2::3]))
+                    finally:
+                        instance.close()
+
     def test_lr4_amplitude_and_sum(self):
         for crossover in (40, 500, 5000):
             for frequency in (100, 500, 1000, 10000):
