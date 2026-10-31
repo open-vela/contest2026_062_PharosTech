@@ -65,6 +65,7 @@
 #include <zephyr/bluetooth/classic/hfp_hf.h>
 #include <zephyr/bluetooth/classic/sdp.h>
 #include <zephyr/bluetooth/conn.h>
+#include <zephyr/init.h>
 #ifdef CONFIG_BT_SETTINGS
 #include <zephyr/settings/settings.h>
 #endif
@@ -330,6 +331,7 @@ static void ny_bt_hf_inband(struct bt_hfp_hf *hf, bool inband);
 static void ny_bt_hf_codec(struct bt_hfp_hf *hf, uint8_t id);
 
 static void ny_bt_apply_name(void);
+static void ny_bt_stack_init(void);
 static void *ny_bt_bringup(void *arg);
 static void ny_bt_devices_load(void);
 static void ny_bt_devices_save(void);
@@ -345,6 +347,8 @@ static int ny_bt_target(const cJSON *data, bool required, bt_addr_t *address,
 /****************************************************************************
  * Private Data
  ****************************************************************************/
+
+static pthread_once_t g_bt_init_once = PTHREAD_ONCE_INIT;
 
 static struct ny_bt_s g_bt = {
   .lock = NXMUTEX_INITIALIZER,
@@ -1878,6 +1882,12 @@ static void ny_bt_apply_name(void)
 }
 
 /****************************************************************************
+ * Name: ny_bt_stack_init
+ ****************************************************************************/
+
+static void ny_bt_stack_init(void) { z_sys_init(); }
+
+/****************************************************************************
  * Name: ny_bt_bringup
  *
  * Description:
@@ -1909,6 +1919,13 @@ static void *ny_bt_bringup(void *arg)
         }
 
       usleep(500000);
+    }
+
+  ret = pthread_once(&g_bt_init_once, ny_bt_stack_init);
+  if (ret != 0)
+    {
+      ret = -ret;
+      goto failed;
     }
 
   ret = bt_enable(NULL);
