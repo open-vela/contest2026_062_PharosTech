@@ -818,4 +818,74 @@ int ny_audio_stream_unity(struct ny_audio_stream_s *stream)
   return 0;
 }
 
+/****************************************************************************
+ * Name: ny_audio_stream_drain
+ ****************************************************************************/
+
+int ny_audio_stream_drain(struct ny_audio_stream_s *stream, int timeout_ms)
+{
+  struct timespec begin;
+  int ret;
+  if (stream == NULL || stream->config.capture)
+    {
+      return -EINVAL;
+    }
+
+  if (stream->current >= 0)
+    {
+      int index = stream->current;
+      struct ap_buffer_s *apb = stream->buffers[index].apb;
+      size_t target = stream->config.chunk;
+      if (stream->config.wav && !stream->header_sent)
+        {
+          target += NY_PCM_WAV_HEADER_BYTES;
+        }
+
+      memset(apb->samp + apb->nbytes, 0, target - apb->nbytes);
+      apb->nbytes = target;
+      ret = ny_audio_stream_enqueue(stream, index);
+      if (ret < 0)
+        {
+          return ret;
+        }
+
+      stream->current = -1;
+      stream->header_sent = true;
+      ret = ny_audio_stream_start(stream);
+      if (ret < 0)
+        {
+          return ret;
+        }
+    }
+
+  if (stream->queued > 0)
+    {
+      ret = ny_audio_stream_start(stream);
+      if (ret < 0)
+        {
+          return ret;
+        }
+    }
+
+  clock_gettime(CLOCK_MONOTONIC, &begin);
+  while (stream->queued != 0)
+    {
+      struct timespec now;
+      if (ny_audio_stream_pump(stream, 50) == -EPIPE)
+        {
+          return 0;
+        }
+
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      if ((now.tv_sec - begin.tv_sec) * 1000 +
+              (now.tv_nsec - begin.tv_nsec) / 1000000 >
+          timeout_ms)
+        {
+          return -ETIMEDOUT;
+        }
+    }
+
+  return 0;
+}
+
 #endif /* CONFIG_NYABULA_CORE_BT */
