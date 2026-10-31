@@ -125,7 +125,7 @@ ifeq ($(CONFIG_NYABULA_CORE_AGENT),y)
 CSRCS += ny_product_companion.c
 endif
 ifeq ($(CONFIG_NYABULA_CORE_WEATHER),y)
-CSRCS += ny_product_weather.c
+CSRCS += ny_product_weather.c ny_weather_openmeteo.c
 endif
 ifeq ($(CONFIG_NYABULA_CORE_MODELS),y)
 CSRCS += ny_web_models.c

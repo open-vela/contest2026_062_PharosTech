@@ -22,6 +22,7 @@
 #include "infra/vela_tls.h"
 #include "ny_product.h"
 #include "ny_product_store.h"
+#include "ny_weather_openmeteo.h"
 #include <errno.h>
 #include <math.h>
 #include <nuttx/mutex.h>
@@ -51,6 +52,8 @@ static const char *g_weather_domains[] = { "weather-now", "weather-daily",
                                            "weather-alerts" };
 
 static const char *ny_weather_text(const cJSON *row, const char *key);
+static bool ny_weather_public(const cJSON *config);
+static int ny_weather_query(const cJSON *data, cJSON **result);
 static bool ny_weather_host(const char *host);
 static int ny_weather_load(void);
 static cJSON *ny_weather_status(void);
@@ -70,6 +73,54 @@ static const char *ny_weather_text(const cJSON *row, const char *key)
   const char *value =
       cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(row, key));
   return value ? value : "";
+}
+
+/****************************************************************************
+ * Name: ny_weather_public
+ ****************************************************************************/
+
+static bool ny_weather_public(const cJSON *config)
+{
+  return !strcmp(ny_weather_text(config, "provider"), "open-meteo");
+}
+
+/****************************************************************************
+ * Name: ny_weather_query
+ ****************************************************************************/
+
+static int ny_weather_query(const cJSON *data, cJSON **result)
+{
+  const char *location = ny_weather_text(data, "location");
+  const char *section = ny_weather_text(data, "section");
+  int index = !section[0] || !strcmp(section, "now") ? 0
+              : !strcmp(section, "daily")            ? 1
+              : !strcmp(section, "hourly")           ? 2
+                                                     : -1;
+  if (!location[0] || strlen(location) > 96 || index < 0)
+    return -EINVAL;
+  cJSON *config = cJSON_CreateObject();
+  if (!config || !cJSON_AddStringToObject(config, "city", location))
+    {
+      cJSON_Delete(config);
+      return -ENOMEM;
+    }
+  cJSON *place = NULL, *sections = NULL;
+  int ret = ny_weather_openmeteo(config, &place, &sections);
+  cJSON_Delete(config);
+  if (ret == 0)
+    {
+      *result = cJSON_DetachItemFromArray(sections, index);
+      if (!*result || !cJSON_AddItemToObject(*result, "location", place))
+        ret = -ENOMEM;
+      else
+        place = NULL;
+      if (ret == 0 && !cJSON_AddNumberToObject(*result, "fetched_at",
+                                               ny_product_time_ms(false)))
+        ret = -ENOMEM;
+    }
+  cJSON_Delete(place);
+  cJSON_Delete(sections);
+  return ret;
 }
 
 /****************************************************************************
@@ -118,6 +169,7 @@ static int ny_weather_load(void)
     {
       config = cJSON_CreateObject();
       if (!config || !cJSON_AddBoolToObject(config, "enabled", false) ||
+          !cJSON_AddStringToObject(config, "provider", "open-meteo") ||
           !cJSON_AddStringToObject(config, "host", "") ||
           !cJSON_AddStringToObject(config, "key", "") ||
           !cJSON_AddStringToObject(config, "city", "") ||
@@ -129,12 +181,17 @@ static int ny_weather_load(void)
     }
   if (!cJSON_IsObject(config) ||
       !cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(config, "enabled")) ||
+      (ny_weather_text(config, "provider")[0] &&
+       strcmp(ny_weather_text(config, "provider"), "qweather") &&
+       !ny_weather_public(config)) ||
+      strlen(ny_weather_text(config, "host")) > 128 ||
       strlen(ny_weather_text(config, "city")) > 96 ||
       strlen(ny_weather_text(config, "province")) > 96 ||
       strlen(ny_weather_text(config, "key")) > 128 ||
       (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(config, "enabled")) &&
-       (!ny_weather_host(ny_weather_text(config, "host")) ||
-        !ny_weather_text(config, "key")[0] ||
+       ((!ny_weather_public(config) &&
+         (!ny_weather_host(ny_weather_text(config, "host")) ||
+          !ny_weather_text(config, "key")[0])) ||
         !ny_weather_text(config, "city")[0])))
     {
       cJSON_Delete(config);
@@ -156,6 +213,8 @@ static cJSON *ny_weather_status(void)
     return NULL;
   cJSON_DeleteItemFromObjectCaseSensitive(root, "key");
   cJSON_DeleteItemFromObjectCaseSensitive(root, "fixture_port");
+  if (!ny_weather_text(root, "provider")[0])
+    cJSON_AddStringToObject(root, "provider", "qweather");
   cJSON *errors = cJSON_AddObjectToObject(root, "errors");
   bool ok =
       errors &&
@@ -167,6 +226,8 @@ static cJSON *ny_weather_status(void)
       cJSON_AddNumberToObject(root, "poll_minutes",
                               NY_WEATHER_POLL_MS / 60000) &&
       cJSON_AddBoolToObject(root, "clock_valid", ny_product_clock_valid());
+  ok &= cJSON_AddBoolToObject(root, "alertsSupported",
+                              !ny_weather_public(g_weather_config)) != NULL;
   for (int i = 0; ok && i < NY_WEATHER_SECTION_COUNT; i++)
     ok = cJSON_AddNumberToObject(errors, g_weather_sections[i],
                                  g_weather_errors[i]) != NULL;
@@ -375,7 +436,12 @@ static int ny_weather_worker(int argc, char **argv)
   uint64_t config_revision = g_weather_revision;
   nxmutex_unlock(&g_weather_lock);
   cJSON *location = NULL;
-  int error = config ? ny_weather_location(config, &location) : -ENOMEM;
+  cJSON *public_sections = NULL;
+  bool public = ny_weather_public(config);
+  int error = !config ? -ENOMEM
+              : public
+                  ? ny_weather_openmeteo(config, &location, &public_sections)
+                  : ny_weather_location(config, &location);
   if (error < 0)
     goto done;
   char *end_lat;
@@ -408,7 +474,14 @@ static int ny_weather_worker(int argc, char **argv)
                  : i == 2 ? "&hours=24"
                           : "");
       cJSON *data = NULL;
-      int ret = ny_weather_fetch(config, path, &data);
+      int ret;
+      if (public)
+        {
+          data = cJSON_DetachItemFromArray(public_sections, 0);
+          ret = data ? 0 : -EBADMSG;
+        }
+      else
+        ret = ny_weather_fetch(config, path, &data);
       if (!ret)
         {
           if ((i == 0 && !cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(
@@ -446,7 +519,7 @@ static int ny_weather_worker(int argc, char **argv)
               if (!ret)
                 ret = ny_product_store_write(g_weather_domains[i], data,
                                              revision, &revision);
-              if (!ret && i == 3)
+              if (!ret && i == 3 && !public)
                 ret = ny_weather_alerts(data);
             }
           g_weather_errors[i] = ret;
@@ -458,6 +531,7 @@ static int ny_weather_worker(int argc, char **argv)
     }
 done:
   cJSON_Delete(location);
+  cJSON_Delete(public_sections);
   cJSON_Delete(config);
   nxmutex_lock(&g_weather_lock);
   if (generation == g_weather_generation)
@@ -480,6 +554,8 @@ int ny_product_weather_request(const struct ny_product_caller_s *caller,
   if (caller->role < NY_PRODUCT_FAMILY)
     return -EACCES;
   const char *op = topic + 8;
+  if (!strcmp(op, "query"))
+    return ny_weather_query(data, result);
   if (strcmp(op, "status") && strcmp(op, "get") && strcmp(op, "configure") &&
       strcmp(op, "refresh"))
     return -ENOSYS;
@@ -539,6 +615,10 @@ int ny_product_weather_request(const struct ny_product_caller_s *caller,
           goto out;
         }
       const char *host = ny_weather_text(data, "host");
+      const char *provider = ny_weather_text(data, "provider");
+      if (!provider[0])
+        provider = "qweather";
+      bool public = !strcmp(provider, "open-meteo");
       const char *city = ny_weather_text(data, "city");
       const char *province = ny_weather_text(data, "province");
       const cJSON *provided_key =
@@ -546,8 +626,10 @@ int ny_product_weather_request(const struct ny_product_caller_s *caller,
       const char *key = provided_key
                             ? cJSON_GetStringValue(provided_key)
                             : ny_weather_text(g_weather_config, "key");
-      if (!ny_weather_host(host) || !city[0] || strlen(city) > 96 ||
-          strlen(province) > 96 || !key || strlen(key) > 128 ||
+      if ((!public && strcmp(provider, "qweather")) || strlen(host) > 128 ||
+          (!public && !ny_weather_host(host)) || !city[0] ||
+          strlen(city) > 96 || strlen(province) > 96 || !key ||
+          strlen(key) > 128 ||
           !cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(data, "enabled")))
         {
           ret = -EINVAL;
@@ -560,7 +642,7 @@ int ny_product_weather_request(const struct ny_product_caller_s *caller,
             goto out;
           }
       if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "enabled")) &&
-          !key[0])
+          !public && !key[0])
         {
           ret = -EINVAL;
           goto out;
@@ -568,6 +650,7 @@ int ny_product_weather_request(const struct ny_product_caller_s *caller,
       cJSON *candidate = cJSON_CreateObject();
       bool ok =
           candidate && cJSON_AddStringToObject(candidate, "host", host) &&
+          cJSON_AddStringToObject(candidate, "provider", provider) &&
           cJSON_AddStringToObject(candidate, "key", key) &&
           cJSON_AddStringToObject(candidate, "city", city) &&
           cJSON_AddStringToObject(candidate, "province", province) &&
@@ -638,8 +721,7 @@ int ny_product_weather_tick(void)
   if (ret < 0)
     return ret;
   ret = ny_weather_load();
-  if (!ret && !g_weather_running &&
-      ny_product_clock_valid() &&
+  if (!ret && !g_weather_running && ny_product_clock_valid() &&
       ny_product_time_ms(true) >= g_weather_next &&
       cJSON_IsTrue(
           cJSON_GetObjectItemCaseSensitive(g_weather_config, "enabled")))

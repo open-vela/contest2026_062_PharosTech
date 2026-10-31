@@ -121,7 +121,7 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     list(APPEND NYABULA_CORE_DEPENDS nyabula_eye)
   endif()
   if(CONFIG_NYABULA_CORE_WEATHER)
-    list(APPEND NYABULA_CORE_SRCS ny_product_weather.c)
+    list(APPEND NYABULA_CORE_SRCS ny_product_weather.c ny_weather_openmeteo.c)
   endif()
 
   if(CONFIG_NYABULA_CORE_COMPUTE)

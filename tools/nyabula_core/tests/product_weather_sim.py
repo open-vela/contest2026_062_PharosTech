@@ -43,7 +43,7 @@ class Fixture(BaseHTTPRequestHandler):
                 data['alerts'] = [{'id': 'test-' + Fixture.mode, 'headline': 'Fixture ' + Fixture.mode,
                     'description': 'Test data only', 'messageType': {'code': Fixture.mode,
                     'supersedes': [] if Fixture.mode == 'alert' else ['test-alert']},
-                    'expireTime': '2026-09-14T08:00+08:00'}]
+                    'expireTime': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() + 86400))}]
         else:
             code = 404
         payload = json.dumps(data).encode()
@@ -87,7 +87,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='nyabula-weather-') as directory:
         sim = Simulator(args.binary.resolve(), directory)
         try:
-            sim.request('system.time.set', {'unix_ms': 1789257600000})
+            sim.request('system.time.set', {'unix_ms': int(time.time() * 1000)})
             config = dict(revision=0, host='test.re.qweatherapi.com', key='fixture-only-key',
                           city='大连', province='辽宁', enabled=True, fixture_port=str(server.server_port))
             state = sim.request('weather.configure', config)
