@@ -2597,6 +2597,12 @@ static cJSON *ny_bt_status(void)
        cJSON_AddNumberToObject(sound, "mediaDropped", audio.media_dropped);
   ok = ok &&
        cJSON_AddNumberToObject(sound, "mediaUnderruns", audio.media_underruns);
+  ok = ok && cJSON_AddNumberToObject(sound, "mediaLastUnderrunMs",
+                                     audio.media_last_underrun_ms);
+  ok = ok && cJSON_AddNumberToObject(sound, "mediaRecoveries",
+                                     audio.media_recoveries);
+  ok = ok && cJSON_AddNumberToObject(sound, "mediaLastRecoveryMs",
+                                     audio.media_last_recovery_ms);
   ok = ok &&
        cJSON_AddNumberToObject(sound, "mediaSbcRate", audio.media_sbc_rate);
   ok = ok && cJSON_AddNumberToObject(sound, "mediaSbcChannels",
