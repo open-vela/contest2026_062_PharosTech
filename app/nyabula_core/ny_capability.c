@@ -411,7 +411,8 @@ static JSValue ny_capability_ui_notify(JSContext *context,
   ret = ny_broker_ui_notify(&client, message, strlen(message));
   JS_FreeCString(context, message);
   return ret >= 0 ? ny_capability_settled_promise(plugin, false, JS_UNDEFINED)
-                  : JS_ThrowInternalError(context, "UI broker unavailable");
+                  : JS_ThrowInternalError(context,
+                                          "UI notification failed: %d", ret);
 }
 
 /****************************************************************************
