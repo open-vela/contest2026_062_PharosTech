@@ -316,6 +316,28 @@ int ny_product_request(const struct ny_product_caller_s *caller,
       return *result == NULL ? -ENOMEM : 0;
     }
 
+  if (!strcmp(topic, "panel.pair.show") || !strcmp(topic, "panel.pair.hide"))
+    {
+      if (caller->role != NY_PRODUCT_OWNER)
+        return -EACCES;
+#if defined(CONFIG_NYABULA_CORE_NETWORK) && \
+    defined(CONFIG_NYABULA_CORE_WEB) && defined(CONFIG_NYABULA_CORE_EYE)
+      *result = cJSON_CreateObject();
+      if (*result == NULL ||
+          !cJSON_AddStringToObject(*result, "message",
+                                   !strcmp(topic, "panel.pair.show")
+                                       ? "Scan the code on the device to sign "
+                                         "in or reset the password."
+                                       : "Pairing screen hidden."))
+        return -ENOMEM;
+      return !strcmp(topic, "panel.pair.show")
+                 ? ny_product_network_pair_show()
+                 : ny_product_network_pair_hide();
+#else
+      return -ENOTSUP;
+#endif
+    }
+
 #ifdef CONFIG_NYABULA_CORE_DSP
   ret = ny_product_dsp_request(caller, topic, data, result);
   if (ret != -ENOSYS)

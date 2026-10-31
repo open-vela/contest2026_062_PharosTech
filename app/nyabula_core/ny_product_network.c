@@ -102,6 +102,8 @@
 #define NY_NET_PSK_MAX        64
 #define NY_NET_SCAN_MAX       24
 
+#define NY_NET_EYE_LOGIN_MS   (5U * 60U * 1000U)
+
 #define NY_NET_EYE_SOURCE     "network"
 #define NY_NET_EYE_PRIORITY   70
 #define NY_NET_EYE_LEASE_MS   15000
@@ -1278,6 +1280,65 @@ static int ny_net_eye_submit(const char *action, cJSON *params,
   cJSON_Delete(params);
   cJSON_Delete(command);
   return ret;
+}
+
+/****************************************************************************
+ * Name: ny_product_network_pair_show
+ *
+ * Description:
+ *   Show the local owner's login code for five minutes. Never return the
+ *   credential in a tool result or send it through the language model.
+ ****************************************************************************/
+
+int ny_product_network_pair_show(void)
+{
+  char address[INET_ADDRSTRLEN] = { 0 };
+  char token[65];
+  char url[NYABULA_EYE_TEXT_QR];
+  cJSON *params;
+  cJSON *payload;
+  int ret = nxmutex_lock(&g_net_lock);
+  if (ret < 0)
+    return ret;
+  if (g_net.state == NY_NET_STA_ONLINE)
+    strlcpy(address, g_net.sta_ipv4, sizeof(address));
+  else if (g_net.state == NY_NET_AP_PROVISION)
+    strlcpy(address, NY_NET_AP_ADDR, sizeof(address));
+  nxmutex_unlock(&g_net_lock);
+  if (address[0] == 0)
+    return -ENETDOWN;
+  ret = ny_web_product_token(token, sizeof(token));
+  if (ret < 0)
+    return ret;
+  ret = snprintf(url, sizeof(url), "http://%s/#/?token=%s", address, token);
+  memset(token, 0, sizeof(token));
+  if (ret < 0 || ret >= sizeof(url))
+    return -EOVERFLOW;
+  params = cJSON_CreateObject();
+  payload = params ? cJSON_AddObjectToObject(params, "payload") : NULL;
+  if (!payload || !cJSON_AddStringToObject(params, "scene", "qr") ||
+      !cJSON_AddStringToObject(params, "style", "full") ||
+      !cJSON_AddStringToObject(payload, "qr_right", url) ||
+      !cJSON_AddStringToObject(payload, "qr_right_label",
+                               NY_NET_EYE_OPEN_PANEL) ||
+      !cJSON_AddStringToObject(payload, "title", "登录面板") ||
+      !cJSON_AddStringToObject(payload, "detail", address))
+    {
+      memset(url, 0, sizeof(url));
+      cJSON_Delete(params);
+      return -ENOMEM;
+    }
+  memset(url, 0, sizeof(url));
+  return ny_net_eye_submit("eyes.scene.show", params, NY_NET_EYE_LOGIN_MS);
+}
+
+/****************************************************************************
+ * Name: ny_product_network_pair_hide
+ ****************************************************************************/
+
+int ny_product_network_pair_hide(void)
+{
+  return ny_net_eye_submit("eyes.scene.hide", NULL, NY_NET_EYE_LOGIN_MS);
 }
 
 /* Build the payload for the pairing scene: the address of the setup page on
