@@ -66,7 +66,7 @@ function fmtLastSeen(s: string): string {
         </div>
       </MdCard>
       <p v-if="!devices.loading && devices.devices.length === 0" class="empty">
-        还没有设备。点击「认领设备」，输入设备 ID 与认领码（模拟器打印在 stdout，真机显示在眼睛配对画面）。
+        还没有设备。点击「认领设备」，输入设备 ID 与认领码（真机请在局域网设备面板的 Cloud 设置中查看；模拟器见启动输出）。
       </p>
     </div>
 
