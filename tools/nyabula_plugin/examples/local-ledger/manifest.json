@@ -1,0 +1,14 @@
+{
+  "id": "sample-ledger-cn",
+  "name": "本地记账本示例",
+  "version": "1.0.14",
+  "apiVersion": 1,
+  "runtime": "quickjs",
+  "entry": "main.js",
+  "permissions": [
+    "storage.read",
+    "storage.write",
+    "ui.notify",
+    "ui.page"
+  ]
+}
