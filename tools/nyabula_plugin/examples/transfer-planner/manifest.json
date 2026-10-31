@@ -1,0 +1,15 @@
+{
+  "id": "sample-transfer-planner",
+  "name": "传输时间计算器示例",
+  "version": "1.0.10",
+  "apiVersion": 1,
+  "runtime": "quickjs",
+  "entry": "main.js",
+  "permissions": [
+    "core.log",
+    "storage.read",
+    "storage.write",
+    "ui.notify",
+    "ui.page"
+  ]
+}
