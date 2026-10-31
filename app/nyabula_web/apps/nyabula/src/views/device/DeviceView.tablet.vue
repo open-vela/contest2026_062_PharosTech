@@ -2,7 +2,9 @@
 /* Tablet: landscape = directory + content (like desktop); portrait =
  * horizontally scrollable segmented tabs above the content. */
 import { computed, inject } from 'vue';
-import { SegmentedTabs, UiIcon } from '@nyabula/ui';
+import { SegmentedTabs } from '@nyabula/ui';
+import DeviceSectionNav from './DeviceSectionNav.vue';
+import DeviceSectionHead from './DeviceSectionHead.vue';
 import { useDevicePage } from './device.logic';
 import type { useFormFactor } from '../../composables/useFormFactor';
 
@@ -19,23 +21,12 @@ const tab = computed({
 
 <template>
   <div class="device-tablet" :class="{ portrait }">
-    <nav v-if="!portrait" class="dir">
-      <button
-        v-for="s in page.sections.value"
-        :key="s.id"
-        class="dir-item"
-        :class="{ on: page.current.value.id === s.id }"
-        @click="page.go(s.id)"
-      >
-        <UiIcon :name="s.icon" :size="20" />
-        <span>{{ s.label }}</span>
-      </button>
-    </nav>
+    <DeviceSectionNav v-if="!portrait" :page="page" compact />
     <div v-else class="tabs-scroll">
       <SegmentedTabs v-model="tab" :items="tabItems" />
     </div>
     <section class="content">
-      <h1 class="page-title">{{ page.current.value.label }}</h1>
+      <DeviceSectionHead :section="page.current.value" :device="page.session.device?.name" />
       <Transition name="page" mode="out-in">
         <component :is="page.current.value.component" :key="page.current.value.id" :section="page.current.value.id" />
       </Transition>
@@ -51,21 +42,6 @@ const tab = computed({
   padding: 18px 20px 40px;
 }
 .device-tablet.portrait { grid-template-columns: 1fr; }
-.dir { position: sticky; top: 12px; align-self: start; display: flex; flex-direction: column; gap: 2px; }
-.dir-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border: none;
-  border-radius: var(--radius-full);
-  background: transparent;
-  color: var(--md-on-surface-variant);
-  font: 500 14px var(--font-body);
-  text-align: left;
-  cursor: pointer;
-}
-.dir-item.on { background: var(--md-secondary-container); color: var(--md-on-secondary-container); font-weight: 600; }
 .tabs-scroll { overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
 .tabs-scroll::-webkit-scrollbar { display: none; }
 .content { min-width: 0; }
