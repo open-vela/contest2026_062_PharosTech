@@ -22,8 +22,11 @@ export interface NyaUiPageMeta {
 
 export interface NyaUiTree {
   nyaui: number;
+  views?: Partial<Record<'component' | 'html', NyaUiTree>>;
   page?: NyaUiPageMeta;
-  root: NyaUiNode;
+  root?: NyaUiNode;
+  html?: string;
+  events?: Record<string, NyaUiAction>;
 }
 
 export interface NyaUiPatch {
@@ -34,6 +37,7 @@ export interface NyaUiPatch {
 
 /** Payload emitted by NyaUiPage when a component fires an event. */
 export interface NyaUiCommand {
+  view?: 'component' | 'html';
   componentId?: string;
   event: string;
   command?: string;
