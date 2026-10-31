@@ -3,11 +3,28 @@
  * picks a subset so variants can arrange them in columns. */
 import { MdButton, MdCard, MdSwitch, UiIcon, eventOrigin } from '@nyabula/ui';
 import type { useSettingsPage } from './settings.logic';
+import SkinPreview from './SkinPreview.vue';
 
-defineProps<{ page: ReturnType<typeof useSettingsPage>; only?: ('theme' | 'palette' | 'layout' | 'dev' | 'data')[] }>();
+defineProps<{ page: ReturnType<typeof useSettingsPage>; only?: ('skin' | 'theme' | 'palette' | 'layout' | 'dev' | 'data')[] }>();
 </script>
 
 <template>
+  <MdCard v-if="!only || only.includes('skin')" title="界面风格">
+    <div class="skins">
+      <button
+        v-for="s in page.skins.value"
+        :key="s.id"
+        class="skin"
+        :class="{ on: page.skin.value === s.id }"
+        @click="page.setSkin(s.id, eventOrigin($event))"
+      >
+        <SkinPreview :skin="s.id" :accent="page.theme.palette[page.theme.mode].primary" :dark="page.theme.mode === 'dark'" />
+        <span class="skin-name">{{ s.name }}<UiIcon v-if="page.skin.value === s.id" name="check_circle" :size="15" /></span>
+        <span class="skin-desc">{{ s.desc }}</span>
+      </button>
+    </div>
+  </MdCard>
+
   <MdCard v-if="!only || only.includes('theme')" title="外观模式">
     <div class="choices">
       <button
@@ -63,12 +80,33 @@ defineProps<{ page: ReturnType<typeof useSettingsPage>; only?: ('theme' | 'palet
   </MdCard>
 
   <MdCard v-if="!only || only.includes('data')" title="本机数据">
-    <p class="muted hint" style="margin-top: 0">已知设备、配对令牌与账号会话保存在本浏览器（{{ page.localCount.value }} 项）。</p>
-    <MdButton variant="outlined" class="danger" @click="page.clearLocal()"><UiIcon name="delete" :size="16" /> 清除本机数据</MdButton>
+    <div class="data-controls">
+      <p class="muted hint">已知设备、配对令牌与账号会话保存在本浏览器（{{ page.localCount.value }} 项）。</p>
+      <MdButton variant="outlined" class="danger" @click="page.clearLocal()"><UiIcon name="delete" :size="16" /> 清除本机数据</MdButton>
+    </div>
   </MdCard>
 </template>
 
 <style scoped>
+.skins { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; }
+.skin {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 6px 10px;
+  border-radius: var(--radius-m);
+  border: 1px solid var(--md-outline-variant);
+  background: transparent;
+  color: var(--md-on-surface);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast), background var(--dur-fast), transform var(--dur-fast) var(--ease-spring);
+}
+.skin:hover { background: var(--md-surface-container-high); transform: translateY(-2px); }
+.skin.on { border-color: var(--md-primary); background: rgba(var(--md-primary-rgb), 0.08); }
+.skin-name { display: flex; align-items: center; gap: 4px; font: 600 13.5px var(--font-body); padding: 0 2px; }
+.skin-name .ui-icon { color: var(--md-primary); }
+.skin-desc { font-size: 11.5px; color: var(--md-on-surface-variant); padding: 0 2px; line-height: 1.35; }
 .choices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .choices.four { grid-template-columns: repeat(4, 1fr); }
 .choice {
@@ -109,6 +147,8 @@ defineProps<{ page: ReturnType<typeof useSettingsPage>; only?: ('theme' | 'palet
 .swatch.on .swatch-name { color: var(--md-on-surface); font-weight: 600; }
 .lbl { display: block; font-size: 14px; color: var(--md-on-surface); }
 .sub { display: block; font-size: 12.5px; margin-top: 2px; }
+.data-controls { display: flex; flex-direction: column; align-items: flex-start; gap: 18px; }
+.data-controls .hint { margin: 0; line-height: 1.65; }
 .danger { color: var(--md-error) !important; border-color: var(--md-error) !important; }
 .md-btn :deep(.ui-icon) { vertical-align: -3px; margin-right: 4px; }
 </style>

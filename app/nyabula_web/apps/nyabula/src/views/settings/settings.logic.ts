@@ -1,7 +1,7 @@
 /* Local (this browser) settings shared by all three variants: theme mode,
- * palette, form-factor override, developer mode, clear local data. */
+ * palette, skin, form-factor override, developer mode, clear local data. */
 import { computed, inject, ref } from 'vue';
-import { circularReveal, useDialogStore, useThemeStore, useToastStore, type ThemeMode } from '@nyabula/ui';
+import { themeTransition, useDialogStore, useThemeStore, useToastStore, type ThemeMode, type ThemeSkin } from '@nyabula/ui';
 import type { FormFactor, useFormFactor } from '../../composables/useFormFactor';
 
 import { useDevStore, DEV_KEY } from '../../stores/dev';
@@ -32,7 +32,7 @@ export function useSettingsPage() {
     if (!origin) return apply();
     // Direction hint: going lighter expands, going darker contracts.
     const after = choice === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : choice;
-    circularReveal(origin, apply, before === 'dark' && after === 'light' ? 'expand' : after === 'dark' && before === 'light' ? 'contract' : 'expand');
+    themeTransition(origin, apply, before === 'dark' && after === 'light' ? 'expand' : after === 'dark' && before === 'light' ? 'contract' : 'expand');
   }
 
   /* Palette */
@@ -40,10 +40,19 @@ export function useSettingsPage() {
   const paletteId = computed(() => theme.paletteId);
   function setPalette(id: string, origin?: { x: number; y: number }): void {
     if (id === theme.paletteId) return;
-    if (origin) circularReveal(origin, () => theme.setPalette(id), 'expand');
+    if (origin) themeTransition(origin, () => theme.setPalette(id), 'expand');
     else theme.setPalette(id);
   }
 
+
+  /* Skin: the target skin's own motion introduces it. */
+  const skins = computed(() => theme.skins);
+  const skin = computed<ThemeSkin>(() => theme.skin);
+  function setSkin(id: ThemeSkin, origin?: { x: number; y: number }): void {
+    if (id === theme.skin) return;
+    if (origin) themeTransition(origin, () => theme.setSkin(id), 'expand', id);
+    else theme.setSkin(id);
+  }
   /* Layout override */
   const layoutChoices: { id: FormFactor | 'auto'; label: string; icon: string }[] = [
     { id: 'auto', label: '自动', icon: 'auto_awesome' },
@@ -95,5 +104,5 @@ export function useSettingsPage() {
     location.reload();
   }
 
-  return { theme, modeChoices, mode, setMode, palettes, paletteId, setPalette, layoutChoices, layout, layoutAuto, setLayout, dev, setDev, localCount, clearLocal };
+  return { theme, modeChoices, mode, setMode, palettes, paletteId, setPalette, skins, skin, setSkin, layoutChoices, layout, layoutAuto, setLayout, dev, setDev, localCount, clearLocal };
 }
