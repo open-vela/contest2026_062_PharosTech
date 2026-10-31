@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import PluginIcon from '../../components/PluginIcon.vue';
+import PluginLifecycle from './PluginLifecycle.vue';
 /* Tablet: segmented tabs (页面 / 权限) on top of one column. */
 import { ref } from 'vue';
-import { NyaUiPage } from '@nyabula/nyaui-vue';
+import { NyaUiSurface as NyaUiPage } from '@nyabula/nyaui-vue';
 import { EmptyState, MdButton, SegmentedTabs, Skeleton, UiIcon } from '@nyabula/ui';
 import PluginPermissionPanel from './PluginPermissionPanel.vue';
 import { usePluginPageView } from './PluginPageView.logic';
@@ -21,7 +23,7 @@ const tabs = [
   <div class="page narrow plugin-tablet">
     <div class="row between">
       <div class="row">
-        <UiIcon :name="page.plugin.value?.icon ?? 'extension'" :size="24" />
+        <PluginIcon :plugin="page.plugin.value" :size="24" />
         <div>
           <h2 class="page-title">{{ page.title.value }}</h2>
           <p class="page-sub">
@@ -33,11 +35,13 @@ const tabs = [
       <MdButton variant="icon" :disabled="page.loading.value" aria-label="重新加载" @click="page.retry"><UiIcon name="refresh" :size="20" /></MdButton>
     </div>
 
+    <PluginLifecycle :id="id" />
     <SegmentedTabs v-model="tab" :items="tabs" stretch />
 
     <template v-if="tab === 'page'">
+      <EmptyState v-if="page.plugin.value?.state === 'stopped'" icon="stop" title="插件已停止" hint="授权所需能力后，点击上方启动插件。" />
       <EmptyState
-        v-if="page.errorText.value && !page.tree.value"
+        v-else-if="page.errorText.value && !page.tree.value"
         tone="error"
         icon="extension"
         title="插件页面加载失败"
@@ -48,7 +52,7 @@ const tabs = [
       <Skeleton v-else-if="!page.tree.value" :lines="8" />
       <div v-else class="stage">
         <p v-if="!page.session.canControl" class="muted readonly">当前为访客身份，页面只读</p>
-        <NyaUiPage :tree="page.tree.value" :busy="page.busy.value" @command="page.onCommand" />
+        <NyaUiPage :plugin-id="id" :tree="page.tree.value" :busy="page.busy.value" @command="page.onCommand" />
       </div>
     </template>
     <div v-else class="stack">

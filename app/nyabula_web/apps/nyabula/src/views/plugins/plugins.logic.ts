@@ -94,7 +94,7 @@ export function usePluginPage(id: Ref<string>, opts: { holdRoute?: boolean; surf
     return plugins.trees[treeKey.value] ?? null;
   });
   const plugin = computed(() => plugins.list.find((p) => p.id === id.value) ?? null);
-  const title = computed(() => tree.value?.page?.title ?? plugin.value?.name ?? id.value);
+  const title = computed(() => plugin.value?.name ?? tree.value?.page?.title ?? id.value);
 
   let force = false;
   const task = useAsyncTask(
@@ -138,19 +138,12 @@ export function usePluginPermissions(id: Ref<string>) {
   const plugin = computed(() => plugins.list.find((p) => p.id === id.value) ?? null);
   const perms = computed(() => plugin.value?.permissions ?? []);
   const canEdit = computed(() => session.isOwner && session.connected);
-  const pending = ref<Record<string, boolean>>({});
+  const pending = computed(() => Object.fromEntries(perms.value.map(p => [p.name, plugins.permissionPending(id.value, p.name)])));
   const summary = computed(() => (plugin.value ? permSummary(plugin.value) : { granted: 0, total: 0, missing: 0 }));
 
   async function toggle(name: string, granted: boolean) {
     if (!canEdit.value || pending.value[name]) return;
-    pending.value = { ...pending.value, [name]: true };
-    try {
-      await plugins.setPermission(id.value, name, granted);
-    } finally {
-      const next = { ...pending.value };
-      delete next[name];
-      pending.value = next;
-    }
+    await plugins.setPermission(id.value, name, granted);
   }
 
   return { plugins, session, plugin, perms, canEdit, pending, summary, toggle };
