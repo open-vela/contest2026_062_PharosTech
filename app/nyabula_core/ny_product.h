@@ -81,6 +81,13 @@ bool ny_product_timesync_describe(cJSON *root);
 #endif
 int ny_product_request(const struct ny_product_caller_s *caller,
                        const char *topic, const cJSON *data, cJSON **result);
+
+/* Internal MCP dispatch after credential scope validation. Fixed read-only
+ * records only; not a browser role or a generic access-policy bypass.
+ */
+
+int ny_product_scoped_read(const char *principal, const char *topic,
+                           cJSON **result);
 int ny_product_timers_request(const struct ny_product_caller_s *caller,
                               const char *topic, const cJSON *data,
                               cJSON **result);
@@ -125,7 +132,9 @@ void ny_product_media_shutdown(void);
 
 #define NY_PRODUCT_MEDIA_ALERT_OFF  0 /* Silence an alert that is sounding */
 #define NY_PRODUCT_MEDIA_ALERT_ONCE 1 /* One chime: a countdown ran out */
-#define NY_PRODUCT_MEDIA_ALERT_LOOP 2 /* Chime until switched off: an alarm */
+#define NY_PRODUCT_MEDIA_ALERT_LOOP       \
+  2 /* Chime until switched off: an alarm \
+     */
 
 void ny_product_media_alert(int mode);
 void ny_product_media_sleep(void);
