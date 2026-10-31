@@ -9,7 +9,8 @@
     "build:device": "pnpm --dir ../.. build:packages && vite build --mode device && node scripts/gzip-dist.mjs dist-device",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json",
-    "test": "node --test test/deviceKey.test.mjs test/deviceToken.test.mjs test/wifi.test.mjs test/deviceAccess.test.mjs test/keyboardInset.test.mjs test/deviceName.test.mjs test/deviceMaint.test.mjs test/eyeScenePayload.test.mjs test/audioControl.test.mjs test/deviceModels.test.mjs test/modelUpload.test.mjs test/deviceCompute.test.mjs test/panelVersion.test.mjs test/eyeMirror.test.mjs"
+    "test": "node --test test/shellNavigation.test.mjs test/dspHotSwitch.test.mjs test/crossoverControls.test.mjs test/chatMarkdown.test.mjs test/permissionLabels.test.mjs test/deviceKey.test.mjs test/deviceToken.test.mjs test/wifi.test.mjs test/deviceAccess.test.mjs test/keyboardInset.test.mjs test/deviceName.test.mjs test/deviceMaint.test.mjs test/eyeScenePayload.test.mjs test/audioControl.test.mjs test/deviceModels.test.mjs test/modelUpload.test.mjs test/deviceCompute.test.mjs test/panelVersion.test.mjs test/eyeMirror.test.mjs test/pluginArchive.test.mjs test/dspEqualizer.test.mjs && pnpm test:state",
+    "test:state": "vitest run test/pluginPermissions.test.ts test/pluginCache.test.ts test/instrumentCurtain.test.ts test/instrumentClock.test.ts test/frontendReturn.test.ts test/runOutcome.test.ts test/nebulaBoot.test.ts --environment happy-dom --maxWorkers=1 --minWorkers=1"
   },
   "dependencies": {
     "@nyabula/eye-engine": "workspace:*",
