@@ -7,12 +7,15 @@
 import { computed, ref } from 'vue';
 import { BottomSheet, MdButton, MdSwitch, MdTextField, NkActionBar, NkChipSelect, NkListSection, NkRow, NkTimeWheel, UiIcon } from '@nyabula/ui';
 import { FeaturePageHeader as NkHeader } from '../featureHeader';
+import { useSessionStore } from '../../../stores/session';
 import { useAlarms, type Alarm } from '../../../composables/useAlarms';
 import type { FormFactor } from '../../../composables/useFormFactor';
 import EyeShowButton from './EyeShowButton.vue';
 
 const props = defineProps<{ type: string; ff: FormFactor }>();
 const { product, alarms, sorted, nextAlarm, ringing, scene, dismiss, snooze } = useAlarms();
+const session = useSessionStore();
+const canEdit = computed(() => product.available && session.canControl && !product.busy.alarm);
 const onEyes = computed(() => scene.shown.value || scene.held.value);
 const DAYS = [
   { id: 'mon', label: '一' }, { id: 'tue', label: '二' }, { id: 'wed', label: '三' }, { id: 'thu', label: '四' },
@@ -44,6 +47,7 @@ const subtitle = computed(() => !product.available ? '请连接支持 Core 的�
   ? `下次 ${new Date(nextAlarm.value.next_at).toLocaleString()}（浏览器时区）` : '没有待触发的闹钟');
 
 function openNew(): void {
+  if (!canEdit.value) return;
   editRevision.value = product.records.alarm?.revision ?? 0;
   eOffset.value = -new Date().getTimezoneOffset();
   editId.value = null;
@@ -53,6 +57,7 @@ function openNew(): void {
   editing.value = true;
 }
 function openEdit(a: Alarm): void {
+  if (!canEdit.value) return;
   editRevision.value = product.records.alarm?.revision ?? 0;
   eOffset.value = a.utc_offset_minutes;
   editId.value = a.id;
@@ -81,11 +86,11 @@ function toggle(a: Alarm, v: boolean): void {
 <template>
   <div class="feature" :class="ff">
     <NkHeader icon="alarm" title="闹钟" :subtitle="subtitle" :tone="nextAlarm ? 'ok' : 'default'">
-      <MdButton variant="tonal" @click="openNew"><UiIcon name="add" :size="18" /> 新建</MdButton>
+      <MdButton variant="tonal" :disabled="!canEdit" @click="openNew"><UiIcon name="add" :size="18" /> 新建</MdButton>
     </NkHeader>
     <p v-if="product.errors.alarm" role="alert">{{ product.errors.alarm }}</p>
     <p class="muted">闹钟由设备运行，关闭网页仍有效；设备关机或时钟未校准时不能准时提醒。固定 UTC 偏移不自动跟随夏令时。</p>
-    <div v-for="a in ringing" :key="a.id" class="card ring" role="alert">
+    <div v-for="a in ringing" :key="a.id" class="ui-panel card ring" role="alert">
       <strong>闹钟到点：{{ a.time }}{{ a.label ? ' · ' + a.label : '' }}</strong>
       <div class="ring-actions">
         <MdButton :disabled="product.busy.alarm" @click="dismiss(a)">关闭提醒</MdButton>
@@ -97,13 +102,13 @@ function toggle(a: Alarm, v: boolean): void {
       <EyeShowButton :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
     </div>
     <div class="grid" :class="{ editing: editing && !sheetMode }">
-      <section class="card">
+      <section class="ui-panel card">
         <NkListSection title="我的闹钟" :card="false">
-          <p v-if="!alarms.length" class="muted empty">还没有闹钟，点右上角「新建」</p>
+          <p v-if="!alarms.length" class="muted empty">{{ product.available ? (session.canControl ? '还没有闹钟，点右上角「新建」' : '当前角色只读') : '此设备不支持 Core 闹钟' }}</p>
           <div v-for="a in sorted" :key="a.id" class="alarm-row" :class="{ off: !a.enabled }">
             <NkRow :title="a.time" :sub="(a.label ? a.label + ' · ' : '') + repeatText(a.repeat) + ' · UTC偏移 ' + a.utc_offset_minutes + ' 分钟' + (a.status === 'missed' ? ' · 已错过' : '')" tappable @tap="openEdit(a)">
               <span class="switch-wrap" @click.stop>
-                <MdSwitch :model-value="a.enabled" @update:model-value="toggle(a, $event)" />
+                <MdSwitch :model-value="a.enabled" :disabled="!canEdit" @update:model-value="toggle(a, $event)" />
               </span>
             </NkRow>
           </div>
@@ -111,12 +116,12 @@ function toggle(a: Alarm, v: boolean): void {
       </section>
 
       <!-- Desktop: inline side panel editor. -->
-      <section v-if="!sheetMode && editing" class="card editor">
+      <section v-if="!sheetMode && editing" class="ui-panel card editor">
         <h3 class="section-title">{{ editId ? '编辑闹钟' : '新建闹钟' }}</h3>
         <NkTimeWheel v-model="eTime" />
         <NkChipSelect :model-value="eRepeat" :options="DAYS" multi label="重复" @update:model-value="onRepeat" />
         <MdTextField v-model="eLabel" label="标签" placeholder="如：起床、吃药" />
-        <NkActionBar primary-text="保存" primary-icon="check" :secondary-text="editId ? '删除' : '取消'" :secondary-icon="editId ? 'delete' : 'close'" @primary="save" @secondary="editId ? remove() : (editing = false)" />
+        <NkActionBar :disabled="!product.available || !session.canControl" :busy="product.busy.alarm" primary-text="保存" primary-icon="check" :secondary-text="editId ? '删除' : '取消'" :secondary-icon="editId ? 'delete' : 'close'" @primary="save" @secondary="editId ? remove() : (editing = false)" />
       </section>
     </div>
 
@@ -126,7 +131,7 @@ function toggle(a: Alarm, v: boolean): void {
         <NkTimeWheel v-model="eTime" />
         <NkChipSelect :model-value="eRepeat" :options="DAYS" multi label="重复" @update:model-value="onRepeat" />
         <MdTextField v-model="eLabel" label="标签" placeholder="如：起床、吃药" />
-        <NkActionBar primary-text="保存" primary-icon="check" :secondary-text="editId ? '删除' : '取消'" :secondary-icon="editId ? 'delete' : 'close'" @primary="save" @secondary="editId ? remove() : (editing = false)" />
+        <NkActionBar :disabled="!product.available || !session.canControl" :busy="product.busy.alarm" primary-text="保存" primary-icon="check" :secondary-text="editId ? '删除' : '取消'" :secondary-icon="editId ? 'delete' : 'close'" @primary="save" @secondary="editId ? remove() : (editing = false)" />
       </div>
     </BottomSheet>
   </div>
@@ -138,8 +143,7 @@ function toggle(a: Alarm, v: boolean): void {
 .feature.desktop .grid.editing { grid-template-columns: 1fr 360px; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .editor { position: sticky; top: 0; align-self: start; }
 .empty { padding: 12px 0; text-align: center; }
