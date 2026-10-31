@@ -1,0 +1,169 @@
+/* Nebula primitives for the skin's own shells and pages (design-lab A).
+ * Tokens follow the active mode and palette: accent = --md-primary, the
+ * violet / pink / amber companions are fixed per mode. Everything is scoped
+ * under :root[data-skin='nebula']; global component styling lives in
+ * packages/ui/src/skins/nebula/nebula.css. */
+
+:root[data-skin='nebula'] {
+  --nb-fg: var(--md-on-surface);
+  --nb-sub: var(--md-on-surface-variant);
+  --nb-dim: color-mix(in srgb, var(--md-on-surface-variant) 62%, transparent);
+  --nb-acc: var(--md-primary);
+  --nb-acc-rgb: var(--md-primary-rgb);
+  --nb-violet: #8b7cff;
+  --nb-violet-rgb: 139, 124, 255;
+  --nb-pink: #ff8fb1;
+  --nb-amber: #ffcf7a;
+  --nb-glass: rgba(20, 26, 46, 0.46);
+  --nb-glass-strong: rgba(16, 20, 36, 0.82);
+  --nb-line: rgba(255, 255, 255, 0.08);
+  --nb-line-strong: rgba(255, 255, 255, 0.16);
+  --nb-hi: rgba(255, 255, 255, 0.12);
+  --nb-soft: rgba(255, 255, 255, 0.04);
+  --nb-soft-2: rgba(255, 255, 255, 0.08);
+  --nb-drop: 0 24px 60px -28px rgba(0, 0, 0, 0.8);
+  --nb-title-grad: linear-gradient(180deg, #ffffff 30%, #9fb0e8);
+  --nb-on-acc: var(--md-on-primary);
+  --nb-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --nb-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+:root[data-skin='nebula'][data-mode='light'] {
+  --nb-dim: color-mix(in srgb, var(--md-on-surface-variant) 70%, transparent);
+  --nb-violet: #6a5cf0;
+  --nb-violet-rgb: 106, 92, 240;
+  --nb-pink: #e8588b;
+  --nb-amber: #c98a12;
+  --nb-glass: rgba(255, 255, 255, 0.52);
+  --nb-glass-strong: rgba(250, 251, 255, 0.88);
+  --nb-line: rgba(30, 40, 110, 0.09);
+  --nb-line-strong: rgba(30, 40, 110, 0.18);
+  --nb-hi: rgba(255, 255, 255, 0.9);
+  --nb-soft: rgba(30, 40, 110, 0.035);
+  --nb-soft-2: rgba(30, 40, 110, 0.07);
+  --nb-drop: 0 24px 60px -30px rgba(40, 46, 110, 0.35);
+  --nb-title-grad: linear-gradient(180deg, #141833 35%, #5b64a8);
+}
+
+:root[data-skin='nebula'] .nb-glass {
+  background: var(--nb-glass);
+  -webkit-backdrop-filter: blur(26px) saturate(150%);
+  backdrop-filter: blur(26px) saturate(150%);
+  border: 1px solid var(--nb-line);
+  box-shadow: inset 0 1px 0 var(--nb-hi), var(--nb-drop);
+  border-radius: 26px;
+}
+:root[data-skin='nebula'] .nb-title { font-family: var(--font-title); font-weight: 400; letter-spacing: 0.02em; }
+:root[data-skin='nebula'] .nb-grad {
+  background: var(--nb-title-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+:root[data-skin='nebula'] .nb-kicker { font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--nb-dim); margin: 0; }
+:root[data-skin='nebula'] .nb-in { animation: nb-rise 0.8s var(--nb-ease) both; animation-delay: var(--d, 0ms); }
+:root[data-skin='nebula'] .nb-btn {
+  border: 1px solid var(--nb-line);
+  background: var(--nb-soft);
+  color: var(--nb-fg);
+  border-radius: 999px;
+  padding: 9px 16px;
+  font: 600 13.5px var(--font-body);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: transform 0.35s var(--nb-spring), background 0.2s, border-color 0.2s, opacity 0.2s;
+}
+:root[data-skin='nebula'] .nb-btn:hover:not(:disabled) { background: var(--nb-soft-2); border-color: var(--nb-line-strong); }
+:root[data-skin='nebula'] .nb-btn:active:not(:disabled) { transform: scale(0.95); }
+:root[data-skin='nebula'] .nb-btn:disabled { opacity: 0.4; cursor: default; }
+:root[data-skin='nebula'] .nb-btn.primary {
+  background: var(--nb-acc);
+  color: var(--nb-on-acc);
+  border-color: transparent;
+  box-shadow: 0 8px 28px -8px rgba(var(--nb-acc-rgb), 0.7);
+}
+:root[data-skin='nebula'] .nb-btn.primary:hover:not(:disabled) { background: var(--nb-acc); filter: brightness(1.1); }
+:root[data-skin='nebula'] .nb-btn.danger { color: var(--md-error); border-color: color-mix(in srgb, var(--md-error) 35%, transparent); }
+:root[data-skin='nebula'] .nb-input {
+  width: 100%;
+  background: var(--nb-soft);
+  border: 1px solid var(--nb-line);
+  border-radius: 14px;
+  color: var(--nb-fg);
+  padding: 12px 14px;
+  font: 600 14.5px var(--font-body);
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.3s, background 0.2s;
+}
+:root[data-skin='nebula'] .nb-input::placeholder { color: var(--nb-dim); font-weight: 500; }
+:root[data-skin='nebula'] .nb-input:focus {
+  border-color: rgba(var(--nb-acc-rgb), 0.6);
+  box-shadow: 0 0 0 4px rgba(var(--nb-acc-rgb), 0.12);
+  background: var(--nb-soft-2);
+}
+:root[data-skin='nebula'] .nb-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  background: var(--nb-soft-2);
+  color: var(--nb-sub);
+  white-space: nowrap;
+}
+:root[data-skin='nebula'] .nb-tag.ok { color: var(--nb-acc); background: rgba(var(--nb-acc-rgb), 0.12); }
+:root[data-skin='nebula'] .nb-tag.warn { color: var(--nb-amber); background: color-mix(in srgb, var(--nb-amber) 14%, transparent); }
+:root[data-skin='nebula'] .nb-tag.err { color: var(--md-error); background: color-mix(in srgb, var(--md-error) 14%, transparent); }
+:root[data-skin='nebula'] .nb-tag.info { color: var(--nb-violet); background: rgba(var(--nb-violet-rgb), 0.13); }
+:root[data-skin='nebula'] .nb-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; flex: none; }
+
+/* Sliding-light segmented control (seg + .seg-light + buttons). */
+:root[data-skin='nebula'] .nb-seg {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--n, 2), 1fr);
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--nb-soft-2);
+}
+:root[data-skin='nebula'] .nb-seg > .seg-light {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: calc((100% - 8px) / var(--n, 2));
+  height: calc(100% - 8px);
+  border-radius: 999px;
+  background: var(--nb-soft-2);
+  box-shadow: inset 0 1px 0 var(--nb-hi), 0 0 0 1px var(--nb-line);
+  transform: translateX(calc(var(--i, 0) * 100%));
+  transition: transform 0.5s var(--nb-spring);
+}
+:root[data-skin='nebula'][data-mode='dark'] .nb-seg > .seg-light { background: rgba(255, 255, 255, 0.12); }
+:root[data-skin='nebula'][data-mode='light'] .nb-seg > .seg-light { background: #fff; }
+:root[data-skin='nebula'] .nb-seg > button {
+  position: relative;
+  border: none;
+  background: transparent;
+  color: var(--nb-sub);
+  padding: 9px;
+  border-radius: 999px;
+  font: 600 13.5px var(--font-body);
+  cursor: pointer;
+  transition: color 0.2s;
+}
+:root[data-skin='nebula'] .nb-seg > button.on { color: var(--nb-fg); }
+
+@keyframes nb-rise { from { opacity: 0; transform: translateY(18px) scale(0.985); filter: blur(6px); } }
+@keyframes nb-fade { from { opacity: 0; } }
+
+/* Transitions used by the Nebula shell / pages. */
+.nb-page-enter-active { transition: opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1), transform 0.6s cubic-bezier(0.22, 1, 0.36, 1), filter 0.5s cubic-bezier(0.22, 1, 0.36, 1); }
+.nb-page-leave-active { transition: opacity 0.22s ease, transform 0.25s ease, filter 0.22s ease; }
+.nb-page-enter-from { opacity: 0; transform: translateY(14px) scale(0.99); filter: blur(8px); }
+.nb-page-leave-to { opacity: 0; transform: scale(0.985); filter: blur(4px); }
+.nb-pop-enter-active { transition: opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1), transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.nb-pop-leave-active { transition: opacity 0.18s ease, transform 0.2s ease; }
+.nb-pop-enter-from, .nb-pop-leave-to { opacity: 0; transform: translateY(-6px) scale(0.96); }
