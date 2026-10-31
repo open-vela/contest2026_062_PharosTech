@@ -177,6 +177,8 @@ struct ny_bt_s
   char pairing_address[BT_ADDR_STR_LEN];
   uint64_t pairing_deadline;
   bool pairing_passkey_style;
+  unsigned int pairing_passkey;
+  bool pairing_display_only;
 
   /* The one phone. */
 
@@ -239,9 +241,11 @@ static int ny_bt_absolute_to_volume(int absolute);
 
 static void ny_bt_connected(struct bt_conn *conn, uint8_t err);
 static void ny_bt_disconnected(struct bt_conn *conn, uint8_t reason);
-static void ny_bt_pairing_request(struct bt_conn *conn, bool passkey_style);
+static void ny_bt_pairing_request(struct bt_conn *conn, bool passkey_style,
+                                  unsigned int passkey, bool display_only);
 static void ny_bt_pairing_confirm(struct bt_conn *conn);
 static void ny_bt_passkey_confirm(struct bt_conn *conn, unsigned int passkey);
+static void ny_bt_passkey_display(struct bt_conn *conn, unsigned int passkey);
 static void ny_bt_auth_cancel(struct bt_conn *conn);
 static void ny_bt_pairing_complete(struct bt_conn *conn, bool bonded);
 static void ny_bt_pairing_failed(struct bt_conn *conn,
@@ -496,6 +500,7 @@ static struct bt_conn_cb g_bt_conn_cb = {
  */
 
 static const struct bt_conn_auth_cb g_bt_auth_cb = {
+  .passkey_display = ny_bt_passkey_display,
   .passkey_confirm = ny_bt_passkey_confirm,
   .pairing_confirm = ny_bt_pairing_confirm,
   .cancel = ny_bt_auth_cancel,
@@ -744,7 +749,8 @@ static void ny_bt_disconnected(struct bt_conn *conn, uint8_t reason)
  *
  ****************************************************************************/
 
-static void ny_bt_pairing_request(struct bt_conn *conn, bool passkey_style)
+static void ny_bt_pairing_request(struct bt_conn *conn, bool passkey_style,
+                                  unsigned int passkey, bool display_only)
 {
   bool refuse;
 
@@ -754,6 +760,8 @@ static void ny_bt_pairing_request(struct bt_conn *conn, bool passkey_style)
     {
       g_bt.pairing = bt_conn_ref(conn);
       g_bt.pairing_passkey_style = passkey_style;
+      g_bt.pairing_passkey = passkey;
+      g_bt.pairing_display_only = display_only;
       g_bt.pairing_deadline = ny_product_time_ms(true) + NY_BT_PAIRING_MS;
       ny_bt_address(conn, g_bt.pairing_address);
       g_bt.work |= NY_BT_WORK_NOTIFY_PAIRING;
@@ -769,13 +777,21 @@ static void ny_bt_pairing_request(struct bt_conn *conn, bool passkey_style)
 
 static void ny_bt_pairing_confirm(struct bt_conn *conn)
 {
-  ny_bt_pairing_request(conn, false);
+  ny_bt_pairing_request(conn, false, 0, false);
 }
 
 static void ny_bt_passkey_confirm(struct bt_conn *conn, unsigned int passkey)
 {
-  (void)passkey;
-  ny_bt_pairing_request(conn, true);
+  ny_bt_pairing_request(conn, passkey <= 999999, passkey, false);
+}
+
+/****************************************************************************
+ * Name: ny_bt_passkey_display
+ ****************************************************************************/
+
+static void ny_bt_passkey_display(struct bt_conn *conn, unsigned int passkey)
+{
+  ny_bt_pairing_request(conn, true, passkey, true);
 }
 
 /****************************************************************************
@@ -2445,6 +2461,14 @@ static cJSON *ny_bt_status(void)
                g_bt.pairing_deadline > now
                    ? (double)((g_bt.pairing_deadline - now + 999) / 1000)
                    : 0);
+      if (g_bt.pairing_passkey_style)
+        {
+          char passkey[7];
+          snprintf(passkey, sizeof(passkey), "%06u", g_bt.pairing_passkey);
+          ok = ok && cJSON_AddStringToObject(pairing, "passkey", passkey);
+          ok = ok && cJSON_AddBoolToObject(pairing, "displayOnly",
+                                           g_bt.pairing_display_only);
+        }
     }
 
   if (g_bt.acl != NULL)
@@ -2808,6 +2832,13 @@ int ny_product_bt_request(const struct ny_product_caller_s *caller,
 
       ret = ny_bt_target(data, false, &address, text);
       nxmutex_lock(&g_bt.lock);
+      if (g_bt.pairing != NULL && g_bt.pairing_display_only &&
+          cJSON_IsTrue(accept))
+        {
+          nxmutex_unlock(&g_bt.lock);
+          return -EINVAL;
+        }
+
       if (g_bt.pairing != NULL &&
           (cJSON_GetObjectItemCaseSensitive(data, "address") == NULL ||
            (ret == 0 && strcasecmp(text, g_bt.pairing_address) == 0)))
