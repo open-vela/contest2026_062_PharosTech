@@ -48,6 +48,10 @@ int ny_scheduler_start(const char *id, const char *path);
 int ny_scheduler_start_package(const char *package_path);
 int ny_scheduler_start_installed(const char *package_path,
                                  const char *storage_root);
+int ny_scheduler_start_installed_report(const char *package_path,
+                                        const char *storage_root,
+                                        uint64_t permission_mask, char *error,
+                                        size_t capacity);
 int ny_scheduler_dispatch(const char *id, const char *event);
 /* Task-context provider entry: copies bytes; never accepts JS values. */
 
