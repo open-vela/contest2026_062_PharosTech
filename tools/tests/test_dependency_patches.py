@@ -80,6 +80,29 @@ class PatchTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((root / 'nuttx/test.c').read_text(), 'after\n')
 
+    def test_zblue_patches_canonical_header_behind_port_link(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'apps').mkdir()
+            zblue = root / 'apps/external/zblue/zblue'
+            header = zblue / 'include/zephyr/irq.h'
+            header.parent.mkdir(parents=True)
+            header.write_text('before\n')
+            link = zblue / 'port/include/zephyr/irq.h'
+            link.parent.mkdir(parents=True)
+            link.symlink_to(header)
+            patches = root / 'patches'
+            patches.mkdir()
+            (patches / 'zblue-nuttx-smp-config.patch').write_text(
+                '--- a/include/zephyr/irq.h\n+++ b/include/zephyr/irq.h\n'
+                '@@ -1 +1 @@\n-before\n+after\n')
+            command = ['bash', str(SCRIPT), str(root), str(patches)]
+            for _ in range(2):
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(header.read_text(), 'after\n')
+                self.assertTrue(link.is_symlink())
+
     def test_apply_repeat_and_conflict(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
