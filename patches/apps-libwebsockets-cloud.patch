@@ -1,0 +1,36 @@
+--- a/netutils/libwebsockets/libwebsockets/lib/tls/tls.c
++++ b/netutils/libwebsockets/libwebsockets/lib/tls/tls.c
+@@ -26,6 +26,7 @@
+ #include "private-lib-tls.h"
+ 
+ #if defined(LWS_WITH_NETWORK)
++#if defined(LWS_WITH_SERVER)
+ #if defined(LWS_WITH_MBEDTLS) || (defined(OPENSSL_VERSION_NUMBER) && \
+ 				  OPENSSL_VERSION_NUMBER >= 0x10002000L)
+ static int
+@@ -44,6 +45,8 @@
+ 	return SSL_TLSEXT_ERR_OK;
+ }
+ #endif
++
++#endif /* LWS_WITH_SERVER */
+ 
+ int
+ lws_tls_restrict_borrow(struct lws *wsi)
+@@ -152,6 +155,7 @@
+ 		_lws_tls_restrict_return(wsi);
+ }
+ 
++#if defined(LWS_WITH_SERVER)
+ void
+ lws_context_init_alpn(struct lws_vhost *vhost)
+ {
+@@ -177,6 +181,8 @@
+ 		 OPENSSL_VERSION_NUMBER);
+ #endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
+ }
++
++#endif /* LWS_WITH_SERVER */
+ 
+ int
+ lws_tls_server_conn_alpn(struct lws *wsi)
