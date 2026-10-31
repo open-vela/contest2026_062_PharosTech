@@ -22,6 +22,7 @@
 #include "agent_config.h"
 #include "infra/config_store.h"
 #include "ny_agent.h"
+#include "ny_mimo.h"
 #include "tools/tool_fetch_url.h"
 #include "tools/tool_files.h"
 #include "tools/tool_shell.h"
@@ -51,6 +52,10 @@ static int ny_agent_builtin_weather(const char *input, char *output,
                                     size_t capacity);
 
 static const struct ny_agent_builtin_s g_builtin[] = {
+  { "mimo_vision", "Understand a user-provided public HTTPS image with MiMo",
+    "{\"url\":\"https://example.com/cat.jpg\",\"prompt\":\"Describe this "
+    "image\"}",
+    false, false, ny_mimo_vision_tool },
   { "read_file", "Read a workspace file", "{\"path\":\"notes.txt\"}", false,
     true, tool_read_file_execute },
   { "list_dir", "List workspace files", "{\"prefix\":\"\"}", false, true,
