@@ -70,5 +70,8 @@ int ny_broker_ui_eye(const struct ny_broker_client_s *client,
 int ny_broker_ai_invoke(const struct ny_broker_client_s *client,
                         const char *prompt, size_t prompt_length,
                         char *response, size_t response_capacity);
+int ny_broker_hardware_request(const struct ny_broker_client_s *client,
+                               const char *topic, const char *json,
+                               size_t length, char **response);
 
 #endif /* __PACKAGES_DEMOS_CONTEST2026_062_NYABULA_CORE_NY_BROKER_H */

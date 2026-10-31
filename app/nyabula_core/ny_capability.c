@@ -84,6 +84,9 @@ static JSValue ny_capability_ui_notify(JSContext *context,
 static JSValue ny_capability_ai_invoke(JSContext *context,
                                        JSValueConst this_value, int argc,
                                        JSValueConst *argv);
+static JSValue ny_capability_hardware_request(JSContext *context,
+                                              JSValueConst this_value,
+                                              int argc, JSValueConst *argv);
 static JSValue ny_capability_ui_render(JSContext *context,
                                        JSValueConst this_value, int argc,
                                        JSValueConst *argv);
@@ -125,6 +128,10 @@ static const struct ny_capability_binding_s g_ui_bindings[] = {
 
 static const struct ny_capability_binding_s g_ai_bindings[] = {
   { "invoke", ny_capability_ai_invoke, 1 },
+};
+
+static const struct ny_capability_binding_s g_hardware_bindings[] = {
+  { "request", ny_capability_hardware_request, 2 },
 };
 
 /****************************************************************************
@@ -499,6 +506,81 @@ static JSValue ny_capability_ui_eye(JSContext *context,
              : ny_capability_settled_promise(plugin, false, JS_UNDEFINED);
 }
 
+/****************************************************************************
+ * Name: ny_capability_hardware_request
+ ****************************************************************************/
+
+static JSValue ny_capability_hardware_request(JSContext *context,
+                                              JSValueConst this_value,
+                                              int argc, JSValueConst *argv)
+{
+  struct ny_plugin_s *plugin = ny_capability_plugin(context);
+  struct ny_broker_client_s client;
+  const char *topic;
+  const char *text;
+  char *response = NULL;
+  size_t length;
+  JSValue json;
+  JSValue result;
+  JSValue promise;
+  int ret;
+
+  if (plugin == NULL || argc < 1 || argc > 2 || !JS_IsString(argv[0]) ||
+      (argc == 2 && !JS_IsObject(argv[1])))
+    {
+      return JS_ThrowTypeError(context,
+                               "hardware.request requires a topic and object");
+    }
+
+  topic = JS_ToCString(context, argv[0]);
+  if (topic == NULL)
+    {
+      return JS_EXCEPTION;
+    }
+
+  json = argc == 2
+             ? JS_JSONStringify(context, argv[1], JS_UNDEFINED, JS_UNDEFINED)
+             : JS_NewString(context, "{}");
+  if (JS_IsException(json))
+    {
+      JS_FreeCString(context, topic);
+      return json;
+    }
+
+  text = JS_ToCStringLen(context, &length, json);
+  if (text == NULL)
+    {
+      JS_FreeCString(context, topic);
+      JS_FreeValue(context, json);
+      return JS_EXCEPTION;
+    }
+
+  ny_capability_client(plugin, &client);
+  ret = ny_broker_hardware_request(&client, topic, text, length, &response);
+  JS_FreeCString(context, topic);
+  JS_FreeCString(context, text);
+  JS_FreeValue(context, json);
+  if (ret < 0)
+    {
+      free(response);
+      return ret == -EACCES
+                 ? ny_capability_denied(context, "hardware capability")
+                 : JS_ThrowInternalError(context,
+                                         "hardware request failed: %d", ret);
+    }
+
+  result = JS_ParseJSON(context, response, strlen(response), "hardware");
+  free(response);
+  if (JS_IsException(result))
+    {
+      return result;
+    }
+
+  promise = ny_capability_settled_promise(plugin, false, result);
+  JS_FreeValue(context, result);
+  return promise;
+}
+
 static JSValue ny_capability_ai_invoke(JSContext *context,
                                        JSValueConst this_value, int argc,
                                        JSValueConst *argv)
@@ -630,6 +712,13 @@ ny_capability_find_bindings(const char *module_name,
       return g_ai_bindings;
     }
 
+  if (strcmp(module_name, "@nyabula/hardware") == 0)
+    {
+      *namespace_name = "hardware";
+      *count = sizeof(g_hardware_bindings) / sizeof(g_hardware_bindings[0]);
+      return g_hardware_bindings;
+    }
+
   return NULL;
 }
 
@@ -737,7 +826,10 @@ int ny_capability_register(struct ny_plugin_s *plugin)
                                       sizeof(g_ui_bindings[0])) < 0 ||
       ny_capability_add_namespace(context, root, "ai", g_ai_bindings,
                                   sizeof(g_ai_bindings) /
-                                      sizeof(g_ai_bindings[0])) < 0)
+                                      sizeof(g_ai_bindings[0])) < 0 ||
+      ny_capability_add_namespace(
+          context, root, "hardware", g_hardware_bindings,
+          sizeof(g_hardware_bindings) / sizeof(g_hardware_bindings[0])) < 0)
     {
       JS_FreeValue(context, root);
       return -EFAULT;

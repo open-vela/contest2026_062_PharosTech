@@ -58,7 +58,9 @@ static bool ny_module_is_capability(const char *name)
   return strcmp(name, "@nyabula/core") == 0 ||
          strcmp(name, "@nyabula/storage") == 0 ||
          strcmp(name, "@nyabula/network") == 0 ||
-         strcmp(name, "@nyabula/ui") == 0 || strcmp(name, "@nyabula/ai") == 0;
+         strcmp(name, "@nyabula/ui") == 0 ||
+         strcmp(name, "@nyabula/ai") == 0 ||
+         strcmp(name, "@nyabula/hardware") == 0;
 }
 
 static bool ny_module_safe_relative(const char *name)
