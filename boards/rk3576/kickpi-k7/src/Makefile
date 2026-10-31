@@ -87,6 +87,10 @@ ifeq ($(CONFIG_KICKPI_K7_CAMERA),y)
 CSRCS += kickpi_k7_camera.c
 endif
 
+ifeq ($(CONFIG_KICKPI_K7_REGULATOR),y)
+CSRCS += kickpi_k7_regulator.c
+endif
+
 ifeq ($(CONFIG_ETC_ROMFS),y)
   RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS
 endif

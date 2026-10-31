@@ -99,6 +99,14 @@ static int kickpi_k7_emmc_pinmux(void);
 #include <stdio.h>
 #endif
 
+#ifdef CONFIG_RK3576_I2C
+#include "rk3576_i2c.h"
+#endif
+
+#ifdef CONFIG_REGULATOR_RK806
+#include "rk806.h"
+#endif
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -390,6 +398,18 @@ void board_late_initialize(void)
         }
     }
   while (0);
+#endif
+
+#ifdef CONFIG_KICKPI_K7_REGULATOR
+  /* Init regulator */
+
+  {
+    int ret = kickpi_k7_regulator_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "Failed to init kickpi-k7 regulators\n");
+      }
+  }
 #endif
 
 #ifdef CONFIG_RK3576_SDMMC
