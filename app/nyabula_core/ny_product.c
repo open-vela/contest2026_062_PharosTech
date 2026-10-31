@@ -20,6 +20,7 @@
  ****************************************************************************/
 
 #include "ny_product.h"
+#include "ny_access.h"
 #ifdef CONFIG_NYABULA_CORE_MODELS
 #include "ny_web_models.h"
 #endif
@@ -53,6 +54,49 @@ uint64_t ny_product_time_ms(bool monotonic)
   struct timespec now;
   clock_gettime(monotonic ? CLOCK_MONOTONIC : CLOCK_REALTIME, &now);
   return (uint64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+/****************************************************************************
+ * Name: ny_product_scoped_read
+ ****************************************************************************/
+
+int ny_product_scoped_read(const char *principal, const char *topic,
+                           cJSON **result)
+{
+  const struct ny_product_caller_s caller = { principal, NY_PRODUCT_FAMILY,
+                                              false };
+  cJSON *empty;
+  int ret = -EACCES;
+
+  if (result == NULL || principal == NULL || principal[0] == '\0' ||
+      strlen(principal) > 63 || topic == NULL)
+    {
+      return -EINVAL;
+    }
+
+  *result = NULL;
+  empty = cJSON_CreateObject();
+  if (empty == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  if (strcmp(topic, "sys.info") == 0 || strcmp(topic, "system.time.get") == 0)
+    {
+      ret = ny_product_system(&caller, topic, empty, result);
+    }
+  else if (strcmp(topic, "timer.list") == 0)
+    {
+      ret = ny_product_timers_request(&caller, topic, empty, result);
+    }
+  else if (strcmp(topic, "task.list") == 0 ||
+           strcmp(topic, "calendar.list") == 0)
+    {
+      ret = ny_product_records_request(&caller, topic, empty, result);
+    }
+
+  cJSON_Delete(empty);
+  return ret;
 }
 
 /****************************************************************************
@@ -237,6 +281,12 @@ int ny_product_request(const struct ny_product_caller_s *caller,
     {
       return -EINVAL;
     }
+
+  if (!ny_access_allowed(caller->role, topic))
+    return -EACCES;
+  ret = ny_access_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
 
   if (strcmp(topic, "product.status") == 0 ||
       strcmp(topic, "product.start") == 0 ||
