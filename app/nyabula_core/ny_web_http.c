@@ -283,7 +283,7 @@ int ny_web_http_write(int fd, const void *data, size_t length)
           return ready == 0 ? -ETIMEDOUT : -errno;
         }
 
-      ssize_t count = send(fd, cursor, length, MSG_DONTWAIT);
+      ssize_t count = send(fd, cursor, length, MSG_DONTWAIT | MSG_NOSIGNAL);
       if (count < 0 && (errno == EAGAIN || errno == EINTR))
         {
           continue;
