@@ -13,16 +13,19 @@ const page = useDevicePage(props);
     <template v-if="!page.requested.value">
       <h1 class="page-title">设备</h1>
       <p class="page-sub">{{ page.session.device?.name ?? '未连接' }}</p>
-      <div class="stack">
-        <button v-for="s in page.sections.value" :key="s.id" class="list-tile" @click="page.go(s.id)">
-          <span class="tile-icon"><UiIcon :name="s.icon" :size="22" /></span>
-          <span class="tile-body">
-            <span class="tile-title">{{ s.label }}</span>
-            <span v-if="s.extension" class="tile-sub">扩展段</span>
-          </span>
-          <span class="tile-trail"><UiIcon name="chevron_right" :size="20" /></span>
-        </button>
-      </div>
+      <section v-for="g in page.groups.value" :key="g.id" class="group">
+        <p class="section-title">{{ g.label }}</p>
+        <div class="stack">
+          <button v-for="s in g.items" :key="s.id" class="list-tile" @click="page.go(s.id)">
+            <span class="tile-icon"><UiIcon :name="s.icon" :size="22" /></span>
+            <span class="tile-body">
+              <span class="tile-title">{{ s.label }}</span>
+              <span class="tile-sub">{{ s.extension ? '扩展段' : s.desc }}</span>
+            </span>
+            <span class="tile-trail"><UiIcon name="chevron_right" :size="20" /></span>
+          </button>
+        </div>
+      </section>
     </template>
     <template v-else>
       <button class="crumb" @click="page.go(null)"><UiIcon name="chevron_left" :size="18" /> 设备目录</button>
@@ -36,6 +39,8 @@ const page = useDevicePage(props);
 
 <style scoped>
 .device-phone { padding: 8px 14px calc(28px + var(--shell-bottom) + var(--safe-b)); }
+.group + .group { margin-top: 6px; }
+.stack { gap: 8px; }
 .list-tile { width: 100%; text-align: left; border: none; font: inherit; }
 .crumb {
   display: inline-flex;
