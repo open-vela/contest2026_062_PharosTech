@@ -101,6 +101,10 @@
 #include "ny_voice_wire.h"
 #include "nyamp_protocol.h"
 
+#ifdef CONFIG_NYABULA_CORE_BT
+#include "ny_product_bt.h"
+#endif
+
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
@@ -462,6 +466,10 @@ static cJSON *ny_voice_status(void);
 /****************************************************************************
  * Private Data
  ****************************************************************************/
+
+#ifdef CONFIG_NYABULA_CORE_BT
+static bool g_voice_bt_held;
+#endif
 
 static struct ny_voice_s g_voice =
 {
@@ -1516,6 +1524,9 @@ static bool ny_voice_play_cancelled(void)
   cancelled = g_voice.stopping ||
               (int32_t)(g_voice.play_dropped - g_voice.play_current) >= 0;
   nxmutex_unlock(&g_voice.lock);
+#ifdef CONFIG_NYABULA_CORE_BT
+  cancelled = cancelled || ny_product_bt_call_active();
+#endif
   return cancelled;
 }
 
@@ -1539,6 +1550,17 @@ static int ny_voice_play_acquire(void)
   cJSON *result = NULL;
   uint64_t deadline;
   int ret = 0;
+
+#ifdef CONFIG_NYABULA_CORE_BT
+  ret = ny_product_bt_speaker_claim(true);
+  if (ret < 0)
+    {
+      cJSON_Delete(data);
+      return ret;
+    }
+
+  g_voice_bt_held = true;
+#endif
 
   if (data != NULL &&
       ny_product_request(&caller, "music.status", data, &result) == 0)
@@ -1593,6 +1615,13 @@ static void ny_voice_play_release(void)
   nxmutex_lock(&g_voice.lock);
   g_voice.capture_hold = false;
   nxmutex_unlock(&g_voice.lock);
+#ifdef CONFIG_NYABULA_CORE_BT
+  if (g_voice_bt_held)
+    {
+      g_voice_bt_held = false;
+      ny_product_bt_speaker_release();
+    }
+#endif
 }
 
 /****************************************************************************
