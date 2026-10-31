@@ -42,8 +42,8 @@ export type { ThemeMode, ThemePreset, Palette, PaletteColors } from './theme/typ
 export { vReveal } from './directives/reveal';
 export { UI_ICONS } from './icons';
 
-export { PERMISSION_META, PERMISSION_FALLBACK_ICON, permissionZh, permissionIcon } from './permissions';
-export type { PermissionMeta } from './permissions';
+export { PERMISSION_META, PERMISSION_FALLBACK_ICON, permissionZh, permissionLabel, roleLabel, permissionIcon } from './permissions';
+export type { PermissionMeta, PermissionLocale } from './permissions';
 
 /* Feature Kit (Mi Home style consumer components, prefix Nk). See src/kit/README.md. */
 export { default as NkHeader } from './kit/NkHeader.vue';

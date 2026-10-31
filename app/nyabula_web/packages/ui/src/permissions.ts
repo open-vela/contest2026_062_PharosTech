@@ -6,6 +6,7 @@
 
 export interface PermissionMeta {
   zh: string;
+  en?: string;
   /** SVG path data on a 0 0 24 24 viewBox. */
   icon: string;
 }
@@ -30,6 +31,17 @@ const ICON_LOCK =
 
 /** Permission id -> display metadata. Keys mirror the protocol table 1:1. */
 export const PERMISSION_META: Record<string, PermissionMeta> = {
+  'core.log': { en: 'Runtime logs', zh: '运行日志', icon: ICON_STORAGE },
+  'storage.read': { en: 'Read private data', zh: '私有数据读取', icon: ICON_STORAGE },
+  'storage.write': { en: 'Write private data', zh: '私有数据写入', icon: ICON_STORAGE },
+  'weather.read': { en: 'Read public weather', zh: '天气查询', icon: ICON_PUBLIC },
+  'device.read': { en: 'Read device status', zh: '设备状态读取', icon: ICON_SETTINGS },
+  'nas.read': { en: 'Browse USB share', zh: 'USB 共享浏览', icon: ICON_STORAGE },
+  'nas.write': { en: 'Create USB folders', zh: 'USB 共享新建文件夹', icon: ICON_STORAGE },
+  'nas.manage': { en: 'Manage USB share', zh: 'USB 共享与读写设置', icon: ICON_SETTINGS },
+  'ui.page': { en: 'Component page', zh: '组件页面', icon: ICON_SETTINGS },
+  'ui.html': { en: 'Isolated HTML page', zh: '隔离 HTML 页面', icon: ICON_ETHERNET },
+  'ui.notify': { en: 'Notifications and eye display', zh: '通知与眼睛显示', icon: ICON_SETTINGS },
   'servo.control': { zh: '舵机控制', icon: ICON_SETTINGS },
   'storage.private': {
     zh: '私有存储',
@@ -39,10 +51,15 @@ export const PERMISSION_META: Record<string, PermissionMeta> = {
   'storage.shared.write': { zh: '共享存储写入', icon: ICON_STORAGE },
   'gpio.read': { zh: 'GPIO 读取', icon: ICON_MEMORY },
   'gpio.write': { zh: 'GPIO 控制', icon: ICON_MEMORY },
-  'network.request': { zh: '网络请求', icon: ICON_PUBLIC },
+  'network.request': { en: 'Network requests', zh: '网络请求', icon: ICON_PUBLIC },
   'network.raw_socket': { zh: '原始网络套接字', icon: ICON_ETHERNET },
   'bluetooth.scan': { zh: '蓝牙扫描', icon: ICON_BLUETOOTH },
   'bluetooth.connect': { zh: '蓝牙连接', icon: ICON_BLUETOOTH },
+  'bluetooth.read': { zh: '蓝牙状态与设备', icon: ICON_BLUETOOTH },
+  'bluetooth.call': { zh: '蓝牙通话管理', icon: ICON_BLUETOOTH },
+  'audio.read': { zh: '声卡与音频状态', icon: ICON_MEMORY },
+  'audio.control': { zh: '声卡与音量控制', icon: ICON_SETTINGS },
+  'usb.access': { zh: 'USB 设备访问', icon: ICON_ETHERNET },
   'wifi.status': { zh: 'WiFi 状态', icon: ICON_WIFI },
   'wifi.control': { zh: 'WiFi 控制', icon: ICON_WIFI },
   'audio.play': {
@@ -50,7 +67,7 @@ export const PERMISSION_META: Record<string, PermissionMeta> = {
     icon: 'M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z',
   },
   'audio.capture': {
-    zh: '录音',
+    zh: '麦克风与录音',
     icon: 'M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z',
   },
   'camera.capture': {
@@ -74,6 +91,7 @@ export const PERMISSION_META: Record<string, PermissionMeta> = {
     icon: 'M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z',
   },
   'ai.invoke': {
+    en: 'AI invocation',
     zh: 'AI 调用',
     icon: 'M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z',
   },
@@ -100,10 +118,26 @@ export const PERMISSION_FALLBACK_ICON = ICON_LOCK;
 
 /** Chinese display name for a permission id (falls back to the id itself). */
 export function permissionZh(id: string): string {
-  return PERMISSION_META[id]?.zh ?? id;
+  return permissionLabel(id, 'zh-CN');
 }
 
 /** Icon path for a permission id (falls back to a lock icon). */
 export function permissionIcon(id: string): string {
   return PERMISSION_META[id]?.icon ?? PERMISSION_FALLBACK_ICON;
+}
+
+export type PermissionLocale = 'zh-CN' | 'en';
+/** Keep wire identifiers stable; choose a human-facing label at the UI boundary. */
+export function permissionLabel(id: string, locale: PermissionLocale = 'zh-CN'): string {
+  const entry = PERMISSION_META[id];
+  return locale === 'en' ? (entry?.en ?? id) : (entry?.zh ?? '自定义权限');
+}
+
+export function roleLabel(role: string | null, locale: PermissionLocale = 'zh-CN'): string {
+  const labels: Record<string, { 'zh-CN': string; en: string }> = {
+    owner: { 'zh-CN': '主人', en: 'Owner' },
+    family: { 'zh-CN': '家人', en: 'Family' },
+    guest: { 'zh-CN': '访客', en: 'Guest' },
+  };
+  return labels[role ?? '']?.[locale] ?? (locale === 'en' ? 'Not signed in' : '未登录');
 }
