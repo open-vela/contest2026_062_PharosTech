@@ -210,13 +210,13 @@ jobs:
           make_placeholder "$FIRMWARE_DIR/sv6160lite.nvbin" 37
 
       - name: Apply AMP GIC dependency
-        if: matrix.config == 'boards/rk3576/kickpi-k7/configs/amp' || startsWith(matrix.config, 'configs/product_amp')
+        if: matrix.config == 'boards/rk3576/kickpi-k7/configs/amp' || matrix.config == 'configs/product_amp' || startsWith(matrix.config, 'configs/product_amp')
         run: |
           bash "${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}/tools/amp/nuttx/apply.sh" \
             "${{ env.OPENVELA_DIR }}/nuttx"
 
       - name: Prepare Core service regression dependencies
-        if: matrix.config == 'configs/core_services'
+        if: matrix.config == 'configs/core_services' || matrix.config == 'configs/product_amp'
         run: |
           ROOT="${{ env.OPENVELA_DIR }}"
           TEAM="$ROOT/${{ env.REPO_NAME }}"
@@ -226,7 +226,7 @@ jobs:
 
       # CMake 构建
       - uses: actions/setup-node@v4
-        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services'
+        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services' || matrix.config == 'configs/product_amp'
         with:
           node-version: '22'
 
@@ -241,7 +241,7 @@ jobs:
           bash "$REPO/tools/apply_dependency_patches.sh" "$PWD" "$REPO/patches"
 
       - name: Generate Eye glyph tables from official Noto Sans
-        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services' || startsWith(matrix.config, 'configs/product')
+        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services' || matrix.config == 'configs/product_amp' || startsWith(matrix.config, 'configs/product')
         run: |
           cd ${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}
           python3 app/nyabula/tools/test_generate_fonts.py
@@ -280,7 +280,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload Eye font attribution
-        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services'
+        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services' || matrix.config == 'configs/product_amp'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.CONFIG_SLUG }}-font-notices
