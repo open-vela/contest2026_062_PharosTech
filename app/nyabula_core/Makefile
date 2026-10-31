@@ -104,6 +104,9 @@ NYCORE_DSP_DIR := $(realpath $(CURDIR))/../nyabula_dsp
 VPATH += $(NYCORE_DSP_DIR)
 CFLAGS += ${INCDIR_PREFIX}$(NYCORE_DSP_DIR)
 CSRCS += ny_product_dsp.c nyadsp.c nyadsp_clock.c nyadsp_resample.c ny_dsp_output.c
+ifeq ($(CONFIG_NYABULA_CORE_MEDIA),y)
+CSRCS += ny_dsp_player.c
+endif
 endif
 ifeq ($(CONFIG_NYABULA_CORE_NETWORK),y)
 CSRCS += ny_product_network.c
