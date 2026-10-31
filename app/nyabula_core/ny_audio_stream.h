@@ -154,6 +154,8 @@ void ny_audio_stream_stats(struct ny_audio_stream_s *stream,
  *
  ****************************************************************************/
 
+int ny_audio_stream_unity(struct ny_audio_stream_s *stream);
+
 void ny_audio_stream_close(struct ny_audio_stream_s *stream);
 
 #endif /* __NYABULA_CORE_NY_AUDIO_STREAM_H */

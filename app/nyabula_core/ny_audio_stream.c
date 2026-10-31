@@ -772,4 +772,50 @@ void ny_audio_stream_close(struct ny_audio_stream_s *stream)
   free(stream);
 }
 
+/****************************************************************************
+ * Name: ny_audio_stream_unity
+ *
+ * Description:
+ *   Establish a known hardware baseline for a software-controlled output.
+ *   Devices without feature units need no hardware volume operation.
+ ****************************************************************************/
+
+int ny_audio_stream_unity(struct ny_audio_stream_s *stream)
+{
+  struct audio_caps_s caps;
+  struct audio_caps_desc_s desc;
+  memset(&caps, 0, sizeof(caps));
+  caps.ac_len = sizeof(caps);
+  caps.ac_type = AUDIO_TYPE_FEATURE;
+  caps.ac_subtype = AUDIO_FU_UNDEF;
+  if (ioctl(stream->fd, AUDIOIOC_GETCAPS, (unsigned long)&caps) < 0)
+    {
+      return -errno;
+    }
+
+  memset(&desc, 0, sizeof(desc));
+  desc.caps.ac_len = sizeof(desc.caps);
+  desc.caps.ac_type = AUDIO_TYPE_FEATURE;
+  if ((caps.ac_controls.hw[0] & AUDIO_FU_VOLUME) != 0)
+    {
+      desc.caps.ac_format.hw = AUDIO_FU_VOLUME;
+      desc.caps.ac_controls.hw[0] = 1000;
+      if (ioctl(stream->fd, AUDIOIOC_CONFIGURE, (unsigned long)&desc) < 0)
+        {
+          return -errno;
+        }
+    }
+
+  if ((caps.ac_controls.hw[0] & AUDIO_FU_MUTE) != 0)
+    {
+      desc.caps.ac_format.hw = AUDIO_FU_MUTE;
+      desc.caps.ac_controls.hw[0] = 0;
+      if (ioctl(stream->fd, AUDIOIOC_CONFIGURE, (unsigned long)&desc) < 0)
+        {
+          return -errno;
+        }
+    }
+  return 0;
+}
+
 #endif /* CONFIG_NYABULA_CORE_BT */
