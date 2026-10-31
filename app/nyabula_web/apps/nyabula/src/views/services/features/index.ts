@@ -6,6 +6,7 @@ import type { FeatureDef } from './contract';
 const p = (payload: Record<string, unknown> | null, k: string) => (payload && typeof payload[k] === 'string' ? (payload[k] as string) : null);
 
 export const FEATURES: FeatureDef[] = [
+  { type: 'bluetooth', stage: 'ready', label: '蓝牙音频', icon: 'bluetooth', group: '媒体', blurb: '音乐与配对', load: () => import('./BluetoothFeature.vue') },
   { type: 'music', stage: 'ready', label: '音乐', icon: 'music_note', group: '媒体', blurb: '播放控制与歌词', load: () => import('./MusicFeature.vue'), mini: () => import('./MusicMini.vue'), status: (pl, a) => (a ? p(pl, 'title') ?? '播放中' : null) },
   { type: 'audio', stage: 'ready', label: '音频路由', icon: 'volume_up', group: '媒体', blurb: '输出设备与音量', load: () => import('./AudioFeature.vue'), mini: () => import('./AudioMini.vue') },
   { type: 'eq', stage: 'ready', label: '均衡器', icon: 'tune', group: '媒体', blurb: '音效预设与频段', load: () => import('./EqFeature.vue'),  },
@@ -16,7 +17,7 @@ export const FEATURES: FeatureDef[] = [
   { type: 'alarm', stage: 'ready', label: '闹钟', icon: 'alarm', group: '时间', blurb: '多闹钟与重复', load: () => import('./AlarmFeature.vue'), mini: () => import('./AlarmMini.vue') },
   { type: 'calendar', stage: 'ready', label: '日历', icon: 'calendar', group: '时间', blurb: '日程与倒数日', load: () => import('./CalendarFeature.vue'), mini: () => import('./CalendarMini.vue') },
   { type: 'sleep-timer', stage: 'ready', label: '睡眠定时', icon: 'moon', group: '时间', blurb: '定时休眠', load: () => import('./SleepTimerFeature.vue'), mini: () => import('./SleepTimerMini.vue') },
-  { type: 'call', stage: 'planned', needs: '需要通话协议栈与麦克风阵列', label: '通话', icon: 'call', group: '通讯', blurb: '联系人与来电', load: () => import('./CallFeature.vue'), mini: () => import('./CallMini.vue') },
+  { type: 'call', stage: 'ready', label: '通话', icon: 'call', group: '通讯', blurb: 'HFP 来电与通话音频', load: () => import('./CallFeature.vue'),  },
   { type: 'presence', stage: 'planned', needs: '需要毫米波 / 摄像头在场检测', label: '在场', icon: 'presence', group: '通讯', blurb: '谁在家', load: () => import('./PresenceFeature.vue'), mini: () => import('./PresenceMini.vue') },
   { type: 'companion', stage: 'ready', label: '陪伴', icon: 'companion', group: '通讯', blurb: '陪伴模式', load: () => import('./CompanionFeature.vue'), mini: () => import('./CompanionMini.vue') },
   { type: 'weather', stage: 'ready', label: '天气', icon: 'cloud', group: '信息', blurb: '城市与预报', load: () => import('./WeatherFeature.vue'), mini: () => import('./WeatherMini.vue') },
