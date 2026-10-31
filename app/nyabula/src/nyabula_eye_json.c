@@ -314,6 +314,18 @@ nyabula_eye_json_parse_payload(cJSON *object,
   cJSON *bands;
 
   memset(payload, 0, sizeof(*payload));
+  static const char *const weather_fields[] = { "temperature_c",
+                                                "feels_like_c",
+                                                "humidity_percent", "wind_kph",
+                                                "visibility_km" };
+  for (size_t i = 0; i < NYABULA_ARRAY_SIZE(weather_fields); i++)
+    if (cJSON_IsNumber(
+            cJSON_GetObjectItemCaseSensitive(object, weather_fields[i])))
+      payload->weather_fields |= 1u << i;
+  double presence = nyabula_eye_json_number(object, "weather_fields", -1);
+  if (presence >= 0 && presence <= NYABULA_EYE_WEATHER_FIELDS_ALL &&
+      floor(presence) == presence)
+    payload->weather_fields = (uint8_t)presence;
   payload->weather = nyabula_eye_json_enum(
       object, "weather", g_nyabula_weather,
       NYABULA_ARRAY_SIZE(g_nyabula_weather), NYABULA_EYE_WEATHER_SUNNY);
