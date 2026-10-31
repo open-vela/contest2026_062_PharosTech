@@ -51,6 +51,8 @@
 #include <nuttx/config.h>
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef CONFIG_NYABULA_CORE_VOICE
 
@@ -59,8 +61,7 @@
  ****************************************************************************/
 
 #ifdef __cplusplus
-extern "C"
-{
+extern "C" {
 #endif
 
 /****************************************************************************
@@ -98,6 +99,11 @@ bool ny_voice_running(void);
 
 int ny_voice_speaker_claim(void);
 void ny_voice_speaker_release(void);
+
+/* Copy fresh mono 16 kHz samples without consuming the wake-word reader.
+ * This never opens the microphone. Returns samples copied or a negative errno.
+ */
+int ny_voice_capture_snapshot(int16_t *samples, size_t capacity);
 
 #ifdef __cplusplus
 }

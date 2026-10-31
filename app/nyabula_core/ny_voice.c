@@ -91,7 +91,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "nyamp_protocol.h"
 #include "ny_compute.h"
 #include "ny_product.h"
 #include "ny_product_store.h"
@@ -100,22 +99,22 @@
 #include "ny_voice_dsp.h"
 #include "ny_voice_sm.h"
 #include "ny_voice_wire.h"
-
+#include "nyamp_protocol.h"
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
 #ifndef CONFIG_NYABULA_CORE_VOICE_PRIORITY
-#  define CONFIG_NYABULA_CORE_VOICE_PRIORITY 100
+#define CONFIG_NYABULA_CORE_VOICE_PRIORITY 100
 #endif
 
 #ifndef CONFIG_NYABULA_CORE_VOICE_STACKSIZE
-#  define CONFIG_NYABULA_CORE_VOICE_STACKSIZE 32768
+#define CONFIG_NYABULA_CORE_VOICE_STACKSIZE 32768
 #endif
 
 #ifndef CONFIG_NYABULA_CORE_VOICE_WINDOW_MS
-#  define CONFIG_NYABULA_CORE_VOICE_WINDOW_MS 200
+#define CONFIG_NYABULA_CORE_VOICE_WINDOW_MS 200
 #endif
 
 /* Well under half of NYABULA_EYE_DEFAULT_LEASE_MS (5 s). */
@@ -123,71 +122,71 @@
 #define NY_VOICE_EYES_RENEW_S 2
 
 #ifndef CONFIG_NYABULA_CORE_VOICE_VAD_MIN_RMS
-#  define CONFIG_NYABULA_CORE_VOICE_VAD_MIN_RMS 150
+#define CONFIG_NYABULA_CORE_VOICE_VAD_MIN_RMS 150
 #endif
 
 #ifndef CONFIG_NYABULA_CORE_VOICE_SPEAKER
-#  define CONFIG_NYABULA_CORE_VOICE_SPEAKER 1
+#define CONFIG_NYABULA_CORE_VOICE_SPEAKER 1
 #endif
 
 #ifndef CONFIG_NYABULA_CORE_VOICE_CUE_DIR
-#  define CONFIG_NYABULA_CORE_VOICE_CUE_DIR "/data/voice"
+#define CONFIG_NYABULA_CORE_VOICE_CUE_DIR "/data/voice"
 #endif
 
 #ifndef CONFIG_NYABULA_CORE_VOICE_UNLOAD_IDLE_S
-#  define CONFIG_NYABULA_CORE_VOICE_UNLOAD_IDLE_S 0
+#define CONFIG_NYABULA_CORE_VOICE_UNLOAD_IDLE_S 0
 #endif
 
 /* The codec arrangement; see the top of this file. */
 
 #if defined(CONFIG_NYABULA_CORE_VOICE_CODEC_SHARED_44K)
-#  define NY_VOICE_DUPLEX        true
-#  define NY_VOICE_MODE          "shared-44k"
-#  define NY_VOICE_MIC_RATE      44100U
-#  define NY_VOICE_MIC_CHANNELS  2
-#  define NY_VOICE_OUT_RATE      44100U
-#  define NY_VOICE_OUT_CHANNELS  2
+#define NY_VOICE_DUPLEX       true
+#define NY_VOICE_MODE         "shared-44k"
+#define NY_VOICE_MIC_RATE     44100U
+#define NY_VOICE_MIC_CHANNELS 2
+#define NY_VOICE_OUT_RATE     44100U
+#define NY_VOICE_OUT_CHANNELS 2
 #elif defined(CONFIG_NYABULA_CORE_VOICE_CODEC_SHARED_16K)
-#  define NY_VOICE_DUPLEX        true
-#  define NY_VOICE_MODE          "shared-16k"
-#  define NY_VOICE_MIC_RATE      16000U
-#  define NY_VOICE_MIC_CHANNELS  1
-#  define NY_VOICE_OUT_RATE      16000U
-#  define NY_VOICE_OUT_CHANNELS  1
+#define NY_VOICE_DUPLEX       true
+#define NY_VOICE_MODE         "shared-16k"
+#define NY_VOICE_MIC_RATE     16000U
+#define NY_VOICE_MIC_CHANNELS 1
+#define NY_VOICE_OUT_RATE     16000U
+#define NY_VOICE_OUT_CHANNELS 1
 #else
-#  define NY_VOICE_DUPLEX        false
-#  define NY_VOICE_MODE          "half"
-#  define NY_VOICE_MIC_RATE      16000U
-#  define NY_VOICE_MIC_CHANNELS  1
-#  define NY_VOICE_OUT_RATE      44100U
-#  define NY_VOICE_OUT_CHANNELS  2
+#define NY_VOICE_DUPLEX       false
+#define NY_VOICE_MODE         "half"
+#define NY_VOICE_MIC_RATE     16000U
+#define NY_VOICE_MIC_CHANNELS 1
+#define NY_VOICE_OUT_RATE     44100U
+#define NY_VOICE_OUT_CHANNELS 2
 #endif
 
 #ifdef CONFIG_NYABULA_CORE_VOICE_BARGE_IN
-#  define NY_VOICE_BARGE_IN      true
+#define NY_VOICE_BARGE_IN true
 #else
-#  define NY_VOICE_BARGE_IN      false
+#define NY_VOICE_BARGE_IN false
 #endif
 
 #ifdef CONFIG_NYABULA_CORE_VOICE_WIRE_S16
-#  define NY_VOICE_WIRE_S16      true
+#define NY_VOICE_WIRE_S16 true
 #else
-#  define NY_VOICE_WIRE_S16      false
+#define NY_VOICE_WIRE_S16 false
 #endif
 
-#define NY_VOICE_STORE            "voice"
-#define NY_VOICE_CALLER           "voice"
+#define NY_VOICE_STORE  "voice"
+#define NY_VOICE_CALLER "voice"
 
 /* Capture: 100 ms chunks into a 4 s ring.  The ring is longer than any
  * wake phrase plus the gate's reaction, so that a gate which opened late
  * still delivers the start of the phrase.
  */
 
-#define NY_VOICE_CHUNK_SAMPLES    1600U
-#define NY_VOICE_CHUNK_MS         100U
-#define NY_VOICE_RING_SAMPLES     (4U * NY_VOICE_CAPTURE_RATE)
-#define NY_VOICE_PREROLL_SAMPLES  (3U * NY_VOICE_CAPTURE_RATE / 2U)
-#define NY_VOICE_MIC_FRAMES       (NY_VOICE_MIC_RATE / 10U)
+#define NY_VOICE_CHUNK_SAMPLES   1600U
+#define NY_VOICE_CHUNK_MS        100U
+#define NY_VOICE_RING_SAMPLES    (4U * NY_VOICE_CAPTURE_RATE)
+#define NY_VOICE_PREROLL_SAMPLES (3U * NY_VOICE_CAPTURE_RATE / 2U)
+#define NY_VOICE_MIC_FRAMES      (NY_VOICE_MIC_RATE / 10U)
 
 #define NY_VOICE_WINDOW_SAMPLES \
   (CONFIG_NYABULA_CORE_VOICE_WINDOW_MS * NY_VOICE_CAPTURE_RATE / 1000U)
@@ -197,40 +196,44 @@
  * synthesizes the next while this one plays.
  */
 
-#define NY_VOICE_TTS_WINDOW       22050U
-#define NY_VOICE_OUT_CHUNK        8192U
+#define NY_VOICE_TTS_WINDOW     22050U
+#define NY_VOICE_OUT_CHUNK      8192U
 
-#define NY_VOICE_SENTENCE_MAX     400U
-#define NY_VOICE_TEXT_MAX         2048U
-#define NY_VOICE_REPLY_MAX        8192U
-#define NY_VOICE_TRANSCRIPT_MAX   512U
-#define NY_VOICE_ERROR_MAX        96U
-#define NY_VOICE_EVENTS           32U
+#define NY_VOICE_SENTENCE_MAX   400U
+#define NY_VOICE_TEXT_MAX       2048U
+#define NY_VOICE_REPLY_MAX      8192U
+#define NY_VOICE_TRANSCRIPT_MAX 512U
+#define NY_VOICE_ERROR_MAX      96U
+#define NY_VOICE_EVENTS         32U
 
-#define NY_VOICE_LOAD_MS          120000
-#define NY_VOICE_TTS_LOAD_MS      300000
-#define NY_VOICE_RETRY_MS         5000U
-#define NY_VOICE_AGENT_POLL_MS    300U
-#define NY_VOICE_AGENT_RETRY_MS   10000U
-#define NY_VOICE_SESSION_MS       300000U
-#define NY_VOICE_CLAIM_MS         1500U
+#define NY_VOICE_LOAD_MS        120000
+#define NY_VOICE_TTS_LOAD_MS    300000
+#define NY_VOICE_RETRY_MS       5000U
+#define NY_VOICE_AGENT_POLL_MS  300U
+#define NY_VOICE_AGENT_RETRY_MS 10000U
+#define NY_VOICE_SESSION_MS     300000U
+#define NY_VOICE_CLAIM_MS       1500U
 
-#define NY_VOICE_CUE_NOT_HEARD    "\xe6\xb2\xa1\xe5\x90\xac\xe6\xb8\x85\xef\xbc" \
-                                  "\x8c\xe5\x86\x8d\xe8\xaf\xb4\xe4\xb8\x80" \
-                                  "\xe9\x81\x8d\xe5\x90\xa7\xe3\x80\x82"
-#define NY_VOICE_CUE_APPROVAL     "\xe8\xbf\x99\xe4\xb8\xaa\xe6\x93\x8d\xe4\xbd" \
-                                  "\x9c\xe9\x9c\x80\xe8\xa6\x81\xe4\xbd\xa0" \
-                                  "\xe5\x9c\xa8\xe9\x9d\xa2\xe6\x9d\xbf\xe4" \
-                                  "\xb8\x8a\xe7\xa1\xae\xe8\xae\xa4\xe4\xb8" \
-                                  "\x80\xe4\xb8\x8b\xe3\x80\x82"
-#define NY_VOICE_CUE_BUSY         "\xe6\x88\x91\xe6\xad\xa3\xe5\x9c\xa8\xe5\xbf" \
-                                  "\x99\xef\xbc\x8c\xe7\xa8\x8d\xe7\xad\x89" \
-                                  "\xe4\xb8\x80\xe4\xb8\x8b\xe3\x80\x82"
-#define NY_VOICE_CUE_ERROR        "\xe5\x87\xba\xe4\xba\x86\xe7\x82\xb9\xe9\x97" \
-                                  "\xae\xe9\xa2\x98\xef\xbc\x8c\xe7\xa8\x8d" \
-                                  "\xe5\x90\x8e\xe5\x86\x8d\xe8\xaf\x95\xe3" \
-                                  "\x80\x82"
-#define NY_VOICE_CUE_WAIT         "\xe7\xa8\x8d\xe7\xad\x89\xe3\x80\x82"
+#define NY_VOICE_CUE_NOT_HEARD                   \
+  "\xe6\xb2\xa1\xe5\x90\xac\xe6\xb8\x85\xef\xbc" \
+  "\x8c\xe5\x86\x8d\xe8\xaf\xb4\xe4\xb8\x80"     \
+  "\xe9\x81\x8d\xe5\x90\xa7\xe3\x80\x82"
+#define NY_VOICE_CUE_APPROVAL                    \
+  "\xe8\xbf\x99\xe4\xb8\xaa\xe6\x93\x8d\xe4\xbd" \
+  "\x9c\xe9\x9c\x80\xe8\xa6\x81\xe4\xbd\xa0"     \
+  "\xe5\x9c\xa8\xe9\x9d\xa2\xe6\x9d\xbf\xe4"     \
+  "\xb8\x8a\xe7\xa1\xae\xe8\xae\xa4\xe4\xb8"     \
+  "\x80\xe4\xb8\x8b\xe3\x80\x82"
+#define NY_VOICE_CUE_BUSY                        \
+  "\xe6\x88\x91\xe6\xad\xa3\xe5\x9c\xa8\xe5\xbf" \
+  "\x99\xef\xbc\x8c\xe7\xa8\x8d\xe7\xad\x89"     \
+  "\xe4\xb8\x80\xe4\xb8\x8b\xe3\x80\x82"
+#define NY_VOICE_CUE_ERROR                       \
+  "\xe5\x87\xba\xe4\xba\x86\xe7\x82\xb9\xe9\x97" \
+  "\xae\xe9\xa2\x98\xef\xbc\x8c\xe7\xa8\x8d"     \
+  "\xe5\x90\x8e\xe5\x86\x8d\xe8\xaf\x95\xe3"     \
+  "\x80\x82"
+#define NY_VOICE_CUE_WAIT "\xe7\xa8\x8d\xe7\xad\x89\xe3\x80\x82"
 
 /****************************************************************************
  * Private Types
@@ -258,7 +261,7 @@ struct ny_voice_model_s
 {
   enum ny_voice_model_state_e state;
   int error;
-  uint64_t done;  /* Pull progress of the load in flight. */
+  uint64_t done; /* Pull progress of the load in flight. */
   uint64_t total;
 };
 
@@ -282,10 +285,10 @@ struct ny_voice_queued_s
 struct ny_voice_settings_s
 {
   bool enabled;
-  int wake_sensitivity;   /* 0..100, 50 = the evaluated default.   */
+  int wake_sensitivity; /* 0..100, 50 = the evaluated default.   */
   uint32_t max_listen_ms;
-  uint32_t reply_voice;   /* TTS speaker id.                       */
-  uint32_t reply_speed;   /* Percent: 50..200.                     */
+  uint32_t reply_voice; /* TTS speaker id.                       */
+  uint32_t reply_speed; /* Percent: 50..200.                     */
 };
 
 struct ny_voice_s
@@ -295,7 +298,7 @@ struct ny_voice_s
 
   bool running;
   bool stopping;
-  bool loaded;       /* Settings were read from the store. */
+  bool loaded; /* Settings were read from the store. */
   struct ny_voice_settings_s settings;
 
   sem_t events_ready;
@@ -310,20 +313,21 @@ struct ny_voice_s
   struct ny_voice_ring_s ring;
   uint64_t last_loud;   /* Position just past the last loud chunk.       */
   uint64_t resumed_at;  /* Ring position when the microphone last opened. */
+  uint64_t captured_at; /* Monotonic time of the newest ring write. */
   bool capture_gap;     /* It was closed since the last pushed window.    */
   bool gate_open;
-  uint32_t level;       /* RMS of the last chunk.                         */
+  uint32_t level; /* RMS of the last chunk.                         */
   sem_t captured;
 
   bool capture_open;
-  bool capture_hold;    /* Our own playback needs the codec (HALF).       */
-  unsigned int claims;  /* Other players that asked for it.              */
+  bool capture_hold;   /* Our own playback needs the codec (HALF).       */
+  unsigned int claims; /* Other players that asked for it.              */
   int capture_error;
 
   /* Pump. */
 
-  bool streaming;       /* A KWS stream is open.  */
-  bool kws_reload;      /* The sensitivity changed. */
+  bool streaming;  /* A KWS stream is open.  */
+  bool kws_reload; /* The sensitivity changed. */
   uint64_t stream_next;
   uint64_t stream_base;
   uint32_t windows;
@@ -344,11 +348,11 @@ struct ny_voice_s
   uint32_t play_dropped; /* Jobs up to this one are cancelled. */
   enum ny_voice_cue_e play_cue;
   const char *play_name; /* The cue's file name, a literal.    */
-  bool speaking_wake;   /* What is being said contains the wake word. */
+  bool speaking_wake;    /* What is being said contains the wake word. */
   char play_text[NY_VOICE_REPLY_MAX + 1];
 
   sem_t eyes_wake;
-  int eyes_wanted;      /* An ny_voice_eyes_e, or -1. */
+  int eyes_wanted; /* An ny_voice_eyes_e, or -1. */
 
   char say_text[NY_VOICE_TEXT_MAX + 1];
   char transcript[NY_VOICE_TRANSCRIPT_MAX];
@@ -365,12 +369,12 @@ struct ny_voice_turn_s
 {
   struct ny_voice_sm_s sm;
   struct ny_voice_port_s asr;
-  bool asr_open;        /* A request exists on the compute domain.      */
-  bool asr_silent;      /* ... that was cancelled: its FINISH is not news. */
-  uint64_t asr_start;   /* Where it attached.                           */
-  char run[64];         /* The agent run being followed, or "".         */
-  bool run_pending;     /* It was reported as awaiting approval.        */
-  bool submit_due;      /* The agent was busy winding down; try again.  */
+  bool asr_open;      /* A request exists on the compute domain.      */
+  bool asr_silent;    /* ... that was cancelled: its FINISH is not news. */
+  uint64_t asr_start; /* Where it attached.                           */
+  char run[64];       /* The agent run being followed, or "".         */
+  bool run_pending;   /* It was reported as awaiting approval.        */
+  bool submit_due;    /* The agent was busy winding down; try again.  */
   uint64_t submit_until;
   uint64_t poll_at;
   uint64_t last_turn_ms;
@@ -420,8 +424,7 @@ static size_t ny_voice_capture_convert(struct ny_voice_resample_s *resample,
 static void *ny_voice_pump_thread(void *arg);
 static int ny_voice_pump_begin(struct ny_voice_port_s *port,
                                struct nyamp_buffer_s *grant);
-static void ny_voice_pump_events(struct ny_voice_port_s *port,
-                                 int timeout_ms);
+static void ny_voice_pump_events(struct ny_voice_port_s *port, int timeout_ms);
 static void *ny_voice_play_thread(void *arg);
 static int ny_voice_play_acquire(void);
 static void ny_voice_play_release(void);
@@ -438,14 +441,12 @@ static int ny_voice_play_cue(struct ny_voice_audio_s *audio,
 static bool ny_voice_play_cancelled(void);
 static void *ny_voice_eyes_thread(void *arg);
 
-static int ny_voice_topic(const char *topic, const char *json,
-                          cJSON **result);
+static int ny_voice_topic(const char *topic, const char *json, cJSON **result);
 static void ny_voice_turn_say(const char *text, enum ny_voice_cue_e cue,
                               const char *name);
 static void ny_voice_turn_speak(enum ny_voice_speech_e speech);
 static void ny_voice_turn_speak_cancel(void);
-static void ny_voice_turn_asr_start(struct ny_voice_turn_s *turn,
-                                    bool attach);
+static void ny_voice_turn_asr_start(struct ny_voice_turn_s *turn, bool attach);
 static void ny_voice_turn_asr_poll(struct ny_voice_turn_s *turn);
 static void ny_voice_turn_submit(struct ny_voice_turn_s *turn);
 static void ny_voice_turn_agent_poll(struct ny_voice_turn_s *turn);
@@ -624,9 +625,9 @@ static ssize_t ny_voice_io_recv(void *arg, uint8_t *wire, size_t capacity,
 {
   struct ny_voice_port_s *port = arg;
 
-  return port->port == NULL ? -ENOTCONN
-                            : ny_compute_port_recv(port->port, wire, capacity,
-                                                   timeout_ms);
+  return port->port == NULL
+             ? -ENOTCONN
+             : ny_compute_port_recv(port->port, wire, capacity, timeout_ms);
 }
 
 static uint64_t ny_voice_io_request_id(void *arg)
@@ -769,9 +770,8 @@ static int ny_voice_model_load(struct ny_voice_port_s *port,
                            service == NYAMP_SERVICE_KWS ? &kws : NULL,
                            timeout_ms);
   port->loading = NULL;
-  ny_voice_model_set(model,
-                     ret == 0 ? NY_VOICE_MODEL_READY : NY_VOICE_MODEL_ERROR,
-                     ret);
+  ny_voice_model_set(
+      model, ret == 0 ? NY_VOICE_MODEL_READY : NY_VOICE_MODEL_ERROR, ret);
   if (ret < 0)
     {
       char text[NY_VOICE_ERROR_MAX];
@@ -891,9 +891,9 @@ static int ny_voice_settings_save(void)
                                            settings.reply_voice) != NULL;
   valid = valid && cJSON_AddNumberToObject(root, "replySpeed",
                                            settings.reply_speed) != NULL;
-  ret = valid ? ny_product_store_write(NY_VOICE_STORE, root, revision,
-                                       &revision)
-              : -ENOMEM;
+  ret = valid
+            ? ny_product_store_write(NY_VOICE_STORE, root, revision, &revision)
+            : -ENOMEM;
   cJSON_Delete(root);
   return ret;
 }
@@ -935,8 +935,8 @@ static size_t ny_voice_capture_convert(struct ny_voice_resample_s *resample,
 
   for (index = 0; index < frames; index++)
     {
-      mono[index] = ((float)raw[2 * index] + (float)raw[2 * index + 1]) /
-                    32768.0f;
+      mono[index] =
+          ((float)raw[2 * index] + (float)raw[2 * index + 1]) / 32768.0f;
     }
 
   count = ny_voice_resample(resample, mono, frames, slow,
@@ -952,8 +952,7 @@ static size_t ny_voice_capture_convert(struct ny_voice_resample_s *resample,
 
 static void *ny_voice_capture_thread(void *arg)
 {
-  static struct ny_voice_gate_config_s gate_config =
-  {
+  static struct ny_voice_gate_config_s gate_config = {
     CONFIG_NYABULA_CORE_VOICE_VAD_MIN_RMS, 40, 2000
   };
 
@@ -968,7 +967,7 @@ static void *ny_voice_capture_thread(void *arg)
 #endif
   ny_voice_gate_init(&gate, &gate_config);
 
-  for (; ; )
+  for (;;)
     {
       struct ny_voice_audio_config_s config;
       size_t bytes = sizeof(g_voice_mic);
@@ -1025,7 +1024,7 @@ static void *ny_voice_capture_thread(void *arg)
           ret = ny_voice_audio_open(&audio, &config);
           nxmutex_lock(&g_voice.lock);
           g_voice.capture_error = ret;
-          g_voice.capture_open = ret == 0;
+          g_voice.capture_open = false;
           nxmutex_unlock(&g_voice.lock);
           if (ret < 0)
             {
@@ -1045,8 +1044,12 @@ static void *ny_voice_capture_thread(void *arg)
 
           nxmutex_lock(&g_voice.ring_lock);
           g_voice.resumed_at = g_voice.ring.total;
+          g_voice.captured_at = 0;
           g_voice.capture_gap = true;
           nxmutex_unlock(&g_voice.ring_lock);
+          nxmutex_lock(&g_voice.lock);
+          g_voice.capture_open = true;
+          nxmutex_unlock(&g_voice.lock);
         }
 
       got = ny_voice_audio_read(audio, g_voice_mic, bytes, 500);
@@ -1074,6 +1077,7 @@ static void *ny_voice_capture_thread(void *arg)
 
       nxmutex_lock(&g_voice.ring_lock);
       ny_voice_ring_write(&g_voice.ring, g_voice_chunk, count);
+      g_voice.captured_at = ny_voice_now_ms();
       if (loud)
         {
           g_voice.last_loud = g_voice.ring.total;
@@ -1219,7 +1223,7 @@ static void *ny_voice_pump_thread(void *arg)
 
   (void)arg;
   memset(&grant, 0, sizeof(grant));
-  for (; ; )
+  for (;;)
     {
       enum ny_voice_state_e state;
       struct timespec until;
@@ -1295,10 +1299,9 @@ static void *ny_voice_pump_thread(void *arg)
                * backend, does not change by itself: ask rarely.
                */
 
-              retry_at = ny_voice_now_ms() +
-                         (ret == -ENOENT || ret == -ENOTSUP
-                              ? 6 * NY_VOICE_RETRY_MS
-                              : NY_VOICE_RETRY_MS);
+              retry_at = ny_voice_now_ms() + (ret == -ENOENT || ret == -ENOTSUP
+                                                  ? 6 * NY_VOICE_RETRY_MS
+                                                  : NY_VOICE_RETRY_MS);
               continue;
             }
 
@@ -1483,16 +1486,13 @@ static bool ny_voice_play_cancelled(void)
 
 static int ny_voice_play_acquire(void)
 {
-  const struct ny_product_caller_s caller =
-  {
-    NY_VOICE_CALLER, NY_PRODUCT_OWNER, true
-  };
+  const struct ny_product_caller_s caller = { NY_VOICE_CALLER,
+                                              NY_PRODUCT_OWNER, true };
 
   cJSON *data = cJSON_CreateObject();
   cJSON *result = NULL;
   uint64_t deadline;
   int ret = 0;
-
 
   if (data != NULL &&
       ny_product_request(&caller, "music.status", data, &result) == 0)
@@ -1517,7 +1517,7 @@ static int ny_voice_play_acquire(void)
       nxmutex_unlock(&g_voice.lock);
 
       deadline = ny_voice_now_ms() + NY_VOICE_CLAIM_MS;
-      for (; ; )
+      for (;;)
         {
           bool open;
 
@@ -1592,8 +1592,8 @@ static int ny_voice_play_write(struct ny_voice_audio_s *audio, size_t bytes)
           return -ECANCELED;
         }
 
-      written = ny_voice_audio_write(audio, (const uint8_t *)g_voice_out + done,
-                                     part, 1000);
+      written = ny_voice_audio_write(
+          audio, (const uint8_t *)g_voice_out + done, part, 1000);
       if (written < 0)
         {
           return (int)written;
@@ -1650,13 +1650,13 @@ static int ny_voice_play_speech(struct ny_voice_port_s *port,
   speed = (float)g_voice.settings.reply_speed / 100.0f;
   nxmutex_unlock(&g_voice.lock);
 
-  while (ny_voice_sentence_next(text, &position, sentence,
-                                sizeof(sentence)) != 0)
+  while (ny_voice_sentence_next(text, &position, sentence, sizeof(sentence)) !=
+         0)
     {
       struct ny_voice_wire_frame_s frame;
       struct ny_voice_wire_event_s event;
 
-      for (attempt = 0; ; attempt++)
+      for (attempt = 0;; attempt++)
         {
           ret = ny_voice_wire_tts_say(&port->wire, sentence, strlen(sentence),
                                       voice, speed, NY_VOICE_TTS_WINDOW);
@@ -1693,7 +1693,7 @@ static int ny_voice_play_speech(struct ny_voice_port_s *port,
         }
 
       ny_voice_model_set(&g_voice.tts, NY_VOICE_MODEL_READY, 0);
-      for (; ; )
+      for (;;)
         {
           uint8_t *window;
           size_t bytes;
@@ -1722,9 +1722,9 @@ static int ny_voice_play_speech(struct ny_voice_port_s *port,
               if (ny_voice_audio_queued(audio) <
                   NY_VOICE_OUT_RATE / 10 * NY_VOICE_OUT_CHANNELS * 2)
                 {
-                  ny_voice_audio_write(audio, silence,
-                                       NY_VOICE_OUT_RATE / 20 *
-                                           NY_VOICE_OUT_CHANNELS * 2, 0);
+                  ny_voice_audio_write(
+                      audio, silence,
+                      NY_VOICE_OUT_RATE / 20 * NY_VOICE_OUT_CHANNELS * 2, 0);
                 }
 
               continue;
@@ -1766,9 +1766,8 @@ static int ny_voice_play_speech(struct ny_voice_port_s *port,
            * the service synthesizes the next window meanwhile.
            */
 
-          bytes = ny_voice_play_convert(resample,
-                                        (const float *)(void *)window,
-                                        event.valid_samples);
+          bytes = ny_voice_play_convert(
+              resample, (const float *)(void *)window, event.valid_samples);
           ny_voice_wire_tts_release(&port->wire, &event);
           ret = ny_voice_play_write(audio, bytes);
           if (ret < 0)
@@ -1827,9 +1826,8 @@ static int ny_voice_play_cue(struct ny_voice_audio_s *audio,
           size_t count = (size_t)got / sizeof(int16_t);
 
           ny_voice_s16_to_f32(tone, pcm, count);
-          ret = ny_voice_play_write(audio,
-                                    ny_voice_play_convert(resample, tone,
-                                                          count));
+          ret = ny_voice_play_write(
+              audio, ny_voice_play_convert(resample, tone, count));
         }
 
       close(fd);
@@ -1862,18 +1860,17 @@ static int ny_voice_play_cue(struct ny_voice_audio_s *audio,
           continue;
         }
 
-      gain = in_tone < ramp            ? (double)in_tone / (double)ramp
-             : in_tone > length - ramp ? (double)(length - in_tone) /
-                                             (double)ramp
-                                       : 1.0;
+      gain = in_tone < ramp ? (double)in_tone / (double)ramp
+             : in_tone > length - ramp
+                 ? (double)(length - in_tone) / (double)ramp
+                 : 1.0;
       tone[index] = (float)(0.25 * gain *
                             sin(2.0 * 3.14159265358979 * hz * (double)in_tone /
                                 (double)NY_VOICE_TTS_RATE));
     }
 
-  return ny_voice_play_write(audio,
-                             ny_voice_play_convert(resample, tone,
-                                                   NY_VOICE_TTS_RATE / 5));
+  return ny_voice_play_write(
+      audio, ny_voice_play_convert(resample, tone, NY_VOICE_TTS_RATE / 5));
 }
 
 static void *ny_voice_play_thread(void *arg)
@@ -1889,7 +1886,7 @@ static void *ny_voice_play_thread(void *arg)
   resample = &g_voice_resample;
 #endif
 
-  for (; ; )
+  for (;;)
     {
       struct ny_voice_audio_config_s config;
       struct ny_voice_audio_s *audio = NULL;
@@ -1953,8 +1950,8 @@ static void *ny_voice_play_thread(void *arg)
            * takes; once the model is there it says the cue properly.
            */
 
-          if (cue == NY_VOICE_CUE_ONLY || (cue == NY_VOICE_CUE_SHORT &&
-                                           !ready))
+          if (cue == NY_VOICE_CUE_ONLY ||
+              (cue == NY_VOICE_CUE_SHORT && !ready))
             {
               ret = ny_voice_play_cue(audio, resample, name);
             }
@@ -2007,22 +2004,18 @@ static void *ny_voice_play_thread(void *arg)
 
 static void *ny_voice_eyes_thread(void *arg)
 {
-  static const char *const names[] =
-  {
-    "idle", "curious", "processing", "happy"
-  };
+  static const char *const names[] = { "idle", "curious", "processing",
+                                       "happy" };
 
-  const struct ny_product_caller_s caller =
-  {
-    NY_VOICE_CALLER, NY_PRODUCT_OWNER, true
-  };
+  const struct ny_product_caller_s caller = { NY_VOICE_CALLER,
+                                              NY_PRODUCT_OWNER, true };
 
   const char *shown = NULL;
   bool yielded = false; /* The agent chose a face in this turn. */
   int held = -1;
 
   (void)arg;
-  for (; ; )
+  for (;;)
     {
       cJSON *data;
       cJSON *result = NULL;
@@ -2148,10 +2141,8 @@ static void *ny_voice_eyes_thread(void *arg)
 
 static int ny_voice_topic(const char *topic, const char *json, cJSON **result)
 {
-  const struct ny_product_caller_s caller =
-  {
-    NY_VOICE_CALLER, NY_PRODUCT_OWNER, true
-  };
+  const struct ny_product_caller_s caller = { NY_VOICE_CALLER,
+                                              NY_PRODUCT_OWNER, true };
 
   cJSON *data = cJSON_Parse(json);
   int ret;
@@ -2218,7 +2209,8 @@ static void ny_voice_turn_speak(enum ny_voice_speech_e speech)
         break;
 
       case NY_VOICE_SPEECH_APPROVAL:
-        ny_voice_turn_say(NY_VOICE_CUE_APPROVAL, NY_VOICE_CUE_FIXED, "approval");
+        ny_voice_turn_say(NY_VOICE_CUE_APPROVAL, NY_VOICE_CUE_FIXED,
+                          "approval");
         break;
 
       case NY_VOICE_SPEECH_NOT_HEARD:
@@ -2253,7 +2245,7 @@ static void ny_voice_turn_speak_cancel(void)
   nxmutex_lock(&g_voice.lock);
   g_voice.play_dropped = g_voice.play_job;
   nxmutex_unlock(&g_voice.lock);
-  for (; ; )
+  for (;;)
     {
       bool busy;
 
@@ -2295,8 +2287,8 @@ static void ny_voice_turn_asr_start(struct ny_voice_turn_s *turn, bool attach)
   g_voice.transcript[0] = '\0';
   g_voice.transcript_ms = 0;
   streaming = g_voice.streaming;
-  max_samples = (g_voice.settings.max_listen_ms + 2000) / 1000 *
-                NY_VOICE_CAPTURE_RATE;
+  max_samples =
+      (g_voice.settings.max_listen_ms + 2000) / 1000 * NY_VOICE_CAPTURE_RATE;
   nxmutex_unlock(&g_voice.lock);
 
   /* The chime that says the robot is listening.  It is the first thing of
@@ -2311,7 +2303,7 @@ static void ny_voice_turn_asr_start(struct ny_voice_turn_s *turn, bool attach)
     {
       ny_voice_turn_say("", NY_VOICE_CUE_ONLY, "wake");
       deadline = ny_voice_now_ms() + 3000;
-      for (; ; )
+      for (;;)
         {
           bool busy;
 
@@ -2349,8 +2341,8 @@ static void ny_voice_turn_asr_start(struct ny_voice_turn_s *turn, bool attach)
           (g_voice.wake.flags & NYAMP_KWS_DETECTED_HAS_OFFSETS) != 0;
       where.start_sample = g_voice.wake.start_sample;
       where.end_sample = g_voice.wake.end_sample;
-      where.trigger_sample = attach && !cued ? g_voice.wake.trigger_sample
-                                             : g_voice.stream_next;
+      where.trigger_sample =
+          attach && !cued ? g_voice.wake.trigger_sample : g_voice.stream_next;
       where.stream_next = g_voice.stream_next;
       where.stream_base = g_voice.stream_base;
       nxmutex_unlock(&g_voice.lock);
@@ -2383,7 +2375,7 @@ static void ny_voice_turn_asr_start(struct ny_voice_turn_s *turn, bool attach)
        */
 
       deadline = ny_voice_now_ms() + 5000;
-      for (; ; )
+      for (;;)
         {
           bool busy;
 
@@ -2535,10 +2527,8 @@ static void ny_voice_turn_submit(struct ny_voice_turn_s *turn)
 
   if (valid)
     {
-      const struct ny_product_caller_s caller =
-      {
-        NY_VOICE_CALLER, NY_PRODUCT_OWNER, true
-      };
+      const struct ny_product_caller_s caller = { NY_VOICE_CALLER,
+                                                  NY_PRODUCT_OWNER, true };
 
       ret = ny_product_request(&caller, "agent.chat", data, &result);
     }
@@ -2799,14 +2789,14 @@ static void ny_voice_turn_idle(struct ny_voice_turn_s *turn)
 
       if ((asr || tts) && ny_voice_port_open(&turn->asr) == 0)
         {
-          if (tts && ny_voice_wire_unload(&turn->asr.wire,
-                                          NYAMP_SERVICE_TTS) == 0)
+          if (tts &&
+              ny_voice_wire_unload(&turn->asr.wire, NYAMP_SERVICE_TTS) == 0)
             {
               ny_voice_model_set(&g_voice.tts, NY_VOICE_MODEL_UNLOADED, 0);
             }
 
-          if (asr && ny_voice_wire_unload(&turn->asr.wire,
-                                          NYAMP_SERVICE_ASR) == 0)
+          if (asr &&
+              ny_voice_wire_unload(&turn->asr.wire, NYAMP_SERVICE_ASR) == 0)
             {
               ny_voice_model_set(&g_voice.asr, NY_VOICE_MODEL_UNLOADED, 0);
             }
@@ -2955,8 +2945,8 @@ static int ny_voice_task(int argc, char **argv)
           event.silence_ms = (uint32_t)(event.now_ms - text_ms);
           if (loud > turn.asr_start)
             {
-              uint32_t quiet = (uint32_t)((total - loud) /
-                                          (NY_VOICE_CAPTURE_RATE / 1000));
+              uint32_t quiet =
+                  (uint32_t)((total - loud) / (NY_VOICE_CAPTURE_RATE / 1000));
 
               if (quiet < event.silence_ms)
                 {
@@ -3042,16 +3032,11 @@ static int ny_voice_task(int argc, char **argv)
 
 static cJSON *ny_voice_status(void)
 {
-  static const char *const model_states[] =
-  {
-    "unloaded", "loading", "ready", "error"
-  };
+  static const char *const model_states[] = { "unloaded", "loading", "ready",
+                                              "error" };
 
   struct ny_voice_model_s *models[3];
-  static const char *const names[] =
-  {
-    "kws", "asr", "tts"
-  };
+  static const char *const names[] = { "kws", "asr", "tts" };
 
   cJSON *root = cJSON_CreateObject();
   cJSON *list;
@@ -3083,30 +3068,29 @@ static cJSON *ny_voice_status(void)
   mic = cJSON_AddObjectToObject(root, "microphone");
   config = cJSON_AddObjectToObject(root, "config");
   valid = list != NULL && errors != NULL && mic != NULL && config != NULL;
-  valid = valid &&
-          cJSON_AddBoolToObject(root, "running", g_voice.running) != NULL;
+  valid =
+      valid && cJSON_AddBoolToObject(root, "running", g_voice.running) != NULL;
   valid = valid && cJSON_AddBoolToObject(root, "enabled",
                                          g_voice.settings.enabled) != NULL;
   valid = valid &&
-          cJSON_AddStringToObject(root, "state",
-                                  ny_voice_sm_state_name(g_voice.state)) !=
-              NULL;
-  valid = valid && cJSON_AddStringToObject(root, "codec", NY_VOICE_MODE) !=
-                       NULL;
-  valid = valid && cJSON_AddStringToObject(root, "wakeWord",
-                                           g_voice.wake_word) != NULL;
+          cJSON_AddStringToObject(
+              root, "state", ny_voice_sm_state_name(g_voice.state)) != NULL;
+  valid =
+      valid && cJSON_AddStringToObject(root, "codec", NY_VOICE_MODE) != NULL;
+  valid = valid &&
+          cJSON_AddStringToObject(root, "wakeWord", g_voice.wake_word) != NULL;
   valid = valid && cJSON_AddStringToObject(root, "lastTranscript",
                                            g_voice.transcript) != NULL;
   valid = valid &&
           cJSON_AddStringToObject(root, "lastReply", g_voice.reply) != NULL;
-  valid = valid && cJSON_AddBoolToObject(root, "streaming",
-                                         g_voice.streaming) != NULL;
+  valid = valid &&
+          cJSON_AddBoolToObject(root, "streaming", g_voice.streaming) != NULL;
   valid = valid &&
           cJSON_AddNumberToObject(root, "windows", g_voice.windows) != NULL;
   valid = valid && cJSON_AddNumberToObject(root, "detections",
                                            g_voice.detections) != NULL;
-  valid = valid &&
-          cJSON_AddNumberToObject(root, "turns", g_voice.turns) != NULL;
+  valid =
+      valid && cJSON_AddNumberToObject(root, "turns", g_voice.turns) != NULL;
   for (index = 0; index < 3 && valid; index++)
     {
       cJSON *model = cJSON_AddObjectToObject(list, names[index]);
@@ -3115,16 +3099,16 @@ static cJSON *ny_voice_status(void)
               cJSON_AddStringToObject(model, "state",
                                       model_states[models[index]->state]) !=
                   NULL &&
-              cJSON_AddNumberToObject(model, "error",
-                                      models[index]->error) != NULL &&
+              cJSON_AddNumberToObject(model, "error", models[index]->error) !=
+                  NULL &&
               cJSON_AddNumberToObject(model, "pulled",
                                       (double)models[index]->done) != NULL &&
               cJSON_AddNumberToObject(model, "total",
                                       (double)models[index]->total) != NULL;
     }
 
-  valid = valid && cJSON_AddNumberToObject(errors, "last",
-                                           g_voice.last_error) != NULL;
+  valid = valid &&
+          cJSON_AddNumberToObject(errors, "last", g_voice.last_error) != NULL;
   valid = valid && cJSON_AddStringToObject(errors, "text",
                                            g_voice.last_error_text) != NULL;
   valid = valid && cJSON_AddNumberToObject(errors, "capture",
@@ -3133,20 +3117,20 @@ static cJSON *ny_voice_status(void)
           cJSON_AddBoolToObject(mic, "open", g_voice.capture_open) != NULL;
   valid = valid && cJSON_AddBoolToObject(mic, "gateOpen", gate) != NULL;
   valid = valid && cJSON_AddNumberToObject(mic, "level", level) != NULL;
-  valid = valid &&
-          cJSON_AddNumberToObject(mic, "claims", g_voice.claims) != NULL;
+  valid =
+      valid && cJSON_AddNumberToObject(mic, "claims", g_voice.claims) != NULL;
   valid = valid &&
           cJSON_AddNumberToObject(config, "wakeSensitivity",
                                   g_voice.settings.wake_sensitivity) != NULL;
-  valid = valid && cJSON_AddNumberToObject(config, "maxListenMs",
-                                           g_voice.settings.max_listen_ms) !=
-                       NULL;
-  valid = valid && cJSON_AddNumberToObject(config, "replyVoice",
-                                           g_voice.settings.reply_voice) !=
-                       NULL;
-  valid = valid && cJSON_AddNumberToObject(config, "replySpeed",
-                                           g_voice.settings.reply_speed) !=
-                       NULL;
+  valid =
+      valid && cJSON_AddNumberToObject(config, "maxListenMs",
+                                       g_voice.settings.max_listen_ms) != NULL;
+  valid =
+      valid && cJSON_AddNumberToObject(config, "replyVoice",
+                                       g_voice.settings.reply_voice) != NULL;
+  valid =
+      valid && cJSON_AddNumberToObject(config, "replySpeed",
+                                       g_voice.settings.reply_speed) != NULL;
   nxmutex_unlock(&g_voice.lock);
 
   if (!valid)
@@ -3161,6 +3145,50 @@ static cJSON *ny_voice_status(void)
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: ny_voice_capture_snapshot
+ ****************************************************************************/
+
+int ny_voice_capture_snapshot(int16_t *samples, size_t capacity)
+{
+  uint64_t cursor;
+  uint64_t available;
+  bool gap;
+  int ret = -EAGAIN;
+
+  if (samples == NULL || capacity == 0 ||
+      capacity > NY_VOICE_CAPTURE_RATE / 10)
+    {
+      return -EINVAL;
+    }
+
+  nxmutex_lock(&g_voice.lock);
+  if (!g_voice.running || g_voice.stopping || !g_voice.capture_open)
+    {
+      nxmutex_unlock(&g_voice.lock);
+      return -ENODEV;
+    }
+
+  nxmutex_lock(&g_voice.ring_lock);
+  available = g_voice.ring.total - g_voice.resumed_at;
+  if (g_voice.captured_at != 0 &&
+      ny_voice_now_ms() - g_voice.captured_at <= 250 && available != 0)
+    {
+      if (capacity > available)
+        {
+          capacity = available;
+        }
+
+      cursor = g_voice.ring.total - capacity;
+      ret = (int)ny_voice_ring_read(&g_voice.ring, &cursor, samples, capacity,
+                                    &gap);
+    }
+
+  nxmutex_unlock(&g_voice.ring_lock);
+  nxmutex_unlock(&g_voice.lock);
+  return ret;
+}
 
 int ny_voice_start(void)
 {
@@ -3241,7 +3269,7 @@ int ny_voice_speaker_claim(void)
   nxmutex_lock(&g_voice.lock);
   g_voice.claims++;
   nxmutex_unlock(&g_voice.lock);
-  for (; ; )
+  for (;;)
     {
       bool open;
 
@@ -3363,9 +3391,9 @@ int ny_voice_request(const struct ny_product_caller_s *caller,
 
       if ((wake != NULL && (!cJSON_IsNumber(wake) || wake->valueint < 0 ||
                             wake->valueint > 100)) ||
-          (listen != NULL && (!cJSON_IsNumber(listen) ||
-                              listen->valueint < 2000 ||
-                              listen->valueint > 30000)) ||
+          (listen != NULL &&
+           (!cJSON_IsNumber(listen) || listen->valueint < 2000 ||
+            listen->valueint > 30000)) ||
           (who != NULL && (!cJSON_IsNumber(who) || who->valueint < 0 ||
                            who->valueint > 255)) ||
           (speed != NULL && (!cJSON_IsNumber(speed) || speed->valueint < 50 ||
