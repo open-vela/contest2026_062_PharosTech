@@ -51,3 +51,12 @@ export interface Palette {
   light: PaletteColors;
   dark: PaletteColors;
 }
+
+/** Visual skin: layout chrome, component styling, loading and theme-switch
+ * motion. Orthogonal to mode and palette (every skin supports both modes
+ * and all presets). */
+export type ThemeSkin = 'classic' | 'nebula' | 'instrument';
+
+/** Per-skin neutral derivation: returns the full light/dark token sets for
+ * a preset. Classic uses derivePalette's defaults. */
+export type SkinPaletteFn = (preset: ThemePreset) => { light: PaletteColors; dark: PaletteColors };
