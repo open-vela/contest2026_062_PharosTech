@@ -117,6 +117,7 @@ static int ny_audio_stream_configure(struct ny_audio_stream_s *stream)
   desc.caps.ac_len = sizeof(struct audio_caps_s);
   desc.caps.ac_type =
       stream->config.capture ? AUDIO_TYPE_INPUT : AUDIO_TYPE_OUTPUT;
+  desc.caps.ac_subtype = AUDIO_FMT_PCM;
   desc.caps.ac_channels = stream->config.channels;
   desc.caps.ac_controls.hw[0] = (uint16_t)stream->config.rate;
   desc.caps.ac_controls.b[2] = 16;
