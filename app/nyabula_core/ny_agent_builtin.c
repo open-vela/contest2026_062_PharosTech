@@ -34,7 +34,7 @@
 #include <sys/stat.h>
 
 #define NY_AGENT_WORKSPACE   AGENT_DATA_DIR "/workspace"
-#define NY_AGENT_TOOL_OUTPUT 4096
+#define NY_AGENT_TOOL_OUTPUT 8192
 static mutex_t g_builtin_lock = NXMUTEX_INITIALIZER;
 
 struct ny_agent_builtin_s
