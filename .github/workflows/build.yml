@@ -82,6 +82,8 @@ jobs:
         run: python3 tools/tests/test_platform_cmake.py
       - name: Check USB interrupt serialization
         run: python3 tools/tests/test_usb_irq_serialization.py
+      - name: Check libwebsockets Make header exports
+        run: python3 tools/tests/test_libwebsockets_make.py
       - name: Check WAMR dependency context fallback
         run: python3 tools/tests/test_wamr_context_patch.py
       - name: Preserve WAMR-owned context configuration
