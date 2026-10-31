@@ -97,6 +97,7 @@
 #include "ny_product_store.h"
 #include "ny_voice.h"
 #include "ny_voice_audio.h"
+#include "ny_voice_cloud.h"
 #include "ny_voice_dsp.h"
 #include "ny_voice_sm.h"
 #include "ny_voice_wire.h"
@@ -380,9 +381,16 @@ struct ny_voice_turn_s
   bool asr_open;      /* A request exists on the compute domain.      */
   bool asr_silent;    /* ... that was cancelled: its FINISH is not news. */
   uint64_t asr_start; /* Where it attached.                           */
-  char run[64];       /* The agent run being followed, or "".         */
-  bool run_pending;   /* It was reported as awaiting approval.        */
-  bool submit_due;    /* The agent was busy winding down; try again.  */
+  bool cloud_asr;
+  bool cloud_heard;
+  int16_t *cloud_pcm;
+  size_t cloud_samples;
+  size_t cloud_capacity;
+  uint64_t cloud_next;
+  uint32_t cloud_request;
+  char run[64];     /* The agent run being followed, or "".         */
+  bool run_pending; /* It was reported as awaiting approval.        */
+  bool submit_due;  /* The agent was busy winding down; try again.  */
   uint64_t submit_until;
   uint64_t poll_at;
   uint64_t last_turn_ms;
@@ -459,6 +467,8 @@ static void ny_voice_turn_speak(enum ny_voice_speech_e speech);
 static void ny_voice_turn_speak_cancel(void);
 static void ny_voice_turn_asr_start(struct ny_voice_turn_s *turn, bool attach);
 static void ny_voice_turn_asr_poll(struct ny_voice_turn_s *turn);
+static void ny_voice_turn_cloud_poll(struct ny_voice_turn_s *turn);
+static void ny_voice_turn_cloud_end(struct ny_voice_turn_s *turn);
 static void ny_voice_turn_submit(struct ny_voice_turn_s *turn);
 static void ny_voice_turn_agent_poll(struct ny_voice_turn_s *turn);
 static void ny_voice_turn_act(struct ny_voice_turn_s *turn,
@@ -2452,6 +2462,39 @@ static void ny_voice_turn_asr_start(struct ny_voice_turn_s *turn, bool attach)
       cued = true;
     }
 
+  turn->cloud_asr = ny_mimo_asr_enabled();
+  if (turn->cloud_asr)
+    {
+      nxmutex_lock(&g_voice.lock);
+      bool capturing = g_voice.capture_open;
+      nxmutex_unlock(&g_voice.lock);
+      max_samples = max_samples > NY_VOICE_CAPTURE_RATE * 30
+                        ? NY_VOICE_CAPTURE_RATE * 30
+                        : max_samples;
+      turn->cloud_pcm =
+          capturing ? malloc(max_samples * sizeof(int16_t)) : NULL;
+      ret = !capturing ? -ENODEV : !turn->cloud_pcm ? -ENOMEM : 0;
+      turn->cloud_capacity = max_samples;
+      turn->cloud_samples = 0;
+      turn->cloud_request = 0;
+      turn->cloud_heard = false;
+      nxmutex_lock(&g_voice.ring_lock);
+      turn->asr_start = g_voice.ring.total;
+      turn->cloud_next = turn->asr_start;
+      nxmutex_unlock(&g_voice.ring_lock);
+      turn->asr_open = ret == 0;
+      turn->asr_silent = false;
+      ny_voice_model_set(
+          &g_voice.asr, ret == 0 ? NY_VOICE_MODEL_READY : NY_VOICE_MODEL_ERROR,
+          ret);
+      if (ret < 0)
+        ny_voice_error(ret, "cloud recognition capture did not start");
+      ny_voice_post(ret == 0 ? NY_VOICE_EV_ASR_STARTED
+                             : NY_VOICE_EV_ASR_FAILED,
+                    ret == 0, false, 0);
+      return;
+    }
+
   ret = streaming ? ny_voice_port_open(&turn->asr) : -ENOTCONN;
   if (ret == 0 && (ny_compute_capabilities() & NY_COMPUTE_CAP_ASR) == 0)
     {
@@ -2537,11 +2580,95 @@ static void ny_voice_turn_asr_start(struct ny_voice_turn_s *turn, bool attach)
                 ret == 0, false, 0);
 }
 
+/****************************************************************************
+ * Name: ny_voice_turn_cloud_poll
+ ****************************************************************************/
+
+static void ny_voice_turn_cloud_poll(struct ny_voice_turn_s *turn)
+{
+  if (!turn->asr_open)
+    return;
+  if (turn->cloud_pcm)
+    {
+      bool gap;
+      nxmutex_lock(&g_voice.ring_lock);
+      turn->cloud_samples +=
+          ny_voice_ring_read(&g_voice.ring, &turn->cloud_next,
+                             turn->cloud_pcm + turn->cloud_samples,
+                             turn->cloud_capacity - turn->cloud_samples, &gap);
+      nxmutex_unlock(&g_voice.ring_lock);
+      if (gap)
+        {
+          free(turn->cloud_pcm);
+          turn->cloud_pcm = NULL;
+          turn->asr_open = false;
+          ny_voice_error(-EOVERFLOW, "cloud recognition capture overrun");
+          ny_voice_post(NY_VOICE_EV_ASR_FINISHED, false, true, 0);
+        }
+      else if (turn->cloud_samples == turn->cloud_capacity)
+        ny_voice_turn_cloud_end(turn);
+      return;
+    }
+  char text[NY_VOICE_TRANSCRIPT_MAX];
+  int ret = ny_voice_cloud_poll(turn->cloud_request, text, sizeof(text));
+  if (ret == 0)
+    return;
+  turn->asr_open = false;
+  if (ret > 0)
+    {
+      nxmutex_lock(&g_voice.lock);
+      snprintf(g_voice.transcript, sizeof(g_voice.transcript), "%s", text);
+      g_voice.transcript_ms = ny_voice_now_ms();
+      nxmutex_unlock(&g_voice.lock);
+    }
+  else
+    ny_voice_error(ret, "cloud recognition failed");
+  ny_voice_model_set(&g_voice.asr,
+                     ret > 0 ? NY_VOICE_MODEL_READY : NY_VOICE_MODEL_ERROR,
+                     ret > 0 ? 0 : ret);
+  ny_voice_post(NY_VOICE_EV_ASR_FINISHED, ret > 0,
+                ret < 0 || text[strspn(text, " ")] == '\0', 0);
+}
+
+/****************************************************************************
+ * Name: ny_voice_turn_cloud_end
+ ****************************************************************************/
+
+static void ny_voice_turn_cloud_end(struct ny_voice_turn_s *turn)
+{
+  if (!turn->cloud_pcm || !turn->asr_open)
+    return;
+  if (!turn->cloud_heard)
+    {
+      free(turn->cloud_pcm);
+      turn->cloud_pcm = NULL;
+      turn->asr_open = false;
+      ny_voice_post(NY_VOICE_EV_ASR_FINISHED, true, true, 0);
+      return;
+    }
+  int ret = ny_voice_cloud_submit(turn->cloud_pcm, turn->cloud_samples,
+                                  &turn->cloud_request);
+  if (ret < 0)
+    {
+      free(turn->cloud_pcm);
+      turn->asr_open = false;
+      ny_voice_error(ret, "cloud recognition submission failed");
+      ny_voice_post(NY_VOICE_EV_ASR_FINISHED, false, true, 0);
+    }
+  turn->cloud_pcm = NULL;
+}
+
 static void ny_voice_turn_asr_poll(struct ny_voice_turn_s *turn)
 {
   struct ny_voice_wire_frame_s frame;
   struct ny_voice_wire_event_s event;
   int ret;
+
+  if (turn->cloud_asr)
+    {
+      ny_voice_turn_cloud_poll(turn);
+      return;
+    }
 
   while (turn->asr_open)
     {
@@ -2789,6 +2916,12 @@ static void ny_voice_turn_act(struct ny_voice_turn_s *turn,
 
           case NY_VOICE_ACT_ASR_END:
             {
+              if (turn->cloud_asr)
+                {
+                  ny_voice_turn_cloud_poll(turn);
+                  ny_voice_turn_cloud_end(turn);
+                  break;
+                }
               uint64_t end;
               int ret;
 
@@ -2808,6 +2941,14 @@ static void ny_voice_turn_act(struct ny_voice_turn_s *turn,
             break;
 
           case NY_VOICE_ACT_ASR_CANCEL:
+            if (turn->cloud_asr)
+              {
+                ny_voice_cloud_cancel(turn->cloud_request);
+                free(turn->cloud_pcm);
+                turn->cloud_pcm = NULL;
+                turn->asr_open = false;
+                break;
+              }
             if (turn->asr_open)
               {
                 /* Its FINISH still comes, and is nobody's news. */
@@ -3081,7 +3222,8 @@ static int ny_voice_task(int argc, char **argv)
             }
         }
 
-      if (event.type == NY_VOICE_EV_LINK_LOST && turn.asr_open)
+      if (event.type == NY_VOICE_EV_LINK_LOST && turn.asr_open &&
+          !turn.cloud_asr)
         {
           turn.asr_open = false;
           turn.asr.wire.request_id = 0;
@@ -3090,6 +3232,7 @@ static int ny_voice_task(int argc, char **argv)
       nxmutex_lock(&g_voice.lock);
       turn.sm.config.max_listen_ms = g_voice.settings.max_listen_ms;
       nxmutex_unlock(&g_voice.lock);
+      turn.sm.config.asr_finish_ms = turn.cloud_asr ? 60000 : 6000;
 
       ny_voice_sm_step(&turn.sm, &event, &result);
 
@@ -3136,7 +3279,9 @@ static int ny_voice_task(int argc, char **argv)
       pthread_join(eyes, NULL);
     }
 
-  if (turn.asr_open)
+  ny_voice_cloud_cancel(turn.cloud_request);
+  free(turn.cloud_pcm);
+  if (turn.asr_open && !turn.cloud_asr)
     {
       ny_voice_wire_cancel(&turn.asr.wire, NYAMP_SERVICE_ASR);
     }
@@ -3178,6 +3323,9 @@ static cJSON *ny_voice_status(void)
     {
       return NULL;
     }
+
+  cJSON_AddStringToObject(root, "asrBackend",
+                          ny_mimo_asr_enabled() ? "mimo" : "local");
 
   nxmutex_lock(&g_voice.ring_lock);
   level = g_voice.level;
