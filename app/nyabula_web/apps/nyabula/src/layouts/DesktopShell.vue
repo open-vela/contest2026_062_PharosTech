@@ -10,23 +10,17 @@ import ConnectionBanner from '../components/ConnectionBanner.vue';
 import PanelUpdateBanner from '../components/PanelUpdateBanner.vue';
 import CommandPalette from '../components/CommandPalette.vue';
 import DeviceSwitcher from '../components/DeviceSwitcher.vue';
-import { contextPresence } from '../composables/contextPresence';
+import { useContextColumn } from '../composables/useContextColumn';
 
 const shell = useShell();
 const RAIL_KEY = 'nyabula.railWide';
-const CTX_KEY = 'nyabula.contextOpen';
 const railWide = ref(localStorage.getItem(RAIL_KEY) === '1');
-const contextOpen = ref(localStorage.getItem(CTX_KEY) !== '0');
 const palette = ref(false);
 provide('shellHasContext', true);
 
 function toggleRail() {
   railWide.value = !railWide.value;
   localStorage.setItem(RAIL_KEY, railWide.value ? '1' : '0');
-}
-function toggleContext() {
-  contextOpen.value = !contextOpen.value;
-  localStorage.setItem(CTX_KEY, contextOpen.value ? '1' : '0');
 }
 function onKey(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -40,8 +34,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 
 /* Column is only worth space when a page contributes to it. The target
  * element stays mounted (hidden) so slots can still find it. */
-const hasContext = computed(() => contextPresence.count > 0);
-const showContext = computed(() => shell.inDevice.value && contextOpen.value && hasContext.value);
+const ctx = useContextColumn(shell.inDevice);
+const contextOpen = ctx.open;
+const hasContext = ctx.hasContext;
+const toggleContext = ctx.toggle;
+const showContext = computed(() => ctx.show.value);
 </script>
 
 <template>
