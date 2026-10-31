@@ -196,23 +196,25 @@
  * synthesizes the next while this one plays.
  */
 
-#define NY_VOICE_TTS_WINDOW     22050U
-#define NY_VOICE_OUT_CHUNK      8192U
+#define NY_VOICE_TTS_WINDOW      22050U
+#define NY_VOICE_OUT_CHUNK       8192U
+#define NY_VOICE_PLAY_RESERVE_MS 100U
+#define NY_VOICE_PLAY_POLL_MS    50
 
-#define NY_VOICE_SENTENCE_MAX   400U
-#define NY_VOICE_TEXT_MAX       2048U
-#define NY_VOICE_REPLY_MAX      8192U
-#define NY_VOICE_TRANSCRIPT_MAX 512U
-#define NY_VOICE_ERROR_MAX      96U
-#define NY_VOICE_EVENTS         32U
+#define NY_VOICE_SENTENCE_MAX    400U
+#define NY_VOICE_TEXT_MAX        2048U
+#define NY_VOICE_REPLY_MAX       8192U
+#define NY_VOICE_TRANSCRIPT_MAX  512U
+#define NY_VOICE_ERROR_MAX       96U
+#define NY_VOICE_EVENTS          32U
 
-#define NY_VOICE_LOAD_MS        120000
-#define NY_VOICE_TTS_LOAD_MS    300000
-#define NY_VOICE_RETRY_MS       5000U
-#define NY_VOICE_AGENT_POLL_MS  300U
-#define NY_VOICE_AGENT_RETRY_MS 10000U
-#define NY_VOICE_SESSION_MS     300000U
-#define NY_VOICE_CLAIM_MS       1500U
+#define NY_VOICE_LOAD_MS         120000
+#define NY_VOICE_TTS_LOAD_MS     300000
+#define NY_VOICE_RETRY_MS        5000U
+#define NY_VOICE_AGENT_POLL_MS   300U
+#define NY_VOICE_AGENT_RETRY_MS  10000U
+#define NY_VOICE_SESSION_MS      300000U
+#define NY_VOICE_CLAIM_MS        1500U
 
 #define NY_VOICE_CUE_NOT_HEARD                   \
   "\xe6\xb2\xa1\xe5\x90\xac\xe6\xb8\x85\xef\xbc" \
@@ -268,6 +270,7 @@ struct ny_voice_model_s
 struct ny_voice_port_s
 {
   struct ny_compute_port_s *port;
+  struct ny_voice_audio_s *playback; /* Player-owned while speech is active. */
   struct ny_voice_wire_s wire;
   struct ny_voice_model_s *loading; /* Where pull progress goes. */
   bool player;                      /* The player's: a cancelled job ends */
@@ -625,9 +628,52 @@ static ssize_t ny_voice_io_recv(void *arg, uint8_t *wire, size_t capacity,
 {
   struct ny_voice_port_s *port = arg;
 
-  return port->port == NULL
-             ? -ENOTCONN
-             : ny_compute_port_recv(port->port, wire, capacity, timeout_ms);
+  static const uint8_t silence[NY_VOICE_OUT_CHUNK];
+  ssize_t received;
+
+  if (port->port == NULL)
+    {
+      return -ENOTCONN;
+    }
+
+  if (port->playback != NULL && timeout_ms > 0)
+    {
+      /* Consume ready PCM before adding silence.  The same receive hook
+       * serves synthesis ACKs, model loading and PCM-window waits: none
+       * may leave the running codec without data while the daemon works.
+       */
+
+      received = ny_compute_port_recv(port->port, wire, capacity, 0);
+      if (received != 0)
+        {
+          return received;
+        }
+
+      while (ny_voice_audio_queued(port->playback) <
+             NY_VOICE_OUT_RATE * NY_VOICE_PLAY_RESERVE_MS / 1000 *
+                 NY_VOICE_OUT_CHANNELS * sizeof(int16_t))
+        {
+          ssize_t written;
+
+          /* Submit whole blocks: a partial software block does not feed
+           * DMA.  Keep more than one poll interval ahead of the device.
+           */
+
+          written = ny_voice_audio_write(port->playback, silence,
+                                         sizeof(silence), 0);
+          if (written != (ssize_t)sizeof(silence))
+            {
+              return written < 0 ? written : -EIO;
+            }
+        }
+
+      if (timeout_ms > NY_VOICE_PLAY_POLL_MS)
+        {
+          timeout_ms = NY_VOICE_PLAY_POLL_MS;
+        }
+    }
+
+  return ny_compute_port_recv(port->port, wire, capacity, timeout_ms);
 }
 
 static uint64_t ny_voice_io_request_id(void *arg)
@@ -1714,19 +1760,6 @@ static int ny_voice_play_speech(struct ny_voice_port_s *port,
 
           if (ret == 0)
             {
-              /* Synthesis is slower than playback right now.  Silence keeps
-               * the codec fed: a stream that runs dry would have to be
-               * started over, WAV header and all.
-               */
-
-              if (ny_voice_audio_queued(audio) <
-                  NY_VOICE_OUT_RATE / 10 * NY_VOICE_OUT_CHANNELS * 2)
-                {
-                  ny_voice_audio_write(
-                      audio, silence,
-                      NY_VOICE_OUT_RATE / 20 * NY_VOICE_OUT_CHANNELS * 2, 0);
-                }
-
               continue;
             }
 
@@ -1957,7 +1990,9 @@ static void *ny_voice_play_thread(void *arg)
             }
           else
             {
+              port.playback = audio;
               ret = ny_voice_play_speech(&port, audio, resample, text);
+              port.playback = NULL;
               if (ret < 0 && ret != -ECANCELED && cue != NY_VOICE_CUE_NONE)
                 {
                   ret = ny_voice_play_cue(audio, resample, name);
