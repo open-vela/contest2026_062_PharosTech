@@ -35,6 +35,33 @@ QuickJS/WAMR、Core与Eye。它不启用SD host；LCD与SD共用FSPI1引脚，
 /data/nyabula/trusted-keys.json。先提供签名包与trust store，再运行插件。
 程序不会自动绕过缺失的授权或签名。打包工具在tools/nyabula_plugin。
 
+## 网页面板服务的自动恢复
+
+产品启动仍使用 `nyabula_web &`。监听循环遇到异常后由服务自身重建监听，
+无需额外常驻进程，也不重启系统。现有连接会断开，面板按原流程自动重连。
+
+- accept 的连接中止或临时资源不足：100ms 起退避，最多 1 秒，继续使用监听器。
+- 监听器失效或重建失败：1、2、4、8、16、30 秒退避，后续最多每 30 秒尝试一次；
+  一次服务稳定运行至少 60 秒后，下次从 1 秒开始。
+- `nycore web-stop` 是主动停服：包括退避等待期间都有效，不会自动拉回。
+  使用 `nyabula_web &` 再次启动即可；重复启动会被拒绝。
+- 恢复复用已有凭据和认证代次，不重新生成 token，不清空记录，也不停止音频和产品任务。
+- 显式指定端口、token 文件和 Origin 的运维启动仍保持单次运行，不自动重试。
+
+`dmesg` 中的 `nyabula_web:` 日志记录失败阶段、errno、监听事件和下次等待时间，
+不记录凭据。凭据加载错误会直接退出，避免通过重试或重新生成凭据掩盖配置问题。
+HTTP 和 WebSocket 发送均抑制 SIGPIPE，客户端断开只结束对应请求。
+
+这里恢复的是监听循环的可报告错误；强制杀死整个服务任务或内存破坏不属于这个循环的恢复范围。
+
+在指定构建机运行故障回归：
+
+```sh
+python3 tools/nyabula_core/tests/web_recovery_test.py app/nyabula_core
+python3 tools/nyabula_core/tests/http_disconnect_test.py app/nyabula_core
+python3 tools/nyabula_core/tests/product_web_sim.py /path/to/nuttx --output /tmp/web-sim-evidence
+```
+
 ## 插件接口
 
     import * as ui from "@nyabula/ui";
