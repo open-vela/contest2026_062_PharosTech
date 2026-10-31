@@ -478,7 +478,7 @@ static void ny_voice_sm_idle(struct ny_voice_sm_s *sm,
 void ny_voice_sm_defaults(struct ny_voice_sm_config_s *config)
 {
   config->max_listen_ms = 8000;
-  config->trailing_ms = 1600;
+  config->trailing_ms = 1000;
   config->no_speech_ms = 5000;
   config->asr_start_ms = 90000;
   config->asr_finish_ms = 6000;
