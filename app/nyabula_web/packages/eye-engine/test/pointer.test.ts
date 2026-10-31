@@ -58,3 +58,20 @@ describe('drag to set gaze', () => {
     expect(handlers.size).toBe(0);
   });
 });
+
+it('tracks hover only in toy mode, releases on leave, and restores drag-only mode', () => {
+  const { engine, send, events } = setup();
+  engine.setToyMode(true);
+  send('pointermove');
+  expect(events).toEqual([[1, -0.92, 'move']]);
+  send('pointermove', { pointerType: 'touch' });
+  expect(events).toHaveLength(1);
+  send('pointerleave');
+  expect(events[1]).toEqual([1, -0.92, 'up']);
+  engine.setToyMode(false);
+  send('pointermove');
+  expect(events).toHaveLength(2);
+  send('pointerdown');
+  expect(events[2]).toEqual([1, -0.92, 'down']);
+  engine.destroy();
+});
