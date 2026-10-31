@@ -49,6 +49,15 @@ config NYABULA_CORE_EYE
 		ui.notify displays a caption and ui.eye submits the Eye command
 		contract. Requires an attached LVGL display owner.
 
+config NYABULA_CORE_AUTHOR
+	bool "On-device agent plugin authoring"
+	default y
+	depends on NYABULA_CORE_AGENT && NYABULA_CORE_STATE_SQLITE && NYABULA_CORE_REQUIRE_SIGNATURE
+	---help---
+		Allow owner-enabled sandboxed plugin generation, device signing,
+		startup verification and transactional private-data recovery.
+		The owner must enable the authoring policy at runtime.
+
 config NYABULA_CORE_WEATHER
 	bool "Core QWeather service"
 	default y if NYABULA_CORE_AGENT
