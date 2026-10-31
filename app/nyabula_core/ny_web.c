@@ -25,12 +25,12 @@
  */
 
 #include "ny_web.h"
+#include "ny_product.h"
 #include "ny_ui.h"
 #include "ny_web_auth.h"
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
 #include "ny_access.h"
 #endif
-#include "ny_product.h"
 #include "ny_websocket.h"
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -98,6 +98,11 @@ struct nyabula_eye_ws_session_s
   char message[NYABULA_WS_MESSAGE_MAX + 1];
   unsigned char frame[NYABULA_WS_MESSAGE_MAX];
   char output[NYABULA_WS_MESSAGE_MAX + 1];
+  ny_web_relay_send_t relay_send;
+  void *relay_context;
+  uint64_t started;
+  uint64_t last_input;
+  uint64_t next_state;
   bool authenticated;
   bool pair_auth;
   uint32_t auth_generation;
@@ -177,7 +182,9 @@ static int nyabula_eye_ws_emit(int fd, struct nyabula_eye_ws_session_s *s,
   cJSON_AddItemToObject(root, "data", data);
   if (cJSON_PrintPreallocated(root, s->output, sizeof(s->output), false))
     {
-      ret = nyabula_eye_ws_send(fd, 1, s->output, strlen(s->output));
+      ret = s->relay_send != NULL
+                ? s->relay_send(s->relay_context, s->output, strlen(s->output))
+                : nyabula_eye_ws_send(fd, 1, s->output, strlen(s->output));
     }
 
   cJSON_Delete(root);
@@ -538,7 +545,8 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
 
   const struct ny_product_caller_s caller = { s->member_id[0] ? s->member_id
                                                               : "owner",
-                                              s->member_role, true };
+                                              s->member_role,
+                                              s->relay_send == NULL };
   result = NULL;
   ret = strcmp(topic, "eyes.expression") == 0
             ? -ENOSYS
@@ -842,31 +850,7 @@ static int nyabula_eye_ws_client(int fd, const char *token, const char *origin)
       s->used = 0;
     }
 
-  if (s->authenticated)
-    {
-      bool last;
-      nxmutex_lock(&g_web_lock);
-      last = --g_web_panels == 0;
-      nxmutex_unlock(&g_web_lock);
-
-      /* What the panel set holds for as long as a panel is open, and no
-       * longer.  Without this a scene started from a page that was then
-       * closed, or lost its connection, would sit on the eyes until the
-       * next restart with nobody left to dismiss it.
-       */
-
-      if (last)
-        {
-          static const char release[] =
-              "{\"action\":\"core.release\",\"id\":\"panel-closed\","
-              "\"source\":\"" NYABULA_WS_SOURCE "\",\"priority\":40,"
-              "\"lease_ms\":0,\"params\":{\"domain\":\"all\"}}";
-          nyabula_eye_service_submit(NYABULA_WS_SOURCE, release,
-                                     sizeof(release) - 1);
-        }
-    }
-
-  free(s);
+  ny_web_relay_close(s);
   return ret;
 }
 
@@ -895,6 +879,170 @@ static int ny_web_ui_changed(int fd, struct nyabula_eye_ws_session_s *s)
   if (ret == 0)
     {
       s->ui_revision = revision;
+    }
+
+  return ret;
+}
+
+/****************************************************************************
+ * Name: ny_web_relay_open
+ ****************************************************************************/
+
+void *ny_web_relay_open(ny_web_relay_send_t send, void *context)
+{
+  struct nyabula_eye_ws_session_s *s;
+  if (send == NULL)
+    {
+      return NULL;
+    }
+
+  s = calloc(1, sizeof(*s));
+  if (s != NULL)
+    {
+      s->relay_send = send;
+      s->relay_context = context;
+      s->started = nyabula_eye_ws_now();
+      s->last_input = s->started;
+    }
+
+  return s;
+}
+
+/****************************************************************************
+ * Name: ny_web_relay_close
+ ****************************************************************************/
+
+void ny_web_relay_close(void *session)
+{
+  struct nyabula_eye_ws_session_s *s = session;
+  if (s == NULL)
+    {
+      return;
+    }
+
+  if (s->authenticated)
+    {
+      bool last;
+      nxmutex_lock(&g_web_lock);
+      last = --g_web_panels == 0;
+      nxmutex_unlock(&g_web_lock);
+
+      /* What the panel set holds for as long as a panel is open, and no
+       * longer.  Without this a scene started from a page that was then
+       * closed, or lost its connection, would sit on the eyes until the
+       * next restart with nobody left to dismiss it.
+       */
+
+      if (last)
+        {
+          static const char release[] =
+              "{\"action\":\"core.release\",\"id\":\"panel-closed\","
+              "\"source\":\"" NYABULA_WS_SOURCE "\",\"priority\":40,"
+              "\"lease_ms\":0,\"params\":{\"domain\":\"all\"}}";
+          nyabula_eye_service_submit(NYABULA_WS_SOURCE, release,
+                                     sizeof(release) - 1);
+        }
+    }
+
+  free(s);
+}
+
+/****************************************************************************
+ * Name: ny_web_relay_receive
+ ****************************************************************************/
+
+int ny_web_relay_receive(void *session, const char *data, size_t length)
+{
+  struct nyabula_eye_ws_session_s *s = session;
+  char token[NYABULA_WS_TOKEN_SIZE + 1];
+  uint64_t now = nyabula_eye_ws_now();
+  int ret;
+  if (s == NULL || length == 0 || length > NYABULA_WS_MESSAGE_MAX ||
+      memchr(data, 0, length) != NULL ||
+      !nyabula_eye_ws_utf8((const unsigned char *)data, length) ||
+      nyabula_eye_service_check_depth(data, length) < 0)
+    {
+      return -EINVAL;
+    }
+
+  if (s->authenticated && !ny_web_session_current(s))
+    {
+      return -EACCES;
+    }
+
+  if (now - s->window >= 1000)
+    {
+      s->requests = 0;
+      s->window = now;
+    }
+
+  if (++s->requests > NYABULA_WS_MAX_REQUESTS)
+    {
+      return -EBUSY;
+    }
+
+  nxmutex_lock(&g_web_lock);
+  memcpy(token, g_web_product_token, sizeof(token));
+  nxmutex_unlock(&g_web_lock);
+  if (token[0] == 0)
+    {
+      return -ENODEV;
+    }
+
+  memcpy(s->message, data, length);
+  s->message[length] = 0;
+  s->last_input = now;
+  ret = nyabula_eye_ws_request(-1, s, token);
+  memset(token, 0, sizeof(token));
+  memset(s->message, 0, length);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: ny_web_relay_tick
+ ****************************************************************************/
+
+int ny_web_relay_tick(void *session)
+{
+  struct nyabula_eye_ws_session_s *s = session;
+  struct nyabula_core_snapshot_s snapshot;
+  uint64_t now = nyabula_eye_ws_now();
+  int ret;
+  if ((s->authenticated && !ny_web_session_current(s)) ||
+      (!s->authenticated && now - s->started > NYABULA_WS_AUTH_MS) ||
+      now - s->last_input > NYABULA_WS_IDLE_MS)
+    {
+      return -ETIMEDOUT;
+    }
+
+  if (!s->authenticated || now < s->next_state)
+    {
+      return 0;
+    }
+
+  s->next_state = now + NYABULA_WS_STATE_MS;
+  ret = ny_web_ui_changed(-1, s);
+  if (ret < 0)
+    {
+      return ret;
+    }
+  if (nyabula_eye_service_snapshot(&snapshot) < 0)
+    {
+      s->published = false;
+      return 0;
+    }
+
+  if (s->published && s->revision == snapshot.revision)
+    {
+      return 0;
+    }
+
+  ret = nyabula_eye_ws_emit(-1, s, "event", NULL, "eye.state",
+                            nyabula_eye_wire_snapshot(&snapshot));
+  if (ret == 0)
+    {
+      s->revision = snapshot.revision;
+      s->published = true;
     }
 
   return ret;
