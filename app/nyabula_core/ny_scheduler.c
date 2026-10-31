@@ -73,6 +73,7 @@ struct ny_scheduler_slot_s
   bool stopping;
   bool task_stopped;
   bool accept_completions;
+  bool dispatching;
   uint32_t generation;
   size_t completion_head;
   size_t completion_count;
@@ -83,6 +84,7 @@ struct ny_scheduler_slot_s
 #endif
   int start_result;
   int exit_result;
+  char last_error_text[256];
   enum ny_plugin_state_e state;
   struct ny_plugin_config_s config;
   char id[NY_PLUGIN_ID_SIZE];
@@ -409,6 +411,8 @@ static int ny_scheduler_worker(int argc, char *argv[])
 
   nxmutex_lock(&g_scheduler_lock);
   slot->start_result = ret;
+  memcpy(slot->last_error_text, slot->plugin.last_error_text,
+         sizeof(slot->last_error_text));
   slot->state = slot->config.runtime == NY_PLUGIN_RUNTIME_WAMR
                     ? ret < 0 ? NY_PLUGIN_FAILED : NY_PLUGIN_RUNNING
                     : slot->plugin.state;
@@ -464,12 +468,17 @@ static int ny_scheduler_worker(int argc, char *argv[])
       event = slot->events[slot->head];
       slot->head = (slot->head + 1) % CONFIG_NYABULA_CORE_EVENT_DEPTH;
       slot->count--;
+      slot->dispatching = true;
       nxmutex_unlock(&g_scheduler_lock);
 
       ret = slot->config.runtime == NY_PLUGIN_RUNTIME_WAMR
                 ? ny_wasm_dispatch(&slot->wasm, event.payload)
                 : ny_plugin_dispatch(&slot->plugin, event.payload);
       nxmutex_lock(&g_scheduler_lock);
+      slot->dispatching = false;
+      slot->exit_result = ret;
+      memcpy(slot->last_error_text, slot->plugin.last_error_text,
+             sizeof(slot->last_error_text));
       slot->state = slot->config.runtime == NY_PLUGIN_RUNTIME_WAMR
                         ? ret < 0 ? NY_PLUGIN_FAILED : NY_PLUGIN_RUNNING
                         : slot->plugin.state;
@@ -484,6 +493,8 @@ static int ny_scheduler_worker(int argc, char *argv[])
     }
 
   slot->exit_result = ret;
+  memcpy(slot->last_error_text, slot->plugin.last_error_text,
+         sizeof(slot->last_error_text));
   slot->state = ret < 0 ? NY_PLUGIN_FAILED : NY_PLUGIN_STOPPED;
   nxmutex_unlock(&g_scheduler_lock);
 
@@ -1049,4 +1060,38 @@ void ny_scheduler_list(void)
     }
 
   nxmutex_unlock(&g_scheduler_lock);
+}
+
+/****************************************************************************
+ * Name: ny_scheduler_status
+ ****************************************************************************/
+
+int ny_scheduler_status(const char *id, struct ny_scheduler_status_s *status)
+{
+  struct ny_scheduler_slot_s *slot;
+  if (id == NULL || status == NULL)
+    {
+      return -EINVAL;
+    }
+
+  memset(status, 0, sizeof(*status));
+  strlcpy(status->state, "stopped", sizeof(status->state));
+  nxmutex_lock(&g_scheduler_lock);
+  slot = ny_scheduler_find_locked(id);
+  if (slot != NULL)
+    {
+      strlcpy(status->state, ny_scheduler_state_name(slot->state),
+              sizeof(status->state));
+      strlcpy(status->version, slot->config.version, sizeof(status->version));
+      status->generation = slot->generation;
+      status->permissions = slot->config.permissions;
+      status->queued = slot->count;
+      status->dispatching = slot->dispatching;
+      status->last_error = slot->exit_result;
+      snprintf(status->last_error_text, sizeof(status->last_error_text), "%s",
+               slot->last_error_text);
+    }
+
+  nxmutex_unlock(&g_scheduler_lock);
+  return slot != NULL ? 0 : -ENOENT;
 }
