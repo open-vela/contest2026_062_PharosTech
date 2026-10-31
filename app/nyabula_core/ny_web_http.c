@@ -36,6 +36,7 @@
 #include "ny_web.h"
 #include "ny_web_mirror.h"
 #include "ny_web_models.h"
+#include "ny_web_nas.h"
 #include "ny_web_ota.h"
 #include "ny_websocket.h"
 #include <errno.h>
@@ -55,10 +56,10 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NY_HTTP_ROOT       CONFIG_NYABULA_CORE_WEB_ROOT
-#define NY_HTTP_PATH_MAX   192
-#define NY_HTTP_CHUNK      8192
-#define NY_HTTP_SEND_MS    15000
+#define NY_HTTP_ROOT     CONFIG_NYABULA_CORE_WEB_ROOT
+#define NY_HTTP_PATH_MAX 192
+#define NY_HTTP_CHUNK    8192
+#define NY_HTTP_SEND_MS  15000
 
 /****************************************************************************
  * Private Types
@@ -85,8 +86,7 @@ static bool ny_http_is_probe(const char *path);
  * Private Data
  ****************************************************************************/
 
-static const struct ny_http_type_s g_http_types[] =
-{
+static const struct ny_http_type_s g_http_types[] = {
   { ".html", "text/html; charset=utf-8" },
   { ".js", "text/javascript; charset=utf-8" },
   { ".css", "text/css; charset=utf-8" },
@@ -103,11 +103,11 @@ static const struct ny_http_type_s g_http_types[] =
  * internet" into a prompt to open it.
  */
 
-static const char *const g_http_probes[] =
-{
-  "/generate_204", "/gen_204", "/hotspot-detect.html", "/ncsi.txt",
-  "/connecttest.txt", "/canonical.html", "/success.txt",
-  "/library/test/success.html",
+static const char *const g_http_probes[] = {
+  "/generate_204",        "/gen_204",
+  "/hotspot-detect.html", "/ncsi.txt",
+  "/connecttest.txt",     "/canonical.html",
+  "/success.txt",         "/library/test/success.html",
 };
 
 /****************************************************************************
@@ -234,8 +234,7 @@ static bool ny_http_accepts_gzip(const char *head)
 
 static bool ny_http_is_probe(const char *path)
 {
-  for (size_t i = 0; i < sizeof(g_http_probes) / sizeof(g_http_probes[0]);
-       i++)
+  for (size_t i = 0; i < sizeof(g_http_probes) / sizeof(g_http_probes[0]); i++)
     {
       if (strcmp(path, g_http_probes[i]) == 0)
         {
@@ -367,6 +366,10 @@ int ny_web_http_serve(int fd, const char *head, const void *body,
    * and checks the credentials itself.
    */
 
+#ifdef CONFIG_NYABULA_CORE_NAS
+  if (ny_web_nas_claims(head))
+    return ny_web_nas_serve(fd, head, body, body_length, pair_token);
+#endif
   if (ny_web_mirror_claims(head))
     {
       return ny_web_mirror_serve(fd, head, pair_token);
