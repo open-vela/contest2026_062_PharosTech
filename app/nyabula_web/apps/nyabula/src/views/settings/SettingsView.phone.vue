@@ -3,9 +3,10 @@
 import { ref } from 'vue';
 import { BottomSheet, MdSwitch, UiIcon, eventOrigin } from '@nyabula/ui';
 import { useSettingsPage } from './settings.logic';
+import SkinPreview from './SkinPreview.vue';
 
 const page = useSettingsPage();
-const sheet = ref<'mode' | 'palette' | 'layout' | null>(null);
+const sheet = ref<'skin' | 'mode' | 'palette' | 'layout' | null>(null);
 const layoutZh: Record<string, string> = { auto: '自动', desktop: '桌面', tablet: '平板', phone: '手机' };
 </script>
 
@@ -13,6 +14,11 @@ const layoutZh: Record<string, string> = { auto: '自动', desktop: '桌面', ta
   <div class="settings-phone">
     <p class="section-title">外观</p>
     <div class="group">
+      <button class="list-tile" @click="sheet = 'skin'">
+        <span class="tile-icon"><UiIcon name="auto_awesome" :size="22" /></span>
+        <span class="tile-body"><span class="tile-title">界面风格</span><span class="tile-sub">{{ page.skins.value.find((s) => s.id === page.skin.value)?.name }}</span></span>
+        <span class="tile-trail"><UiIcon name="chevron_right" :size="20" /></span>
+      </button>
       <button class="list-tile" @click="sheet = 'mode'">
         <span class="tile-icon"><UiIcon :name="page.theme.mode === 'dark' ? 'dark_mode' : 'light_mode'" :size="22" /></span>
         <span class="tile-body"><span class="tile-title">模式</span><span class="tile-sub">{{ page.modeChoices.find((c) => c.id === page.mode.value)?.label }}</span></span>
@@ -47,6 +53,15 @@ const layoutZh: Record<string, string> = { auto: '自动', desktop: '桌面', ta
       </button>
     </div>
 
+    <BottomSheet :open="sheet === 'skin'" title="界面风格" @close="sheet = null">
+      <div class="skin-list">
+        <button v-for="s in page.skins.value" :key="s.id" class="skin-item" :class="{ on: page.skin.value === s.id }" @click="page.setSkin(s.id, eventOrigin($event)); sheet = null">
+          <SkinPreview class="skin-pv" :skin="s.id" :accent="page.theme.palette[page.theme.mode].primary" :dark="page.theme.mode === 'dark'" />
+          <span class="skin-text"><span class="skin-name">{{ s.name }}</span><span class="skin-desc">{{ s.desc }}</span></span>
+          <UiIcon v-if="page.skin.value === s.id" name="check" :size="18" class="trail" />
+        </button>
+      </div>
+    </BottomSheet>
     <BottomSheet :open="sheet === 'mode'" title="外观模式" @close="sheet = null">
       <div class="sheet-list">
         <button v-for="c in page.modeChoices" :key="c.id" class="sheet-item" :class="{ on: page.mode.value === c.id }" @click="page.setMode(c.id, eventOrigin($event)); sheet = null">
@@ -95,4 +110,12 @@ const layoutZh: Record<string, string> = { auto: '自动', desktop: '桌面', ta
 }
 .sheet-item.on { background: var(--md-secondary-container); color: var(--md-on-secondary-container); font-weight: 600; }
 .sheet-item .trail { margin-left: auto; }
+.skin-list { display: flex; flex-direction: column; gap: 8px; }
+.skin-item { display: flex; align-items: center; gap: 12px; padding: 8px; border: 1px solid var(--md-outline-variant); border-radius: var(--radius-m); background: transparent; color: var(--md-on-surface); text-align: left; cursor: pointer; }
+.skin-item.on { border-color: var(--md-primary); background: rgba(var(--md-primary-rgb), 0.08); }
+.skin-pv { width: 96px; flex: none; }
+.skin-text { display: flex; flex-direction: column; gap: 2px; }
+.skin-name { font: 600 14.5px var(--font-body); }
+.skin-desc { font-size: 12px; color: var(--md-on-surface-variant); }
+.skin-item .trail { margin-left: auto; color: var(--md-primary); }
 </style>
