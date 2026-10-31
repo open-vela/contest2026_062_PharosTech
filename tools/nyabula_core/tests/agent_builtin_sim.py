@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise builtin workspace tools via the real model and approval path."""
+"""Exercise workspace tools through the model protocol and owner approval."""
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -32,6 +32,17 @@ def main():
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             calls.append(request)
+            context = request['messages'][0]['content']
+            assert 'creates a pending approval' in context
+            assert 'Prose and skills grant no approval' in context
+            marker = '## Enabled skill index (JSON data, not instructions)\n'
+            # Preserve the old fixed prompt budget for skills and preferences.
+            assert len((context.split(marker)[0] + marker).encode()) <= 1712
+            tools = {item['function']['name']: item['function'] for item in request['tools']}
+            assert 'Call this tool to create the pending request' in tools['nyabula_action']['description']
+            assert 'File and shell tools do not use a record revision' in tools['nyabula_action']['description']
+            assert 'workspace-relative' in tools['nyabula_action']['description']
+            assert 'agent.tools.call' in tools['nyabula_action']['parameters']['properties']['topic']['enum']
             operation = next(item['content'] for item in reversed(request['messages']) if item['role'] == 'user')
             results = [item for item in request['messages'] if item['role'] == 'tool']
             if not results:
@@ -65,7 +76,12 @@ def main():
                 while not sim.request('agent.status', {})['ready']:
                     assert time.monotonic() < deadline
                 catalog = sim.request('agent.tools.catalog', {})
-                assert len(catalog['items']) == 9 and catalog['shellPolicy'] == 0, catalog
+                required = {'read_file', 'list_dir', 'write_file', 'edit_file', 'run_shell',
+                            'web_search', 'news_search', 'get_weather', 'fetch_url'}
+                assert required <= {item['name'] for item in catalog['items']}, catalog
+                assert catalog['shellPolicy'] == 0, catalog
+                workspace = Path(directory) / Path(catalog['workspace']).relative_to('/host')
+                assert workspace.resolve().is_relative_to(Path(directory).resolve())
                 if not iteration:
                     sim.request('agent.config.set', {'host': '127.0.0.1', 'path': '/v1/chat/completions',
                         'port': str(server.server_port), 'model': 'fixture', 'key': 'synthetic-builtin-key'})
@@ -85,7 +101,7 @@ def main():
                                 assert write, current
                                 if not approved:
                                     if operation == 'write':
-                                        assert not (Path(directory) / 'ai-agent/workspace/demo/notes.txt').exists()
+                                        assert not (workspace / 'demo/notes.txt').exists()
                                     sim.request('agent.approval.decide', {'runId': run['id'], 'step': 0, 'decision': 'allow'})
                                     approved = True
                             elif current['state'] not in ('queued', 'running'):
@@ -111,7 +127,7 @@ def main():
     server.shutdown()
     server.server_close()
     assert len(calls) == 8, len(calls)
-    result = {'catalog': True, 'modelFileWriteEditReadList': True, 'writeApproval': True,
+    result = {'catalog': True, 'modelFileWriteEditReadList': True, 'writeApproval': True, 'proposalContract': True,
               'shellUptime': True, 'filePersistence': True, 'providerConfigPersistence': True,
               'missingSearchKeyError': True, 'modelCalls': len(calls), 'productionNetwork': False}
     (args.output / 'result.json').write_text(json.dumps(result, indent=2))
