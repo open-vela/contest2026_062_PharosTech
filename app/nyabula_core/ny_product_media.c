@@ -36,9 +36,36 @@
 #include <sys/param.h>
 #include <sys/stat.h>
 #include <system/nxplayer.h>
+#ifdef CONFIG_NYABULA_CORE_DSP
+#include "ny_dsp_player.h"
+#define ny_media_player_s         ny_dsp_player_s
+#define ny_media_player_create    ny_dsp_player_create
+#define ny_media_player_release   ny_dsp_player_release
+#define ny_media_player_setdevice ny_dsp_player_setdevice
+#define ny_media_player_setvolume ny_dsp_player_setvolume
+#define ny_media_player_playpcmfd ny_dsp_player_playpcmfd
+#define ny_media_player_getstate  ny_dsp_player_getstate
+#define ny_media_player_pause     ny_dsp_player_pause
+#define ny_media_player_resume    ny_dsp_player_resume
+#define ny_media_player_stop      ny_dsp_player_stop
+#else
+#define ny_media_player_s         nxplayer_s
+#define ny_media_player_create    nxplayer_create
+#define ny_media_player_release   nxplayer_release
+#define ny_media_player_setdevice nxplayer_setdevice
+#define ny_media_player_setvolume nxplayer_setvolume
+#define ny_media_player_playpcmfd nxplayer_playpcmfd
+#define ny_media_player_getstate  nxplayer_getstate
+#define ny_media_player_pause     nxplayer_pause
+#define ny_media_player_resume    nxplayer_resume
+#define ny_media_player_stop      nxplayer_stop
+#endif
 #include <unistd.h>
 #ifdef CONFIG_NYABULA_CORE_AUDIO
 #include "ny_product_audio.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_BT
+#include "ny_product_bt.h"
 #endif
 #ifdef CONFIG_NYABULA_CORE_VOICE
 #include "ny_voice.h"
@@ -53,15 +80,15 @@
 
 /* The alert chime.  The leading dot keeps it out of music.library. */
 
-#define NY_MEDIA_CHIME       ".nyabula-chime.wav"
-#define NY_MEDIA_CHIME_RATE  44100
-#define NY_MEDIA_CHIME_HZ    880
-#define NY_MEDIA_CHIME_BEEPS 3
-#define NY_MEDIA_CHIME_ON_MS 160
-#define NY_MEDIA_CHIME_OFF_MS 110
+#define NY_MEDIA_CHIME         ".nyabula-chime.wav"
+#define NY_MEDIA_CHIME_RATE    44100
+#define NY_MEDIA_CHIME_HZ      880
+#define NY_MEDIA_CHIME_BEEPS   3
+#define NY_MEDIA_CHIME_ON_MS   160
+#define NY_MEDIA_CHIME_OFF_MS  110
 #define NY_MEDIA_CHIME_FADE_MS 12
-#define NY_MEDIA_CHIME_LEVEL 14000
-#define NY_MEDIA_CHIME_GAP_MS 1200
+#define NY_MEDIA_CHIME_LEVEL   14000
+#define NY_MEDIA_CHIME_GAP_MS  1200
 
 struct ny_media_wave_s
 {
@@ -86,9 +113,13 @@ struct ny_media_job_s
   int error;
 };
 
+#ifdef CONFIG_NYABULA_CORE_BT
+static bool g_media_bt_claimed;
+#endif
+
 static mutex_t g_media_lock = NXMUTEX_INITIALIZER;
 static struct ny_media_job_s g_media_job;
-static struct nxplayer_s *g_media_player;
+static struct ny_media_player_s *g_media_player;
 static char g_media_track[NY_MEDIA_TRACK_MAX];
 static char g_media_device[128] = CONFIG_NYABULA_CORE_MEDIA_DEVICE;
 static int g_media_state = NXPLAYER_STATE_IDLE;
@@ -113,6 +144,7 @@ static bool g_media_sleep;
  */
 
 static bool g_media_claimed;
+
 #endif
 static uint64_t g_media_alert_next;
 
@@ -327,10 +359,13 @@ static cJSON *ny_media_status(void)
 
   /* What is on the speaker right now, whoever put it there. */
 
-  const char *source = g_media_state == NXPLAYER_STATE_IDLE ? NULL
-                       : !strcmp(g_media_track, NY_MEDIA_CHIME)
-                           ? "alert"
-                           : "flash";
+  const char *source = g_media_state == NXPLAYER_STATE_IDLE     ? NULL
+                       : !strcmp(g_media_track, NY_MEDIA_CHIME) ? "alert"
+                                                                : "flash";
+#ifdef CONFIG_NYABULA_CORE_BT
+  if (source == NULL)
+    source = ny_product_bt_speaker_source();
+#endif
   cJSON_AddStringToObject(result, "source", source ? source : "none");
   return result;
 }
@@ -496,9 +531,8 @@ static void ny_media_put_le32(unsigned char *bytes, uint32_t value)
 static int ny_media_chime_create(void)
 {
   const uint32_t period = NY_MEDIA_CHIME_ON_MS + NY_MEDIA_CHIME_OFF_MS;
-  const uint32_t frames =
-      (uint32_t)((uint64_t)NY_MEDIA_CHIME_RATE * NY_MEDIA_CHIME_BEEPS *
-                 period / 1000);
+  const uint32_t frames = (uint32_t)((uint64_t)NY_MEDIA_CHIME_RATE *
+                                     NY_MEDIA_CHIME_BEEPS * period / 1000);
   const uint32_t bytes = frames * 4;
   unsigned char header[44];
   static int16_t block[2048];
@@ -580,6 +614,13 @@ static int ny_media_chime_create(void)
 
 static void ny_media_speaker_release(void)
 {
+#ifdef CONFIG_NYABULA_CORE_BT
+  if (g_media_bt_claimed)
+    {
+      g_media_bt_claimed = false;
+      ny_product_bt_speaker_release();
+    }
+#endif
 #ifdef CONFIG_NYABULA_CORE_VOICE
   if (g_media_claimed)
     {
@@ -600,6 +641,24 @@ static int ny_media_start(const char *name)
   int fd = ny_media_wave(name, &wave);
   if (fd < 0)
     return fd;
+#ifdef CONFIG_NYABULA_CORE_BT
+  /* One owner of the speaker at a time: Bluetooth music lets go of the
+   * device before the player opens it (for good when this is a track,
+   * until the chime is over when it is the alert), and the tick gives the
+   * speaker back once the player is idle.  Only a phone call says no.
+   */
+
+  int claim = g_media_bt_claimed
+                  ? 0
+                  : ny_product_bt_speaker_claim(!strcmp(name, NY_MEDIA_CHIME));
+  if (claim < 0)
+    {
+      close(fd);
+      return claim;
+    }
+
+  g_media_bt_claimed = true;
+#endif
 #ifdef CONFIG_NYABULA_CORE_VOICE
   /* The wake word holds the microphone open, and the ES8388 refuses a
    * playback format that differs from the capture one while it is: music
@@ -611,12 +670,14 @@ static int ny_media_start(const char *name)
   if (listening < 0)
     {
       close(fd);
+      ny_voice_speaker_release();
+      ny_media_speaker_release();
       return listening;
     }
 
   g_media_claimed = true;
 #endif
-  int ret = nxplayer_setdevice(g_media_player, g_media_device);
+  int ret = ny_media_player_setdevice(g_media_player, g_media_device);
   bool supported = ny_media_volume_support(g_media_device);
 #ifndef CONFIG_AUDIO_EXCLUDE_VOLUME
   if (ret == 0 && supported)
@@ -629,12 +690,12 @@ static int ny_media_start(const char *name)
       ny_media_levels_sync();
       int level = g_media_muted ? 0 : g_media_volume * 10;
       nxmutex_unlock(&g_media_lock);
-      ret = nxplayer_setvolume(g_media_player, level);
+      ret = ny_media_player_setvolume(g_media_player, level);
     }
 #endif
   if (ret == 0)
-    ret = nxplayer_playpcmfd(g_media_player, fd, wave.channels, wave.bits,
-                             wave.rate);
+    ret = ny_media_player_playpcmfd(g_media_player, fd, wave.channels,
+                                    wave.bits, wave.rate);
   if (ret < 0)
     {
       close(fd);
@@ -642,10 +703,10 @@ static int ny_media_start(const char *name)
       return ret;
     }
   uint64_t deadline = ny_product_time_ms(true) + NY_MEDIA_START_MS;
-  while (nxplayer_getstate(g_media_player) == NXPLAYER_STATE_IDLE &&
+  while (ny_media_player_getstate(g_media_player) == NXPLAYER_STATE_IDLE &&
          ny_product_time_ms(true) < deadline)
     usleep(10000);
-  if (nxplayer_getstate(g_media_player) == NXPLAYER_STATE_IDLE)
+  if (ny_media_player_getstate(g_media_player) == NXPLAYER_STATE_IDLE)
     {
       ny_media_speaker_release();
       return -EIO;
@@ -669,7 +730,7 @@ static void ny_media_halt(void)
 {
 #ifndef CONFIG_AUDIO_EXCLUDE_STOP
   if (g_media_player)
-    nxplayer_stop(g_media_player);
+    ny_media_player_stop(g_media_player);
 #endif
 }
 
@@ -704,7 +765,7 @@ static void ny_media_alert_tick(int state, uint64_t now)
       return;
     }
   if (!g_media_player)
-    g_media_player = nxplayer_create();
+    g_media_player = ny_media_player_create();
   if (!g_media_player)
     return;
   if (state != NXPLAYER_STATE_IDLE)
@@ -720,6 +781,14 @@ static void ny_media_alert_tick(int state, uint64_t now)
     }
   if (alert == NY_PRODUCT_MEDIA_ALERT_OFF || now < g_media_alert_next)
     return;
+#ifdef CONFIG_NYABULA_CORE_BT
+  /* A call keeps the speaker.  The alert is not spent on a start that
+   * cannot work: it stays wanted and sounds when the call is over.
+   */
+
+  if (ny_product_bt_call_active())
+    return;
+#endif
   int ret = ny_media_start(NY_MEDIA_CHIME);
   if (ret == -ENOENT || ret == -ENOTDIR)
     {
@@ -753,29 +822,31 @@ static void ny_media_alert_tick(int state, uint64_t now)
 static int ny_media_execute(const struct ny_media_job_s *job)
 {
   if (!g_media_player)
-    g_media_player = nxplayer_create();
+    g_media_player = ny_media_player_create();
   if (!g_media_player)
     return -ENOMEM;
-  int state = nxplayer_getstate(g_media_player);
+  int state = ny_media_player_getstate(g_media_player);
   if (!strcmp(job->action, "music.play"))
     return state != NXPLAYER_STATE_IDLE ? -EBUSY : ny_media_start(job->name);
 #ifndef CONFIG_AUDIO_EXCLUDE_PAUSE_RESUME
   if (!strcmp(job->action, "music.pause"))
-    return state == NXPLAYER_STATE_PLAYING ? nxplayer_pause(g_media_player)
-                                           : -EALREADY;
+    return state == NXPLAYER_STATE_PLAYING
+               ? ny_media_player_pause(g_media_player)
+               : -EALREADY;
   if (!strcmp(job->action, "music.resume"))
-    return state == NXPLAYER_STATE_PAUSED ? nxplayer_resume(g_media_player)
-                                          : -EALREADY;
+    return state == NXPLAYER_STATE_PAUSED
+               ? ny_media_player_resume(g_media_player)
+               : -EALREADY;
 #endif
 #ifndef CONFIG_AUDIO_EXCLUDE_STOP
   if (!strcmp(job->action, "music.stop"))
-    return nxplayer_stop(g_media_player);
+    return ny_media_player_stop(g_media_player);
 #endif
   if (!strcmp(job->action, "music.output"))
     {
       if (state != NXPLAYER_STATE_IDLE)
         return -EBUSY;
-      int ret = nxplayer_setdevice(g_media_player, job->device);
+      int ret = ny_media_player_setdevice(g_media_player, job->device);
       if (ret == 0)
         {
           bool supported = ny_media_volume_support(job->device);
@@ -805,8 +876,8 @@ static int ny_media_execute(const struct ny_media_job_s *job)
                                           NY_PRODUCT_AUDIO_KEEP);
 #endif
       if (ret == 0)
-        ret = nxplayer_setvolume(g_media_player,
-                                 job->muted ? 0 : job->volume * 10);
+        ret = ny_media_player_setvolume(g_media_player,
+                                        job->muted ? 0 : job->volume * 10);
       if (ret == 0)
         {
           nxmutex_lock(&g_media_lock);
@@ -958,10 +1029,29 @@ int ny_product_media_tick(void)
     }
   nxmutex_unlock(&g_media_lock);
   int ret = execute ? ny_media_execute(&job) : 0;
-  int state =
-      g_media_player ? nxplayer_getstate(g_media_player) : NXPLAYER_STATE_IDLE;
+  int state = g_media_player ? ny_media_player_getstate(g_media_player)
+                             : NXPLAYER_STATE_IDLE;
+#ifdef CONFIG_NYABULA_CORE_BT
+#ifndef CONFIG_AUDIO_EXCLUDE_STOP
+  if (state != NXPLAYER_STATE_IDLE && ny_product_bt_call_active())
+    {
+      ny_media_player_stop(g_media_player);
+      state = ny_media_player_getstate(g_media_player);
+    }
+#endif
+#endif
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (!execute && g_media_player && state == NXPLAYER_STATE_IDLE)
+    {
+      int playback_error = ny_dsp_player_error(g_media_player);
+      if (playback_error < 0)
+        ret = playback_error;
+    }
+#endif
   uint64_t now = ny_product_time_ms(true);
   nxmutex_lock(&g_media_lock);
+  if (ret < 0)
+    g_media_error = ret;
   if (g_media_state == NXPLAYER_STATE_PLAYING && g_media_sampled &&
       now > g_media_sampled)
     {
@@ -992,6 +1082,7 @@ int ny_product_media_tick(void)
     }
 
   ny_media_alert_tick(state, now);
+
   return ret;
 #else
   return 0;
@@ -1045,13 +1136,14 @@ void ny_product_media_shutdown(void)
   if (g_media_player)
     {
 #ifndef CONFIG_AUDIO_EXCLUDE_STOP
-      nxplayer_stop(g_media_player);
+      ny_media_player_stop(g_media_player);
 #endif
-      nxplayer_release(g_media_player);
+      ny_media_player_release(g_media_player);
       g_media_player = NULL;
     }
   nxmutex_lock(&g_media_lock);
   g_media_state = NXPLAYER_STATE_IDLE;
+  ny_media_speaker_release();
   if (g_media_job.busy)
     {
       g_media_job.error = -ECANCELED;

@@ -79,6 +79,9 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
       list(APPEND NYABULA_CORE_SRCS ny_product_dsp.c
            ${NYCORE_DSP_DIR}/nyadsp.c ${NYCORE_DSP_DIR}/nyadsp_clock.c
            ${NYCORE_DSP_DIR}/nyadsp_resample.c ny_dsp_output.c)
+      if(CONFIG_NYABULA_CORE_MEDIA)
+        list(APPEND NYABULA_CORE_SRCS ny_dsp_player.c)
+      endif()
     endif()
     if(CONFIG_NYABULA_CORE_NETWORK)
       list(APPEND NYABULA_CORE_SRCS ny_product_network.c)
