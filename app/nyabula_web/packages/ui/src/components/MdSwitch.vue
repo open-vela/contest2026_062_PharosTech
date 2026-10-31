@@ -1,12 +1,12 @@
 <script setup lang="ts">
-defineProps<{ modelValue: boolean; disabled?: boolean; label?: string }>();
+defineProps<{ modelValue: boolean; disabled?: boolean; label?: string; ariaLabel?: string }>();
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void }>();
 </script>
 
 <template>
   <label class="md-switch" :class="{ on: modelValue, disabled }">
     <span v-if="label" class="sw-label">{{ label }}</span>
-    <span class="track" role="switch" :aria-checked="modelValue" tabindex="0"
+    <span class="track" role="switch" :aria-checked="modelValue" :aria-label="ariaLabel ?? label" :aria-disabled="disabled" :tabindex="disabled ? -1 : 0"
       @click="!disabled && emit('update:modelValue', !modelValue)"
       @keydown.space.prevent="!disabled && emit('update:modelValue', !modelValue)">
       <span class="thumb" />
