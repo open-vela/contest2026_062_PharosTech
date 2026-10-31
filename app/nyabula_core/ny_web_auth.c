@@ -562,3 +562,28 @@ int ny_web_auth_session_token(const char *pair_token, char *out)
 }
 
 #endif /* CONFIG_CRYPTO_MBEDTLS */
+
+/****************************************************************************
+ * Name: ny_web_auth_accept_token
+ ****************************************************************************/
+
+bool ny_web_auth_accept_token(const char *pair_token, const char *offered,
+                              size_t length)
+{
+  if (!pair_token || !offered ||
+      strlen(pair_token) != NY_WEB_AUTH_TOKEN_SIZE ||
+      length != NY_WEB_AUTH_TOKEN_SIZE)
+    return false;
+  unsigned int pair_difference = 0, session_difference = 0;
+  char session[NY_WEB_AUTH_TOKEN_SIZE + 1] = { 0 };
+  bool has_session = ny_web_auth_session_token(pair_token, session) == 0;
+  for (size_t i = 0; i < NY_WEB_AUTH_TOKEN_SIZE; i++)
+    {
+      pair_difference |=
+          (unsigned char)offered[i] ^ (unsigned char)pair_token[i];
+      session_difference |=
+          (unsigned char)offered[i] ^ (unsigned char)session[i];
+    }
+  memset(session, 0, sizeof(session));
+  return pair_difference == 0 || (has_session && session_difference == 0);
+}

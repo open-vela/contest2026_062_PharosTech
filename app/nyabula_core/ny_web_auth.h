@@ -23,6 +23,7 @@
 #define __NYABULA_CORE_NY_WEB_AUTH_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define NY_WEB_AUTH_TOKEN_SIZE   64
@@ -74,5 +75,7 @@ int ny_web_auth_set(const char *password);
  */
 
 int ny_web_auth_session_token(const char *pair_token, char *out);
+bool ny_web_auth_accept_token(const char *pair_token, const char *offered,
+                              size_t length);
 
 #endif /* __NYABULA_CORE_NY_WEB_AUTH_H */
