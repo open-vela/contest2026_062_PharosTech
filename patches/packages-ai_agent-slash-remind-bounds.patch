@@ -1,0 +1,14 @@
+diff --git a/src/core/agent_loop.c b/src/core/agent_loop.c
+--- a/src/core/agent_loop.c
++++ b/src/core/agent_loop.c
+@@ -665,8 +665,8 @@
+     char* reply = calloc(1, 512);
+     if (reply) {
+         tool_registry_execute("cron_add", input, reply, 512);
+-        snprintf(reply, 512, "好的，%d 秒后提醒你：%s",
+-            secs, remind_msg);
++        snprintf(reply, 512, "好的，%d 秒后提醒你：", secs);
++        strlcat(reply, remind_msg, 512);
+     }
+     return reply;
+ }

@@ -1,0 +1,30 @@
+{
+  "name": "@nyabula/nyaui-vue",
+  "version": "0.1.0",
+  "description": "NyaUI DSL v1 renderer for Vue3 + MD3 (Shared/nyaui/nyaui.md).",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "vue-tsc --noEmit -p tsconfig.json",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@nyabula/eye-engine": "workspace:*",
+    "@nyabula/ui": "workspace:*"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/test-utils": "^2.4.6",
+    "happy-dom": "^15.11.7",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.9",
+    "vue": "^3.5.13",
+    "vue-tsc": "^2.1.10"
+  }
+}
