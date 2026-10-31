@@ -25,6 +25,17 @@ function checkStrings(value: unknown): string | null {
 export function validateTree(tree: NyaUiTree | null | undefined): string | null {
   if (!tree || typeof tree !== 'object') return 'empty tree';
   if (tree.nyaui !== 1) return `unsupported nyaui version: ${String(tree.nyaui)}`;
+  if (tree.views) {
+    if (tree.root || tree.html || Object.keys(tree.views).length === 0) return 'invalid view collection';
+    for (const [name, view] of Object.entries(tree.views)) {
+      if (!view || view.views || (name !== 'component' && name !== 'html')) return 'invalid named view';
+      if ((name === 'component' && !view.root) || (name === 'html' && typeof view.html !== 'string')) return 'view content does not match its type';
+      const error = validateTree(view);
+      if (error) return error;
+    }
+    return null;
+  }
+  if (typeof tree.html === 'string') return tree.html.length <= 24000 ? null : 'HTML exceeds 24 KiB';
   if (!tree.root || typeof tree.root !== 'object') return 'missing root node';
 
   let count = 0;

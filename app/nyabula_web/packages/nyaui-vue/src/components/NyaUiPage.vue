@@ -10,13 +10,14 @@ import { NYAUI_CTX } from '../context.js';
 import { validateTree } from '../validate.js';
 import { collectValues, resolveArgs } from '../values.js';
 import { INPUT_TYPES, type NyaUiCommand, type NyaUiNode, type NyaUiTree } from '../types.js';
+import NyaHtmlFrame from './NyaHtmlFrame.vue';
 import NyaUiNodeComp from './NyaUiNode.vue';
 import { registerKit } from '../kit.js';
 
 /* Feature Kit types are available to every page by default. Idempotent. */
 registerKit();
 
-const props = defineProps<{ tree: NyaUiTree | null; busy?: boolean }>();
+const props = defineProps<{ tree: NyaUiTree | null; busy?: boolean; pluginId?: string }>();
 const emit = defineEmits<{ (e: 'command', payload: NyaUiCommand): void }>();
 
 const CHANGE_DEBOUNCE_MS = 300;
@@ -31,6 +32,8 @@ const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 watch(
   () => props.tree,
   () => {
+    for (const timer of debounceTimers.values()) clearTimeout(timer);
+    debounceTimers.clear();
     for (const k of Object.keys(localEdits)) delete localEdits[k];
   },
   { deep: true },
@@ -54,6 +57,7 @@ function snapshot(): Record<string, unknown> {
 
 function emitEvent(node: NyaUiNode, event: string, extra?: Record<string, unknown>): void {
   const action = node.on?.[event];
+  if (!action?.command) return;
   const values = snapshot();
   const resolved = resolveArgs(action?.args, values);
   const args = extra ? { ...(resolved ?? {}), ...extra } : resolved;
@@ -86,6 +90,10 @@ function setValue(node: NyaUiNode, value: unknown, immediate: boolean): void {
   localEdits[node.id] = value;
   const pending = debounceTimers.get(node.id);
   if (pending) clearTimeout(pending);
+  debounceTimers.delete(node.id);
+  // Unbound inputs belong to the next declared action's values snapshot.
+  // Do not send an undeclared change event to the device's policy gate.
+  if (!node.on?.change?.command) return;
   if (immediate) {
     debounceTimers.delete(node.id);
     emitEvent(node, 'change');
@@ -114,7 +122,8 @@ provide(NYAUI_CTX, { getValue, setValue, fire });
       <div class="nyaui-error-title">页面无法渲染</div>
       <div class="nyaui-error-msg">{{ error }}</div>
     </div>
-    <NyaUiNodeComp v-else-if="tree" :node="tree.root" />
+    <NyaHtmlFrame v-else-if="typeof tree?.html === 'string'" :html="tree.html" :plugin-id="pluginId ?? 'plugin'" :title="tree.page?.title" @command="emit('command', $event)" />
+    <NyaUiNodeComp v-else-if="tree?.root" :node="tree.root" />
     <div v-if="busy" class="nyaui-busy-veil" />
   </div>
 </template>
