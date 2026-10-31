@@ -36,6 +36,19 @@ int ny_web_product_token(char *out, size_t size);
 
 int ny_web_panel_count(void);
 
+/* Transport-neutral sessions retain the same authentication, limits and
+ * panel lifetime as LAN WebSockets. A session has one worker owner; send
+ * must copy the borrowed payload before returning. No credential is added
+ * by the transport: clients still perform sys.login and sys.hello.
+ */
+
+typedef int (*ny_web_relay_send_t)(void *context, const char *data,
+                                   size_t length);
+void *ny_web_relay_open(ny_web_relay_send_t send, void *context);
+int ny_web_relay_receive(void *session, const char *data, size_t length);
+int ny_web_relay_tick(void *session);
+void ny_web_relay_close(void *session);
+
 /* Answer one plain HTTP request and return.  head is the request head as
  * received; the connection is not kept alive.
  *
