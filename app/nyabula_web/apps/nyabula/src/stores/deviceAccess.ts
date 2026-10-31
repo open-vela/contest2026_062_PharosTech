@@ -187,6 +187,21 @@ export const useDeviceAccessStore = defineStore('deviceAccess', () => {
     phase.value = 'ready';
   }
 
+  async function loginMember(token: string): Promise<void> {
+    if (!isDeviceToken(token)) throw new Error('成员凭证应为 64 位字符');
+    try {
+      await session.preAuth(SELF_KEY, 'sys.auth.state');
+      session.storeSessionToken(SELF_KEY, token);
+      const hello = await session.authenticate('session');
+      if (hello.pairingRequired) throw new Error('设备没有接受这个成员凭证');
+      phase.value = 'ready';
+    } catch (e) {
+      session.forgetSessionToken(SELF_KEY);
+      session.disconnect();
+      throw e;
+    }
+  }
+
   /* ---------------- password ---------------- */
 
   /** sys.password.set on the authenticated socket. `current` is required by
@@ -234,6 +249,6 @@ export const useDeviceAccessStore = defineStore('deviceAccess', () => {
   return {
     phase, unreachable, setupMode, authState, lockUntil, online, passwordSet,
     noteNetwork, refreshNetwork, rememberPath, nextLocation,
-    boot, restart, ensureAuthState, login, setPassword, finishSetup, handleAuthLost, requireLogin,
+    boot, restart, ensureAuthState, login, loginMember, setPassword, finishSetup, handleAuthLost, requireLogin,
   };
 });
