@@ -39,3 +39,14 @@ ln -s ../../boards/rk3576/kickpi-k7/scripts/Make.defs configs/<新配置名>/Mak
 ```
 
 CMake 模式不需要此链接，但 Makefile 模式必须有。
+
+### CMake 平台驱动接入
+
+`boards/rk3576/drivers` 必须保持为指向 `../../drivers` 的有效软链。
+跨 Windows/Linux 打包时使用正斜杠，不能把 Windows 的反斜杠软链目标
+直接写入 Linux tar 包。断链会使 NuttX 回落到空平台 Kconfig；板级 CMake
+现在拒绝这种构建，避免生成没有 LCD、RTC 和 WiFi 的产品固件。
+
+板级 CMake 显式收录平台驱动，不依赖旧 Make 构建残留的源码树软链。
+`python3 tools/tests/test_platform_cmake.py` 验证全新构建入口、重复入口去重
+以及空 Kconfig 拒绝路径。
