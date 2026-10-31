@@ -8,9 +8,9 @@ defineProps<{
 </script>
 
 <template>
-  <span class="pill" :class="tone">
+  <span class="pill" :class="tone" :title="label">
     <span class="dot" />
-    {{ label }}
+    <span class="label">{{ label }}</span>
   </span>
 </template>
 
@@ -24,8 +24,13 @@ defineProps<{
   font: 600 12.5px var(--font-body);
   background: var(--md-surface-container-high);
   color: var(--md-on-surface-variant);
+  max-width: 100%;
+  min-width: 0;
 }
+/* Long device names stay on one line. */
+.label { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dot {
+  flex: none;
   width: 8px;
   height: 8px;
   border-radius: 50%;
