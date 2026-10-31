@@ -25,3 +25,6 @@ Make.dep
 
 # Python bytecode from tools/amp test helpers
 __pycache__/
+
+# Plugin example bundles are rebuilt from src/ by nyabula_plugin.py.
+/tools/nyabula_plugin/examples/*/build/
