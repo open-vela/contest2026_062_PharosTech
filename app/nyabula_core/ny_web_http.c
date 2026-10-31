@@ -36,6 +36,7 @@
 #include "ny_web.h"
 #include "ny_web_mirror.h"
 #include "ny_web_models.h"
+#include "ny_web_nas.h"
 #include "ny_web_ota.h"
 #include "ny_websocket.h"
 #include <errno.h>
@@ -365,6 +366,10 @@ int ny_web_http_serve(int fd, const char *head, const void *body,
    * and checks the credentials itself.
    */
 
+#ifdef CONFIG_NYABULA_CORE_NAS
+  if (ny_web_nas_claims(head))
+    return ny_web_nas_serve(fd, head, body, body_length, pair_token);
+#endif
   if (ny_web_mirror_claims(head))
     {
       return ny_web_mirror_serve(fd, head, pair_token);
