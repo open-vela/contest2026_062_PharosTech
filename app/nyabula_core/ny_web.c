@@ -415,6 +415,16 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
       cJSON_AddItemToArray(capabilities,
                            cJSON_CreateString("core.weather-v1"));
 #endif
+#ifdef CONFIG_NYABULA_CORE_NAS
+      cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.nas-v1"));
+#endif
+#ifdef CONFIG_NYABULA_CORE_DSP
+      cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.dsp-v1"));
+#endif
+#ifdef CONFIG_NYABULA_CORE_BT
+      cJSON_AddItemToArray(capabilities,
+                           cJSON_CreateString("core.bluetooth-audio-v1"));
+#endif
 #ifdef CONFIG_NYABULA_CORE_MEDIA
       cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.media-v1"));
 #endif
