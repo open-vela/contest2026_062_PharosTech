@@ -57,7 +57,8 @@ class Simulator:
         out = self.command(f"nycore product {topic} /host/request.json")
         if error is not None:
             assert f"nycore: command failed: {error}" in out, out
-            return None
+            match = re.search(r"PRODUCT_RESULT (\{[^\r\n]*\})", out)
+            return json.loads(match[1]) if match else None
         match = re.search(r"PRODUCT_RESULT (\{[^\r\n]*\})", out)
         assert match, out[-1500:]
         return json.loads(match[1])
