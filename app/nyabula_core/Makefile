@@ -80,7 +80,7 @@ CSRCS += ny_web_mirror.c
 endif
 
 ifeq ($(CONFIG_NYABULA_CORE_PRODUCT),y)
-CSRCS += ny_access.c ny_product_store.c ny_product_records.c ny_product_cli.c ny_product.c
+CSRCS += ny_plugin_upload.c ny_access.c ny_product_store.c ny_product_records.c ny_product_cli.c ny_product.c
 CSRCS += ny_product_clock.c ny_sntp.c
 CSRCS += ny_product_timers.c ny_product_runtime.c ny_product_eyes.c ny_product_device.c ny_product_media.c ny_product_maintenance.c
 CSRCS += ny_product_alarms.c ny_product_notifications.c ny_product_briefing.c
