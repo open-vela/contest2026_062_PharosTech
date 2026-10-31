@@ -8,8 +8,8 @@ const p = (payload: Record<string, unknown> | null, k: string) => (payload && ty
 export const FEATURES: FeatureDef[] = [
   { type: 'music', stage: 'ready', label: '音乐', icon: 'music_note', group: '媒体', blurb: '播放控制与歌词', load: () => import('./MusicFeature.vue'), mini: () => import('./MusicMini.vue'), status: (pl, a) => (a ? p(pl, 'title') ?? '播放中' : null) },
   { type: 'audio', stage: 'ready', label: '音频路由', icon: 'volume_up', group: '媒体', blurb: '输出设备与音量', load: () => import('./AudioFeature.vue'), mini: () => import('./AudioMini.vue') },
-  { type: 'eq', stage: 'planned', needs: '需要音频 DSP / 均衡器驱动', label: '均衡器', icon: 'tune', group: '媒体', blurb: '音效预设与频段', load: () => import('./EqFeature.vue'), mini: () => import('./EqMini.vue') },
-  { type: 'subwoofer', stage: 'planned', needs: '需要 2.1 功放与分频驱动', label: '低音炮', icon: 'subwoofer', group: '媒体', blurb: '低频增强', load: () => import('./SubwooferFeature.vue'), mini: () => import('./SubwooferMini.vue') },
+  { type: 'eq', stage: 'ready', label: '均衡器', icon: 'tune', group: '媒体', blurb: '音效预设与频段', load: () => import('./EqFeature.vue'),  },
+  { type: 'subwoofer', stage: 'ready', label: '低音炮', icon: 'subwoofer', group: '媒体', blurb: 'USB 2.1 分频与延迟', load: () => import('./SubwooferFeature.vue'),  },
   { type: 'caption', stage: 'ready', label: '字幕', icon: 'article', group: '媒体', blurb: '实时字幕显示', load: () => import('./CaptionFeature.vue'), mini: () => import('./CaptionMini.vue'), status: (pl, a) => (a ? p(pl, 'current_line') : null) },
   { type: 'timer', stage: 'ready', label: '倒计时', icon: 'timer', group: '时间', blurb: '拨盘设定与预设', load: () => import('./TimerFeature.vue'), mini: () => import('./TimerMini.vue') },
   { type: 'stopwatch', stage: 'ready', label: '秒表', icon: 'schedule', group: '时间', blurb: '计时与分段', load: () => import('./StopwatchFeature.vue'), mini: () => import('./StopwatchMini.vue') },
