@@ -3,6 +3,8 @@
 import { EmptyState, MdButton, MdCard, Skeleton, UiIcon } from '@nyabula/ui';
 import ContextSlot from '../../components/ContextSlot.vue';
 import PluginCard from './PluginCard.vue';
+import PluginInstall from './PluginInstall.vue';
+import PluginAuthorPanel from './PluginAuthorPanel.vue';
 import { usePluginsPage } from './PluginsView.logic';
 
 const page = usePluginsPage();
@@ -15,8 +17,10 @@ const page = usePluginsPage();
         <h2 class="page-title">插件</h2>
         <p class="page-sub">设备上已安装的插件，点击进入插件页面</p>
       </div>
+      <PluginInstall />
     </div>
 
+    <PluginAuthorPanel />
     <div v-if="page.showSkeleton.value" class="grid-cards">
       <Skeleton v-for="i in 6" :key="i" height="110px" radius="var(--radius-l, 18px)" />
     </div>
@@ -59,6 +63,7 @@ const page = usePluginsPage();
 </template>
 
 <style scoped>
+.grid-cards { grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr)); }
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
 .stat {
   display: flex;
