@@ -158,6 +158,8 @@ int ny_audio_stream_unity(struct ny_audio_stream_s *stream);
 
 int ny_audio_stream_drain(struct ny_audio_stream_s *stream, int timeout_ms);
 
+int ny_audio_stream_pause(struct ny_audio_stream_s *stream, bool paused);
+
 void ny_audio_stream_close(struct ny_audio_stream_s *stream);
 
 #endif /* __NYABULA_CORE_NY_AUDIO_STREAM_H */

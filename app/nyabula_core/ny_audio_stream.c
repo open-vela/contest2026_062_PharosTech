@@ -888,4 +888,30 @@ int ny_audio_stream_drain(struct ny_audio_stream_s *stream, int timeout_ms)
   return 0;
 }
 
+/****************************************************************************
+ * Name: ny_audio_stream_pause
+ ****************************************************************************/
+
+int ny_audio_stream_pause(struct ny_audio_stream_s *stream, bool paused)
+{
+#ifndef CONFIG_AUDIO_EXCLUDE_PAUSE_RESUME
+  if (stream == NULL || stream->config.capture)
+    {
+      return -EINVAL;
+    }
+
+  if (!stream->started)
+    {
+      return 0;
+    }
+  return ioctl(stream->fd, paused ? AUDIOIOC_PAUSE : AUDIOIOC_RESUME, 0) < 0
+             ? -errno
+             : 0;
+#else
+  (void)stream;
+  (void)paused;
+  return -ENOTSUP;
+#endif
+}
+
 #endif /* CONFIG_NYABULA_CORE_BT */
