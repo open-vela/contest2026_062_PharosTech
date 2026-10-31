@@ -311,9 +311,10 @@ struct ny_voice_s
   /* Capture (ring_lock). */
 
   struct ny_voice_ring_s ring;
-  uint64_t last_loud;  /* Position just past the last loud chunk.       */
-  uint64_t resumed_at; /* Ring position when the microphone last opened. */
-  bool capture_gap;    /* It was closed since the last pushed window.    */
+  uint64_t last_loud;   /* Position just past the last loud chunk.       */
+  uint64_t resumed_at;  /* Ring position when the microphone last opened. */
+  uint64_t captured_at; /* Monotonic time of the newest ring write. */
+  bool capture_gap;     /* It was closed since the last pushed window.    */
   bool gate_open;
   uint32_t level; /* RMS of the last chunk.                         */
   sem_t captured;
@@ -1023,7 +1024,7 @@ static void *ny_voice_capture_thread(void *arg)
           ret = ny_voice_audio_open(&audio, &config);
           nxmutex_lock(&g_voice.lock);
           g_voice.capture_error = ret;
-          g_voice.capture_open = ret == 0;
+          g_voice.capture_open = false;
           nxmutex_unlock(&g_voice.lock);
           if (ret < 0)
             {
@@ -1043,8 +1044,12 @@ static void *ny_voice_capture_thread(void *arg)
 
           nxmutex_lock(&g_voice.ring_lock);
           g_voice.resumed_at = g_voice.ring.total;
+          g_voice.captured_at = 0;
           g_voice.capture_gap = true;
           nxmutex_unlock(&g_voice.ring_lock);
+          nxmutex_lock(&g_voice.lock);
+          g_voice.capture_open = true;
+          nxmutex_unlock(&g_voice.lock);
         }
 
       got = ny_voice_audio_read(audio, g_voice_mic, bytes, 500);
@@ -1072,6 +1077,7 @@ static void *ny_voice_capture_thread(void *arg)
 
       nxmutex_lock(&g_voice.ring_lock);
       ny_voice_ring_write(&g_voice.ring, g_voice_chunk, count);
+      g_voice.captured_at = ny_voice_now_ms();
       if (loud)
         {
           g_voice.last_loud = g_voice.ring.total;
@@ -3139,6 +3145,50 @@ static cJSON *ny_voice_status(void)
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: ny_voice_capture_snapshot
+ ****************************************************************************/
+
+int ny_voice_capture_snapshot(int16_t *samples, size_t capacity)
+{
+  uint64_t cursor;
+  uint64_t available;
+  bool gap;
+  int ret = -EAGAIN;
+
+  if (samples == NULL || capacity == 0 ||
+      capacity > NY_VOICE_CAPTURE_RATE / 10)
+    {
+      return -EINVAL;
+    }
+
+  nxmutex_lock(&g_voice.lock);
+  if (!g_voice.running || g_voice.stopping || !g_voice.capture_open)
+    {
+      nxmutex_unlock(&g_voice.lock);
+      return -ENODEV;
+    }
+
+  nxmutex_lock(&g_voice.ring_lock);
+  available = g_voice.ring.total - g_voice.resumed_at;
+  if (g_voice.captured_at != 0 &&
+      ny_voice_now_ms() - g_voice.captured_at <= 250 && available != 0)
+    {
+      if (capacity > available)
+        {
+          capacity = available;
+        }
+
+      cursor = g_voice.ring.total - capacity;
+      ret = (int)ny_voice_ring_read(&g_voice.ring, &cursor, samples, capacity,
+                                    &gap);
+    }
+
+  nxmutex_unlock(&g_voice.ring_lock);
+  nxmutex_unlock(&g_voice.lock);
+  return ret;
+}
 
 int ny_voice_start(void)
 {
