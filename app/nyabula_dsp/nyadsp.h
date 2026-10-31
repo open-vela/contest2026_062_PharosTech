@@ -86,6 +86,14 @@ enum nyadsp_filter_e
   NYADSP_FILTER_HIGH_SHELF
 };
 
+/* Optional independent branch cutoffs; the ABI v1 config stays unchanged. */
+
+struct nyadsp_crossover_s
+{
+  float satellite_highpass_hz; /* Left/right LR4 high-pass, 40..5000 Hz */
+  float bass_lowpass_hz;      /* Mono bass LR4 low-pass, 40..5000 Hz */
+};
+
 struct nyadsp_s;
 
 /* Additive constructor: existing config layout and constructors remain
@@ -103,6 +111,13 @@ struct nyadsp_s *nyadsp_create_input_eq(const struct nyadsp_config_s *config,
                                         const enum nyadsp_filter_e *kinds,
                                         size_t count, int fullrange,
                                         int *error);
+
+/* NULL crossover retains the common config.crossover_hz cutoff. */
+
+struct nyadsp_s *nyadsp_create_input_eq_split(
+  const struct nyadsp_config_s *config, const struct nyadsp_eq_s *bands,
+  const enum nyadsp_filter_e *kinds, size_t count,
+  const struct nyadsp_crossover_s *crossover, int fullrange, int *error);
 
 uint32_t nyadsp_api_version(void);
 void nyadsp_default_config(struct nyadsp_config_s *config);
