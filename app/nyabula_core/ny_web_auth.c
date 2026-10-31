@@ -456,6 +456,12 @@ int ny_web_auth_set(const char *password)
       return ret;
     }
 
+  if (g_auth.path[0] == '\0')
+    {
+      nxmutex_unlock(&g_auth_lock);
+      return -EAGAIN;
+    }
+
   previous = g_auth;
   fd = open("/dev/urandom", O_RDONLY);
   if (fd < 0 ||
