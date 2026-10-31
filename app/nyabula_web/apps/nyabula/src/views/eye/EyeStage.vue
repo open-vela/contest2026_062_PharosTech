@@ -5,6 +5,7 @@
  * its width (see .stage) instead of a viewport share, which is what used to
  * leave tall empty bands above and below the eyes. */
 import { EyeCanvas, PairOverlay, UiIcon } from '@nyabula/ui';
+import EyeMirrorCard from './EyeMirrorCard.vue';
 import type { EyeEngine } from '@nyabula/eye-engine';
 import { useEyeStore } from '../../stores/eye';
 import { useSessionStore } from '../../stores/session';
@@ -26,8 +27,9 @@ const session = useSessionStore();
 
 <template>
   <div class="stage" :class="{ pairing: showPair }">
+    <EyeMirrorCard v-if="ready && eye.nativeQr" embedded auto-start />
     <EyeCanvas
-      v-if="ready"
+      v-else-if="ready"
       :eye-state="eye.lastState"
       :clock-offset-ms="eye.nativeCore ? 0 : session.clockOffsetMs()"
       @ready="emit('ready', $event)"
@@ -38,7 +40,7 @@ const session = useSessionStore();
       <p>{{ session.state === 'pairing-required' ? '输入设备屏幕上的配对码' : session.connected ? '眼睛服务未启动' : '等待连接…' }}</p>
     </div>
     <PairOverlay v-if="showPair" :busy="pairing" :error="pairError" @submit="emit('pair', $event)" />
-    <div v-if="ready" class="stage-hint">拖动画布 = 注视点</div>
+    <div v-if="ready && !eye.nativeQr" class="stage-hint">拖动画布 = 注视点</div>
   </div>
 </template>
 
