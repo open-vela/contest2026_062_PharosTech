@@ -29,7 +29,7 @@ function pickStyle(v: string) {
 
 <template>
   <div class="controls" :class="{ dense }">
-    <EyeMirrorCard v-if="!only || only === 'modes'" />
+    <EyeMirrorCard v-if="(!only || only === 'modes') && !eye.nativeQr" />
     <MdCard v-if="!only || only === 'modes'" title="表情">
       <div class="mode-grid">
         <button

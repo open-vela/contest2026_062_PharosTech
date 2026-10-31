@@ -67,6 +67,9 @@ export const useEyeStore = defineStore('eye', () => {
   const toast = useToastStore();
   const lastState = shallowRef<EyeState | null>(null);
   const nativeCore = ref(false);
+  // Pairing QR payloads are deliberately omitted from public eye.state.
+  // Show the authenticated device frames instead of inventing a local code.
+  const nativeQr = computed(() => nativeCore.value && lastState.value?.scene?.type === 'qr');
   const ready = computed(() => session.connected && (!nativeCore.value || lastState.value !== null));
   const pendingMode = ref<string | null>(null);
   const pendingScene = ref<string | null | undefined>(undefined);
@@ -186,7 +189,8 @@ export const useEyeStore = defineStore('eye', () => {
         const scene = type ? coreSceneName(type) : null;
         // Not a device scene (e.g. a planned feature): nothing may be sent.
         if (type && !scene) { pendingScene.value = undefined; return; }
-        await session.request(scene ? 'eyes.scene.show' : 'eyes.scene.hide', scene ? { scene, style, payload:corePayload(payload, options) } : {});
+        if (!scene && nativeQr.value) await session.request('panel.pair.hide', {});
+        else await session.request(scene ? 'eyes.scene.show' : 'eyes.scene.hide', scene ? { scene, style, payload:corePayload(payload, options) } : {});
         webScene.value = type;
       } else { await session.request('eye.scene', data); webScene.value = type; }
     } catch (e) {
@@ -319,5 +323,5 @@ export const useEyeStore = defineStore('eye', () => {
     void flushIris();
   }
 
-  return { lastState, nativeCore, ready, activeMode, activeScene, webScene, sceneStyle, lightPreview, ambientOnDevice, irisColors, setMode, setScene, updateScene, toggleScene, look, setAmbient, setIris };
+  return { lastState, nativeCore, nativeQr, ready, activeMode, activeScene, webScene, sceneStyle, lightPreview, ambientOnDevice, irisColors, setMode, setScene, updateScene, toggleScene, look, setAmbient, setIris };
 });
