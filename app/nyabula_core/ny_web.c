@@ -25,8 +25,11 @@
  */
 
 #include "ny_web.h"
-#include "ny_product.h"
 #include "ny_web_auth.h"
+#ifdef CONFIG_NYABULA_CORE_PRODUCT
+#include "ny_access.h"
+#endif
+#include "ny_product.h"
 #include "ny_websocket.h"
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -96,6 +99,12 @@ struct nyabula_eye_ws_session_s
   char output[NYABULA_WS_MESSAGE_MAX + 1];
   bool authenticated;
   bool pair_auth;
+  uint32_t auth_generation;
+#ifdef CONFIG_NYABULA_CORE_PRODUCT
+  char member_id[64];
+  enum ny_product_role_e member_role;
+  uint32_t member_generation;
+#endif
   bool fragmented;
   size_t used;
   uint64_t fragment_deadline;
@@ -113,6 +122,7 @@ static int nyabula_eye_ws_error(int fd, struct nyabula_eye_ws_session_s *s,
                                 const char *id, const char *topic,
                                 const char *code);
 static bool nyabula_eye_ws_auth(const char *actual, const char *expected);
+static bool ny_web_session_current(struct nyabula_eye_ws_session_s *s);
 static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
                                   const char *token);
 static int nyabula_eye_ws_client(int fd, const char *token,
@@ -206,6 +216,22 @@ static bool nyabula_eye_ws_auth(const char *actual, const char *expected)
 }
 
 /****************************************************************************
+ * Name: ny_web_session_current
+ ****************************************************************************/
+
+static bool ny_web_session_current(struct nyabula_eye_ws_session_s *s)
+{
+  if (s->auth_generation != ny_web_auth_generation())
+    return false;
+#ifdef CONFIG_NYABULA_CORE_PRODUCT
+  if (s->member_id[0] != '\0' &&
+      s->member_generation != ny_access_generation())
+    return false;
+#endif
+  return true;
+}
+
+/****************************************************************************
  * Name: nyabula_eye_ws_request
  ****************************************************************************/
 
@@ -270,6 +296,7 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
 
       if (status == 0)
         {
+          s->auth_generation = ny_web_auth_generation();
           result = cJSON_CreateObject();
           cJSON_AddStringToObject(result, "token", session);
           memset(session, 0, sizeof(session));
@@ -302,6 +329,7 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
        * because it decides what changing the password requires.
        */
 
+      s->auth_generation = ny_web_auth_generation();
       const char *offered = nyabula_eye_ws_string(data, "token");
       char session[NY_WEB_AUTH_TOKEN_SIZE + 1];
       bool pair = nyabula_eye_ws_auth(offered, token);
@@ -312,6 +340,13 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
           memset(session, 0, sizeof(session));
         }
 
+#ifdef CONFIG_NYABULA_CORE_PRODUCT
+      s->member_id[0] = '\0';
+      s->member_role = NY_PRODUCT_OWNER;
+      if (!valid)
+        valid = ny_access_auth(offered, s->member_id, sizeof(s->member_id),
+                               &s->member_role, &s->member_generation) == 0;
+#endif
       if (!valid)
         {
           nyabula_eye_ws_error(fd, s, id, topic, "EACCES");
@@ -350,7 +385,8 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
 #endif
       cJSON_AddStringToObject(device, "coreVersion", "native-eye-v1");
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
-      cJSON_AddStringToObject(result, "role", "owner");
+      cJSON_AddStringToObject(result, "role",
+                              ny_access_role_name(s->member_role));
 #else
       cJSON_AddStringToObject(result, "role", "family");
 #endif
@@ -393,12 +429,20 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
       goto out;
     }
 
-  if (!s->authenticated)
+  if (!s->authenticated || !ny_web_session_current(s))
     {
       nyabula_eye_ws_error(fd, s, id, topic, "EACCES");
       ret = -EACCES;
       goto out;
     }
+
+#ifdef CONFIG_NYABULA_CORE_PRODUCT
+  if (!ny_access_allowed(s->member_role, topic))
+    {
+      ret = nyabula_eye_ws_error(fd, s, id, topic, "EACCES");
+      goto out;
+    }
+#endif
 
   if (strcmp(topic, "sys.password.set") == 0)
     {
@@ -435,6 +479,7 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
 
       if (status == 0)
         {
+          s->auth_generation = ny_web_auth_generation();
           result = cJSON_CreateObject();
           cJSON_AddStringToObject(result, "token", session);
           memset(session, 0, sizeof(session));
@@ -478,7 +523,9 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
    * product layer at all.
    */
 
-  const struct ny_product_caller_s caller = { "bootstrap", NY_PRODUCT_OWNER };
+  const struct ny_product_caller_s caller = { s->member_id[0] ? s->member_id
+                                                              : "owner",
+                                              s->member_role, true };
   result = NULL;
   ret = strcmp(topic, "eyes.expression") == 0
             ? -ENOSYS
@@ -641,7 +688,8 @@ static int nyabula_eye_ws_client(int fd, const char *token, const char *origin)
     {
       uint64_t now = nyabula_eye_ws_now();
       struct pollfd pfd = { fd, POLLIN, 0 };
-      if ((!s->authenticated && now - started > NYABULA_WS_AUTH_MS) ||
+      if ((s->authenticated && !ny_web_session_current(s)) ||
+          (!s->authenticated && now - started > NYABULA_WS_AUTH_MS) ||
           now - last_input > NYABULA_WS_IDLE_MS ||
           (s->fragmented && now > s->fragment_deadline))
         {
