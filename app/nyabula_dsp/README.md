@@ -2,7 +2,7 @@
 
 独立 C99 DSP 核心 + 调用同一动态库的 Python 离线 WAV 工具。
 不修改 NuttX 的 `audio/pcm_decode.c`、ES8388、SAI 或 USB 驱动。
-库仍可独立宿主构建；产品 Core 已让蓝牙、TTS 与文件播放接入公共 DSP 出口。使用入口、设备路由与验收边界见 [音频服务](../../docs/audio-plugin-services-20261018.md)。
+库仍可独立宿主构建；产品 Core 已让蓝牙、TTS 与文件播放接入公共 DSP 出口。使用入口、设备路由与验收边界见 [产品集成 PR #93](https://github.com/open-vela/contest2026_062_PharosTech/pull/93)。
 
 ## 已实现的处理合同
 
@@ -38,7 +38,7 @@ ctest --test-dir out/audio-dsp --output-on-failure
 
 库为 `out/audio-dsp/libnyadsp.so`。Windows 可以使用 CMake/MSVC
 生成 `nyadsp.dll` 后传给 Python；此阶段只验证了 Linux 宿主构建，
-Windows 原生动态库尚未验收；产品 ARM64 B53 板测见音频服务文档。
+Windows 原生动态库尚未验收；产品 ARM64 B53 板测由产品集成 PR #93 记录。
 
 ASan/UBSan 仅加在原生边界测试程序，不加在 Python 加载的动态库；
 动态库的频响和文件回归由另一个 CTest 运行。测试不依赖 NumPy、
