@@ -42,8 +42,7 @@
  *   cloud.status      any role   the stored relay settings
  *   cloud.config      owner      {"enabled": bool, "url": "ws[s]://..."}
  *
- * Nothing here pretends: the firmware has no online update service and no
- * relay client, and the answers say so.
+ * Cloud transport is optional; builds without it report unsupported.
  *
  * The update.* topics other than status exist only with NYABULA_CORE_OTA.
  * Without it they fall through as unknown, which is how the panel tells a
@@ -86,6 +85,9 @@
 #include "ny_product_store.h"
 
 #include <nuttx/config.h>
+#ifdef CONFIG_NYABULA_CORE_CLOUD
+#include "ny_cloud.h"
+#endif
 #include <nuttx/mutex.h>
 
 #include <dirent.h>
@@ -1468,8 +1470,11 @@ static int ny_maint_logs(const cJSON *data, cJSON **result)
  * Name: ny_maint_cloud
  ****************************************************************************/
 
-static int ny_maint_cloud(const cJSON *update, cJSON **result)
+static int ny_maint_cloud(const cJSON *update, cJSON **result, bool owner)
 {
+#ifdef CONFIG_NYABULA_CORE_CLOUD
+  return ny_cloud_config(update, result, owner);
+#else
   cJSON *stored = NULL;
   uint64_t revision = 0;
   bool enabled = false;
@@ -1548,6 +1553,7 @@ static int ny_maint_cloud(const cJSON *update, cJSON **result)
                           "relay client is not part of this firmware");
   *result = root;
   return 0;
+#endif
 }
 
 /****************************************************************************
@@ -1650,12 +1656,12 @@ int ny_product_maintenance_request(const struct ny_product_caller_s *caller,
 
   if (strcmp(topic, "cloud.status") == 0)
     {
-      return ny_maint_cloud(NULL, result);
+      return ny_maint_cloud(NULL, result, owner);
     }
 
   if (strcmp(topic, "cloud.config") == 0)
     {
-      return owner ? ny_maint_cloud(data, result) : -EACCES;
+      return owner ? ny_maint_cloud(data, result, owner) : -EACCES;
     }
 
   return -ENOSYS;

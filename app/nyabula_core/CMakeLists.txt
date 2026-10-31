@@ -58,6 +58,10 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     list(APPEND NYABULA_CORE_SRCS ny_web.c ny_web_auth.c ny_web_http.c ny_websocket.c
          ny_web_mirror.c)
   endif()
+  if(CONFIG_NYABULA_CORE_CLOUD)
+    list(APPEND NYABULA_CORE_SRCS ny_cloud.c)
+    list(APPEND NYABULA_CORE_DEPENDS libwebsockets)
+  endif()
   if(CONFIG_NYABULA_CORE_PRODUCT)
     list(APPEND NYABULA_CORE_SRCS ny_product_store.c ny_product_records.c
          ny_plugins.c ny_plugin_upload.c ny_access.c

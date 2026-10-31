@@ -123,6 +123,25 @@ config NYABULA_CORE_WEB_EYEPROBE
 		its panels.  The stream the control panel uses (/eyes/stream)
 		asks for credentials either way.
 
+config NYABULA_CORE_CLOUD
+	bool "Outbound Cloud relay"
+	default n
+	depends on NYABULA_CORE_WEB && NYABULA_CORE_PRODUCT && CRYPTO_MBEDTLS
+	select NET_TCPPROTO_OPTIONS
+	select OPENSSL_MBEDTLS_WRAPPER
+	select NETUTILS_LIBWEBSOCKETS
+	---help---
+		Connect to a separately deployed Nyabula Cloud service. Relayed
+		panels retain the device's password authentication and permissions.
+
+config NYABULA_CORE_CLOUD_CA
+	string "Cloud TLS CA certificate bundle"
+	default "/config/nyabula/cloud-ca.pem"
+	depends on NYABULA_CORE_CLOUD
+	---help---
+		PEM CA bundle used to verify wss endpoints, including host names.
+		Provision the server's trusted CA before enabling a wss endpoint.
+
 config NYABULA_CORE_WEB_PORT
 	int "Port of the product Web service"
 	default 80
