@@ -3,6 +3,7 @@
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { PRIMARY_NAV, type NavItem } from '../nav';
+import { hasAppBack } from '../lib/shellNavigation';
 import { useSessionStore } from '../stores/session';
 import { PREVIEW_KEY, useDevStore } from '../stores/dev';
 
@@ -11,7 +12,6 @@ export function useShell() {
   const router = useRouter();
   const session = useSessionStore();
   const dev = useDevStore();
-
   const activeNav = computed(() => (route.meta.nav as string | undefined) ?? (route.name === 'connect' ? 'connect' : undefined));
   const inDevice = computed(() => typeof route.params.key === 'string');
   const deviceKey = computed(() => session.deviceKey ?? (dev.enabled ? PREVIEW_KEY : session.lastDeviceKey));
@@ -59,9 +59,11 @@ export function useShell() {
   const depth = computed(() => (typeof route.meta.depth === 'number' ? route.meta.depth : 0));
 
   function back(): void {
-    if (window.history.length > 1) router.back();
-    else if (activeNav.value && deviceKey.value) void router.push({ name: activeNav.value, params: { key: deviceKey.value } });
-    else void router.push({ name: 'connect' });
+    if (hasAppBack(router, route.fullPath)) router.back();
+    else {
+      const key = typeof route.params.key === 'string' ? route.params.key : deviceKey.value;
+      void router.replace(key ? { name: 'home', params: { key } } : { name: 'connect' });
+    }
   }
 
   return { nav: PRIMARY_NAV, activeNav, inDevice, deviceKey, go, connTone, connLabel, title, depth, back, session, route };
