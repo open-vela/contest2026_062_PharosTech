@@ -916,9 +916,17 @@ static void rk3576_usb_devevent(struct rk3576_usb_s *priv, uint32_t evt)
 static int rk3576_usb_interrupt(int irq, void *context, void *arg)
 {
   struct rk3576_usb_s *priv = &g_usbdev;
+  irqstate_t flags;
   uint32_t count;
   uint32_t evt;
 
+  /* Share the submission/cancellation critical section on SMP. The entire
+   * completion transition must be atomic: clearing busy before dequeuing
+   * the completed request otherwise lets another CPU restart its old TRB.
+   * Class callbacks may recursively submit the next request.
+   */
+
+  flags = enter_critical_section();
   count = rk3576_usb_getreg(DWC3_GEVNTCOUNT) & 0xffffu;
 
   while (count != 0)
@@ -949,6 +957,7 @@ static int rk3576_usb_interrupt(int irq, void *context, void *arg)
         }
     }
 
+  leave_critical_section(flags);
   return OK;
 }
 
