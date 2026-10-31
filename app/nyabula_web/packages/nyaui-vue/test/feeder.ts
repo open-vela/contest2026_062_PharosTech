@@ -1,11 +1,13 @@
 /* The feeder demo tree from Shared/nyaui/nyaui.md §5 (Simulator built-in). */
-import type { NyaUiTree } from '../src/types.js';
+import type { NyaUiNode, NyaUiTree } from '../src/types.js';
 
-export function feederTree(): NyaUiTree {
-  return JSON.parse(JSON.stringify(FEEDER)) as NyaUiTree;
+type ComponentTree = NyaUiTree & { root: NyaUiNode };
+
+export function feederTree(): ComponentTree {
+  return JSON.parse(JSON.stringify(FEEDER)) as ComponentTree;
 }
 
-const FEEDER: NyaUiTree = {
+const FEEDER: ComponentTree = {
   nyaui: 1,
   page: { title: '智能喂食器', icon: 'pets', placement: 'menu' },
   root: {
