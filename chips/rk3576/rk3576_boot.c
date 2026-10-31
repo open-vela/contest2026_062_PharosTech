@@ -98,6 +98,17 @@ static const struct arm_mmu_region g_mmu_regions[] = {
 
   MMU_REGION_FLAT_ENTRY("DRAM0_BANK2", CONFIG_RAMBANK2_ADDR,
                         CONFIG_RAMBANK2_SIZE, MT_NORMAL | MT_RW | MT_SECURE),
+
+#if defined(CONFIG_RK3576_RAMBANK2_ADDR) && CONFIG_RK3576_RAMBANK2_ADDR != 0
+  /* With the second bank confined elsewhere, nothing above covers the RAM
+   * the image itself runs from when that lies outside bank 1 (AMP: the
+   * carve-out at 0x4a400000).  Its primary heap and the idle stack live
+   * there, past the sections the MMU code maps on its own.
+   */
+
+  MMU_REGION_FLAT_ENTRY("DRAM_KERNEL", CONFIG_RAM_START, CONFIG_RAM_SIZE,
+                        MT_NORMAL | MT_RW | MT_SECURE),
+#endif
 };
 
 const struct arm_mmu_config g_mmu_config = {

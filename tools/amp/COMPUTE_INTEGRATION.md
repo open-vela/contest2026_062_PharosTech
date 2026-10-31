@@ -1,5 +1,7 @@
 # 板载 LLM、ASR、TTS 与摄像头对接说明（Draft）
 
+> 当前计算服务与摄像头所有权以 [COMPUTE_CURRENT.md](COMPUTE_CURRENT.md) 为准。下文保留当时的实验记录；Linux 摄像头服务不再属于本次交付。
+
 更新：2026-09-14。面向 Nyabula Core 与 Linux 计算域的接入开发。
 本文区分团队仓已实现代码、隔离镜像板测能力、拟议接口；接口名称不是已发布 ABI。
 本 Draft 不另建 Agent，不实现 Core 的产品编排，也不宣称 Core 跨OS业务接口已经交付。
@@ -67,6 +69,12 @@ nyampctl info
 大数据共享区目前仅预留，allocator、描述符编码与 release 协议均未实现。
 下一阶段先确定共享对象 ID、generation、offset、length、格式、归还时机，再开放业务 RPC。
 协议定义见 [protocol/README.md](protocol/README.md)。
+
+2026-09-20 补充：NYBS 描述符、LLM(service 8) 与 BLOB(service 9，模型按需交付) 已有编解码与
+主机单测；BLOB 是唯一由 Linux 发起请求的服务，方向、request_id 与 generation 规则见上述
+README 的「请求方向」一节。LLM LOAD 现在接受逻辑名（相对路径，如 `llm/model.rkllm` 或目录
+`asr`）：nyampd 先经 BLOB 从 `/data/models` 拉到 tmpfs `/tmp/models/` 并校验 SHA-256，再把
+本地路径交给后端；绝对路径保持原行为（SD 时代的测试不变）。上板未验证。
 
 ## 4. LLM 接入
 

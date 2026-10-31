@@ -111,6 +111,20 @@ extern const uint8_t g_sv6621_nv_end[];
 extern const uint8_t g_sv6621_calib_start[];
 extern const uint8_t g_sv6621_calib_end[];
 
+#ifdef CONFIG_KICKPI_K7_BLUETOOTH
+__asm__("  .section .rodata, \"a\"\n"
+        "  .align 4\n"
+        "  .global g_sv6621_bt_nv_start\n"
+        "g_sv6621_bt_nv_start:\n"
+        "  .incbin \"" CONFIG_KICKPI_K7_BLUETOOTH_NV "\"\n"
+        "  .global g_sv6621_bt_nv_end\n"
+        "g_sv6621_bt_nv_end:\n"
+        "  .previous\n");
+
+extern const uint8_t g_sv6621_bt_nv_start[];
+extern const uint8_t g_sv6621_bt_nv_end[];
+#endif
+
 static const gpio_pinset_t g_wifi_sdio_pins[] = {
   WIFI_SDIO_PIN(GPIO_PIN_B4), /* D0 */
   WIFI_SDIO_PIN(GPIO_PIN_B5), /* D1 */
@@ -142,6 +156,10 @@ static bool kickpi_k7_wifi_blob_is_zero(FAR const uint8_t *data,
                                         size_t length);
 static bool kickpi_k7_wifi_has_placeholders(void);
 static void kickpi_k7_wifi_warn_placeholders(void);
+#ifdef CONFIG_KICKPI_K7_BLUETOOTH
+static bool kickpi_k7_wifi_bt_nv_is_placeholder(void);
+static void kickpi_k7_wifi_warn_bt_placeholder(void);
+#endif
 static int kickpi_k7_wifi_config_sdio_pin(gpio_pinset_t pinset,
                                           unsigned int af,
                                           enum rk3576_gpio_pull_e pull,
@@ -252,6 +270,35 @@ static void kickpi_k7_wifi_warn_placeholders(void)
 
   syslog(LOG_WARNING, "%s", msg);
 }
+
+#ifdef CONFIG_KICKPI_K7_BLUETOOTH
+/****************************************************************************
+ * Name: kickpi_k7_wifi_bt_nv_is_placeholder
+ *
+ * Description:
+ *   Return true when the embedded Bluetooth NV image is entirely zero, so
+ *   Bluetooth can be skipped without tearing down an otherwise healthy
+ *   Wi-Fi bring-up.
+ ****************************************************************************/
+
+static bool kickpi_k7_wifi_bt_nv_is_placeholder(void)
+{
+  return kickpi_k7_wifi_blob_is_zero(
+      g_sv6621_bt_nv_start,
+      (size_t)(g_sv6621_bt_nv_end - g_sv6621_bt_nv_start));
+}
+
+/****************************************************************************
+ * Name: kickpi_k7_wifi_warn_bt_placeholder
+ ****************************************************************************/
+
+static void kickpi_k7_wifi_warn_bt_placeholder(void)
+{
+  syslog(LOG_WARNING,
+         "WARNING: SV6621 Bluetooth NV is a zero-filled placeholder; "
+         "Bluetooth is being skipped while Wi-Fi continues.\n");
+}
+#endif
 
 static int kickpi_k7_wifi_config_sdio_pin(gpio_pinset_t pinset,
                                           unsigned int af,
@@ -573,6 +620,11 @@ int kickpi_k7_wifi_initialize(void)
   config.nvram.length = g_sv6621_nv_end - g_sv6621_nv_start;
   config.calibration.data = g_sv6621_calib_start;
   config.calibration.length = g_sv6621_calib_end - g_sv6621_calib_start;
+#ifdef CONFIG_KICKPI_K7_BLUETOOTH
+  config.bluetooth_nv.data = g_sv6621_bt_nv_start;
+  config.bluetooth_nv.length = g_sv6621_bt_nv_end - g_sv6621_bt_nv_start;
+  config.bluetooth_device_id = 0;
+#endif
   config.regulatory = &g_kickpi_k7_wifi_regulatory_domains[0];
   config.regulatory_domains = g_kickpi_k7_wifi_regulatory_domains;
   config.regulatory_domain_count =
@@ -595,6 +647,23 @@ int kickpi_k7_wifi_initialize(void)
       g_kickpi_k7_wifi_dev = NULL;
       return ret;
     }
+
+#ifdef CONFIG_KICKPI_K7_BLUETOOTH
+  if (kickpi_k7_wifi_bt_nv_is_placeholder())
+    {
+      kickpi_k7_wifi_warn_bt_placeholder();
+    }
+  else
+    {
+      ret = sv6621_start_bluetooth(g_kickpi_k7_wifi_dev);
+      if (ret < 0)
+        {
+          sv6621_destroy(g_kickpi_k7_wifi_dev);
+          g_kickpi_k7_wifi_dev = NULL;
+          return ret;
+        }
+    }
+#endif
 
 #ifdef CONFIG_SV6621_PM
   ret = rk3576_gpio_get(WIFI_HOST_WAKE, &g_kickpi_k7_wifi_host_wake);

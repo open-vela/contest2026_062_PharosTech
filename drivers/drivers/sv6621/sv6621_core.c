@@ -1165,6 +1165,9 @@ static void sv6621_core_recovery_worker(FAR void *arg)
       enum sv6621_state_e state = SV6621_STATE_RECOVERING;
       uint16_t disconnect_reason = 0;
       bool report_disconnect = false;
+#ifdef CONFIG_SV6621_BLUETOOTH
+      bool restart_bluetooth;
+#endif
       int error = -EIO;
 
       ret = nxmutex_lock(&dev->lifecycle_lock);
@@ -1192,6 +1195,9 @@ static void sv6621_core_recovery_worker(FAR void *arg)
         }
 
       error = dev->status.last_error;
+#ifdef CONFIG_SV6621_BLUETOOTH
+      restart_bluetooth = sv6621_bluetooth_is_started(dev);
+#endif
       dev->recovery_pending = false;
       dev->status.state = SV6621_STATE_RECOVERING;
       dev->status.recovery_count++;
@@ -1238,6 +1244,9 @@ static void sv6621_core_recovery_worker(FAR void *arg)
         }
 
       sv6621_command_cancel(&dev->command, error);
+#ifdef CONFIG_SV6621_BLUETOOTH
+      sv6621_bluetooth_offline(dev, error);
+#endif
       sv6621_data_reset_credits(&dev->data);
       sv6621_data_set_tx_block(&dev->data, UINT8_MAX, false);
       sv6621_rx_stop(&dev->rx);
@@ -1263,6 +1272,12 @@ static void sv6621_core_recovery_worker(FAR void *arg)
       nxmutex_unlock(&dev->lifecycle_lock);
 
       ret = sv6621_start(dev);
+#ifdef CONFIG_SV6621_BLUETOOTH
+      if (ret == 0 && restart_bluetooth)
+        {
+          ret = sv6621_start_bluetooth(dev);
+        }
+#endif
       if (ret == 0)
         {
           sv6621_core_report(dev, SV6621_EVENT_RECOVERY_COMPLETE, NULL, 0);
@@ -2512,10 +2527,22 @@ int sv6621_create(FAR const struct sv6621_config_s *config,
       goto unsubscribe_service;
     }
 
-  ret = nxsem_init(&dev->recovery_sem, 0, 0);
+#ifdef CONFIG_SV6621_BLUETOOTH
+  ret = sv6621_bluetooth_attach(dev);
   if (ret < 0)
     {
       goto unsubscribe_command;
+    }
+#endif
+
+  ret = nxsem_init(&dev->recovery_sem, 0, 0);
+  if (ret < 0)
+    {
+#ifdef CONFIG_SV6621_BLUETOOTH
+      goto detach_bluetooth;
+#else
+      goto unsubscribe_command;
+#endif
     }
 
   ret = nxsem_init(&dev->recovery_exit_sem, 0, 0);
@@ -2591,6 +2618,10 @@ destroy_recovery_exit_sem:
   nxsem_destroy(&dev->recovery_exit_sem);
 destroy_recovery_sem:
   nxsem_destroy(&dev->recovery_sem);
+#ifdef CONFIG_SV6621_BLUETOOTH
+detach_bluetooth:
+  sv6621_bluetooth_detach(dev);
+#endif
 unsubscribe_command:
   sv6621_packet_unsubscribe(&dev->router, SV6621_CHANNEL_WIFI_COMMAND,
                             sv6621_command_channel_consumer, &dev->command);
@@ -2663,6 +2694,9 @@ void sv6621_destroy(FAR struct sv6621_dev_s *dev)
   work_cancel_sync(LPWORK, &dev->event_work);
   work_cancel_sync(LPWORK, &dev->scan_work);
   work_cancel_sync(LPWORK, &dev->station_work);
+#ifdef CONFIG_SV6621_BLUETOOTH
+  sv6621_bluetooth_detach(dev);
+#endif
   sv6621_packet_unsubscribe(&dev->router, SV6621_CHANNEL_WIFI_COMMAND,
                             sv6621_command_channel_consumer, &dev->command);
   sv6621_packet_unsubscribe(&dev->router, SV6621_CHANNEL_LOOPCHECK,
@@ -3023,6 +3057,65 @@ unlock_lifecycle:
   return ret;
 }
 
+#ifdef CONFIG_SV6621_BLUETOOTH
+int sv6621_start_bluetooth(FAR struct sv6621_dev_s *dev)
+{
+  enum sv6621_state_e state;
+  int ret;
+
+  if (dev == NULL)
+    {
+      return -EINVAL;
+    }
+
+  ret = nxmutex_lock(&dev->lifecycle_lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = nxmutex_lock(&dev->status_lock);
+  if (ret < 0)
+    {
+      nxmutex_unlock(&dev->lifecycle_lock);
+      return ret;
+    }
+
+  state = dev->status.state;
+  nxmutex_unlock(&dev->status_lock);
+  if (state != SV6621_STATE_WIFI_READY)
+    {
+      nxmutex_unlock(&dev->lifecycle_lock);
+      return -EAGAIN;
+    }
+
+  ret = sv6621_bluetooth_start(dev, &dev->config.bluetooth_nv,
+                               dev->config.bluetooth_device_id);
+  nxmutex_unlock(&dev->lifecycle_lock);
+  return ret;
+}
+
+int sv6621_stop_bluetooth(FAR struct sv6621_dev_s *dev)
+{
+  int ret;
+
+  if (dev == NULL)
+    {
+      return -EINVAL;
+    }
+
+  ret = nxmutex_lock(&dev->lifecycle_lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = sv6621_bluetooth_stop(dev);
+  nxmutex_unlock(&dev->lifecycle_lock);
+  return ret;
+}
+#endif
+
 int sv6621_stop(FAR struct sv6621_dev_s *dev)
 {
   enum sv6621_state_e state;
@@ -3091,6 +3184,9 @@ int sv6621_stop(FAR struct sv6621_dev_s *dev)
     }
 
   sv6621_command_cancel(&dev->command, -ESHUTDOWN);
+#ifdef CONFIG_SV6621_BLUETOOTH
+  sv6621_bluetooth_offline(dev, -ESHUTDOWN);
+#endif
   sv6621_data_reset_credits(&dev->data);
   sv6621_data_set_tx_block(&dev->data, UINT8_MAX, false);
   sv6621_rx_stop(&dev->rx);

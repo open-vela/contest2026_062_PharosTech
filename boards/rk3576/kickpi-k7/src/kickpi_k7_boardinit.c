@@ -65,10 +65,33 @@
 #include <nuttx/mmcsd.h>
 #endif
 
+#ifdef CONFIG_RK3576_VEPU
+/* Spelled with the subdirectory: the chip include path stops at chips/rk3576,
+ * and exporting that path to the encoder's own headers would put names like
+ * h264_syntax.h on the global include path for every file in the build.
+ */
+#include "vepu/rk3576_vepu.h"
+#endif
+
+#ifdef CONFIG_RK3576_VEPU_CODEC
+#include "vepu/rk3576_vepu_codec.h"
+#endif
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* The encoder's node, taken from where the camera's leaves off.  The
+ * capture device owns /dev/video0, so the encoder is /dev/video1 -- a
+ * separate node rather than a second function on the first one, because
+ * they are separate pieces of hardware with separate streaming state.
+ */
+
+#define KICKPI_K7_ENC_DEVPATH "/dev/video1"
+
 /****************************************************************************
  * Private Function Prototypes
  ****************************************************************************/
-
 #if defined(CONFIG_BOARD_LATE_INITIALIZE) && defined(CONFIG_RK3576_EMMC)
 static int kickpi_k7_emmc_pinmux(void);
 #endif
@@ -161,8 +184,7 @@ void rk3576_board_initialize(void)
 
 static int kickpi_k7_emmc_pinmux(void)
 {
-  gpio_pinset_t common =
-      GPIO_PORT1 | GPIO_ALT | GPIO_AF1 | GPIO_PULLUP | GPIO_DRV_STRENGTH_66OHM;
+  gpio_pinset_t common = GPIO_PORT1;
   FAR struct gpio_dev_s *handle;
   unsigned int pin;
   int ret;
@@ -433,6 +455,44 @@ void board_late_initialize(void)
   }
 #endif
 
+#ifdef CONFIG_KICKPI_K7_USBHOST
+  {
+    int ret = kickpi_k7_usbhost_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: USB-A host initialization failed: %d\n", ret);
+      }
+  }
+#endif
+
+#ifdef CONFIG_KICKPI_K7_MIPI_DSI
+  /* Bring up the on-board MIPI DSI LCD panel (DCPHY + DSI + VOP). */
+
+  {
+    int ret = kickpi_k7_mipi_dsi_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: kickpi_k7_mipi_dsi_initialize failed: %d\n",
+               ret);
+      }
+  }
+#endif
+
+#ifdef CONFIG_KICKPI_K7_HDMI
+  /* Bring up the HDMI output (HDMI TX + HDPTX PHY + VOP).  Mutually
+   * exclusive with the MIPI DSI panel above: rk3576_vop.c drives a single
+   * output instance, so only one of the two may be selected.
+   */
+
+  {
+    int ret = kickpi_k7_hdmi_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: kickpi_k7_hdmi_initialize failed: %d\n", ret);
+      }
+  }
+#endif
+
 #ifdef CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT
   {
     int ret = kickpi_k7_storage_initialize(
@@ -526,6 +586,99 @@ void board_late_initialize(void)
       }
   }
 #endif
+
+#ifdef CONFIG_KICKPI_K7_CAMERA
+  /* Bring up the MIPI CSI camera on CSI0.  This is a capture path that
+   * writes frames to DDR and shares no video port with the VOP, so it is
+   * independent of whichever display output is selected.  A failure only
+   * logs: a missing or mis-seated camera module must not stop the board
+   * from booting.
+   */
+
+  {
+    int ret = kickpi_k7_camera_initialize();
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: kickpi_k7_camera_initialize failed: %d\n",
+               ret);
+      }
+  }
+#endif /* CONFIG_KICKPI_K7_CAMERA */
+
+#ifdef CONFIG_RK3576_VEPU
+  /* Bring the hardware video encoder (VEPU0) up in two steps, each of which
+   * proves something the previous one cannot.
+   *
+   * The version register cannot answer until PD_VEPU0 is out of its initial
+   * reset and its register bus is clocked, so reading it is a real check of
+   * the power/clock/reset path.  It says nothing about whether the encoder
+   * can encode, though, which is what the self-test below is for.
+   *
+   * Preparation is separate from encoding because attaching an interrupt
+   * wants a context where blocking is allowed, and that is not something the
+   * first encode should have to arrange for itself.
+   *
+   * Every failure only logs, like the camera path: a broken encoder must not
+   * stop the board from booting.
+   */
+
+  {
+    int ret = rk3576_vepu_probe();
+
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: rk3576_vepu_probe failed: %d\n", ret);
+      }
+  }
+
+  {
+    int ret = rk3576_vepu_initialize();
+
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: rk3576_vepu_initialize failed: %d\n", ret);
+      }
+  }
+
+#ifdef CONFIG_RK3576_VEPU_SELFTEST
+  {
+    int ret = rk3576_vepu_selftest();
+
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: rk3576_vepu_selftest failed: %d\n", ret);
+      }
+  }
+#endif /* CONFIG_RK3576_VEPU_SELFTEST */
+
+#ifdef CONFIG_RK3576_VEPU_CODEC
+  /* The encoder as a device node, next to the capture device rather than on
+   * top of it: the camera owns /dev/video0, so the encoder takes the node
+   * after it.  Registration is separate from the hardware bring-up above
+   * because a board with an encoder and no one to use it should still boot.
+   */
+
+  {
+    int ret = rk3576_vepu_codec_register(KICKPI_K7_ENC_DEVPATH);
+
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: rk3576_vepu_codec_register failed: %d\n", ret);
+      }
+  }
+
+#ifdef CONFIG_RK3576_VEPU_CODEC_SELFTEST
+  {
+    int ret = rk3576_vepu_codec_selftest(KICKPI_K7_ENC_DEVPATH);
+
+    if (ret < 0)
+      {
+        syslog(LOG_ERR, "ERROR: rk3576_vepu_codec_selftest failed: %d\n", ret);
+      }
+  }
+#endif /* CONFIG_RK3576_VEPU_CODEC_SELFTEST */
+#endif /* CONFIG_RK3576_VEPU_CODEC */
+#endif /* CONFIG_RK3576_VEPU */
 
 #ifdef CONFIG_RK3576_RPTUN
   /* Bring up the AMP control transport to the Linux compute domain.

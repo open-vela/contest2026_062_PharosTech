@@ -31,8 +31,8 @@ if(CONFIG_GRAPHICS_NYABULA_DISPLAY)
     list(APPEND NYABULA_SRCS nyabula_te_sw.c)
   endif()
 
-  if(CONFIG_NYABULA_DISPLAY_TE_GPIO)
-    list(APPEND NYABULA_SRCS nyabula_te_gpio.c)
+  if(CONFIG_NYABULA_DISPLAY_TE_BOARDCTL)
+    list(APPEND NYABULA_SRCS nyabula_te_boardctl.c)
   endif()
 
   nuttx_add_application(

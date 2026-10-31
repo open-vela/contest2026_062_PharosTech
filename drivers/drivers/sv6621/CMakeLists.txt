@@ -45,3 +45,7 @@ if(CONFIG_SV6621)
             sv6621_wpa_eapol.c
             sv6621_wpa_handshake.c)
 endif()
+
+if(CONFIG_SV6621_BLUETOOTH)
+  target_sources(drivers PRIVATE sv6621_bluetooth.c)
+endif()

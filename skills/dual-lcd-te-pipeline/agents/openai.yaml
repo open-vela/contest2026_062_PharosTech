@@ -1,0 +1,4 @@
+interface:
+  display_name: "双圆屏 TE 与渲染流水"
+  short_description: "构建或排查共享 QSPI 的双 LCD 显示流水，处理 TE 时序、双缓冲、CPU/DMA 所有权、RGB5"
+  default_prompt: "使用 $dual-lcd-te-pipeline，根据现有版本和证据完成本次任务，给出可复现结果与未验证边界。"

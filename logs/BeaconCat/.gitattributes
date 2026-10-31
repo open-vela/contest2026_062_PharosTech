@@ -1,0 +1,2 @@
+# Preserve the exported bytes and their SHA-256 across Windows/Linux checkouts.
+*.jsonl -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

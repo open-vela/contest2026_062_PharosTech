@@ -29,20 +29,24 @@ if(CONFIG_RK3576_USB)
   list(APPEND SRCS rk3576_usb.c)
 endif()
 
+if(CONFIG_RK3576_USBHOST)
+  list(APPEND SRCS rk3576_usbhost.c)
+endif()
+
 if(CONFIG_RK3576_EMMC)
   list(APPEND SRCS rk3576_emmc.c)
 endif()
 
+# drivers/misc/addrenv.c defines the same up_addrenv_va_to_pa when
+# DEV_SIMPLE_ADDRENV is selected, and the two collide at link time.  Prefer
+# the generic copy where it is enabled: it is the maintained one, and this
+# file is a fork of an older revision of it.
+if(NOT CONFIG_DEV_SIMPLE_ADDRENV)
+  list(APPEND SRCS rk3576_addrenv.c)
+endif()
+
 if(CONFIG_RK3576_DMA)
   list(APPEND SRCS rk3576_dma.c)
-
-  # drivers/misc/addrenv.c defines the same up_addrenv_va_to_pa when
-  # DEV_SIMPLE_ADDRENV is selected, and the two collide at link time.  Prefer
-  # the generic copy where it is enabled: it is the maintained one, and this
-  # file is a fork of an older revision of it.
-  if(NOT CONFIG_DEV_SIMPLE_ADDRENV)
-    list(APPEND SRCS rk3576_addrenv.c)
-  endif()
 endif()
 
 if(CONFIG_RK3576_DMA_ALLOC)
@@ -90,6 +94,45 @@ endif()
 
 if(CONFIG_RK3576_SPI)
   list(APPEND SRCS rk3576_spi.c)
+endif()
+
+if(CONFIG_RK3576_MIPI_DCPHY)
+  list(APPEND SRCS rk3576_mipi_dcphy.c)
+endif()
+
+if(CONFIG_RK3576_MIPI_DSI)
+  list(APPEND SRCS rk3576_mipi_dsi.c)
+endif()
+
+if(CONFIG_RK3576_HDPTXPHY)
+  list(APPEND SRCS rk3576_hdptxphy.c)
+endif()
+
+if(CONFIG_RK3576_HDMI)
+  list(APPEND SRCS rk3576_hdmi.c)
+endif()
+
+if(CONFIG_RK3576_VOP)
+  list(APPEND SRCS rk3576_vop.c)
+endif()
+
+if(CONFIG_RK3576_MIPI_CSI)
+  list(APPEND SRCS rk3576_csi_host.c)
+endif()
+
+if(CONFIG_RK3576_VICAP)
+  list(APPEND SRCS rk3576_vicap.c)
+endif()
+
+if(CONFIG_RK3576_VEPU)
+  list(APPEND SRCS vepu/rk3576_vepu.c)
+  list(APPEND SRCS vepu/vepu510_regs.c)
+  list(APPEND SRCS vepu/vepu510_tables.c)
+  list(APPEND SRCS vepu/h264_syntax.c)
+endif()
+
+if(CONFIG_RK3576_VEPU_CODEC)
+  list(APPEND SRCS vepu/rk3576_vepu_codec.c)
 endif()
 
 target_sources(arch PRIVATE ${SRCS})

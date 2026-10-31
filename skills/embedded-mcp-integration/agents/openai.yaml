@@ -1,0 +1,4 @@
+interface:
+  display_name: "嵌入式 MCP 接入与权限验证"
+  short_description: "在设备产品中接入MCP客户端或服务器，处理独立凭据、principal/scope、工具发现、逐次审批、异步"
+  default_prompt: "使用 $embedded-mcp-integration，根据现有版本和证据完成本次任务，给出可复现结果与未验证边界。"

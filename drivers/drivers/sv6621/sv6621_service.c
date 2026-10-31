@@ -40,6 +40,8 @@
  ****************************************************************************/
 
 #define SV6621_SERVICE_WIFI_START 0x01
+#define SV6621_SERVICE_BT_START   0x04
+#define SV6621_SERVICE_BT_STOP    0x08
 
 /****************************************************************************
  * Private Data
@@ -248,6 +250,15 @@ int sv6621_service_init(FAR struct sv6621_service_s *service,
       return ret;
     }
 
+  ret = nxsem_init(&service->bt_completion, 0, 0);
+  if (ret < 0)
+    {
+      nxsem_destroy(&service->wifi_completion);
+      nxsem_destroy(&service->bsp_completion);
+      nxmutex_destroy(&service->lock);
+      return ret;
+    }
+
   service->event = event;
   service->event_arg = event_arg;
   return 0;
@@ -257,6 +268,7 @@ void sv6621_service_deinit(FAR struct sv6621_service_s *service)
 {
   if (service != NULL)
     {
+      nxsem_destroy(&service->bt_completion);
       nxsem_destroy(&service->wifi_completion);
       nxsem_destroy(&service->bsp_completion);
       nxmutex_destroy(&service->lock);
@@ -281,6 +293,7 @@ int sv6621_service_reset(FAR struct sv6621_service_s *service)
   memset(&service->status, 0, sizeof(service->status));
   nxsem_reset(&service->bsp_completion, 0);
   nxsem_reset(&service->wifi_completion, 0);
+  nxsem_reset(&service->bt_completion, 0);
   nxmutex_unlock(&service->lock);
   return 0;
 }
@@ -359,6 +372,89 @@ int sv6621_service_start_wifi(FAR struct sv6621_service_s *service,
                              &service->status.wifi_ready, timeout_ms);
 }
 
+int sv6621_service_start_bluetooth(FAR struct sv6621_service_s *service,
+                                   FAR struct sv6621_transport_s *transport,
+                                   uint32_t timeout_ms)
+{
+  struct sv6621_service_status_s status;
+  int ret;
+
+  if (service == NULL || timeout_ms == 0)
+    {
+      return -EINVAL;
+    }
+
+  ret = sv6621_transport_validate(transport);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = sv6621_service_get_status(service, &status);
+  if (ret < 0 || status.bt_ready)
+    {
+      return ret;
+    }
+
+  if (!status.bsp_ready)
+    {
+      return -EAGAIN;
+    }
+
+  if (status.failure < 0)
+    {
+      return status.failure;
+    }
+
+  nxsem_reset(&service->bt_completion, 0);
+  ret = transport->ops->write_byte(transport, SV6621_SDIO_FUNCTION_CONTROL,
+                                   SV6621_SDIO_AP_TO_CP_IRQ,
+                                   SV6621_SERVICE_BT_START);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  return sv6621_service_wait(service, &service->bt_completion,
+                             &service->status.bt_ready, timeout_ms);
+}
+
+int sv6621_service_stop_bluetooth(FAR struct sv6621_service_s *service,
+                                  FAR struct sv6621_transport_s *transport)
+{
+  int ret;
+
+  if (service == NULL)
+    {
+      return -EINVAL;
+    }
+
+  ret = sv6621_transport_validate(transport);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = transport->ops->write_byte(transport, SV6621_SDIO_FUNCTION_CONTROL,
+                                   SV6621_SDIO_AP_TO_CP_IRQ,
+                                   SV6621_SERVICE_BT_STOP);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = nxmutex_lock(&service->lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  service->status.bt_ready = false;
+  nxsem_reset(&service->bt_completion, 0);
+  nxmutex_unlock(&service->lock);
+  return 0;
+}
+
 void sv6621_service_channel_consumer(uint8_t channel,
                                      FAR const uint8_t encoded[4],
                                      FAR const uint8_t *payload, size_t length,
@@ -416,6 +512,7 @@ void sv6621_service_channel_consumer(uint8_t channel,
                                    sizeof(g_sv6621_bt_ready) - 1))
     {
       event = SV6621_SERVICE_EVENT_BT_READY;
+      completion = &service->bt_completion;
       ready = &service->status.bt_ready;
     }
   else
@@ -439,6 +536,7 @@ void sv6621_service_channel_consumer(uint8_t channel,
       service->status.failure = -EIO;
       nxsem_post(&service->bsp_completion);
       nxsem_post(&service->wifi_completion);
+      nxsem_post(&service->bt_completion);
     }
   else if (!*ready)
     {

@@ -60,6 +60,13 @@ struct nyabula_eye_engine_s
   struct nyabula_eye_frame_s target;
   enum nyabula_eye_expression_e expression;
   lv_timer_t *timer;
+
+  /* The two LVGL displays the eyes are drawn on, indexed by eye id.  Each
+   * display carries an LV_EVENT_REFR_START handler that composes and
+   * invalidates exactly that eye's canvas right before its own TE-aligned
+   * lv_refr_now(), so the two screens render independently. */
+  lv_display_t *disp[NYABULA_EYE_COUNT];
+
   uint32_t start_tick;
   uint32_t last_tick;
   uint32_t mode_start;
@@ -80,6 +87,16 @@ struct nyabula_eye_engine_s
   float sleep_end_top;
   float sleep_end_bottom;
   float zzz_mask;
+
+  /* Per-tick cached render inputs.  `blink_amount` is the live blink
+   * interpolation and `scene_frame` the composed scene state, both advanced
+   * exactly once per animation tick by animation_cb.  Each screen then
+   * reads these (plus a freshly-computed global_seconds / mode_seconds) when
+   * it renders, so the two screens share animation state but sample the
+   * animation TIME at their own TE-aligned refresh instant. */
+  float blink_amount;
+  struct nyabula_eye_scene_frame_s scene_frame;
+
   struct nyabula_eye_scene_request_s scene;
   struct nyabula_eye_scene_request_s previous_scene;
   struct nyabula_eye_scene_request_s pending_scene;
@@ -141,6 +158,7 @@ static void
 nyabula_eye_engine_update_scene_frame(struct nyabula_eye_engine_s *engine,
                                       struct nyabula_eye_scene_frame_s *frame);
 static void nyabula_eye_engine_animation_cb(lv_timer_t *timer);
+static void nyabula_eye_engine_refr_start_cb(lv_event_t *e);
 
 static float nyabula_eye_engine_clamp(float value, float minimum,
                                       float maximum)
@@ -695,8 +713,6 @@ nyabula_eye_engine_update_scene_frame(struct nyabula_eye_engine_s *engine,
 static void nyabula_eye_engine_animation_cb(lv_timer_t *timer)
 {
   struct nyabula_eye_engine_s *engine = lv_timer_get_user_data(timer);
-  struct nyabula_eye_frame_s frames[NYABULA_EYE_COUNT];
-  struct nyabula_eye_scene_frame_s scene_frame;
   uint32_t now = lv_tick_get();
   uint32_t delta_ms = lv_tick_elaps(engine->last_tick);
   uint32_t elapsed = lv_tick_elaps(engine->start_tick);
@@ -705,7 +721,6 @@ static void nyabula_eye_engine_animation_cb(lv_timer_t *timer)
   float mode_seconds = (float)lv_tick_elaps(engine->mode_start) / 1000.0f;
   float blink;
   float zzz_target;
-  int eye_id;
 
   if (delta_ms > NYABULA_EYE_MAX_FRAME_DELTA_MS)
     {
@@ -716,7 +731,7 @@ static void nyabula_eye_engine_animation_cb(lv_timer_t *timer)
   delta_seconds = (float)delta_ms / 1000.0f;
   nyabula_eye_engine_apply_expression(engine, mode_seconds);
   nyabula_eye_engine_update_saccade(engine, elapsed, global_seconds);
-  nyabula_eye_engine_update_scene_frame(engine, &scene_frame);
+  nyabula_eye_engine_update_scene_frame(engine, &engine->scene_frame);
 
   if (engine->explicit_gaze)
     {
@@ -748,23 +763,103 @@ static void nyabula_eye_engine_animation_cb(lv_timer_t *timer)
                    : 0.0f;
   engine->zzz_mask = nyabula_eye_engine_follow(engine->zzz_mask, zzz_target,
                                                22.0f, delta_seconds);
+  engine->blink_amount = blink;
 
-  for (eye_id = 0; eye_id < NYABULA_EYE_COUNT; eye_id++)
+  /* Advance the sleep particles exactly once per tick (stateful), using the
+   * just-updated shared frame body as the representative time/expression
+   * source.  Actual per-eye compositing happens later, per screen, at its
+   * TE-aligned refresh instant via nyabula_eye_engine_render_eye(). */
+  {
+    struct nyabula_eye_frame_s particle_frame = engine->current;
+
+    particle_frame.expression = engine->expression;
+    particle_frame.global_seconds = global_seconds;
+    nyabula_eye_renderer_update_particles(engine->renderer, &particle_frame);
+  }
+}
+
+void nyabula_eye_engine_render_eye(struct nyabula_eye_engine_s *engine,
+                                   int eye_id)
+{
+  struct nyabula_eye_frame_s frame;
+  float global_seconds;
+  float mode_seconds;
+
+  if (engine == NULL || engine->renderer == NULL || eye_id < 0 ||
+      eye_id >= NYABULA_EYE_COUNT)
     {
-      frames[eye_id] = engine->current;
-      frames[eye_id].expression = engine->expression;
-      frames[eye_id].global_seconds = global_seconds;
-      frames[eye_id].mode_seconds = mode_seconds;
-      frames[eye_id].zzz_mask = engine->zzz_mask;
-      frames[eye_id].iris_rgb = engine->iris_rgb[eye_id];
-      frames[eye_id].scene = scene_frame;
-      if (engine->blink_active && (engine->blink_eyes & (1 << eye_id)) != 0)
-        {
-          nyabula_eye_engine_apply_blink(&frames[eye_id], blink);
-        }
+      return;
     }
 
-  nyabula_eye_renderer_render(engine->renderer, frames);
+  /* Compose this eye's frame using the shared per-tick animation state
+   * (engine->current / expression / zzz_mask / blink_amount / scene_frame),
+   * but sample the animation TIME right now, at this eye's TE-aligned
+   * refresh instant.  This is the crux of the fix: the two screens advance
+   * their time-dependent animation independently instead of sharing one
+   * frozen clock snapshot. */
+  global_seconds = (float)lv_tick_elaps(engine->start_tick) / 1000.0f;
+  mode_seconds = (float)lv_tick_elaps(engine->mode_start) / 1000.0f;
+
+  frame = engine->current;
+  frame.expression = engine->expression;
+  frame.global_seconds = global_seconds;
+  frame.mode_seconds = mode_seconds;
+  frame.zzz_mask = engine->zzz_mask;
+  frame.iris_rgb = engine->iris_rgb[eye_id];
+  frame.scene = engine->scene_frame;
+  if (engine->blink_active && (engine->blink_eyes & (1 << eye_id)) != 0)
+    {
+      nyabula_eye_engine_apply_blink(&frame, engine->blink_amount);
+    }
+
+  nyabula_eye_renderer_render_eye(engine->renderer, eye_id, &frame);
+}
+
+/* LV_EVENT_REFR_START handler, registered on each eye's display.  LVGL
+ * sends this event on the display about to run lv_refr_now() -- a per-screen
+ * instant driven by that screen's own TE scan-start edge through the
+ * BlankGated scheduler.  Here we compose exactly this eye's frame and
+ * invalidate its canvas, so each screen samples the animation clock at its
+ * own refresh time (fixing the former "one screen lags" tear) without the
+ * display layer needing any knowledge of the eye renderer. */
+
+static void nyabula_eye_engine_refr_start_cb(lv_event_t *e)
+{
+  struct nyabula_eye_engine_s *engine = lv_event_get_user_data(e);
+  lv_display_t *disp = lv_event_get_current_target(e);
+  int eye_id;
+
+  if (engine == NULL || disp == NULL)
+    {
+      return;
+    }
+
+  /* Single-display mode (both eyes on one panel): render both eyes on this
+   * one display's refresh. */
+  if (engine->disp[NYABULA_EYE_LEFT] == engine->disp[NYABULA_EYE_RIGHT])
+    {
+      if (engine->disp[NYABULA_EYE_LEFT] != disp)
+        {
+          return;
+        }
+
+      for (eye_id = 0; eye_id < NYABULA_EYE_COUNT; eye_id++)
+        {
+          nyabula_eye_engine_render_eye(engine, eye_id);
+        }
+
+      return;
+    }
+
+  /* Dual-display mode: render only the eye whose display is refreshing. */
+  for (eye_id = 0; eye_id < NYABULA_EYE_COUNT; eye_id++)
+    {
+      if (engine->disp[eye_id] == disp)
+        {
+          nyabula_eye_engine_render_eye(engine, eye_id);
+          return;
+        }
+    }
 }
 
 struct nyabula_eye_engine_s *
@@ -790,6 +885,15 @@ nyabula_eye_engine_create_dual(lv_obj_t *left_parent, lv_obj_t *right_parent)
       free(engine);
       return NULL;
     }
+
+  /* Resolve each eye's display now so we can drive per-screen composition
+   * from that display's own LV_EVENT_REFR_START (sent just before its
+   * TE-aligned lv_refr_now).  Use left_parent's display for the left eye and
+   * right_parent's for the right; when both parents share one display (the
+   * single-screen create() path), both eyes land on that display and are
+   * composed together on its single refresh. */
+  engine->disp[NYABULA_EYE_LEFT] = lv_obj_get_display(left_parent);
+  engine->disp[NYABULA_EYE_RIGHT] = lv_obj_get_display(right_parent);
 
   engine->expression = NYABULA_EYE_EXPRESSION_IDLE;
   engine->ambient_light = NYABULA_EYE_DEFAULT_LIGHT;
@@ -823,6 +927,26 @@ nyabula_eye_engine_create_dual(lv_obj_t *left_parent, lv_obj_t *right_parent)
       return NULL;
     }
 
+  /* Register the per-screen REFR_START handler on each eye's display.  This
+   * is what makes each screen compose its frames at its own refresh instant;
+   * the display layer itself is never modified.  When both eyes share one
+   * display, register only once (the handler renders both eyes on that
+   * display's refresh). */
+  if (engine->disp[NYABULA_EYE_LEFT] != NULL)
+    {
+      lv_display_add_event_cb(engine->disp[NYABULA_EYE_LEFT],
+                              nyabula_eye_engine_refr_start_cb,
+                              LV_EVENT_REFR_START, engine);
+    }
+
+  if (engine->disp[NYABULA_EYE_RIGHT] != NULL &&
+      engine->disp[NYABULA_EYE_RIGHT] != engine->disp[NYABULA_EYE_LEFT])
+    {
+      lv_display_add_event_cb(engine->disp[NYABULA_EYE_RIGHT],
+                              nyabula_eye_engine_refr_start_cb,
+                              LV_EVENT_REFR_START, engine);
+    }
+
   nyabula_eye_engine_animation_cb(engine->timer);
   return engine;
 }
@@ -842,6 +966,22 @@ void nyabula_eye_engine_destroy(struct nyabula_eye_engine_s *engine)
   if (engine->timer != NULL)
     {
       lv_timer_delete(engine->timer);
+    }
+
+  /* Remove the per-screen REFR_START handlers we registered. */
+  if (engine->disp[NYABULA_EYE_LEFT] != NULL)
+    {
+      lv_display_remove_event_cb_with_user_data(
+          engine->disp[NYABULA_EYE_LEFT], nyabula_eye_engine_refr_start_cb,
+          engine);
+    }
+
+  if (engine->disp[NYABULA_EYE_RIGHT] != NULL &&
+      engine->disp[NYABULA_EYE_RIGHT] != engine->disp[NYABULA_EYE_LEFT])
+    {
+      lv_display_remove_event_cb_with_user_data(
+          engine->disp[NYABULA_EYE_RIGHT], nyabula_eye_engine_refr_start_cb,
+          engine);
     }
 
   nyabula_eye_renderer_destroy(engine->renderer);

@@ -34,7 +34,9 @@
 #include <errno.h>
 #include <nuttx/ioexpander/gpio.h>
 #include <nuttx/spi/qspi.h>
+#include <semaphore.h>
 #include <string.h>
+#include <sys/boardctl.h>
 #include <syslog.h>
 
 #include "rk3576_fspi.h"
@@ -69,18 +71,17 @@
 
 /* TE (vertical-sync) pins.  The panels output an HSYNC TE which the on-board
  * CPLD converts to a per-screen VSYNC TE before routing it to these GPIOs:
- *   - LCD0 TE -> GPIO3_C6  -> /dev/gpio1
- *   - LCD1 TE -> GPIO3_C5  -> /dev/gpio2
+ *   - LCD0 TE -> GPIO3_C6
+ *   - LCD1 TE -> GPIO3_C5
  * The VSYNC TE is a level signal: HIGH = blanking, LOW = scanning.  Both
  * edges carry a meaningful event (rising = blank-start, falling =
- * scan-start), so the pins are registered as both-edge interrupt inputs.
- * minor 0 is already taken by the on-board LED (/dev/gpio0). */
+ * scan-start), so the pins are configured as both-edge interrupt inputs
+ * with a driver-level callback (kickpi_k7_te_int_handler) that classifies
+ * the edge direction at interrupt time and posts the per-direction
+ * semaphore registered by the application. */
 
-#define GPIO_LCD_TE0            (GPIO_PORT3 | GPIO_PIN_C6)
-#define GPIO_LCD_TE1            (GPIO_PORT3 | GPIO_PIN_C5)
-
-#define KICKPI_K7_LCD_TE0_MINOR 1
-#define KICKPI_K7_LCD_TE1_MINOR 2
+#define GPIO_LCD_TE0 (GPIO_PORT3 | GPIO_PIN_C6)
+#define GPIO_LCD_TE1 (GPIO_PORT3 | GPIO_PIN_C5)
 
 /* IOMUX alternate function of the FSPI1 signal group */
 
@@ -176,8 +177,46 @@ static void lcd1_select_cb(bool sel)
     }
 }
 
-/* Claim one TE pin and register it as a both-edge interrupt character
- * device (/dev/gpioN).  The panels output an HSYNC TE; the on-board CPLD
+/* TE pin driver-level interrupt callback.  Signature mirrors NuttX
+ * pin_interrupt_t / rk3576_gpio_irq_callback_t.  It identifies the screen by
+ * matching the dev pointer against g_lcd_te_gpio[], reads the pin level to
+ * classify the edge direction at ISR time, and posts the matching semaphore
+ * registered by the application.  Runs in interrupt context: only
+ * sem_post() (interrupt-safe) and rk3576_gpio_read_bit() are used. */
+
+static int kickpi_k7_te_int_handler(FAR struct gpio_dev_s *dev, uint8_t pin)
+{
+  int sid;
+  bool level;
+#ifdef CONFIG_BOARDCTL_IOCTL
+  FAR sem_t *sem;
+#endif
+
+  UNUSED(pin);
+
+  sid = (dev == g_lcd_te_gpio[1]) ? 1 : 0;
+
+  /* Read the pin level now, while the edge is fresh: HIGH = blanking,
+   * LOW = scanning. */
+
+  level = rk3576_gpio_read_bit(dev);
+
+#ifdef CONFIG_BOARDCTL_IOCTL
+  /* Select the matching sem: bs = rising (blanking begins), ss = falling
+   * (scan begins).  Layout: index = sid*2 + (bs ? 0 : 1). */
+
+  sem = g_te_sem[(sid << 1) | (level ? 0 : 1)];
+  if (sem != NULL)
+    {
+      sem_post(sem);
+    }
+#endif
+
+  return OK;
+}
+
+/* Claim one TE pin and attach it as a both-edge interrupt with a
+ * driver-level callback.  The panels output an HSYNC TE; the on-board CPLD
  * converts it to a per-screen VSYNC TE before arriving here (HIGH blanking,
  * LOW scanning), so both edges carry a meaningful event.  The handle is
  * retained in g_lcd_te_gpio[] for the LCD driver lifetime. */
@@ -185,7 +224,6 @@ static void lcd1_select_cb(bool sel)
 static int kickpi_k7_lcd_te_register(int sid)
 {
   gpio_pinset_t pinset = (sid == 0) ? GPIO_LCD_TE0 : GPIO_LCD_TE1;
-  int minor = (sid == 0) ? KICKPI_K7_LCD_TE0_MINOR : KICKPI_K7_LCD_TE1_MINOR;
   FAR struct gpio_dev_s *handle;
   int ret;
 
@@ -203,24 +241,22 @@ static int kickpi_k7_lcd_te_register(int sid)
   rk3576_gpio_set_int_type(handle, RK3576_GPIO_INT_EDGE);
   rk3576_gpio_set_int_pol(handle, RK3576_GPIO_INT_BOTH_EDGE);
 
-  /* The /dev/gpioN upper half keys its interrupt support off gp_pintype:
-   * both-edge interrupt. */
+  /* Attach the driver-level interrupt callback (posting the app sem) and
+   * keep the handle for the ISR's screen identification. */
 
-  handle->gp_pintype = GPIO_INTERRUPT_BOTH_PIN;
-
-  ret = gpio_pin_register(handle, minor);
+  ret = rk3576_gpio_irq_attach(handle, kickpi_k7_te_int_handler);
   if (ret < 0)
     {
-      syslog(LOG_ERR, "ERROR: gpio_pin_register(/dev/gpio%d) failed: %d\n",
-             minor, ret);
+      syslog(LOG_ERR, "ERROR: TE%d irq_attach failed: %d\n", sid, ret);
       rk3576_gpio_put(handle);
       return ret;
     }
 
+  rk3576_gpio_irq_enable(handle);
+
   g_lcd_te_gpio[sid] = handle;
 
-  syslog(LOG_INFO, "LCD TE%d: /dev/gpio%d registered (%p)\n", sid, minor,
-         handle);
+  syslog(LOG_INFO, "LCD TE%d: irq attached (%p)\n", sid, handle);
 
   return OK;
 }
@@ -441,25 +477,24 @@ int kickpi_k7_lcd_initialize(void)
 
   syslog(LOG_INFO, "ST77916: /dev/lcd1 registered (%p)\n", lcd1);
 
-  /* Register the TE (vertical-sync) pins as both-edge interrupt character
-   * devices (/dev/gpio1 and /dev/gpio2).  Consumed by the nyabula_display
-   * app as its vertical-sync source. */
+  /* Register the TE (vertical-sync) pins as both-edge interrupts with a
+   * driver-level callback that posts the application's per-edge semaphores
+   * (registered later via board_ioctl/BOARDIOC_USER).  Consumed by the
+   * nyabula_display app as its vertical-sync source. */
 
-#ifdef CONFIG_DEV_GPIO
   ret = kickpi_k7_lcd_te_register(0);
   if (ret < 0)
     {
-      syslog(LOG_ERR, "ST77916: TE0 gpio register failed: %d\n", ret);
+      syslog(LOG_ERR, "ST77916: TE0 register failed: %d\n", ret);
       return ret;
     }
 
   ret = kickpi_k7_lcd_te_register(1);
   if (ret < 0)
     {
-      syslog(LOG_ERR, "ST77916: TE1 gpio register failed: %d\n", ret);
+      syslog(LOG_ERR, "ST77916: TE1 register failed: %d\n", ret);
       return ret;
     }
-#endif
 
   return OK;
 }

@@ -83,7 +83,7 @@ class TopologyTest(unittest.TestCase):
         result = self.root / "test.dtb"
         source.write_text('/dts-v1/; / { cpus { '
                           f'#address-cells = <{address_cells}>; #size-cells = <0>; '
-                          + "".join(nodes) + '}; };')
+                          + "".join(nodes) + '}; csi { compatible = "rockchip,rk3576-csi2-dphy"; status = "disabled"; }; };')
         subprocess.run(["dtc", "-I", "dts", "-O", "dtb", "-o", str(result),
                         str(source)], check=True, capture_output=True)
         return result

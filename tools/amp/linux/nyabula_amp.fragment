@@ -106,7 +106,7 @@ CONFIG_UNIX=y
 # CONFIG_BPF_SYSCALL is not set
 # CONFIG_PERF_EVENTS is not set
 
-# NPU, RGA, MPP and ISP stay enabled; display GPUs do not belong to this domain.
+# NPU, RGA and decode engines stay enabled; capture belongs to openvela.
 # CONFIG_MALI_BIFROST is not set
 # CONFIG_MALI_MIDGARD is not set
 # CONFIG_MALI400 is not set
@@ -115,12 +115,12 @@ CONFIG_UNIX=y
 # CONFIG_MFD_SERDES_DISPLAY is not set
 # CONFIG_LKDTM is not set
 
-# Retain the K7 camera/ISP and Rockchip media accelerators without pulling in
-# every tuner, DVB frontend, radio and test driver from the vendor defconfig.
+# Retain media infrastructure for compute accelerators, not capture.
+# camera_ownership.py also enforces this policy on validated seed configs.
 CONFIG_MEDIA_SUPPORT=y
 CONFIG_MEDIA_SUPPORT_FILTER=y
 # CONFIG_MEDIA_SUBDRV_AUTOSELECT is not set
-CONFIG_MEDIA_CAMERA_SUPPORT=y
+# CONFIG_MEDIA_CAMERA_SUPPORT is not set
 CONFIG_MEDIA_PLATFORM_SUPPORT=y
 # CONFIG_MEDIA_ANALOG_TV_SUPPORT is not set
 # CONFIG_MEDIA_DIGITAL_TV_SUPPORT is not set
@@ -128,10 +128,10 @@ CONFIG_MEDIA_PLATFORM_SUPPORT=y
 # CONFIG_MEDIA_SDR_SUPPORT is not set
 # CONFIG_MEDIA_TEST_SUPPORT is not set
 # CONFIG_MEDIA_CEC_SUPPORT is not set
-CONFIG_VIDEO_IMX415=y
+# CONFIG_VIDEO_IMX415 is not set
 
-# Disable controller PHYs selected by the broad vendor defconfig.  Camera
-# DPHYs stay enabled for the later ISP service profile.
+# Disable controller PHYs selected by the broad vendor defconfig.
+# The shared camera DCPHY belongs to openvela, including its DSI side.
 # CONFIG_TYPEC is not set
 # CONFIG_PHY_ROCKCHIP_EMMC is not set
 # CONFIG_PHY_ROCKCHIP_INNO_USB3 is not set

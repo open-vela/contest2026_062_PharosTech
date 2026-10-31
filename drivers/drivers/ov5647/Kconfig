@@ -1,0 +1,118 @@
+############################################################################
+# drivers/drivers/ov5647/Kconfig
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.  The
+# ASF licenses this file to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance with the
+# License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+# License for the specific language governing permissions and limitations
+# under the License.
+#
+############################################################################
+#
+# OmniVision OV5647 MIPI CSI-2 camera sensor driver.
+#
+############################################################################
+
+config VIDEO_OV5647
+	bool "OV5647 camera sensor"
+	default n
+	depends on DRIVERS_VIDEO
+	select I2C
+	---help---
+		Enable the OmniVision OV5647 MIPI CSI-2 camera sensor driver.
+
+		The driver implements the NuttX capture framework's sensor side
+		(struct imgsensor_s), so the board registers it together with a
+		SoC-side imgdata driver:
+
+		  ov5647_initialize(i2c, OV5647_I2C_ADDR);
+		  capture_register("/dev/video0", imgdata, sensors, 1);
+
+		The sensor outputs RAW10 Bayer data over two MIPI CSI-2 data
+		lanes.  Its control interface is SCCB, which is an I2C subset the
+		standard NuttX I2C driver drives directly.
+
+		Seven modes are implemented, in four geometries, and the
+		application chooses one for each stream it opens.  The board
+		reconfigures its VICAP/CSI path to match; see the board's
+		KICKPI_K7 camera source.
+
+		  1920x1080 @ 15   the middle of the array, read at full
+		                   resolution and cropped
+		  1296x960 @ 30    the 2x2 bin of the whole array
+		  1296x960 @ 15
+		  1280x720 @ 30    that binned readout, cropped to 16:9
+		  1280x720 @ 15
+		  640x480  @ 60    the binned array, subsampled
+		  640x480  @ 30
+
+		Each geometry runs at two rates, and the slower entry of a pair is
+		the one that can expose a darker scene: the frame is longer, and an
+		exposure cannot outlast the frame it is in.  A pair differs in
+		nothing else -- the two entries share a register set and a link
+		rate -- so moving between them costs no clock, no D-PHY rate and no
+		buffers.  Reaching the slower rate of the three faster geometries
+		does need a longer line as well as a longer frame, because their
+		vertical total is eleven bits and caps a frame at 2047 lines.
+
+		The 1920x1080 mode is the one that reads the middle of the pixel
+		array at full resolution, with no binning.  It therefore collects
+		less light per pixel than the binned modes do -- about 0.9 of a stop
+		less than 1296x960, after taking the longest exposure its 15 fps
+		readout allows -- and it shows less of the scene, because it crops.
+		What it gives in exchange is 1.67 times the pixels in a 16:9 shape.
+		It is also the only geometry that changes the capture geometry
+		without changing the MIPI link rate.
+
+		The 1280x720 mode changes the geometry without changing the link
+		rate either, but it gets there the other way: it keeps the binned
+		readout and crops it to 16:9.  That costs a quarter of the vertical
+		field of view and no light at all, and it cuts the pixels every
+		stage behind the sensor has to move to 74 per cent -- which is what
+		it is for, since the 1296x960 modes were measured running slightly
+		over their own frame period.  It is also the geometry the encoder
+		needs no padding or cropping for.
+
+		None of that is configurable here, and one part of it is worth
+		saying why.  The driver has to name a mode for the sensor to sit in
+		before an application has asked for anything -- a capture device
+		has to exist before it can be asked for a format, and the engine
+		behind this sensor has no scaler, so a device node implies a
+		geometry.  That mode is OV5647_MODE_DEFAULT in ov5647.h, and it is
+		not a Kconfig setting because it is not a decision: the table's
+		first entry, for the reason its comment gives.  Which mode a stream
+		runs at is the application's to choose, and it says so before it
+		opens the camera.
+if VIDEO_OV5647
+
+config OV5647_I2C_ADDR
+	hex "OV5647 I2C (SCCB) slave address"
+	default 0x36
+	range 0x08 0x77
+	depends on VIDEO_OV5647
+	---help---
+		Seven-bit SCCB address.  The OV5647's factory default is 0x36,
+		which is what a Raspberry Pi compatible module uses.
+
+config OV5647_I2C_FREQUENCY
+	int "OV5647 I2C (SCCB) bus frequency"
+	default 100000
+	depends on VIDEO_OV5647
+	---help---
+		SCCB is specified for 100 kHz.  The sensor tolerates more on most
+		modules, but the specification has no acknowledgement bit, so a
+		faster clock leaves less margin for the receiver to sample it
+		reliably.
+
+endif # VIDEO_OV5647

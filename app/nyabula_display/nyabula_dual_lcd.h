@@ -105,6 +105,15 @@ extern "C" {
 #define NYABULA_DUAL_LCD_FRAME_BYTES \
   (NYABULA_DUAL_LCD_DEF_WIDTH * NYABULA_DUAL_LCD_DEF_HEIGHT * 2)
 
+/* Size of one LVGL draw buffer in RGB888 (3 bytes per pixel).  LVGL renders
+ * into the RGB888 draw buffer, then flush_cb converts it to RGB565 (with
+ * ordered dithering + byte swap) into the RGB565 DMA buffer above.  Keeping
+ * the two formats in separate buffers decouples the 8-bit render path from
+ * the 16-bit DMA path so the existing 565 double-buffer machinery is
+ * unchanged. */
+#define NYABULA_DUAL_LCD_DRAW_BYTES \
+  (NYABULA_DUAL_LCD_DEF_WIDTH * NYABULA_DUAL_LCD_DEF_HEIGHT * 3)
+
 /* Default refresh rate in Hz.  The TE source (see nyabula_te.h) derives the
  * software frame clock from this when the SW source is selected. */
 
@@ -160,14 +169,22 @@ struct nyabula_screen
   /* Geometry */
   int width;
   int height;
-  int stride;        /* Bytes per scan line (RGB565 => width*2) */
-  uint32_t buf_size; /* Bytes per full frame buffer */
-  int total_lines;   /* height */
+  int stride;      /* Bytes per scan line of the RGB565 DMA buffer (width*2) */
+  int draw_stride; /* Bytes per scan line of the RGB888 draw buffer (width*3)
+                    */
+  uint32_t buf_size;  /* Bytes per full frame RGB565 DMA buffer */
+  uint32_t draw_size; /* Bytes per full-frame RGB888 draw buffer */
+  int total_lines;    /* height */
 
   struct lcddev_area_align_s align;
 
-  /* Double buffers (full screen each) */
+  /* Double buffers (full screen each, RGB565, DMA-direct to the panel) */
   nyabula_buf_t buf[2];
+
+  /* LVGL draw buffers (full screen each, RGB888).  LVGL renders here, then
+   * flush_cb converts to RGB565 into buf[].  Dynamically allocated (need not
+   * be DMA-aligned: only buf[] is DMA'd). */
+  uint8_t *draw_data[2];
 
   /* LVGL draw-buffer descriptors bound to buf[].data.  The algorithm picks
    * the offscreen slot to render into; request_render redirects LVGL to that

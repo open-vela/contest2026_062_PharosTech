@@ -1,0 +1,4 @@
+interface:
+  display_name: "ARM64 Linux 与 openvela AMP 启动"
+  short_description: "建立或排查 ARM64 Linux/openvela 双OS启动，明确 CPU、RAM、GIC、时钟和外设所"
+  default_prompt: "使用 $arm64-linux-nuttx-amp，根据现有版本和证据完成本次任务，给出可复现结果与未验证边界。"

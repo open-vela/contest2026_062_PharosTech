@@ -82,8 +82,22 @@ struct nyabula_eye_renderer_s;
 struct nyabula_eye_renderer_s *
 nyabula_eye_renderer_create(lv_obj_t *left_parent, lv_obj_t *right_parent);
 void nyabula_eye_renderer_destroy(struct nyabula_eye_renderer_s *renderer);
-void nyabula_eye_renderer_render(
+
+/* Advance the sleep particles (z-z-z) once per animation tick.  This is
+ * stateful (r->last_time / r->znext) and must be called exactly once per
+ * tick from the engine, independent of how many eyes are rendered that
+ * tick.  A representative frame (any eye) supplies global_seconds. */
+void nyabula_eye_renderer_update_particles(
     struct nyabula_eye_renderer_s *renderer,
-    const struct nyabula_eye_frame_s frames[NYABULA_EYE_COUNT]);
+    const struct nyabula_eye_frame_s *frame);
+
+/* Render a single eye (id == NYABULA_EYE_LEFT or NYABULA_EYE_RIGHT) into
+ * its own canvas and invalidate only that canvas.  Call this once per eye
+ * at the moment that eye's display is about to be refreshed (TE-aligned by
+ * nyabula_display), so each eye is composited with the latest frame data
+ * instead of sharing one stale frame snapshot. */
+void nyabula_eye_renderer_render_eye(struct nyabula_eye_renderer_s *renderer,
+                                     int id,
+                                     const struct nyabula_eye_frame_s *frame);
 
 #endif /* __APP_NYABULA_SRC_NYABULA_EYE_INTERNAL_H */
