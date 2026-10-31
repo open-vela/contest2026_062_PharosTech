@@ -1,0 +1,57 @@
+--- a/src/core/agent_loop.c
++++ b/src/core/agent_loop.c
+@@ -1088,6 +1088,7 @@
+         }
+         send_working_status(msg, iteration);
+ 
++        bool cascade_used = false;
+         llm_response_t resp;
+         struct timeval tv_start, tv_end;
+         gettimeofday(&tv_start, NULL);
+@@ -1162,6 +1163,7 @@
+             break;
+         }
+ 
++process_response:
+         /* Report success to router */
+         if (router_idx >= 0) {
+             llm_router_report_success(router_idx);
+@@ -1182,7 +1184,8 @@
+              * for a SIMPLE query but the response looks inadequate,
+              * retry once with PREMIUM tier. */
+             bool cascade_retry = false;
+-            if (llm_router_get_profile() == LLM_ROUTE_AUTO
++            if (!cascade_used
++                && llm_router_get_profile() == LLM_ROUTE_AUTO
+                 && complexity == LLM_COMPLEXITY_SIMPLE
+                 && router_idx >= 0
+                 && resp.text != NULL) {
+@@ -1239,15 +1242,21 @@
+                         break;
+                     }
+ 
+-                    if (err == OK && resp.text && resp.text_len > 0) {
+-                        final_text = strdup(resp.text);
++                    if (err == OK && (resp.tool_use
++                        || (resp.text && resp.text_len > 0))) {
++                        /* Escalation can return an actionable tool call,
++                         * including one with accompanying reply text. Keep
++                         * it alive for normal accounting and dispatch; text
++                         * alone must not replace the approval operation.
++                         */
+                         free(fallback_text);
+-                        fallback_text = NULL;
+-                    } else {
+-                        /* Premium failed — fall back to cheap response */
+-                        final_text = fallback_text;
+-                        fallback_text = NULL;
++                        cascade_used = true;
++                        goto process_response;
+                     }
++
++                    /* Premium failed — fall back to cheap response. */
++                    final_text = fallback_text;
++                    fallback_text = NULL;
+                     agent_trace_step(&trace, iteration, NULL,
+                         latency_ms, err == OK);
+                     llm_response_free(&resp);
