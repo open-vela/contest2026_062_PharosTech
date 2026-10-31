@@ -9,6 +9,8 @@ import { useSessionStore } from '../../stores/session';
 import { otaEndpoint } from '../../lib/deviceMaint';
 import { MIRROR_FRAME, MirrorPage, MirrorParser } from '../../lib/eyeMirror';
 
+const props = defineProps<{ embedded?: boolean; autoStart?: boolean }>();
+
 const WANTED_SLOT = 'nyabula.eyeMirror.on';
 const RETRY_MS = 3000;
 /** Below this many pages per second per eye the link is the limit. */
@@ -171,7 +173,7 @@ function fullscreen(): void {
 }
 
 onMounted(() => {
-  try { wanted.value = localStorage.getItem(WANTED_SLOT) === '1'; } catch { /* private mode */ }
+  try { wanted.value = !!props.autoStart || localStorage.getItem(WANTED_SLOT) === '1'; } catch { wanted.value = !!props.autoStart; }
   document.addEventListener('visibilitychange', apply);
   apply();
 });
@@ -183,23 +185,24 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <MdCard title="屏幕实时画面">
+  <component :is="embedded ? 'div' : MdCard" :title="embedded ? undefined : '屏幕实时画面'" :class="{ 'mirror-embedded': embedded }">
     <p v-if="!available" class="hint">屏幕镜像只在设备自己的页面上可用（浏览器直接打开设备地址）。</p>
     <template v-else>
       <div ref="fullscreenHost" class="eyes" :class="{ idle: phase !== 'live' }">
         <canvas :ref="canvases[0]" width="360" height="360" aria-label="左眼屏幕" />
         <canvas :ref="canvases[1]" width="360" height="360" aria-label="右眼屏幕" />
       </div>
-      <div class="bar">
+      <div v-if="!embedded" class="bar">
         <span class="state" :class="phase" role="status">{{ status }}</span>
         <span class="grow" />
         <MdButton v-if="wanted" variant="text" @click="quality">{{ half ? '切到高清' : '切到流畅' }}</MdButton>
         <MdButton v-if="phase === 'live'" variant="text" @click="fullscreen">全屏</MdButton>
         <MdButton :variant="wanted ? 'tonal' : 'filled'" @click="toggle">{{ wanted ? '停止' : '开始观看' }}</MdButton>
       </div>
-      <p class="hint">两块眼睛屏幕上正在显示的内容，给手边没有屏幕的人看。只有这里开着时设备才会传画面，关掉或离开页面就停。</p>
+      <p v-if="!embedded" class="hint">两块眼睛屏幕上正在显示的内容，给手边没有屏幕的人看。只有这里开着时设备才会传画面，关掉或离开页面就停。</p>
+      <span v-if="embedded && phase !== 'live'" class="embedded-state" role="status">{{ status }}</span>
     </template>
-  </MdCard>
+  </component>
 </template>
 
 <style scoped>
@@ -210,8 +213,12 @@ onBeforeUnmount(() => {
 .eyes:fullscreen canvas { max-width: min(42vw, 84vh); }
 .bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .grow { flex: 1; }
-.state { font-size: 13px; color: var(--md-sys-color-on-surface-variant); font-variant-numeric: tabular-nums; }
-.state.live { color: var(--md-sys-color-primary); }
-.state.error { color: var(--md-sys-color-error); }
-.hint { margin: 10px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--md-sys-color-on-surface-variant); }
+.state { font-size: 13px; color: var(--md-on-surface-variant); font-variant-numeric: tabular-nums; }
+.state.live { color: var(--md-primary); }
+.state.error { color: var(--md-error); }
+.hint { margin: 10px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--md-on-surface-variant); }
+.mirror-embedded { position: relative; width: 100%; height: 100%; container-type: size; }
+.mirror-embedded .eyes { height: 100%; padding: 0; gap: 16px; align-items: center; background: transparent; }
+.mirror-embedded .eyes canvas { width: min(100%, 84cqh); }
+.embedded-state { position: absolute; inset: auto 8px 4px; text-align: center; color: var(--md-on-surface-variant); font-size: 13px; }
 </style>
