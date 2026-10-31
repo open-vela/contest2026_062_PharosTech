@@ -1,0 +1,16 @@
+############################################################################
+# drivers/drivers/gt911/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Goodix GT911 touch controller driver -- compiled into libdrivers.a (kernel
+# side).  Collected by the parent platform Make.defs; compilation happens in
+# nuttx/drivers/, so VPATH/DEPPATH are relative to the `platform/` link.
+############################################################################
+
+ifeq ($(CONFIG_INPUT_GT911),y)
+CSRCS += gt911.c
+
+DEPPATH += --dep-path platform$(DELIM)drivers$(DELIM)gt911
+VPATH += :platform$(DELIM)drivers$(DELIM)gt911
+endif

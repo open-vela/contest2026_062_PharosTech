@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rockchip CSI 相机连续取帧"
+  short_description: "在 Rockchip Linux 计算域带起 MIPI CSI 相机，从芯片ACK、sensor/DPHY/"
+  default_prompt: "使用 $rockchip-csi-camera-bringup，根据现有版本和证据完成本次任务，给出可复现结果与未验证边界。"

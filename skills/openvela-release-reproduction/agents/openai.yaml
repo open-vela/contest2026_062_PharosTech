@@ -1,0 +1,4 @@
+interface:
+  display_name: "openvela 交付构建复现"
+  short_description: "把能在开发树运行的openvela项目整理成可复现的构建交付，固定多仓manifest、未提交补丁、生成资源"
+  default_prompt: "使用 $openvela-release-reproduction，根据现有版本和证据完成本次任务，给出可复现结果与未验证边界。"

@@ -12,6 +12,22 @@ if(CONFIG_KICKPI_K7_WIFI)
     PRIVATE
       "-Wa,-I${NUTTX_BOARD_DIR}/../../../drivers/drivers/sv6621/firmware")
 endif()
+      
+if(CONFIG_KICKPI_K7_VIDEO)
+  list(APPEND SRCS kickpi_k7_video.c)
+endif()
+
+if(CONFIG_KICKPI_K7_MIPI_DSI)
+  list(APPEND SRCS kickpi_k7_mipi_dsi.c)
+endif()
+
+if(CONFIG_KICKPI_K7_TOUCH)
+  list(APPEND SRCS kickpi_k7_touch.c)
+endif()
+
+if(CONFIG_KICKPI_K7_HDMI)
+  list(APPEND SRCS kickpi_k7_hdmi.c)
+endif()
 
 if(CONFIG_KICKPI_K7_STORAGE_AUTOMOUNT)
   list(APPEND SRCS kickpi_k7_storage.c)
@@ -27,6 +43,14 @@ endif()
 
 if(CONFIG_BOARDCTL_IOCTL)
   list(APPEND SRCS kickpi_k7_boardctl.c)
+endif()
+
+if(CONFIG_KICKPI_K7_USBHOST)
+  list(APPEND SRCS kickpi_k7_usbhost.c)
+endif()
+
+if(CONFIG_KICKPI_K7_CAMERA)
+  list(APPEND SRCS kickpi_k7_camera.c)
 endif()
 
 target_sources(board PRIVATE ${SRCS})

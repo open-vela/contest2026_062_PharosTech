@@ -29,6 +29,8 @@
 
 #include <nuttx/config.h>
 
+struct usbhost_connection_s;
+
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
@@ -58,6 +60,20 @@ extern "C" {
  ****************************************************************************/
 
 int rk3576_usb_initialize(void);
+
+/****************************************************************************
+ * Name: rk3576_usbhost_initialize
+ *
+ * Description:
+ *   Put USB1 into host mode and attach its xHCI register window and fixed
+ *   interrupt to the NuttX USB host stack.
+ *
+ * Returned Value:
+ *   A USB host connection on success; NULL on failure.
+ *
+ ****************************************************************************/
+
+FAR struct usbhost_connection_s *rk3576_usbhost_initialize(void);
 
 #undef EXTERN
 #ifdef __cplusplus

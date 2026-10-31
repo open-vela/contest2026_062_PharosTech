@@ -481,6 +481,21 @@ static int rk3576_i2c_transfer(struct i2c_master_s *dev,
         {
           break;
         }
+
+      /* rk3576_i2c_poll() reports success by returning the interrupt-pending
+       * value it matched, which is an arbitrary positive bit mask.  The I2C
+       * master contract, however, is "OK, or a negated errno", and callers
+       * reasonably test the result against OK -- so a successful transfer
+       * has to be reported as OK here rather than passed through raw.
+       *
+       * Left un-normalised this is silent and nasty: every caller that
+       * checks `ret < 0` sees success, while every caller that checks
+       * `ret == OK` sees a failure it cannot explain -- which is exactly how
+       * it surfaced, as a capture device whose sensor driver initialised
+       * correctly yet whose open() returned -ENODEV.
+       */
+
+      ret = OK;
     }
 
   nxmutex_unlock(&priv->lock);

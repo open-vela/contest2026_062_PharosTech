@@ -71,7 +71,17 @@
 
 /* USB OTG (Synopsys DesignWare USB3 / DWC3) */
 
-#define RK3576_USB0_ADDR 0x23000000 /* USB OTG0 (DWC3)       */
+#define RK3576_USB0_ADDR 0x23000000 /* USB OTG0 (DWC3) */
+#define RK3576_USB1_ADDR 0x23400000 /* USB OTG1 (DWC3) */
+
+/* USB and PIPE PHY register files */
+
+#define RK3576_USB_GRF_ADDR       0x2601e000
+#define RK3576_PHP_GRF_ADDR       0x26020000
+#define RK3576_PMU0_GRF_ADDR      0x26024000
+#define RK3576_PIPE_PHY1_GRF_ADDR 0x2602a000
+#define RK3576_USB2PHY_GRF_ADDR   0x2602e000
+#define RK3576_COMBPHY1_ADDR      0x2b060000
 
 /* I2C controller (Synopsys/Rockchip RK I2C, "rk3399-i2c" compatible). */
 
@@ -107,6 +117,81 @@
 #define RK3576_SPI3_ADDR 0x2AD20000
 #define RK3576_SPI4_ADDR 0x2AD30000
 
+/* Video Output Processor (VOP) */
+
+#define RK3576_VOP_ADDR 0x27D00000 /* VOP (VO0 domain, 64KB) */
+
+/* Video encoder (VEPU510) -- H.264/H.265 and JPEG, in the VPU power
+ * cluster next to RGA (0x27920000), VDPP (0x27960000) and RKVDEC
+ * (0x27B00000).
+ *
+ * VEPU0 and VEPU1 are two instances of the same IP in separate power
+ * domains (PD_VEPU0 / PD_VEPU1).  This tree drives VEPU0 only.
+ */
+
+#define RK3576_VEPU0_ADDR 0x27A00000 /* VEPU510 instance 0 (64KB) */
+#define RK3576_VEPU1_ADDR 0x27A10000 /* VEPU510 instance 1 (64KB) */
+
+#define RK3576_VEPU_SIZE  0x00010000
+
+/* MIPI DSI host controller + MIPI D-PHY (DCPHY) */
+
+#define RK3576_DSIHOST_ADDR   0x27D80000 /* DSI host controller (DSI2.0) */
+#define RK3576_DCPHY_ADDR     0x2B020000 /* MIPI D/C-PHY combo APB */
+#define RK3576_DCPHY_GRF_ADDR 0x26034000 /* MIPI DCPHY GRF */
+#define RK3576_VO0_GRF_ADDR                       \
+  0x2601A000 /* VO0 GRF (SOC_CON10 = DSI IPI cfg) \
+              */
+
+/* Video Capture (VICAP) and the MIPI CSI-2 receive path (TRM Part 2, Ch. 6
+ * and Ch. 19).
+ *
+ * The capture path is a three-stage pipeline:
+ *
+ *   D-PHY RX  ->  CSI HOST (CSI-2 protocol parser)  ->  VICAP (capture,
+ *                                                       crop, DMA to DDR)
+ *
+ * There are five CSI HOSTs but only three RX PHYs, so the hosts are wired
+ * the same way: HOST0 is fed by the DCPHY RX (slave) lanes, HOST1+HOST2
+ * share CSIDPHY0 and HOST3+HOST4 share CSIDPHY1.  VICAP's MIPIn input is
+ * hard-wired to CSIHOSTn with no mux in between.
+ */
+
+#define RK3576_VICAP_ADDR    0x27C10000 /* VICAP core (PD_VI, 128KB) */
+
+#define RK3576_CSIHOST0_ADDR 0x27C80000 /* CSI-2 parser 0 (64KB) */
+#define RK3576_CSIHOST1_ADDR 0x27C90000
+#define RK3576_CSIHOST2_ADDR 0x27CA0000
+#define RK3576_CSIHOST3_ADDR 0x27CB0000
+#define RK3576_CSIHOST4_ADDR 0x27CC0000
+
+/* RX-only MIPI CSI D-PHYs -- a separate block from the DSI-side DCPHY.
+ * CSIDPHY0 sits in the PMU1 PHY cluster, CSIDPHY1 in the main CRU domain.
+ */
+
+#define RK3576_CSIDPHY0_ADDR 0x2B030000 /* MIPI CSI D-PHY 0 (64KB) */
+#define RK3576_CSIDPHY1_ADDR 0x2B070000 /* MIPI CSI D-PHY 1 (64KB) */
+
+/* HDMI TX controller and HDMI/eDP combo PHY.
+ *
+ * The HDMITX controller and the combo PHY are two separate APB slaves:
+ * the controller (PD_VO0 domain, 0x27DA0000) implements the HDMI link
+ * layer, while the PHY (VD_HDPTXPHY domain, 0x2B000000) contains the PLL,
+ * the four serialisers and the sideband block.  The PHY's control/status
+ * GRF (0x26032000) carries the power-up controls (bias/bgr/pll enable) and
+ * the ready flags (o_pll_lock_done / o_phy_clk_rdy / o_phy_rdy).
+ *
+ * Only one of HDMI and eDP can be active at a time: they share this PHY
+ * ("the VOP can only work in HDMI or eDP mode", TRM Part 2, 11.3.3).
+ */
+
+#define RK3576_HDMITX_ADDR   0x27DA0000 /* HDMI TX controller (128KB)    */
+#define RK3576_HDPTXPHY_ADDR 0x2B000000 /* HDMI/eDP combo PHY APB (64KB) */
+#define RK3576_HDPTXPHY_GRF_ADDR \
+  0x26032000 /* HDPTX PHY control / status GRF */
+#define RK3576_VCCIO6_IOC_ADDR \
+  0x2604A000 /* VCCIO6 IOC: HPD / DDC / CEC pads */
+
 /* Rockchip FSPI (Flexible Serial Peripheral Interface) */
 
 #define RK3576_FSPI0_ADDR 0x2A340000
@@ -120,6 +205,10 @@
 #define RK3576_WDT_S_ADDR   0x2A4C0000 /* WDT_S    - secure WDT     */
 #define RK3576_WDT_NS_ADDR  0x2ACE0000 /* WDT_NS   - non-secure WDT */
 #define RK3576_BUS_WDT_ADDR 0x2AEB0000 /* BUS_WDT  - reset BUS_MCU  */
+
+/* Power Management Unit (PMU) */
+
+#define RK3576_PMU_ADDR 0x27360000 /* PMU (power-domain & PMC control) */
 
 /* Clock & Reset Unit */
 

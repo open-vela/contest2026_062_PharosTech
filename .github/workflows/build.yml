@@ -182,14 +182,23 @@ jobs:
           bash "${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}/tools/amp/nuttx/apply.sh" \
             "${{ env.OPENVELA_DIR }}/nuttx"
 
+      - name: Prepare Core service regression dependencies
+        if: matrix.config == 'configs/core_services'
+        run: |
+          ROOT="${{ env.OPENVELA_DIR }}"
+          TEAM="$ROOT/${{ env.REPO_NAME }}"
+          patch --batch -d "$ROOT/apps" -p1 --forward < "$TEAM/patches/apps-wamr-context-default.patch"
+          patch --batch -d "$ROOT/nuttx" -p1 --forward < "$TEAM/patches/nuttx-audio-fake-stop.patch"
+          echo 'CXXFLAGS=-D_LIBCPP_WORKAROUND_OBJCXX_COMPILER_INTRINSICS' >> "$GITHUB_ENV"
+
       # CMake 构建
       - uses: actions/setup-node@v4
-        if: matrix.config == 'configs/core_eye'
+        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services'
         with:
           node-version: '22'
 
       - name: Generate Eye glyph tables from official Noto Sans
-        if: matrix.config == 'configs/core_eye'
+        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services'
         run: |
           cd ${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}
           python3 app/nyabula/tools/test_generate_fonts.py
@@ -200,18 +209,35 @@ jobs:
         continue-on-error: true
         run: |
           cd ${{ env.OPENVELA_DIR }}
-          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} --cmake
+          EXTRA=()
+          if [ "${{ matrix.config }}" = configs/core_services ]; then
+            EXTRA=(-e -D_LIBCPP_WORKAROUND_OBJCXX_COMPILER_INTRINSICS)
+          fi
+          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} "${EXTRA[@]}" --cmake
+
+      - name: Exercise native Core services
+        if: matrix.config == 'configs/core_services' && steps.cmake_build.outcome == 'success'
+        run: |
+          ROOT="${{ env.OPENVELA_DIR }}"
+          TEAM="$ROOT/${{ env.REPO_NAME }}"
+          SIM=$(find "$ROOT/cmake_out" -type f -name nuttx -print -quit)
+          test -n "$SIM"
+          for name in product_records product_timers product_alarms product_web; do
+            python3 "$TEAM/tools/nyabula_core/tests/${name}_sim.py" "$SIM" --output "$RUNNER_TEMP/$name"
+          done
 
       - name: Upload CMake artifact
         if: steps.cmake_build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.CONFIG_SLUG }}-cmake
-          path: ${{ env.OPENVELA_DIR }}/cmake_out/**/nuttx.bin
+          path: |
+            ${{ env.OPENVELA_DIR }}/cmake_out/**/nuttx.bin
+            ${{ env.OPENVELA_DIR }}/cmake_out/**/nuttx
           if-no-files-found: error
 
       - name: Upload Eye font attribution
-        if: matrix.config == 'configs/core_eye'
+        if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services'
         uses: actions/upload-artifact@v4
         with:
           name: core-eye-font-notices
@@ -228,14 +254,20 @@ jobs:
         run: |
           cd ${{ env.OPENVELA_DIR }}
           ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} distclean
-          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} -j4
+          EXTRA=()
+          if [ "${{ matrix.config }}" = configs/core_services ]; then
+            EXTRA=(-e -D_LIBCPP_WORKAROUND_OBJCXX_COMPILER_INTRINSICS)
+          fi
+          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} "${EXTRA[@]}" -j4
 
       - name: Upload Makefile artifact
         if: steps.make_build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.CONFIG_SLUG }}-makefile
-          path: ${{ env.OPENVELA_DIR }}/nuttx/nuttx.bin
+          path: |
+            ${{ env.OPENVELA_DIR }}/nuttx/nuttx.bin
+            ${{ env.OPENVELA_DIR }}/nuttx/nuttx
           if-no-files-found: error
 
       # 任一构建失败则 job 失败

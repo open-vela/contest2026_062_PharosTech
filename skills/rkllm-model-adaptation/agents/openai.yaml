@@ -1,0 +1,4 @@
+interface:
+  display_name: "RKLLM 模型兼容与文本前端"
+  short_description: "定位 RKLLM 模型加载、乱码、chat template、tokenizer、工具输出及性能问题，建立与"
+  default_prompt: "使用 $rkllm-model-adaptation，根据现有版本和证据完成本次任务，给出可复现结果与未验证边界。"

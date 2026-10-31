@@ -1017,7 +1017,47 @@ static int ny_agent_submit(const struct ny_product_caller_s *caller,
       return -ENOMEM;
     }
 
-  char *serialized = cJSON_PrintUnformatted(root);
+  /* The runs share one bounded record.  Without eviction it simply filled up
+   * and every later message was refused (EQUOTA on the board after a day of
+   * short conversations), which no owner can be expected to cure by deleting
+   * conversations by hand.  The oldest finished runs of other conversations
+   * go first, then the oldest finished runs of this one; a run that is still
+   * in flight is never dropped.
+   */
+
+  char *serialized = NULL;
+  for (int pass = 0; pass < 2; pass++)
+    {
+      for (;;)
+        {
+          cJSON *runs = cJSON_GetObjectItemCaseSensitive(root, "runs");
+          cJSON *old = NULL;
+          int index = 0;
+          free(serialized);
+          serialized = cJSON_PrintUnformatted(root);
+          if (serialized == NULL ||
+              strlen(serialized) <= NY_AGENT_ACCEPT_LIMIT)
+            break;
+          cJSON_ArrayForEach(old, runs)
+          {
+            const char *state = ny_agent_string(old, "state");
+            bool other = strcmp(ny_agent_string(old, "conversationId"),
+                                conversation) != 0;
+            if (old != run && (pass == 1 || other) &&
+                strcmp(state, "queued") != 0 &&
+                strcmp(state, "running") != 0 &&
+                strcmp(state, "waiting_approval") != 0 &&
+                strcmp(state, "cancelling") != 0)
+              break;
+            index++;
+          }
+          if (old == NULL)
+            break;
+          cJSON_DeleteItemFromArray(runs, index);
+        }
+      if (serialized == NULL || strlen(serialized) <= NY_AGENT_ACCEPT_LIMIT)
+        break;
+    }
   ret = serialized == NULL                           ? -ENOMEM
         : strlen(serialized) > NY_AGENT_ACCEPT_LIMIT ? -ENOSPC
                                                      : 0;

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rockchip → openvela 移植"
+  short_description: "用 K7 实证定位 Rockchip BSP 代码入口、启动故障与 NSH 验收"
+  default_prompt: "使用 $rockchip-openvela-porting，核对目标板证据并推进当前最早未验证的移植环节。"

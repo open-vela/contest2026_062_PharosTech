@@ -35,9 +35,9 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Synopsys DesignWare USB3 (DWC3) register offsets and bit fields for the
- * device-mode subset used by the RK3576 USB OTG0 controller driver.
- * Offsets are relative to the controller base (RK3576_USB0_ADDR).
+/* Synopsys DesignWare USB3 (DWC3) register offsets and bit fields shared by
+ * the RK3576 USB0 device controller and USB1 host controller.  Offsets are
+ * relative to the selected controller base.
  */
 
 /* Global register block (xHCI-relative offsets, device-mode subset) ******/
@@ -45,7 +45,10 @@
 #define DWC3_GSBUSCFG0     0xc100
 #define DWC3_GCTL          0xc110
 #define DWC3_GSTS          0xc118
+#define DWC3_GUCTL1        0xc11c
 #define DWC3_GSNPSID       0xc120
+#define DWC3_GUCTL         0xc12c
+#define DWC3_GFLADJ        0xc630
 #define DWC3_GUSB2PHYCFG   0xc200
 #define DWC3_GUSB3PIPECTL  0xc2c0
 #define DWC3_GTXFIFOSIZ(n) (0xc300 + ((n) << 2))
@@ -67,41 +70,58 @@
 
 /* Register fields ********************************************************/
 
-#define GCTL_CORESOFTRESET      (1u << 11)
-#define GCTL_PRTCAPDIR_SHIFT    12
-#define GCTL_PRTCAPDIR_MASK     (3u << 12)
-#define GCTL_PRTCAP_DEVICE      (2u << 12)
-#define GCTL_DSBLCLKGTNG        (1u << 0)
+#define GCTL_CORESOFTRESET            (1u << 11)
+#define GCTL_PRTCAPDIR_SHIFT          12
+#define GCTL_PRTCAPDIR_MASK           (3u << 12)
+#define GCTL_PRTCAP_HOST              (1u << 12)
+#define GCTL_PRTCAP_DEVICE            (2u << 12)
+#define GCTL_SOFITPSYNC               (1u << 10)
+#define GCTL_DSBLCLKGTNG              (1u << 0)
 
-#define GUSB2PHYCFG_PHYSOFTRST  (1u << 31)
-#define GUSB2PHYCFG_SUSPHY      (1u << 6)
-#define GUSB2PHYCFG_PHYIF       (1u << 3)
-#define GUSB2PHYCFG_ENBLSLPM    (1u << 8)
-#define GUSB2PHYCFG_TRDTIM_MASK (0xfu << 10)
-#define GUSB2PHYCFG_TRDTIM(n)   ((uint32_t)(n) << 10)
-#define GUSB2PHYCFG_U2FREECLK   (1u << 30)
+#define GUCTL1_TX_IPGAP_LINECHECK_DIS (1u << 28)
+#define GUCTL1_PARKMODE_DISABLE_SS    (1u << 17)
+#define GUCTL1_PARKMODE_DISABLE_HS    (1u << 16)
 
-#define GUSB3PIPECTL_PHYSOFTRST (1u << 31)
-#define GUSB3PIPECTL_SUSPEND    (1u << 17)
+#define GUCTL_REFCLKPER_SHIFT         22
+#define GUCTL_REFCLKPER_MASK          (0x3ffu << GUCTL_REFCLKPER_SHIFT)
 
-#define DCFG_DEVSPD_MASK        (7u << 0)
-#define DCFG_DEVSPD_HS          (0u << 0)
-#define DCFG_DEVADDR_SHIFT      3
-#define DCFG_DEVADDR_MASK       (0x7fu << 3)
+#define GFLADJ_REFCLK_FLADJ_SHIFT     8
+#define GFLADJ_REFCLK_FLADJ_MASK      (0x3fffu << GFLADJ_REFCLK_FLADJ_SHIFT)
+#define GFLADJ_240MHZDECR_SHIFT       24
+#define GFLADJ_240MHZDECR_MASK        (0x7fu << GFLADJ_240MHZDECR_SHIFT)
+#define GFLADJ_240MHZDECR_PLS1        (1u << 31)
 
-#define DCTL_RUNSTOP            (1u << 31)
-#define DCTL_CSFTRST            (1u << 30)
+#define GUSB2PHYCFG_PHYSOFTRST        (1u << 31)
+#define GUSB2PHYCFG_SUSPHY            (1u << 6)
+#define GUSB2PHYCFG_PHYIF             (1u << 3)
+#define GUSB2PHYCFG_ENBLSLPM          (1u << 8)
+#define GUSB2PHYCFG_TRDTIM_MASK       (0xfu << 10)
+#define GUSB2PHYCFG_TRDTIM(n)         ((uint32_t)(n) << 10)
+#define GUSB2PHYCFG_U2FREECLK         (1u << 30)
 
-#define DEVTEN_DISCONNEVTEN     (1u << 0)
-#define DEVTEN_USBRSTEN         (1u << 1)
-#define DEVTEN_CONNECTDONEEN    (1u << 2)
-#define DEVTEN_ULSTCNGEN        (1u << 3)
-#define DEVTEN_WKUPEVTEN        (1u << 4)
-#define DEVTEN_U3L2L1SUSPEN     (1u << 6)
+#define GUSB3PIPECTL_PHYSOFTRST       (1u << 31)
+#define GUSB3PIPECTL_DISRXDETINP3     (1u << 28)
+#define GUSB3PIPECTL_DEPOCHANGE       (1u << 18)
+#define GUSB3PIPECTL_SUSPEND          (1u << 17)
 
-#define DSTS_CONNECTSPD_MASK    (7u << 0)
-#define DSTS_SPEED_HS           0
-#define DSTS_SPEED_FS           1
+#define DCFG_DEVSPD_MASK              (7u << 0)
+#define DCFG_DEVSPD_HS                (0u << 0)
+#define DCFG_DEVADDR_SHIFT            3
+#define DCFG_DEVADDR_MASK             (0x7fu << 3)
+
+#define DCTL_RUNSTOP                  (1u << 31)
+#define DCTL_CSFTRST                  (1u << 30)
+
+#define DEVTEN_DISCONNEVTEN           (1u << 0)
+#define DEVTEN_USBRSTEN               (1u << 1)
+#define DEVTEN_CONNECTDONEEN          (1u << 2)
+#define DEVTEN_ULSTCNGEN              (1u << 3)
+#define DEVTEN_WKUPEVTEN              (1u << 4)
+#define DEVTEN_U3L2L1SUSPEN           (1u << 6)
+
+#define DSTS_CONNECTSPD_MASK          (7u << 0)
+#define DSTS_SPEED_HS                 0
+#define DSTS_SPEED_FS                 1
 
 /* Endpoint commands (DEPCMD.CmdTyp) **************************************/
 

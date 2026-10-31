@@ -51,6 +51,24 @@ display root，每个 canvas 均位于自身 display 的 `(0, 0)`。
   ThorVG 矢量光栅，也不再需要中间 LRU 底图缓存或整页/局部 `lv_draw_buf_copy()`。
 - 48 根虹膜放射线改用改良 SDF 光栅（直线上 1px 抗锯齿，标量 + 可选 NEON 实现）
   直接合成到 ARGB8888 页，取代原先每帧的 ThorVG vector stroke 路径。
+- Scene 路径必须自己清帧：Scene 只绘制中心背板圆盘（`R * 0.93`）与装饰，圆盘
+  之外的像素没有任何写入者。历史上原始实现靠 `base_buffer == NULL` 分支的
+  `lv_canvas_fill_bg` 清黑，底图缓存重构时随该分支一起被删除，导致 music/spectrum
+  等 FULL 风格 Scene 在背板圆环边缘（距边约 14px）残留上一帧眼睛路径写入的虹膜/
+  光晕像素，呈现"淡蓝色毛躁点、缓慢变亮的圆环"。现由 `clear_frame()` 在
+  `render_scene()` 之前把整页填为不透明黑（alpha 必须为 0xFF，否则后续
+  read-modify-write 通道（虹膜 SDF 线、Scene 矢量混合）会让残留透出）；`clear_frame`
+  是纯 store，不经 LVGL 绘制路径，并在 `__ARM_NEON` 下用 `vst4_u8` 一次提交 8 像素
+  （inner loop 4 条指令存 32B），`W=360` 是 8 的倍数故无标量尾部。
+- 缓存维护只在下层边界做，且由下层负责：renderer 的 `r->buffer[eye][page]` 与
+  `mask_buffer` 是纯 CPU 缓冲（LVGL 之后把它们 blit 进 display 的 RGB888 draw
+  buffer），`draw_data[]` 同样是纯 CPU 缓冲（`flush_cb` 只读它、转换成 RGB565 写进
+  `buf[].data`）。唯一进入 DMA 的是 `buf[].data`（静态 64B 对齐），而 `rk3576_fspi.c`
+  已在 `QSPIMEM_WRITE` 路径统一 `up_clean_dcache()`，因此 renderer 与 display 侧
+  不再调用任何 `lv_draw_buf_flush_cache()`。注意 ARM64 上该 API 会落到
+  `up_flush_dcache()` = `CACHE_OP_WB_INVD`（writeback + **invalidate**），对"写完马上
+  还要读改"的缓冲是净损失（丢掉刚写的 cache line 并制造额外 miss），全页约 7920 条
+  64B line。
 - 已删除无意义的外圈描边（仅 2px 宽，存在感极低）。
 - 眼皮、天气图形与 Scene 装饰仍走 LVGL vector path + ThorVG software backend 覆盖
   采样与抗锯齿；SVG 资源保留原始二次/三次 Bézier 命令，不预栅格化或轮廓折线化。
