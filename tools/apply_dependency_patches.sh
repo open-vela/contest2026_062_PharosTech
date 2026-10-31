@@ -37,11 +37,19 @@ apply_one()
   fi
 }
 
-for patch_file in "$patch_dir"/apps-*.patch; do
-  [ -f "$patch_file" ] || continue
-  apply_one "$workspace/apps" "$patch_file"
-done
 shopt -s nullglob
+app_patches=("$patch_dir"/apps-*.patch)
+if (( ${#app_patches[@]} )); then
+  applied=$(python3 "$(dirname "$0")/check_patch_stack.py" \
+       "$workspace/apps" "${app_patches[@]}")
+  for patch_file in "${app_patches[@]}"; do
+    if grep -Fxq "$(basename "$patch_file")" <<< "$applied"; then
+      echo "already applied $(basename "$patch_file")"
+    else
+      apply_one "$workspace/apps" "$patch_file"
+    fi
+  done
+fi
 agent_patches=("$patch_dir"/packages-ai_agent-*.patch)
 if (( ${#agent_patches[@]} )); then
   applied=$(python3 "$(dirname "$0")/check_patch_stack.py" \
