@@ -28,6 +28,7 @@ export const FEATURES: FeatureDef[] = [
   { type: 'battery', stage: 'planned', needs: '需要电量计与充电芯片驱动', label: '电量', icon: 'battery', group: '系统', blurb: '电量与充电', load: () => import('./BatteryFeature.vue'), mini: () => import('./BatteryMini.vue') },
   { type: 'network', stage: 'ready', label: '网络', icon: 'wifi', group: '系统', blurb: 'WiFi 与连接', load: () => import('./NetworkFeature.vue'), mini: () => import('./NetworkMini.vue') },
   { type: 'devices', stage: 'ready', label: '设备', icon: 'devices', group: '系统', blurb: '已接入硬件', load: () => import('./DevicesFeature.vue'), mini: () => import('./DevicesMini.vue') },
+  { type: 'nas', stage: 'ready', label: 'USB 文件共享', icon: 'storage', group: '系统', blurb: 'USB盘变为局域网文件库', load: () => import('./NasFeature.vue') },
   { type: 'system', stage: 'ready', label: '系统', icon: 'system', group: '系统', blurb: '系统状态', load: () => import('./SystemFeature.vue'), mini: () => import('./SystemMini.vue') },
   { type: 'privacy', stage: 'planned', needs: '需要摄像头 / 麦克风硬件开关状态', label: '隐私', icon: 'privacy', group: '系统', blurb: '摄像头与麦克风', load: () => import('./PrivacyFeature.vue'), mini: () => import('./PrivacyMini.vue') },
   { type: 'identity', stage: 'planned', needs: '需要人脸 / 声纹识别', label: '身份', icon: 'identity', group: '系统', blurb: '认主与家人', load: () => import('./IdentityFeature.vue'), mini: () => import('./IdentityMini.vue') },
