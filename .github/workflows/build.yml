@@ -80,6 +80,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check platform Kconfig and driver registration
         run: python3 tools/tests/test_platform_cmake.py
+      - name: Check USB interrupt serialization
+        run: python3 tools/tests/test_usb_irq_serialization.py
       - name: Preserve WAMR-owned context configuration
         run: |
           for context in 0 1; do
