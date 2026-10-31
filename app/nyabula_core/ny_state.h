@@ -39,6 +39,11 @@ int ny_state_write_many(const struct ny_state_update_s *updates, size_t count);
 int ny_state_storage_write(const char *key, const void *value, size_t length,
                            size_t byte_limit, size_t key_limit);
 
+/* Replace a disjoint prefix atomically with a copy of another prefix. Both
+ * prefixes must end in '/'. Used only while the plugin worker is stopped.
+ */
+
+int ny_state_copy_prefix(const char *source, const char *destination);
 int ny_state_delete(const char *key);
 
 #endif
