@@ -90,6 +90,13 @@ static JSValue ny_runtime_settled(JSContext *context, JSValueConst this_value,
       plugin->lifecycle_result == -EINPROGRESS)
     {
       plugin->lifecycle_result = magic ? -EFAULT : 0;
+      if (magic && argc > 0)
+        {
+          const char *message = JS_ToCString(context, argv[0]);
+          snprintf(plugin->last_error_text, sizeof(plugin->last_error_text),
+                   "%s", message ? message : "Promise rejected");
+          JS_FreeCString(context, message);
+        }
     }
 
   return JS_UNDEFINED;
@@ -209,6 +216,8 @@ static void ny_runtime_dump_exception(struct ny_plugin_s *plugin,
 
   exception = JS_GetException(plugin->context);
   message = JS_ToCString(plugin->context, exception);
+  snprintf(plugin->last_error_text, sizeof(plugin->last_error_text), "%s: %s",
+           operation, message ? message : "unknown exception");
   fprintf(stderr, "nycore: %s failed: %s\n", operation,
           message == NULL ? "unknown exception" : message);
 
