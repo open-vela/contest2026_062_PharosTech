@@ -16,6 +16,10 @@ let seq = 0;
 
 /** Map protocol error codes to user-facing Chinese copy. */
 export const ERROR_COPY: Record<string, string> = {
+  EACCES: '权限不足，请联系设备主人授权',
+  ENOENT: '插件或页面不存在，请确认插件已启动',
+  ENOSYS: '当前设备暂不支持此操作',
+  ENOSPC: '存储空间或成员名额已满',
   EPERM: '权限不足，此操作需要更高角色',
   EAUTH: '未认证或令牌失效，请重新配对',
   EINVAL: '参数无效',
