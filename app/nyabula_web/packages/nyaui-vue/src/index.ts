@@ -33,3 +33,5 @@ export type {
   NyaHtmlFrameToHost,
   NyaHtmlHostToFrame,
 } from './html-sdk.js';
+
+export { default as NyaUiSurface } from './components/NyaUiSurface.vue';
