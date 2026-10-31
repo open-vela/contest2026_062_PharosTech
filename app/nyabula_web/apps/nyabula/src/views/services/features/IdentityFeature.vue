@@ -84,7 +84,7 @@ function hide(): void {
   <div class="feature" :class="ff">
     <NkHeader icon="identity" title="身份" :subtitle="subtitle" :tone="recognizing || active ? 'ok' : 'default'" />
     <div class="grid">
-      <section class="card">
+      <section class="ui-panel card">
         <div class="owner">
           <span class="avatar">{{ owner ? owner.name.charAt(0) : '?' }}</span>
           <div class="owner-text">
@@ -108,7 +108,7 @@ function hide(): void {
         />
         <MdButton variant="text" @click="push"><UiIcon name="visibility" :size="18" />显示成员到眼睛</MdButton>
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <NkListSection title="家庭成员" :card="false">
           <template #trailing><span class="muted">{{ state.members.length }} 人</span></template>
           <NkContactList :contacts="contacts" empty-text="还没有成员" @tap="setOwner" @action="remove" />
@@ -129,8 +129,7 @@ function hide(): void {
 .feature.desktop .grid, .feature.tablet .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .owner { display: flex; align-items: center; gap: 14px; padding: 4px; }
 .avatar {

@@ -114,7 +114,7 @@ async function remove(id: string): Promise<void> {
     </NkHeader>
     <p v-if="!core.available.value || core.error.value" role="status" class="muted">{{ core.error.value || '未连接支持此功能的 Core' }}</p>
     <div class="grid">
-      <section class="card">
+      <section class="ui-panel card">
         <div class="month-bar">
           <MdButton variant="icon" @click="shiftMonth(-1)"><UiIcon name="chevron_left" :size="22" /></MdButton>
           <button class="month-title" type="button" @click="goToday">{{ monthTitle }}</button>
@@ -139,7 +139,7 @@ async function remove(id: string): Promise<void> {
       </section>
 
       <div class="stack-col">
-        <section class="card">
+        <section class="ui-panel card">
           <NkListSection :title="selectedText" :card="false">
             <p v-if="!dayEvents.length" class="muted empty">这天没有日程</p>
             <NkRow v-for="e in dayEvents" :key="e.id" icon="calendar" :title="e.title" :sub="countdownText(daysLeft(e.date))">
@@ -152,7 +152,7 @@ async function remove(id: string): Promise<void> {
           </NkListSection>
         </section>
 
-        <section class="card">
+        <section class="ui-panel card">
           <h3 class="section-title">倒数日</h3>
           <p v-if="!upcoming.length" class="muted empty">添加一个值得期待的日子</p>
           <div class="eye-row">
@@ -169,7 +169,7 @@ async function remove(id: string): Promise<void> {
         </section>
       </div>
 
-      <section v-if="!sheetMode && editing" class="card editor">
+      <section v-if="!sheetMode && editing" class="ui-panel card editor">
         <h3 class="section-title">{{ editId ? '编辑日程' : '添加日程' }}</h3>
         <MdTextField v-model="eTitle" label="标题" placeholder="如：体检、纪念日" />
         <MdTextField v-model="eDate" label="日期" type="date" />
@@ -196,8 +196,7 @@ async function remove(id: string): Promise<void> {
 .eye-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .card {
   display: flex; flex-direction: column; gap: 12px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .empty { padding: 12px 0; text-align: center; }
 .month-bar { display: flex; align-items: center; justify-content: space-between; }

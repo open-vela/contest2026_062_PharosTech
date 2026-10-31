@@ -46,7 +46,7 @@ function hide(): void {
   <div class="feature" :class="ff">
     <NkHeader icon="home" title="家居" :subtitle="subtitle" :tone="active ? 'ok' : 'default'" />
     <div class="grid">
-      <section class="card">
+      <section class="ui-panel card">
         <div class="row between">
           <h3 class="section-title">场景</h3>
           <span class="contract-only">MCP 联动为契约预留</span>
@@ -56,7 +56,7 @@ function hide(): void {
         </div>
         <NkActionBar primary-text="显示到眼睛" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" @primary="push" @secondary="hide" />
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <NkListSection title="灯光">
           <NkToggleRow v-model="state.lights" icon="lightbulb" title="客厅灯" :sub="state.lights ? `亮度 ${state.brightness}%` : '已关闭'" />
           <NkSliderRow v-model="state.brightness" title="亮度" unit="%" :min="1" :max="100" icon-start="dark_mode" icon-end="light_mode" :disabled="!state.lights" />
@@ -77,8 +77,7 @@ function hide(): void {
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .feature.tablet .tiles { grid-template-columns: repeat(4, 1fr); }

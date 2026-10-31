@@ -87,14 +87,14 @@ const managing = ref(false);
       </div>
     </section>
 
-    <section class="card">
+    <section class="ui-panel card">
       <NkListSection title="自动检测" :card="false">
         <NkToggleRow v-model="auto" icon="visibility" title="自动识别在场" sub="通过摄像头与语音判断谁在家" />
         <template #trailing><span class="contract-only">契约预留</span></template>
       </NkListSection>
     </section>
 
-    <section v-if="!sheetMode && adding" class="card">
+    <section v-if="!sheetMode && adding" class="ui-panel card">
       <h3 class="section-title">添加成员</h3>
       <MdTextField v-model="nName" label="姓名" placeholder="如：奶奶" />
       <NkActionBar primary-text="保存" primary-icon="check" secondary-text="取消" secondary-icon="close" :disabled="!nName.trim()" @primary="save" @secondary="adding = false" />
@@ -112,8 +112,7 @@ const managing = ref(false);
 .feature { display: flex; flex-direction: column; gap: 16px; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .members { display: grid; grid-template-columns: 1fr; gap: 12px; }
 .feature.tablet .members, .feature.desktop .members { grid-template-columns: repeat(2, 1fr); }

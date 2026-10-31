@@ -23,7 +23,7 @@ const portrait = computed(() => ff.orientation.value === 'portrait');
       <MdButton v-if="activeDef" variant="tonal" class="exit" :disabled="!session.canControl" @click="page.exit()">退出</MdButton>
     </div>
 
-    <FeatureSections :page="page" :ff="ff.formFactor.value" :columns="portrait ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))'" />
+    <FeatureSections :page="page" :ff="ff.formFactor.value" :columns="portrait ? 'repeat(auto-fill, minmax(min(100%, 300px), 1fr))' : 'repeat(auto-fill, minmax(280px, 1fr))'" />
   </div>
 </template>
 
