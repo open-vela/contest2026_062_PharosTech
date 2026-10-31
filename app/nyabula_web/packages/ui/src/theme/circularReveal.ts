@@ -30,6 +30,7 @@ export function circularReveal(
   // circle() radius % resolves against hypot(w,h)/sqrt(2).
   const pr = `${((radiusPx / (Math.hypot(w, h) / Math.SQRT2)) * 100).toFixed(3)}%`;
   const root = document.documentElement;
+  root.classList.add('vt-circle');
   root.classList.toggle('vt-contract', direction === 'contract');
   root.style.setProperty('--vt-x', px);
   root.style.setProperty('--vt-y', py);
@@ -52,7 +53,7 @@ export function circularReveal(
       .catch(() => undefined)
       .then(() => {
         anim.cancel();
-        root.classList.remove('vt-contract');
+        root.classList.remove('vt-contract', 'vt-circle');
       });
   });
 }

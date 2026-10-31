@@ -2,7 +2,8 @@
 /* Palette dots + light/dark toggle with circular reveal (ported from Myself).
  * `compact` hides the palette dots (round mode button only). */
 import { useThemeStore } from '../stores/theme';
-import { circularReveal, eventOrigin } from '../theme/circularReveal';
+import { eventOrigin } from '../theme/circularReveal';
+import { themeTransition } from '../skins';
 import UiIcon from './UiIcon.vue';
 
 defineProps<{ compact?: boolean }>();
@@ -10,11 +11,11 @@ const theme = useThemeStore();
 
 function onPalette(e: MouseEvent, id: string): void {
   if (id === theme.paletteId) return;
-  circularReveal(eventOrigin(e), () => theme.setPalette(id), 'expand');
+  themeTransition(eventOrigin(e), () => theme.setPalette(id), 'expand');
 }
 function onMode(e: MouseEvent): void {
   const toLight = theme.mode === 'dark';
-  circularReveal(eventOrigin(e), () => theme.toggleMode(), toLight ? 'expand' : 'contract');
+  themeTransition(eventOrigin(e), () => theme.toggleMode(), toLight ? 'expand' : 'contract');
 }
 </script>
 

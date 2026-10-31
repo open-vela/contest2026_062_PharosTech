@@ -1,0 +1,403 @@
+/* Nebula skin: component and global-class styling, scoped under
+ * :root[data-skin='nebula']. Surfaces come from skins/nebula/palette.ts
+ * (translucent containers); this file adds glass, glow, shape and motion.
+ * Selectors carry the root attribute so they out-rank scoped styles. */
+
+:root[data-skin='nebula'] {
+  --radius-s: 10px;
+  --radius-m: 16px;
+  --radius-l: 26px;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur: 0.42s;
+  --dur-slow: 0.75s;
+  --nb-glass: rgba(20, 26, 46, 0.46);
+  --nb-line: rgba(255, 255, 255, 0.08);
+  --nb-line-strong: rgba(255, 255, 255, 0.16);
+  --nb-hi: rgba(255, 255, 255, 0.12);
+  --nb-glass-strong: rgba(16, 20, 36, 0.82);
+  --nb-glass-lite: rgba(255, 255, 255, 0.04);
+  --nb-shadow: 0 24px 60px -28px rgba(0, 0, 0, 0.8);
+  --nb-blur: blur(26px) saturate(150%);
+  --nb-violet: #8b7cff;
+  --nb-pink: #ff8fb1;
+  --md-elev-1: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 12px 30px -18px rgba(0, 0, 0, 0.8);
+  --md-elev-2: 0 1px 0 rgba(255, 255, 255, 0.06) inset, 0 30px 70px -28px rgba(0, 0, 0, 0.9);
+  --shell-bar: 64px;
+}
+:root[data-skin='nebula'][data-mode='light'] {
+  --nb-glass: rgba(255, 255, 255, 0.52);
+  --nb-line: rgba(30, 40, 110, 0.09);
+  --nb-line-strong: rgba(30, 40, 110, 0.18);
+  --nb-hi: rgba(255, 255, 255, 0.9);
+  --nb-glass-strong: rgba(250, 251, 255, 0.88);
+  --nb-glass-lite: rgba(255, 255, 255, 0.42);
+  --nb-shadow: 0 24px 60px -32px rgba(40, 46, 110, 0.35);
+  --nb-violet: #6a5cf0;
+  --nb-pink: #e8588b;
+  --md-elev-1: 0 1px 0 rgba(255, 255, 255, 0.8) inset, 0 12px 30px -20px rgba(40, 46, 110, 0.3);
+  --md-elev-2: 0 1px 0 rgba(255, 255, 255, 0.9) inset, 0 30px 70px -30px rgba(40, 46, 110, 0.4);
+}
+
+/* Registered radii for feathered radial masks (boot reveal, theme bloom). */
+@property --nb-boot-r {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 0%;
+}
+@property --nb-vt-r {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 0%;
+}
+
+/* ---------- base ---------- */
+:root[data-skin='nebula'] body { background: var(--md-surface); }
+:root[data-skin='nebula'] h1,
+:root[data-skin='nebula'] h2,
+:root[data-skin='nebula'] h3 { letter-spacing: 0.02em; }
+:root[data-skin='nebula'] ::selection { background: rgba(var(--md-primary-rgb), 0.3); }
+:root[data-skin='nebula'] *::-webkit-scrollbar-thumb { background: var(--nb-line-strong); }
+:root[data-skin='nebula'] input[type='text']:not(:where(.tf-box *)) {
+  background: var(--nb-glass-lite);
+  border-color: var(--nb-line);
+  border-radius: 14px;
+}
+:root[data-skin='nebula'] input[type='text']:not(:where(.tf-box *)):focus { border-color: rgba(var(--md-primary-rgb), 0.6); box-shadow: 0 0 0 4px rgba(var(--md-primary-rgb), 0.12); }
+
+/* Route curtain: gentle recede instead of the classic 10% shrink. */
+:root[data-skin='nebula'] .app-shell {
+  transition: transform 0.7s var(--ease-out), opacity 0.7s var(--ease-out);
+}
+/* The route curtain covers the whole screen; nothing to shrink behind it. */
+:root[data-skin='nebula'] .app-shell.shrunk { transform: none; opacity: 1; }
+/* The boot mirrors this live canvas, then reveals the same running renderer. */
+html.nb-eyes-handoff [data-eyes-anchor] { visibility: hidden; }
+
+/* ---------- app.css globals ---------- */
+:root[data-skin='nebula'] .page-title { font: 400 26px/1.25 var(--font-title); letter-spacing: 0.03em; }
+:root[data-skin='nebula'] .page-sub { font-size: 13.5px; }
+:root[data-skin='nebula'] .section-title {
+  font: 600 11.5px var(--font-body);
+  letter-spacing: 0.2em;
+  color: var(--md-outline);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+:root[data-skin='nebula'][data-mode='light'] .section-title { color: var(--md-on-surface-variant); }
+:root[data-skin='nebula'] .section-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--nb-line-strong), transparent);
+}
+:root[data-skin='nebula'] .tag {
+  background: var(--nb-glass-lite);
+  border: 1px solid var(--nb-line);
+  padding: 2px 9px;
+}
+:root[data-skin='nebula'] .tag.ok { background: rgba(var(--md-primary-rgb), 0.12); border-color: rgba(var(--md-primary-rgb), 0.28); }
+:root[data-skin='nebula'] .tag.warn { border-color: color-mix(in srgb, var(--md-warning) 35%, transparent); }
+:root[data-skin='nebula'] .tag.err { border-color: color-mix(in srgb, var(--md-error) 35%, transparent); }
+:root[data-skin='nebula'] .tag.info { border-color: color-mix(in srgb, var(--md-tertiary) 35%, transparent); }
+:root[data-skin='nebula'] .list-tile {
+  border: 1px solid var(--nb-line);
+  background: var(--nb-glass-lite);
+  transition: background var(--dur-fast), border-color var(--dur-fast), transform var(--dur) var(--ease-spring);
+}
+:root[data-skin='nebula'] .list-tile:hover {
+  background: var(--md-surface-container-high);
+  border-color: var(--nb-line-strong);
+  transform: translateY(-1px);
+}
+:root[data-skin='nebula'] .list-tile:active { transform: scale(0.985); }
+:root[data-skin='nebula'] .list-tile .tile-icon {
+  border-radius: 14px;
+  background: radial-gradient(120% 120% at 30% 20%, rgba(var(--md-primary-rgb), 0.32), rgba(var(--md-primary-rgb), 0.08));
+  color: var(--md-primary);
+  box-shadow: inset 0 1px 0 var(--nb-hi), 0 0 0 1px rgba(var(--md-primary-rgb), 0.18);
+}
+:root[data-skin='nebula'] .contract-only { border-color: var(--nb-line-strong); }
+:root[data-skin='nebula'] .hover-lift:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--md-elev-2), 0 18px 40px -16px rgba(var(--md-primary-rgb), 0.35);
+}
+
+/* ---------- MdCard ---------- */
+:root[data-skin='nebula'] .md-card {
+  background: var(--nb-glass);
+  -webkit-backdrop-filter: var(--nb-blur);
+  backdrop-filter: var(--nb-blur);
+  border: 1px solid var(--nb-line);
+  box-shadow: inset 0 1px 0 var(--nb-hi), var(--nb-shadow);
+  border-radius: var(--radius-l);
+  padding: 20px 22px;
+}
+:root[data-skin='nebula'] .md-card .card-title {
+  font: 600 12.5px var(--font-body);
+  letter-spacing: 0.14em;
+  color: var(--md-on-surface-variant);
+  margin-bottom: 14px;
+}
+/* Nested cards should not re-blur. */
+:root[data-skin='nebula'] .md-card .md-card { -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: inset 0 1px 0 var(--nb-hi); }
+
+/* ---------- MdButton ---------- */
+:root[data-skin='nebula'] .md-btn {
+  transition: transform 0.35s var(--ease-spring), filter 0.2s, background 0.2s, box-shadow 0.3s, border-color 0.2s;
+}
+:root[data-skin='nebula'] .md-btn:not(:disabled):active { transform: scale(0.95); }
+:root[data-skin='nebula'] .md-btn.filled {
+  box-shadow: 0 10px 28px -10px rgba(var(--md-primary-rgb), 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+:root[data-skin='nebula'] .md-btn.filled:not(:disabled):hover { filter: brightness(1.08); transform: translateY(-1px); }
+:root[data-skin='nebula'] .md-btn.tonal {
+  background: rgba(var(--md-primary-rgb), 0.14);
+  color: var(--md-on-surface);
+  box-shadow: inset 0 0 0 1px rgba(var(--md-primary-rgb), 0.28);
+}
+:root[data-skin='nebula'] .md-btn.outlined { border-color: var(--nb-line-strong); background: var(--nb-glass-lite); }
+:root[data-skin='nebula'] .md-btn.outlined:not(:disabled):hover { border-color: rgba(var(--md-primary-rgb), 0.5); filter: none; }
+:root[data-skin='nebula'] .md-btn.icon:not(:disabled):hover { background: var(--md-surface-container-highest); }
+
+/* ---------- MdChip ---------- */
+:root[data-skin='nebula'] .md-chip {
+  border-radius: 999px;
+  border-color: var(--nb-line);
+  background: var(--nb-glass-lite);
+  transition: background 0.2s, color 0.2s, border-color 0.2s, transform 0.35s var(--ease-spring), box-shadow 0.3s;
+}
+:root[data-skin='nebula'] .md-chip:not(:disabled):hover { border-color: var(--nb-line-strong); transform: translateY(-1px); }
+:root[data-skin='nebula'] .md-chip:not(:disabled):active { transform: scale(0.94); }
+:root[data-skin='nebula'] .md-chip:disabled { opacity: 0.45; cursor: default; }
+:root[data-skin='nebula'] .md-chip.selected {
+  background: rgba(var(--md-primary-rgb), 0.16);
+  border-color: rgba(var(--md-primary-rgb), 0.5);
+  color: var(--md-on-surface);
+  box-shadow: 0 0 18px -6px rgba(var(--md-primary-rgb), 0.7);
+}
+
+/* ---------- MdSwitch ---------- */
+:root[data-skin='nebula'] .md-switch .track { border-color: var(--nb-line-strong); background: var(--nb-glass-lite); }
+:root[data-skin='nebula'] .md-switch .thumb { background: var(--md-on-surface-variant); }
+:root[data-skin='nebula'] .md-switch.on .track {
+  background: var(--md-primary);
+  border-color: var(--md-primary);
+  box-shadow: 0 0 16px -2px rgba(var(--md-primary-rgb), 0.65);
+}
+:root[data-skin='nebula'] .md-switch.on .thumb { background: var(--md-on-primary); }
+
+/* ---------- MdSlider ---------- */
+:root[data-skin='nebula'] .md-slider {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--md-surface-container-highest);
+}
+:root[data-skin='nebula'] .md-slider::-webkit-slider-thumb {
+  width: 20px;
+  height: 20px;
+  background: var(--md-primary);
+  box-shadow: 0 0 0 4px rgba(var(--md-primary-rgb), 0.2), 0 0 16px rgba(var(--md-primary-rgb), 0.6);
+  transition: transform 0.3s var(--ease-spring);
+}
+:root[data-skin='nebula'] .md-slider:active::-webkit-slider-thumb { transform: scale(1.18); }
+
+/* ---------- MdTextField ---------- */
+:root[data-skin='nebula'] .tf-box {
+  background: var(--nb-glass-lite);
+  border-color: var(--nb-line);
+  border-radius: 14px;
+  transition: border-color 0.2s, box-shadow 0.3s, background 0.2s;
+}
+:root[data-skin='nebula'] .tf-box:focus-within {
+  border-color: rgba(var(--md-primary-rgb), 0.6);
+  box-shadow: 0 0 0 4px rgba(var(--md-primary-rgb), 0.12), 0 0 24px -8px rgba(var(--md-primary-rgb), 0.5);
+  background: var(--md-surface-container);
+}
+
+/* ---------- SegmentedTabs ---------- */
+:root[data-skin='nebula'] .seg {
+  background: var(--nb-glass-lite);
+  box-shadow: inset 0 0 0 1px var(--nb-line);
+}
+:root[data-skin='nebula'] .seg .indicator {
+  background: radial-gradient(90% 120% at 50% 100%, rgba(var(--md-primary-rgb), 0.34), rgba(var(--md-primary-rgb), 0.1) 75%);
+  box-shadow: inset 0 0 0 1px rgba(var(--md-primary-rgb), 0.3), 0 0 22px -8px rgba(var(--md-primary-rgb), 0.7);
+  transition: transform 0.55s var(--ease-spring);
+}
+:root[data-skin='nebula'] .seg .seg-btn.active { color: var(--md-on-surface); }
+
+/* ---------- StatusPill ---------- */
+:root[data-skin='nebula'] .pill {
+  background: var(--nb-glass-lite);
+  box-shadow: inset 0 0 0 1px var(--nb-line);
+}
+:root[data-skin='nebula'] .pill.ok .dot { animation: nb-pulse 2.4s ease-out infinite; }
+@keyframes nb-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(var(--md-primary-rgb), 0.55); }
+  70%, 100% { box-shadow: 0 0 0 8px rgba(var(--md-primary-rgb), 0); }
+}
+
+/* ---------- Overlays: sheet / modal / toast / pairing / palette / menus ---------- */
+:root[data-skin='nebula'] .sheet-root,
+:root[data-skin='nebula'] .modal-root,
+:root[data-skin='nebula'] .cp-root {
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+:root[data-skin='nebula'] .sheet,
+:root[data-skin='nebula'] .modal-card,
+:root[data-skin='nebula'] .cp,
+:root[data-skin='nebula'] .notice-panel,
+:root[data-skin='nebula'] .toast,
+:root[data-skin='nebula'] .pair-box,
+:root[data-skin='nebula'] .switcher > .menu {
+  background: var(--nb-glass-strong);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  backdrop-filter: blur(28px) saturate(160%);
+  border: 1px solid var(--nb-line);
+  box-shadow: inset 0 1px 0 var(--nb-hi), 0 40px 90px -30px rgba(0, 0, 0, 0.75);
+}
+:root[data-skin='nebula'][data-mode='light'] .sheet,
+:root[data-skin='nebula'][data-mode='light'] .modal-card,
+:root[data-skin='nebula'][data-mode='light'] .cp,
+:root[data-skin='nebula'][data-mode='light'] .notice-panel,
+:root[data-skin='nebula'][data-mode='light'] .toast,
+:root[data-skin='nebula'][data-mode='light'] .pair-box,
+:root[data-skin='nebula'][data-mode='light'] .switcher > .menu {
+  box-shadow: inset 0 1px 0 var(--nb-hi), 0 40px 90px -36px rgba(40, 46, 110, 0.45);
+}
+:root[data-skin='nebula'] .sheet { border-bottom: none; border-radius: 28px 28px 0 0; }
+:root[data-skin='nebula'] .sheet-root.side .sheet { border-radius: 28px 0 0 28px; }
+:root[data-skin='nebula'] .modal-card { border-radius: 28px; }
+:root[data-skin='nebula'] .modal-title,
+:root[data-skin='nebula'] .sheet-title { font-weight: 400; letter-spacing: 0.03em; }
+:root[data-skin='nebula'] .toast { border-left-width: 1px; border-radius: 18px; }
+:root[data-skin='nebula'] .toast.ok { box-shadow: inset 3px 0 0 var(--md-success), inset 0 1px 0 var(--nb-hi), 0 30px 70px -30px rgba(0, 0, 0, 0.7); }
+:root[data-skin='nebula'] .toast.warn { box-shadow: inset 3px 0 0 var(--md-warning), inset 0 1px 0 var(--nb-hi), 0 30px 70px -30px rgba(0, 0, 0, 0.7); }
+:root[data-skin='nebula'] .toast.error { box-shadow: inset 3px 0 0 var(--md-error), inset 0 1px 0 var(--nb-hi), 0 30px 70px -30px rgba(0, 0, 0, 0.7); }
+:root[data-skin='nebula'] .cp { border-radius: 28px; }
+:root[data-skin='nebula'] .cp-item { border-radius: 14px; transition: background 0.15s; }
+:root[data-skin='nebula'] .cp-item.on {
+  background: radial-gradient(120% 140% at 0% 50%, rgba(var(--md-primary-rgb), 0.24), rgba(var(--md-primary-rgb), 0.06));
+  color: var(--md-on-surface);
+  box-shadow: inset 0 0 0 1px rgba(var(--md-primary-rgb), 0.25);
+}
+:root[data-skin='nebula'] .cp-input { border-bottom-color: var(--nb-line); }
+:root[data-skin='nebula'] .switcher > .menu { border-radius: 20px; padding: 8px; }
+:root[data-skin='nebula'] .switcher > .trigger {
+  background: var(--nb-glass-lite);
+  border-color: var(--nb-line);
+  transition: border-color 0.2s, transform 0.35s var(--ease-spring);
+}
+:root[data-skin='nebula'] .switcher > .trigger:hover { border-color: var(--nb-line-strong); }
+:root[data-skin='nebula'] .switcher > .trigger:active { transform: scale(0.97); }
+:root[data-skin='nebula'] .notice-toggle { box-shadow: 0 10px 30px -12px rgba(var(--md-primary-rgb), 0.6); }
+/* ThemeSwitcher pill */
+:root[data-skin='nebula'] .switcher:has(> .mode-btn) {
+  min-height: 44px;
+  padding: 0 14px;
+  gap: 10px;
+  background: var(--nb-glass);
+  -webkit-backdrop-filter: var(--nb-blur);
+  backdrop-filter: var(--nb-blur);
+  border: 1px solid var(--nb-line);
+  box-shadow: inset 0 1px 0 var(--nb-hi), var(--nb-shadow);
+}
+:root[data-skin='nebula'] .switcher.solo:has(> .mode-btn) { width: 44px; height: 44px; padding: 0; }
+:root[data-skin='nebula'] .switcher:has(> .mode-btn) .dot { width: 14px; height: 14px; }
+
+/* PairOverlay cells */
+:root[data-skin='nebula'] .pair-overlay { background: rgba(4, 6, 16, 0.35); }
+:root[data-skin='nebula'] .pair-box .cell {
+  border-radius: 12px;
+  background: var(--nb-glass-lite);
+  border-color: var(--nb-line-strong);
+}
+:root[data-skin='nebula'] .pair-box .cell.caret { border-color: var(--md-primary); box-shadow: 0 0 16px -4px rgba(var(--md-primary-rgb), 0.8); }
+
+/* ---------- EmptyState / Skeleton ---------- */
+:root[data-skin='nebula'] .empty .orb {
+  background: radial-gradient(circle at 35% 30%, rgba(var(--md-primary-rgb), 0.35), rgba(var(--md-primary-rgb), 0.06) 70%);
+  box-shadow: 0 0 0 1px rgba(var(--md-primary-rgb), 0.2), 0 0 40px -10px rgba(var(--md-primary-rgb), 0.6);
+}
+:root[data-skin='nebula'] .sk {
+  border-radius: 8px;
+  background: linear-gradient(100deg, var(--md-surface-container) 30%, rgba(var(--md-primary-rgb), 0.14) 50%, var(--md-surface-container) 70%);
+  background-size: 220% 100%;
+}
+
+/* ---------- Feature kit (Nk*) ---------- */
+:root[data-skin='nebula'] .nk-tile,
+:root[data-skin='nebula'] .nk-stat {
+  background: var(--nb-glass-lite);
+  box-shadow: inset 0 0 0 1px var(--nb-line), inset 0 1px 0 var(--nb-hi);
+  transition: transform 0.35s var(--ease-spring), background 0.2s, box-shadow 0.3s;
+}
+:root[data-skin='nebula'] .nk-tile:hover { background: var(--md-surface-container-high); transform: translateY(-2px); }
+:root[data-skin='nebula'] .nk-tile:active { transform: scale(0.97); }
+:root[data-skin='nebula'] .nk-stat-num { font-weight: 400; }
+:root[data-skin='nebula'] .nk-row.tappable:hover { background: var(--nb-glass-lite); }
+:root[data-skin='nebula'] .nk-banner { box-shadow: inset 0 0 0 1px var(--nb-line); }
+:root[data-skin='nebula'] .nk-chip { border-radius: 999px; }
+:root[data-skin='nebula'] .nk-player-btn { transition: transform 0.35s var(--ease-spring); }
+:root[data-skin='nebula'] .nk-player-btn:active { transform: scale(0.9); }
+
+/* ---------- Theme-switch motion (see transition.ts) ---------- */
+html.vt-nebula::view-transition-old(root),
+html.vt-nebula::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+html.vt-nebula:not(.vt-nebula-contract)::view-transition-new(root),
+html.vt-nebula.vt-nebula-contract::view-transition-old(root) {
+  -webkit-mask-image: radial-gradient(circle at var(--vt-x, 50%) var(--vt-y, 50%), #000 calc(var(--nb-vt-r) - 18%), transparent var(--nb-vt-r));
+  mask-image: radial-gradient(circle at var(--vt-x, 50%) var(--vt-y, 50%), #000 calc(var(--nb-vt-r) - 18%), transparent var(--nb-vt-r));
+}
+/* Contract starts fully visible; WAAPI then shrinks the radius. */
+html.vt-nebula.vt-nebula-contract::view-transition-old(root) { --nb-vt-r: 118%; z-index: 2; }
+html.vt-nebula.vt-nebula-contract::view-transition-new(root) { z-index: 1; }
+
+/* Route curtain reveal radius (animated through WAAPI). */
+@property --nb-hole {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* ---------- App surface roles (apps/nyabula styles/app.css) ---------- */
+:where(:root[data-skin='nebula']) .ui-panel {
+  background: var(--nb-glass);
+  -webkit-backdrop-filter: var(--nb-blur);
+  backdrop-filter: var(--nb-blur);
+  border: 1px solid var(--nb-line);
+  border-radius: var(--radius-l);
+  box-shadow: inset 0 1px 0 var(--nb-hi), var(--nb-shadow);
+}
+/* Panels nested in panels or cards should not re-blur. */
+:where(:root[data-skin='nebula']) :is(.ui-panel, .md-card) .ui-panel { -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: inset 0 1px 0 var(--nb-hi); }
+:where(:root[data-skin='nebula']) .ui-panel-inset { background: var(--nb-glass-lite); box-shadow: inset 0 0 0 1px var(--nb-line); border-radius: var(--radius-m); }
+
+/* Native controls: frosted wells with a soft focus glow. */
+:root[data-skin='nebula'] :where(select, textarea, input[type='number'], input[type='email'], input[type='password'], input[type='url'], input[type='search'], input[type='time'], input[type='date'], input[type='datetime-local'], input.field):not(:where(.tf-box *)) {
+  border-color: var(--nb-line-strong);
+  background-color: var(--nb-glass-lite);
+  border-radius: 14px;
+}
+:root[data-skin='nebula'] :where(select, textarea, input[type='number'], input[type='email'], input[type='password'], input[type='url'], input[type='search'], input[type='time'], input[type='date'], input[type='datetime-local'], input.field):not(:where(.tf-box *)):focus-visible {
+  border-color: rgba(var(--md-primary-rgb), 0.6);
+  box-shadow: 0 0 0 4px rgba(var(--md-primary-rgb), 0.12), 0 0 24px -8px rgba(var(--md-primary-rgb), 0.5);
+}
+:root[data-skin='nebula'] :where(select) option { background: var(--nb-glass-strong); }
+
+/* Side directory: glass pill with a lit active item. */
+:root[data-skin='nebula'] .side-nav-item { transition: background 0.2s, color 0.2s, transform 0.35s var(--ease-spring), box-shadow 0.3s; }
+:root[data-skin='nebula'] .side-nav-item:hover { background: var(--nb-glass-lite); transform: translateX(2px); }
+:root[data-skin='nebula'] .side-nav-item.on {
+  background: radial-gradient(120% 140% at 0% 50%, rgba(var(--md-primary-rgb), 0.26), rgba(var(--md-primary-rgb), 0.06));
+  color: var(--md-on-surface);
+  box-shadow: inset 0 0 0 1px rgba(var(--md-primary-rgb), 0.28), 0 0 22px -10px rgba(var(--md-primary-rgb), 0.8);
+}
+:root[data-skin='nebula'] .side-nav-item.on .ui-icon { color: var(--md-primary); }
+:root[data-skin='nebula'] .side-nav-group { letter-spacing: 0.2em; }

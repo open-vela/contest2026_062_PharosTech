@@ -35,9 +35,12 @@ export { useToastStore, describeError, ERROR_COPY } from './stores/toast';
 export type { Toast, ToastTone } from './stores/toast';
 
 export { circularReveal, eventOrigin } from './theme/circularReveal';
+export { SKINS, DEFAULT_SKIN, isSkin, themeTransition, currentSkin } from './skins';
+export { nebulaRouteIntent, setNebulaRouteIntent, isNebulaRouteIntentFresh } from './skins/nebula/routeIntent';
+export type { SkinMeta, SkinTransition } from './skins';
 export { derivePalette, mix, onColor, TOKEN_VARS } from './theme/derive';
 export { THEME_PRESETS, DEFAULT_PRESET_ID } from './theme/presets';
-export type { ThemeMode, ThemePreset, Palette, PaletteColors } from './theme/types';
+export type { ThemeMode, ThemePreset, ThemeSkin, Palette, PaletteColors } from './theme/types';
 
 export { vReveal } from './directives/reveal';
 export { UI_ICONS } from './icons';
