@@ -39,6 +39,9 @@
 
 #define NY_PLUGIN_ID_SIZE               64
 #define NY_PLUGIN_VERSION_SIZE          32
+#define NY_PLUGIN_NAME_SIZE             129
+#define NY_PLUGIN_ICON_SIZE             160
+#define NY_PLUGIN_ICON_ASSET_LIMIT      16384
 #define NY_PLUGIN_API_VERSION           1
 
 #define NY_PERMISSION_CORE_LOG          (1ull << 0)
@@ -78,6 +81,10 @@ struct ny_plugin_config_s
 {
   char id[NY_PLUGIN_ID_SIZE];
   char version[NY_PLUGIN_VERSION_SIZE];
+  char name[NY_PLUGIN_NAME_SIZE];
+  char icon[NY_PLUGIN_ICON_SIZE];
+  char icon_type[12];
+  char icon_codepoint[7];
   char root[PATH_MAX];
   char storage_root[PATH_MAX];
   char entry[PATH_MAX];
