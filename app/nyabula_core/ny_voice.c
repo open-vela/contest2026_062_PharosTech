@@ -92,6 +92,7 @@
 #include <unistd.h>
 
 #include "ny_compute.h"
+#include "ny_mimo.h"
 #include "ny_product.h"
 #include "ny_product_store.h"
 #include "ny_voice.h"
@@ -438,6 +439,9 @@ static void ny_voice_play_release(void);
 static size_t ny_voice_play_convert(struct ny_voice_resample_s *resample,
                                     const float *samples, size_t count);
 static int ny_voice_play_write(struct ny_voice_audio_s *audio, size_t bytes);
+static int ny_voice_mimo_pcm(void *context, const int16_t *pcm, size_t count);
+static int ny_voice_mimo_speech(struct ny_voice_audio_s *audio,
+                                const char *text);
 static int ny_voice_play_speech(struct ny_voice_port_s *port,
                                 struct ny_voice_audio_s *audio,
                                 struct ny_voice_resample_s *resample,
@@ -1701,18 +1705,76 @@ static int ny_voice_play_write(struct ny_voice_audio_s *audio, size_t bytes)
  *
  ****************************************************************************/
 
+struct ny_voice_mimo_s
+{
+  struct ny_voice_audio_s *audio;
+  struct ny_voice_resample_s resample;
+};
+
+/****************************************************************************
+ * Name: ny_voice_mimo_pcm
+ ****************************************************************************/
+
+static int ny_voice_mimo_pcm(void *context, const int16_t *pcm, size_t count)
+{
+  struct ny_voice_mimo_s *stream = context;
+  float input[512];
+  float output[1024];
+  if (ny_voice_play_cancelled())
+    return -ECANCELED;
+  if (!count)
+    return 0;
+  if (count > 512)
+    return -E2BIG;
+  ny_voice_s16_to_f32(input, pcm, count);
+  count = ny_voice_resample(&stream->resample, input, count, output, 1024);
+#ifdef CONFIG_NYABULA_CORE_VOICE_CODEC_SHARED_16K
+  ny_voice_f32_to_s16(g_voice_out, output, count);
+#else
+  ny_voice_f32_to_s16_stereo(g_voice_out, output, count);
+#endif
+  return ny_voice_play_write(stream->audio,
+                             count * NY_VOICE_OUT_CHANNELS * sizeof(int16_t));
+}
+
+/****************************************************************************
+ * Name: ny_voice_mimo_speech
+ ****************************************************************************/
+
+static int ny_voice_mimo_speech(struct ny_voice_audio_s *audio,
+                                const char *text)
+{
+  struct ny_voice_mimo_s *stream = calloc(1, sizeof(*stream));
+  if (!stream)
+    return -ENOMEM;
+  stream->audio = audio;
+  int ret = ny_voice_resample_rate_init(&stream->resample, NY_MIMO_AUDIO_RATE,
+                                        NY_VOICE_OUT_RATE);
+  size_t position = 0;
+  char sentence[NY_VOICE_SENTENCE_MAX];
+  while (ret == 0 && ny_voice_sentence_next(text, &position, sentence,
+                                            sizeof(sentence)) != 0)
+    ret = ny_voice_play_cancelled()
+              ? -ECANCELED
+              : ny_mimo_speak(sentence, ny_voice_mimo_pcm, stream);
+  free(stream);
+  return ret;
+}
+
 static int ny_voice_play_speech(struct ny_voice_port_s *port,
                                 struct ny_voice_audio_s *audio,
                                 struct ny_voice_resample_s *resample,
                                 const char *text)
 {
-  static const int16_t silence[NY_VOICE_OUT_RATE / 20 * 2];
   char sentence[NY_VOICE_SENTENCE_MAX];
   size_t position = 0;
   uint32_t voice;
   float speed;
   int attempt;
   int ret;
+
+  if (ny_mimo_tts_enabled())
+    return ny_voice_mimo_speech(audio, text);
 
   ret = ny_voice_port_open(port);
   if (ret < 0)
