@@ -83,9 +83,9 @@ test('calendar: local date fields and countdown', () => {
   assert.equal(calendarCountdown(new Date(2026, 8, 17, 23, 0).getTime(), now), '已过 2 天');
 });
 
-test('task: wire progress is 0..1 and never exactly 0; unknown states fall back', () => {
+test('task: wire progress is 0..1 including real zero; unknown states fall back', () => {
   assert.deepEqual(taskScene({ title: '整理照片', progress: 40, state: 'running' }), { title: '整理照片', progress: 0.4, task_state: 'running', value: '40%' });
-  assert.equal(taskScene({ title: 'x', progress: 0, state: 'queued' }).progress, 0.001);
+  assert.equal(taskScene({ title: 'x', progress: 0, state: 'queued' }).progress, 0);
   assert.equal(taskScene({ title: 'x', progress: 250, state: 'done' }).progress, 1);
   assert.equal(taskScene({ title: 'x', progress: 10, state: 'cancelled' }).task_state, 'failed');
   assert.equal(taskScene({ title: 'x', progress: 10, state: '??' }).task_state, 'queued');
@@ -146,15 +146,20 @@ test('music / audio / network / system / caption / weather', () => {
   assert.ok(wrapped.next_line && utf8(wrapped.current_line) <= 47 && utf8(wrapped.next_line) <= 47);
 
   const weather = weatherScene({ kind: 'rain', city: '上海', temperature: 21.5, humidity: 80 });
-  assert.deepEqual(sanitizeScenePayload(weather), { weather: 'rain', title: '上海', temperature_c: 21.5, feels_like_c: 21.5, humidity_percent: 80 });
+  assert.deepEqual(sanitizeScenePayload(weather), { weather: 'rain', title: '上海', subtitle: '', temperature_c: 21.5, humidity_percent: 80 });
+  const cached = weatherScene({ kind:'rain', city:'上海', temperature:0, feelsLike:0, conditionText:'大雨', stale:true });
+  assert.equal(cached.temperature_c, 0);
+  assert.equal(cached.feels_like_c, 0);
+  assert.equal(cached.subtitle, '大雨');
+  assert.equal(cached.title, '上海 · 缓存');
 });
 
 test('feature registry: stages', () => {
   const planned = FEATURES.filter((f) => f.stage === 'planned').map((f) => f.type).sort();
-  assert.deepEqual(planned, ['battery', 'call', 'eq', 'health', 'home', 'identity', 'presence', 'privacy', 'subwoofer']);
+  assert.deepEqual(planned, ['battery', 'health', 'home', 'identity', 'presence', 'privacy']);
   assert.ok(FEATURES.every((f) => f.stage === 'ready' || f.stage === 'planned'));
   assert.ok(FEATURES.filter((f) => f.stage === 'planned').every((f) => f.needs));
-  // Every ready feature is a device scene, except the two that are not scenes by design.
+  // Hardware services need not claim a graphical scene.
   const notScenes = FEATURES.filter((f) => f.stage === 'ready' && coreSceneName(f.type) === null).map((f) => f.type).sort();
-  assert.deepEqual(notScenes, ['pairing', 'sleep']);
+  assert.deepEqual(notScenes, ['bluetooth', 'nas', 'pairing', 'sleep']);
 });
