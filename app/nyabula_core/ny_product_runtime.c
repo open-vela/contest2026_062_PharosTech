@@ -20,6 +20,9 @@
  ****************************************************************************/
 
 #include "ny_product.h"
+#ifdef CONFIG_NYABULA_CORE_DSP
+#include "ny_product_dsp.h"
+#endif
 #ifdef CONFIG_NYABULA_CORE_AGENT
 #include "ny_agent.h"
 #endif
@@ -110,6 +113,11 @@ static int ny_product_worker(int argc, char **argv)
       if (ret == 0)
         ret = light_ret;
 #endif
+#ifdef CONFIG_NYABULA_CORE_DSP
+      int dsp_ret = ny_product_dsp_tick();
+      if (ret == 0)
+        ret = dsp_ret;
+#endif
 #ifdef CONFIG_NYABULA_CORE_NETWORK
       int network_ret = ny_product_network_tick();
       if (ret == 0)
@@ -126,6 +134,9 @@ static int ny_product_worker(int argc, char **argv)
       usleep(100000);
     }
 
+#ifdef CONFIG_NYABULA_CORE_DSP
+  ny_product_dsp_shutdown();
+#endif
   ny_product_media_shutdown();
 #ifdef CONFIG_NYABULA_CORE_LIGHT
   ny_product_light_shutdown();

@@ -47,7 +47,8 @@ struct ny_audio_stream_s; /* Opaque */
 
 struct ny_audio_stream_config_s
 {
-  const char *path; /* /dev/audio/... */
+  const char *dsp_source; /* NULL: direct device, including calls/capture. */
+  const char *path;       /* /dev/audio/... */
   bool capture;
   bool wav; /* Playback through the PCM decoder node: it takes
              * the stream format from a WAV header, so one is
@@ -156,9 +157,9 @@ void ny_audio_stream_stats(struct ny_audio_stream_s *stream,
 
 int ny_audio_stream_unity(struct ny_audio_stream_s *stream);
 
-int ny_audio_stream_drain(struct ny_audio_stream_s *stream, int timeout_ms);
-
 int ny_audio_stream_pause(struct ny_audio_stream_s *stream, bool paused);
+
+int ny_audio_stream_drain(struct ny_audio_stream_s *stream, int timeout_ms);
 
 void ny_audio_stream_close(struct ny_audio_stream_s *stream);
 
