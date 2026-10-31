@@ -83,6 +83,8 @@ struct ny_product_audio_levels_s
  *
  ****************************************************************************/
 
+unsigned int ny_product_audio_output_level(void);
+
 int ny_product_audio_levels(struct ny_product_audio_levels_s *levels);
 
 /****************************************************************************

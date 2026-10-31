@@ -60,6 +60,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -201,6 +202,7 @@ static const char *const g_audio_input_names[] = {
   (sizeof(g_audio_input_names) / sizeof(g_audio_input_names[0]))
 
 static mutex_t g_audio_lock = NXMUTEX_INITIALIZER;
+static atomic_uint g_audio_output_level;
 
 static struct ny_audio_state_s g_audio =
 {
@@ -391,6 +393,11 @@ static int ny_audio_push_volume(int fd, const struct ny_audio_prefs_s *prefs,
 
           ret = 0;
         }
+    }
+
+  if (ret == 0)
+    {
+      atomic_store(&g_audio_output_level, level);
     }
 
   return ret;
@@ -1098,6 +1105,19 @@ static cJSON *ny_audio_status(void)
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: ny_product_audio_output_level
+ *
+ * Description:
+ *   Real-time snapshot of the last successfully applied global output level.
+ *   Never waits on codec control or persistent storage.
+ ****************************************************************************/
+
+unsigned int ny_product_audio_output_level(void)
+{
+  return atomic_load(&g_audio_output_level);
+}
 
 /****************************************************************************
  * Name: ny_product_audio_levels
