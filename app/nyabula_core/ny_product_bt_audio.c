@@ -25,6 +25,9 @@
  ****************************************************************************/
 
 #include "ny_product_bt_audio.h"
+#ifdef CONFIG_NYABULA_CORE_VOICE
+#include "ny_voice.h"
+#endif
 
 #ifdef CONFIG_NYABULA_CORE_BT
 
@@ -83,6 +86,7 @@ struct ny_bt_audio_s
 
   bool want_media;
   bool want_call;
+  unsigned int holds;
   bool held;
   bool call_msbc;
   uint32_t media_rate;
@@ -107,6 +111,7 @@ struct ny_bt_audio_s
 
 struct ny_bt_audio_worker_s
 {
+  bool voice_held;
   int mode;
   struct ny_audio_stream_s *speaker;
   struct ny_audio_stream_s *microphone;
@@ -198,6 +203,13 @@ static void ny_bt_audio_leave(struct ny_bt_audio_worker_s *worker)
   ny_audio_stream_close(worker->speaker);
   worker->microphone = NULL;
   worker->speaker = NULL;
+#ifdef CONFIG_NYABULA_CORE_VOICE
+  if (worker->voice_held)
+    {
+      ny_voice_speaker_release();
+      worker->voice_held = false;
+    }
+#endif
   worker->playing = false;
   worker->mode = NY_BT_AUDIO_OWNER_NONE;
   nxmutex_lock(&g_bt_audio.lock);
@@ -826,6 +838,20 @@ static void *ny_bt_audio_thread(void *arg)
                                      generation != worker.call_generation))
         {
           ny_bt_audio_leave(&worker);
+#ifdef CONFIG_NYABULA_CORE_VOICE
+          if (desired != NY_BT_AUDIO_OWNER_NONE)
+            {
+              int claim = ny_voice_speaker_claim();
+              if (claim < 0)
+                {
+                  ny_voice_speaker_release();
+                  ny_bt_audio_error(claim);
+                  continue;
+                }
+
+              worker.voice_held = true;
+            }
+#endif
           worker.mode = desired;
           worker.retry_at = 0;
           if (desired == NY_BT_AUDIO_OWNER_CALL)
@@ -1138,6 +1164,7 @@ int ny_bt_audio_hold(int timeout_ms)
       return -EBUSY;
     }
 
+  g_bt_audio.holds++;
   g_bt_audio.held = true;
   g_bt_audio.status.held = true;
   ny_pcm_ring_clear(&g_bt_audio.media_ring);
@@ -1167,6 +1194,7 @@ int ny_bt_audio_hold(int timeout_ms)
 
       if (ny_bt_audio_now() >= deadline)
         {
+          ny_bt_audio_release();
           return -ETIMEDOUT;
         }
 
@@ -1184,8 +1212,13 @@ void ny_bt_audio_release(void)
 
   nxmutex_lock(&g_bt_audio.lock);
   held = g_bt_audio.held;
-  g_bt_audio.held = false;
-  g_bt_audio.status.held = false;
+  if (g_bt_audio.holds > 0)
+    {
+      g_bt_audio.holds--;
+    }
+
+  g_bt_audio.held = g_bt_audio.holds != 0;
+  g_bt_audio.status.held = g_bt_audio.held;
   nxmutex_unlock(&g_bt_audio.lock);
   if (held && g_bt_audio.running)
     {
