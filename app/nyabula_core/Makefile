@@ -38,6 +38,13 @@ CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/crypto/libsodium/libsodium/src/libsodium/inc
 CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/interpreters/wamr/wamr/core/iwasm/include
 
 MAINSRC = nycore_main.c
+ifeq ($(CONFIG_NYABULA_CORE_PRODUCT),y)
+PROGNAME += nyabula
+PRIORITY += 100
+STACKSIZE += 16384
+MODULE += y
+MAINSRC += nyabula_main.c
+endif
 ifeq ($(CONFIG_NYABULA_CORE_AGENT),y)
 PROGNAME += nyabula_mcp
 PRIORITY += 100
