@@ -30,6 +30,11 @@ export interface NyaHtmlReadyMessage {
   nyaui: 1;
   type: 'ready';
 }
+export interface NyaHtmlResizeMessage {
+  nyaui: 1;
+  type: 'resize';
+  height: number;
+}
 export interface NyaHtmlPatchMessage {
   nyaui: 1;
   type: 'patch';
@@ -40,7 +45,7 @@ export interface NyaHtmlThemeMessage {
   type: 'theme';
   vars: Record<string, string>;
 }
-export type NyaHtmlFrameToHost = NyaHtmlEventMessage | NyaHtmlReadyMessage;
+export type NyaHtmlFrameToHost = NyaHtmlEventMessage | NyaHtmlReadyMessage | NyaHtmlResizeMessage;
 export type NyaHtmlHostToFrame = NyaHtmlPatchMessage | NyaHtmlThemeMessage;
 
 /** Options accepted by `window.nyabula.send(event, opts)` inside the frame. */
@@ -102,7 +107,7 @@ export const HTML_SDK_SOURCE = `(function () {
   }
   window.addEventListener('message', function (ev) {
     var m = ev.data;
-    if (!m || m.nyaui !== 1) return;
+    if (ev.source !== window.parent || !m || m.nyaui !== 1) return;
     if (m.type === 'patch' && Array.isArray(m.patches)) {
       patchCbs.forEach(function (f) { try { f(m.patches); } catch (e) {} });
     } else if (m.type === 'theme' && m.vars && typeof m.vars === 'object') {
@@ -110,7 +115,31 @@ export const HTML_SDK_SOURCE = `(function () {
     }
   });
   window.nyabula = sdk;
-  window.parent.postMessage({ nyaui: 1, type: 'ready' }, '*');
+  var resizePending = false;
+  var previousHeight = -1;
+  function reportHeight() {
+    resizePending = false;
+    if (!document.body) return;
+    var height = Math.ceil(Math.max(document.body.getBoundingClientRect().height, document.body.scrollHeight));
+    if (height !== previousHeight) {
+      previousHeight = height;
+      window.parent.postMessage({ nyaui: 1, type: 'resize', height: height }, '*');
+    }
+  }
+  function queueResize() {
+    if (!resizePending) { resizePending = true; window.requestAnimationFrame(reportHeight); }
+  }
+  function ready() {
+    window.parent.postMessage({ nyaui: 1, type: 'ready' }, '*');
+    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(queueResize).observe(document.body);
+    new MutationObserver(queueResize).observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+    window.addEventListener('resize', queueResize);
+    window.addEventListener('load', queueResize);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(queueResize);
+    queueResize();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready, { once: true });
+  else ready();
 })();`;
 
 /** Render the SDK source with the plugin id and theme baked in. */
