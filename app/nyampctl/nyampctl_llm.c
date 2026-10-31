@@ -71,10 +71,7 @@ static uint32_t nyampctl_llm_get_le32(const uint8_t *source)
   return value;
 }
 
-static uint64_t nyampctl_llm_request_id(void)
-{
-  return nyampctl_request_id();
-}
+static uint64_t nyampctl_llm_request_id(void) { return nyampctl_request_id(); }
 
 static int nyampctl_llm_write(int fd, const uint8_t *wire, size_t size)
 {
@@ -126,8 +123,7 @@ static int nyampctl_llm_expect_response(int fd, uint64_t request_id,
           header.service == NYAMP_SERVICE_BLOB &&
           header.opcode == NYAMP_BLOB_EVENT_PROGRESS &&
           header.request_id == request_id &&
-          nyamp_blob_progress_decode(&progress,
-                                     wire + NYAMP_WIRE_HEADER_SIZE,
+          nyamp_blob_progress_decode(&progress, wire + NYAMP_WIRE_HEADER_SIZE,
                                      header.payload_size) == NYAMP_OK)
         {
           printf("nyamp llm: pulling model %" PRIu64 "/%" PRIu64
@@ -360,11 +356,10 @@ static int nyampctl_llm_request(int fd, uint16_t opcode, uint64_t request_id,
       return ret;
     }
 
-  ret = nyampctl_llm_expect_response(fd, request_id, &response, wire,
-                                     sizeof(wire), &length,
-                                     opcode == NYAMP_LLM_LOAD
-                                         ? NYAMPCTL_LLM_LOAD_TIMEOUT_MS
-                                         : NYAMPCTL_LLM_TIMEOUT_MS);
+  ret = nyampctl_llm_expect_response(
+      fd, request_id, &response, wire, sizeof(wire), &length,
+      opcode == NYAMP_LLM_LOAD ? NYAMPCTL_LLM_LOAD_TIMEOUT_MS
+                               : NYAMPCTL_LLM_TIMEOUT_MS);
   if (ret < 0)
     {
       return ret;
@@ -646,10 +641,10 @@ int nyampctl_llm_chat(int fd, const char *path, uint32_t max_new_tokens)
       return ret;
     }
 
-  for (; ; )
+  for (;;)
     {
-      ssize_t got = read(file, request + total,
-                         NYAMP_LLM_CHAT_MAX_BODY + 1 - total);
+      ssize_t got =
+          read(file, request + total, NYAMP_LLM_CHAT_MAX_BODY + 1 - total);
 
       if (got < 0 && errno == EINTR)
         {
@@ -695,8 +690,8 @@ int nyampctl_llm_chat(int fd, const char *path, uint32_t max_new_tokens)
   else
 #endif
     {
-      ret = nyampctl_llm_chat_wire(fd, request, total, max_new_tokens,
-                                   &finish, &response);
+      ret = nyampctl_llm_chat_wire(fd, request, total, max_new_tokens, &finish,
+                                   &response);
       status = ret < 0 ? ret : finish.status;
     }
 

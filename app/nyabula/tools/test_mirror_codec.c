@@ -80,43 +80,43 @@ static void draw_page(uint16_t *page, int width, int height, int index)
 
   switch (index)
     {
-      case 0:                     /* The key page: all of it is new */
-      case 1:                     /* Small motion */
+      case 0: /* The key page: all of it is new */
+      case 1: /* Small motion */
       case 2:
         draw_eye(page, width, height, index);
         break;
 
-      case 3:                     /* Nothing changed at all */
+      case 3: /* Nothing changed at all */
         draw_eye(page, width, height, 2);
         break;
 
-      case 4:                     /* One pixel, the last one */
+      case 4: /* One pixel, the last one */
         draw_eye(page, width, height, 2);
         page[pixels - 1] = 0xffff;
         break;
 
-      case 5:                     /* Noise: nothing to gain anywhere */
+      case 5: /* Noise: nothing to gain anywhere */
         for (i = 0; i < pixels; i++)
           {
             page[i] = (uint16_t)random_next();
           }
         break;
 
-      case 6:                     /* One colour: a run longer than a count */
+      case 6: /* One colour: a run longer than a count */
         for (i = 0; i < pixels; i++)
           {
             page[i] = 0x1234;
           }
         break;
 
-      case 7:                     /* Runs and skips too short to be worth it */
+      case 7: /* Runs and skips too short to be worth it */
         for (i = 0; i < pixels; i++)
           {
             page[i] = (i % 5) < 2 ? 0x1234 : (uint16_t)(i / 2);
           }
         break;
 
-      default:                    /* Back to black */
+      default: /* Back to black */
         memset(page, 0, pixels * sizeof(uint16_t));
         break;
     }
@@ -235,8 +235,7 @@ int main(int argc, char **argv)
       int ret;
 
       draw_page(page, width, height, index);
-      size = nyabula_eye_mirror_encode(page, previous, pixels, payload,
-                                       bound);
+      size = nyabula_eye_mirror_encode(page, previous, pixels, payload, bound);
       ret = size == 0 ? -100 : decode(payload, size, decoded, pixels);
       if (ret < 0 || size > bound ||
           memcmp(decoded, page, pixels * sizeof(uint16_t)) != 0 ||
@@ -246,8 +245,8 @@ int main(int argc, char **argv)
           return 1;
         }
 
-      printf("page %d: %zu bytes of %zu (%.1f%%)\n", index, size,
-             pixels * 2, 100.0 * size / (pixels * 2));
+      printf("page %d: %zu bytes of %zu (%.1f%%)\n", index, size, pixels * 2,
+             100.0 * size / (pixels * 2));
       if (stream != NULL)
         {
           memcpy(record, "NEM1", 4);

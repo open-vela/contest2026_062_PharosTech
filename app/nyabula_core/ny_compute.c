@@ -84,10 +84,10 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "nyamp_protocol.h"
 #include "ny_compute.h"
 #include "ny_product.h"
 #include "ny_voice.h"
+#include "nyamp_protocol.h"
 
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
 
@@ -95,21 +95,21 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NY_COMPUTE_CTRL_PATH       "/dev/rpmsg/linux"
-#define NY_COMPUTE_ENDPOINT_NAME   "rpmsg-raw"
-#define NY_COMPUTE_ENDPOINT_PATH   "/dev/rpmsg-rpmsg-raw"
-#define NY_COMPUTE_OPEN_RETRIES    50
-#define NY_COMPUTE_OPEN_DELAY_US   100000
+#define NY_COMPUTE_CTRL_PATH     "/dev/rpmsg/linux"
+#define NY_COMPUTE_ENDPOINT_NAME "rpmsg-raw"
+#define NY_COMPUTE_ENDPOINT_PATH "/dev/rpmsg-rpmsg-raw"
+#define NY_COMPUTE_OPEN_RETRIES  50
+#define NY_COMPUTE_OPEN_DELAY_US 100000
 
-#define NY_COMPUTE_TASK_PRIORITY   100
-#define NY_COMPUTE_TASK_STACK      16384
-#define NY_COMPUTE_HASH_STACK      8192
+#define NY_COMPUTE_TASK_PRIORITY 100
+#define NY_COMPUTE_TASK_STACK    16384
+#define NY_COMPUTE_HASH_STACK    8192
 
 /* How long the task sleeps in poll().  It bounds the latency of a stop
  * request and of the link probe, nothing else: a frame wakes it at once.
  */
 
-#define NY_COMPUTE_POLL_MS         200
+#define NY_COMPUTE_POLL_MS 200
 
 /* An idle link is probed with a HEALTH query, and is reported down when
  * nothing at all has arrived for the longer interval.  The margin is wide
@@ -131,54 +131,54 @@
  * CLOSE and the diagnostic running beside a model load.
  */
 
-#define NY_COMPUTE_MAX_BLOBS       4
+#define NY_COMPUTE_MAX_BLOBS 4
 
 /* A chat, the loader, the diagnostic, and the voice chain's three standing
  * conversations (wake word stream, recognition, speech): a port routes one
  * request id at a time, so each of those needs its own.
  */
 
-#define NY_COMPUTE_MAX_PORTS       8
+#define NY_COMPUTE_MAX_PORTS 8
 
 /* A chat result arrives as one burst of frames (an 8 KiB answer is nineteen)
  * and the receive task may fill the queue faster than an equal-priority
  * requester drains it, so the queue has to hold a whole burst.
  */
 
-#define NY_COMPUTE_PORT_DEPTH      64
+#define NY_COMPUTE_PORT_DEPTH 64
 
 /* LLM timing.  A cold load pulls 875 MB and may hash it first; a chat is
  * bounded by the context window at the model's decode rate; an
  * acknowledgement is one round trip.
  */
 
-#define NY_COMPUTE_LLM_LOAD_MS     900000
-#define NY_COMPUTE_LLM_CHAT_MS     180000
-#define NY_COMPUTE_LLM_ACK_MS      10000
-#define NY_COMPUTE_LLM_CANCEL_MS   5000
-#define NY_COMPUTE_LLM_POLL_MS     200
-#define NY_COMPUTE_LOADER_STACK    8192
+#define NY_COMPUTE_LLM_LOAD_MS   900000
+#define NY_COMPUTE_LLM_CHAT_MS   180000
+#define NY_COMPUTE_LLM_ACK_MS    10000
+#define NY_COMPUTE_LLM_CANCEL_MS 5000
+#define NY_COMPUTE_LLM_POLL_MS   200
+#define NY_COMPUTE_LOADER_STACK  8192
 
 #ifndef CONFIG_NYABULA_CORE_COMPUTE_LLM
-#  define CONFIG_NYABULA_CORE_COMPUTE_LLM "llm/model.rkllm"
+#define CONFIG_NYABULA_CORE_COMPUTE_LLM "llm/model.rkllm"
 #endif
 
-#define NY_COMPUTE_HASH_CHUNK      65536
-#define NY_COMPUTE_BENCH_BLOCK     4096
-#define NY_COMPUTE_SHA256_HEX      64
+#define NY_COMPUTE_HASH_CHUNK  65536
+#define NY_COMPUTE_BENCH_BLOCK 4096
+#define NY_COMPUTE_SHA256_HEX  64
 
 /* Root, separator, the longest legal name, the longest suffix, NUL. */
 
 #define NY_COMPUTE_PATH_MAX \
   (sizeof(NY_COMPUTE_BLOB_ROOT) + 1 + NYAMP_BLOB_MAX_NAME + 8)
 
-#define NY_COMPUTE_DIGEST_SUFFIX   ".sha256"
+#define NY_COMPUTE_DIGEST_SUFFIX ".sha256"
 
 /* A blob path plus the digest suffix, and a directory plus one entry name. */
 
 #define NY_COMPUTE_SIDECAR_MAX \
   (NY_COMPUTE_PATH_MAX + sizeof(NY_COMPUTE_DIGEST_SUFFIX))
-#define NY_COMPUTE_CHILD_MAX       (NY_COMPUTE_PATH_MAX + NAME_MAX + 2)
+#define NY_COMPUTE_CHILD_MAX (NY_COMPUTE_PATH_MAX + NAME_MAX + 2)
 
 /****************************************************************************
  * Private Types
@@ -342,10 +342,10 @@ static void ny_compute_llm_set(enum ny_compute_llm_state_e state, int error,
                                const char *text);
 static uint32_t ny_compute_current_generation(void);
 static int ny_compute_status_errno(int32_t status);
-static int ny_compute_llm_call(struct ny_compute_port_s *port,
-                               uint16_t opcode, uint64_t request_id,
-                               const uint8_t *body, size_t body_size,
-                               int timeout_ms, int32_t *status);
+static int ny_compute_llm_call(struct ny_compute_port_s *port, uint16_t opcode,
+                               uint64_t request_id, const uint8_t *body,
+                               size_t body_size, int timeout_ms,
+                               int32_t *status);
 static int ny_compute_llm_load_locked(struct ny_compute_port_s *port,
                                       const char *name, int timeout_ms);
 static void *ny_compute_llm_loader(void *arg);
@@ -364,8 +364,7 @@ static int ny_compute_task(int argc, char **argv);
  * Private Data
  ****************************************************************************/
 
-static struct ny_compute_s g_compute =
-{
+static struct ny_compute_s g_compute = {
   .lock = NXMUTEX_INITIALIZER,
   .txlock = NXMUTEX_INITIALIZER,
   .llm_lock = NXMUTEX_INITIALIZER,
@@ -410,8 +409,7 @@ static void ny_compute_error(int code, const char *text)
 {
   nxmutex_lock(&g_compute.lock);
   g_compute.last_error = code;
-  strlcpy(g_compute.last_error_text, text,
-          sizeof(g_compute.last_error_text));
+  strlcpy(g_compute.last_error_text, text, sizeof(g_compute.last_error_text));
   nxmutex_unlock(&g_compute.lock);
 }
 
@@ -861,9 +859,8 @@ static int ny_compute_blob_publish(const struct nyamp_header_s *request,
     }
 
   nxmutex_lock(&g_compute.lock);
-  blob = request->generation == g_compute.generation
-             ? ny_compute_blob_alloc()
-             : NULL;
+  blob = request->generation == g_compute.generation ? ny_compute_blob_alloc()
+                                                     : NULL;
   if (blob == NULL)
     {
       nxmutex_unlock(&g_compute.lock);
@@ -1038,8 +1035,8 @@ static void ny_compute_blob_read(const struct nyamp_header_s *request,
   size_t want;
   int ret;
 
-  if (nyamp_blob_read_decode(&read_request, payload,
-                             request->payload_size) != NYAMP_OK ||
+  if (nyamp_blob_read_decode(&read_request, payload, request->payload_size) !=
+          NYAMP_OK ||
       read_request.flags != 0)
     {
       ny_compute_respond(request, NYAMP_MODEL_INVALID, NULL, 0);
@@ -1087,8 +1084,7 @@ static void ny_compute_blob_read(const struct nyamp_header_s *request,
           chunk = sizeof(g_compute_block);
         }
 
-      got = pread(blob->fd, g_compute_block, chunk,
-                  (off_t)(offset + filled));
+      got = pread(blob->fd, g_compute_block, chunk, (off_t)(offset + filled));
       if (got > 0)
         {
           memcpy(window + filled, g_compute_block, (size_t)got);
@@ -1152,8 +1148,8 @@ static void ny_compute_blob_read(const struct nyamp_header_s *request,
 
   nxmutex_unlock(&g_compute.lock);
 
-  if (nyamp_blob_read_encode(body, sizeof(body), &body_size,
-                             &read_request) != NYAMP_OK)
+  if (nyamp_blob_read_encode(body, sizeof(body), &body_size, &read_request) !=
+      NYAMP_OK)
     {
       ny_compute_respond(request, NYAMP_MODEL_BACKEND_ERROR, NULL, 0);
       return;
@@ -1184,9 +1180,8 @@ static void ny_compute_blob_close(const struct nyamp_header_s *request,
     }
 
   nxmutex_unlock(&g_compute.lock);
-  ny_compute_respond(request,
-                     blob != NULL ? NYAMP_MODEL_OK : NYAMP_MODEL_INVALID, NULL,
-                     0);
+  ny_compute_respond(
+      request, blob != NULL ? NYAMP_MODEL_OK : NYAMP_MODEL_INVALID, NULL, 0);
 }
 
 /****************************************************************************
@@ -1379,8 +1374,8 @@ static void ny_compute_blob_request(const struct nyamp_header_s *request,
       ny_compute_set_generation(request->generation);
     }
 
-  stale = request->generation == 0 ||
-          request->generation != g_compute.generation;
+  stale =
+      request->generation == 0 || request->generation != g_compute.generation;
   if (stale)
     {
       g_compute.last_probe_ms = 0;
@@ -1649,7 +1644,7 @@ static void *ny_compute_hash_worker(void *arg)
   uint8_t *chunk = malloc(NY_COMPUTE_HASH_CHUNK);
 
   (void)arg;
-  for (; ; )
+  for (;;)
     {
       struct ny_compute_hash_s job;
       uint8_t digest[NYAMP_BLOB_SHA256_SIZE];
@@ -1687,7 +1682,7 @@ static void *ny_compute_hash_worker(void *arg)
       else
         {
           sha256init(&hash);
-          for (; ; )
+          for (;;)
             {
               ssize_t got = read(fd, chunk, NY_COMPUTE_HASH_CHUNK);
 
@@ -1775,8 +1770,8 @@ static void *ny_compute_hash_worker(void *arg)
               continue;
             }
 
-          result = ret == -EBUSY ? NYAMP_MODEL_BUSY
-                                 : NYAMP_MODEL_BACKEND_ERROR;
+          result =
+              ret == -EBUSY ? NYAMP_MODEL_BUSY : NYAMP_MODEL_BACKEND_ERROR;
         }
 
       ny_compute_error(-EIO, job.name);
@@ -1878,10 +1873,10 @@ static int ny_compute_status_errno(int32_t status)
  *
  ****************************************************************************/
 
-static int ny_compute_llm_call(struct ny_compute_port_s *port,
-                               uint16_t opcode, uint64_t request_id,
-                               const uint8_t *body, size_t body_size,
-                               int timeout_ms, int32_t *status)
+static int ny_compute_llm_call(struct ny_compute_port_s *port, uint16_t opcode,
+                               uint64_t request_id, const uint8_t *body,
+                               size_t body_size, int timeout_ms,
+                               int32_t *status)
 {
   uint8_t wire[NYAMP_RPMSG_MTU];
   struct nyamp_header_s header;
@@ -1927,8 +1922,7 @@ static int ny_compute_llm_call(struct ny_compute_port_s *port,
 
       if (size == 0)
         {
-          if (generation != 0 &&
-              ny_compute_current_generation() != generation)
+          if (generation != 0 && ny_compute_current_generation() != generation)
             {
               return -ECONNRESET;
             }
@@ -1988,11 +1982,9 @@ static int ny_compute_llm_load_locked(struct ny_compute_port_s *port,
   nxmutex_unlock(&g_compute.lock);
   ny_compute_llm_set(NY_COMPUTE_LLM_LOADING, 0, "");
 
-  ret = ny_compute_llm_call(port, NYAMP_LLM_LOAD, ny_compute_request_id(),
-                            (const uint8_t *)name, length,
-                            timeout_ms > 0 ? timeout_ms
-                                           : NY_COMPUTE_LLM_LOAD_MS,
-                            &status);
+  ret = ny_compute_llm_call(
+      port, NYAMP_LLM_LOAD, ny_compute_request_id(), (const uint8_t *)name,
+      length, timeout_ms > 0 ? timeout_ms : NY_COMPUTE_LLM_LOAD_MS, &status);
   if (ret == 0)
     {
       ret = ny_compute_status_errno(status);
@@ -2007,7 +1999,7 @@ static int ny_compute_llm_load_locked(struct ny_compute_port_s *port,
       ny_compute_llm_set(NY_COMPUTE_LLM_ERROR, ret,
                          ret == -ENOENT
                              ? "model or tokenizer.json not in /data/models"
-                         : ret == -EBUSY ? "another model is loaded"
+                         : ret == -EBUSY     ? "another model is loaded"
                          : ret == -ETIMEDOUT ? "load timed out"
                                              : "load failed");
     }
@@ -2170,7 +2162,7 @@ static int ny_compute_chat_collect(struct ny_compute_port_s *port,
   uint32_t total = 0;
   int ret = -ETIMEDOUT;
 
-  for (; ; )
+  for (;;)
     {
       struct nyamp_header_s header;
       const uint8_t *payload = wire + NYAMP_WIRE_HEADER_SIZE;
@@ -2221,8 +2213,7 @@ static int ny_compute_chat_collect(struct ny_compute_port_s *port,
 
       if (size == 0)
         {
-          if (generation != 0 &&
-              ny_compute_current_generation() != generation)
+          if (generation != 0 && ny_compute_current_generation() != generation)
             {
               ret = -ECONNRESET;
               break;
@@ -2277,8 +2268,8 @@ static int ny_compute_chat_collect(struct ny_compute_port_s *port,
           continue;
         }
 
-      if (nyamp_llm_chat_finish_decode(finish, payload,
-                                       header.payload_size) != NYAMP_OK)
+      if (nyamp_llm_chat_finish_decode(finish, payload, header.payload_size) !=
+          NYAMP_OK)
         {
           ret = -EPROTO;
           break;
@@ -2339,7 +2330,7 @@ static int ny_compute_task(int argc, char **argv)
       ny_compute_error(-ENOMEM, "hash worker not started");
     }
 
-  for (; ; )
+  for (;;)
     {
       struct pollfd pollfd;
       bool stopping;
@@ -2383,7 +2374,7 @@ static int ny_compute_task(int argc, char **argv)
       ready = poll(&pollfd, 1, NY_COMPUTE_POLL_MS);
       if (ready > 0 && (pollfd.revents & POLLIN) != 0)
         {
-          for (; ; )
+          for (;;)
             {
               ssize_t size = read(g_compute.fd, wire, sizeof(wire));
 
@@ -2631,12 +2622,11 @@ int ny_compute_status(struct ny_compute_status_s *status)
   status->blob_active = g_compute.hash.active;
   for (index = 0; index < NY_COMPUTE_MAX_BLOBS; index++)
     {
-      status->blob_active = status->blob_active ||
-                            g_compute.blobs[index].id != 0;
+      status->blob_active =
+          status->blob_active || g_compute.blobs[index].id != 0;
     }
 
-  strlcpy(status->blob_name, g_compute.active_name,
-          sizeof(status->blob_name));
+  strlcpy(status->blob_name, g_compute.active_name, sizeof(status->blob_name));
   status->blob_offset = g_compute.active_offset;
   status->blob_size = g_compute.active_size;
   status->blob_bytes_per_sec =
@@ -2736,8 +2726,8 @@ int ny_compute_port_open(struct ny_compute_port_s **port)
    * there is nothing to send through.
    */
 
-  created->fd = open(NY_COMPUTE_ENDPOINT_PATH,
-                     O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+  created->fd =
+      open(NY_COMPUTE_ENDPOINT_PATH, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
   if (created->fd < 0)
     {
       int error = errno;
@@ -2951,9 +2941,9 @@ int ny_compute_llm_unload(void)
   ret = ny_compute_port_open(&port);
   if (ret == 0)
     {
-      ret = ny_compute_llm_call(port, NYAMP_LLM_UNLOAD,
-                                ny_compute_request_id(), NULL, 0,
-                                NY_COMPUTE_LLM_ACK_MS, &status);
+      ret =
+          ny_compute_llm_call(port, NYAMP_LLM_UNLOAD, ny_compute_request_id(),
+                              NULL, 0, NY_COMPUTE_LLM_ACK_MS, &status);
       ny_compute_port_close(port);
 
       /* INVALID is the daemon's "there was no session to unload", which is
@@ -2991,8 +2981,7 @@ int ny_compute_chat(const char *request_json, size_t max_new_tokens,
   int ret;
 
   if (request_json == NULL || response_json == NULL ||
-      (flags & ~NYAMP_LLM_CHAT_FLAGS_ALL) != 0 ||
-      max_new_tokens > UINT32_MAX)
+      (flags & ~NYAMP_LLM_CHAT_FLAGS_ALL) != 0 || max_new_tokens > UINT32_MAX)
     {
       return -EINVAL;
     }
@@ -3169,10 +3158,8 @@ int ny_compute_request(const struct ny_product_caller_s *caller,
   cJSON *capabilities;
   cJSON *root;
   cJSON *blob;
-  static const char *const states[] =
-  {
-    "unloaded", "provisioning", "loading", "ready", "busy", "error"
-  };
+  static const char *const states[] = { "unloaded", "provisioning", "loading",
+                                        "ready",    "busy",         "error" };
 
   bool start = strcmp(topic, "compute.start") == 0;
   bool stop = strcmp(topic, "compute.stop") == 0;
@@ -3204,8 +3191,9 @@ int ny_compute_request(const struct ny_product_caller_s *caller,
   if (load)
     {
       const cJSON *model = cJSON_GetObjectItemCaseSensitive(data, "model");
-      const char *name = cJSON_IsString(model) ? model->valuestring
-                                               : CONFIG_NYABULA_CORE_COMPUTE_LLM;
+      const char *name = cJSON_IsString(model)
+                             ? model->valuestring
+                             : CONFIG_NYABULA_CORE_COMPUTE_LLM;
 
       if ((model != NULL && !cJSON_IsString(model)) ||
           nyamp_blob_name_check(name, strlen(name)) != NYAMP_OK)
@@ -3306,8 +3294,7 @@ int ny_compute_request(const struct ny_product_caller_s *caller,
                                status.llm_last.prompt_tokens) ||
       !cJSON_AddNumberToObject(llm, "completionTokens",
                                status.llm_last.completion_tokens) ||
-      !cJSON_AddNumberToObject(llm, "prefillMs",
-                               status.llm_last.prefill_ms) ||
+      !cJSON_AddNumberToObject(llm, "prefillMs", status.llm_last.prefill_ms) ||
       !cJSON_AddNumberToObject(llm, "tokensPerSec",
                                status.llm_tokens_per_sec_x10 / 10.0))
     {

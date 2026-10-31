@@ -72,13 +72,13 @@ enum ny_agent_local_intent_e
 struct ny_agent_local_intent_s
 {
   enum ny_agent_local_intent_e kind;
-  bool complete;  /* Every slot the tool call needs was found.           */
-  bool numerals;  /* The words carry a quantity a model could read.      */
-  bool far_date;  /* An alarm for a day alarms cannot express.           */
-  bool ambiguous; /* Clock time with no am/pm hint: 7 is 07:00 or 19:00. */
-  uint32_t seconds;       /* TIMER                                       */
-  int percent;            /* VOLUME_SET level; VOLUME_UP/DOWN step       */
-  int hour;               /* ALARM                                       */
+  bool complete;    /* Every slot the tool call needs was found.           */
+  bool numerals;    /* The words carry a quantity a model could read.      */
+  bool far_date;    /* An alarm for a day alarms cannot express.           */
+  bool ambiguous;   /* Clock time with no am/pm hint: 7 is 07:00 or 19:00. */
+  uint32_t seconds; /* TIMER                                       */
+  int percent;      /* VOLUME_SET level; VOLUME_UP/DOWN step       */
+  int hour;         /* ALARM                                       */
   int minute;
   unsigned int repeat;    /* ALARM: bit 0 is Sunday                      */
   const char *expression; /* EXPRESSION: one of the 13 names             */
@@ -89,12 +89,12 @@ struct ny_agent_local_intent_s
 
 struct ny_agent_local_context_s
 {
-  double revision;        /* Of the list the create is checked against   */
+  double revision; /* Of the list the create is checked against   */
   int utc_offset_minutes;
-  int now_minutes;        /* Local minute of the day; -1: clock not set  */
+  int now_minutes; /* Local minute of the day; -1: clock not set  */
   int volume;
   bool muted;
-  const char *track;      /* MUSIC_PLAY: a file name from the library    */
+  const char *track; /* MUSIC_PLAY: a file name from the library    */
 };
 
 /* Never fails: what it cannot place is NY_AGENT_LOCAL_CHAT. */
@@ -111,12 +111,13 @@ const char *ny_agent_local_intent_revision(enum ny_agent_local_intent_e kind);
  * or NULL when the model has nothing to read it from.
  */
 
-const char *ny_agent_local_intent_forced(
-    const struct ny_agent_local_intent_s *intent, const char **name);
+const char *
+ny_agent_local_intent_forced(const struct ny_agent_local_intent_s *intent,
+                             const char **name);
 int ny_agent_local_intent_fill(struct ny_agent_local_intent_s *intent,
                                const char *name, const cJSON *arguments);
-const char *ny_agent_local_intent_question(
-    const struct ny_agent_local_intent_s *intent);
+const char *
+ny_agent_local_intent_question(const struct ny_agent_local_intent_s *intent);
 
 /* Pick a playable file for a spoken hint; -ENOENT when the library has
  * nothing to play.
@@ -127,9 +128,10 @@ int ny_agent_local_intent_track(const cJSON *library, const char *hint,
 
 /* The arguments the executor accepts, malloc'd; *tool names the tool. */
 
-char *ny_agent_local_intent_call(
-    const struct ny_agent_local_intent_s *intent,
-    const struct ny_agent_local_context_s *context, const char **tool);
+char *
+ny_agent_local_intent_call(const struct ny_agent_local_intent_s *intent,
+                           const struct ny_agent_local_context_s *context,
+                           const char **tool);
 
 /* A chat.completion body, malloc'd: a tool call when `tool` is set, else
  * `text` as the assistant's answer.

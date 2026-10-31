@@ -36,7 +36,7 @@
  * is noticed.
  */
 
-#define NY_VOICE_WIRE_SLICE_MS   200
+#define NY_VOICE_WIRE_SLICE_MS 200
 
 /* UNLOAD answers BUSY until the request it just ended has finished. */
 
@@ -58,8 +58,7 @@ static int ny_voice_wire_call(struct ny_voice_wire_s *wire, uint16_t service,
                               uint8_t *reply, size_t *reply_size);
 static int ny_voice_wire_begin(struct ny_voice_wire_s *wire, uint16_t service,
                                uint16_t opcode, const uint8_t *body,
-                               size_t body_size,
-                               struct nyamp_buffer_s *grant);
+                               size_t body_size, struct nyamp_buffer_s *grant);
 static int ny_voice_wire_fill(const struct ny_voice_wire_s *wire,
                               const struct nyamp_buffer_s *grant,
                               const int16_t *samples, size_t count,
@@ -171,7 +170,7 @@ static int ny_voice_wire_call(struct ny_voice_wire_s *wire, uint16_t service,
       return ret;
     }
 
-  for (; ; )
+  for (;;)
     {
       const uint8_t *data;
       size_t data_size;
@@ -225,13 +224,12 @@ static int ny_voice_wire_call(struct ny_voice_wire_s *wire, uint16_t service,
               header.opcode == NYAMP_BLOB_EVENT_PROGRESS)
             {
               if (wire->io.progress != NULL &&
-                  nyamp_blob_progress_decode(
-                      &progress, frame + NYAMP_WIRE_HEADER_SIZE,
-                      header.payload_size) == NYAMP_OK)
+                  nyamp_blob_progress_decode(&progress,
+                                             frame + NYAMP_WIRE_HEADER_SIZE,
+                                             header.payload_size) == NYAMP_OK)
                 {
                   wire->io.progress(wire->io.arg, progress.done,
-                                    progress.total,
-                                    progress.bytes_per_second);
+                                    progress.total, progress.bytes_per_second);
                 }
             }
           else
@@ -287,8 +285,7 @@ static int ny_voice_wire_call(struct ny_voice_wire_s *wire, uint16_t service,
 
 static int ny_voice_wire_begin(struct ny_voice_wire_s *wire, uint16_t service,
                                uint16_t opcode, const uint8_t *body,
-                               size_t body_size,
-                               struct nyamp_buffer_s *grant)
+                               size_t body_size, struct nyamp_buffer_s *grant)
 {
   uint8_t reply[NYAMP_BUFFER_SIZE];
   size_t reply_size = sizeof(reply);
@@ -420,8 +417,7 @@ int ny_voice_wire_errno(int32_t status)
 
 int ny_voice_wire_load(struct ny_voice_wire_s *wire, uint16_t service,
                        const char *directory,
-                       const struct ny_voice_wire_kws_s *kws,
-                       int timeout_ms)
+                       const struct ny_voice_wire_kws_s *kws, int timeout_ms)
 {
   uint8_t body[NYAMP_INLINE_MAX];
   size_t size = strlen(directory);
@@ -623,8 +619,7 @@ int ny_voice_wire_kws_end(struct ny_voice_wire_s *wire)
 }
 
 int ny_voice_wire_asr_begin(struct ny_voice_wire_s *wire, bool s16,
-                            uint32_t max_samples,
-                            struct nyamp_buffer_s *grant)
+                            uint32_t max_samples, struct nyamp_buffer_s *grant)
 {
   uint8_t body[NYAMP_ASR_BEGIN_SIZE];
   size_t size;
@@ -646,9 +641,8 @@ int ny_voice_wire_asr_attach(struct ny_voice_wire_s *wire,
   uint8_t body[NYAMP_ASR_ATTACH_SIZE];
   size_t size;
 
-  if (nyamp_asr_attach_encode(body, sizeof(body), &size,
-                              NY_VOICE_CAPTURE_RATE, 1, 0, max_samples,
-                              start_sample) != NYAMP_OK)
+  if (nyamp_asr_attach_encode(body, sizeof(body), &size, NY_VOICE_CAPTURE_RATE,
+                              1, 0, max_samples, start_sample) != NYAMP_OK)
     {
       return -EINVAL;
     }
@@ -678,15 +672,15 @@ int ny_voice_wire_asr_push(struct ny_voice_wire_s *wire,
       return ret;
     }
 
-  if (nyamp_asr_push_encode(body, sizeof(body), &size, &window, sequence, 0,
-                            0, 0) != NYAMP_OK)
+  if (nyamp_asr_push_encode(body, sizeof(body), &size, &window, sequence, 0, 0,
+                            0) != NYAMP_OK)
     {
       return -EINVAL;
     }
 
   return ny_voice_wire_call(wire, NYAMP_SERVICE_ASR, NYAMP_ASR_PUSH,
-                            wire->request_id, body, size,
-                            NY_VOICE_WIRE_ACK_MS, false, NULL, NULL);
+                            wire->request_id, body, size, NY_VOICE_WIRE_ACK_MS,
+                            false, NULL, NULL);
 }
 
 int ny_voice_wire_asr_end(struct ny_voice_wire_s *wire, uint64_t end_sample)
@@ -705,8 +699,8 @@ int ny_voice_wire_asr_end(struct ny_voice_wire_s *wire, uint64_t end_sample)
     }
 
   return ny_voice_wire_call(wire, NYAMP_SERVICE_ASR, NYAMP_ASR_END,
-                            wire->request_id, body, size,
-                            NY_VOICE_WIRE_ACK_MS, false, NULL, NULL);
+                            wire->request_id, body, size, NY_VOICE_WIRE_ACK_MS,
+                            false, NULL, NULL);
 }
 
 int ny_voice_wire_tts_say(struct ny_voice_wire_s *wire, const char *text,
@@ -823,7 +817,7 @@ int ny_voice_wire_event(struct ny_voice_wire_s *wire,
       return -ENOTCONN;
     }
 
-  for (; ; )
+  for (;;)
     {
       if (wire->count != 0)
         {
@@ -885,9 +879,9 @@ int ny_voice_wire_event(struct ny_voice_wire_s *wire,
 
       if (header.service == NYAMP_SERVICE_ASR &&
           header.opcode == NYAMP_ASR_EVENT_PARTIAL &&
-          nyamp_asr_partial_decode(&event->sequence,
-                                   &event->consumed_samples, &event->flags,
-                                   &event->text, &event->text_length, payload,
+          nyamp_asr_partial_decode(&event->sequence, &event->consumed_samples,
+                                   &event->flags, &event->text,
+                                   &event->text_length, payload,
                                    header.payload_size) == NYAMP_OK)
         {
           event->kind = NY_VOICE_WIRE_PARTIAL;

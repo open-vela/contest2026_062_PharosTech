@@ -22,18 +22,18 @@
 #define COUNT(list) (sizeof(list) / sizeof((list)[0]))
 #define KINDS       ((int)NY_AGENT_LOCAL_TASK + 1)
 
-#define CHECK(condition, ...) \
-  do \
-    { \
-      g_checks++; \
-      if (!(condition)) \
-        { \
-          g_failures++; \
+#define CHECK(condition, ...)                 \
+  do                                          \
+    {                                         \
+      g_checks++;                             \
+      if (!(condition))                       \
+        {                                     \
+          g_failures++;                       \
           printf("FAIL line %d: ", __LINE__); \
-          printf(__VA_ARGS__); \
-          printf("\n"); \
-        } \
-    } \
+          printf(__VA_ARGS__);                \
+          printf("\n");                       \
+        }                                     \
+    }                                         \
   while (0)
 
 static unsigned long g_checks;
@@ -45,9 +45,9 @@ static unsigned long g_seen[KINDS];
  * 10:00 in the morning, UTC+8, list revision 42, volume 50.
  */
 
-static const struct ny_agent_local_context_s g_context = {
-  42, 480, 600, 50, false, "song.mp3"
-};
+static const struct ny_agent_local_context_s g_context = { 42,    480,
+                                                           600,   50,
+                                                           false, "song.mp3" };
 
 /****************************************************************************
  * Helpers
@@ -200,9 +200,9 @@ static const struct kind_case_s g_kind_cases[] = {
   { "你为什么生气", NY_AGENT_LOCAL_CHAT, false },
   { "why is the alarm so loud", NY_AGENT_LOCAL_CHAT, false },
   { "tell me about timers", NY_AGENT_LOCAL_CHAT, false },
-  { "what is a timer", NY_AGENT_LOCAL_CHAT, false },   /* FIXED */
-  { "what is an alarm", NY_AGENT_LOCAL_CHAT, false },  /* FIXED */
-  { "What's a todo", NY_AGENT_LOCAL_CHAT, false },     /* FIXED */
+  { "what is a timer", NY_AGENT_LOCAL_CHAT, false },  /* FIXED */
+  { "what is an alarm", NY_AGENT_LOCAL_CHAT, false }, /* FIXED */
+  { "What's a todo", NY_AGENT_LOCAL_CHAT, false },    /* FIXED */
 
   /* Must stay chat: questions about features */
 
@@ -211,7 +211,7 @@ static const struct kind_case_s g_kind_cases[] = {
   { "计时器怎么用", NY_AGENT_LOCAL_CHAT, false },
   { "你支持计时器吗", NY_AGENT_LOCAL_CHAT, false },
   { "音量现在是多少", NY_AGENT_LOCAL_CHAT, false },
-  { "音量最大是多少", NY_AGENT_LOCAL_CHAT, false },    /* FIXED: set 100 */
+  { "音量最大是多少", NY_AGENT_LOCAL_CHAT, false }, /* FIXED: set 100 */
   { "what can you do", NY_AGENT_LOCAL_CHAT, false },
   { "do you have a timer", NY_AGENT_LOCAL_CHAT, false },
 
@@ -275,7 +275,7 @@ static const struct kind_case_s g_kind_cases[] = {
   { "\t\n", NY_AGENT_LOCAL_CHAT, false },
   { "😀😀😀", NY_AGENT_LOCAL_CHAT, false },
   { "。。。", NY_AGENT_LOCAL_CHAT, false },
-  { "计时五分钟\xff", NY_AGENT_LOCAL_CHAT, false },     /* Invalid UTF-8 */
+  { "计时五分钟\xff", NY_AGENT_LOCAL_CHAT, false },       /* Invalid UTF-8 */
   { "\xe8\xae\xa1\xe6\x97", NY_AGENT_LOCAL_CHAT, false }, /* Cut sequence */
 
   /* DEBATABLE: a question about a feature that names the verb is answered
@@ -338,8 +338,8 @@ static const struct timer_case_s g_timer_cases[] = {
   { "计时2.5分钟", 150, true, "" },
   { "定个一小时二十分钟的计时器", 4800, true, "" },
   { "计时1小时30分", 5400, true, "" },
-  { "计时1小时二十分钟", 4800, true, "" },   /* Mixed numerals */
-  { "计时两小时30分钟", 9000, true, "" },    /* Mixed numerals */
+  { "计时1小时二十分钟", 4800, true, "" }, /* Mixed numerals */
+  { "计时两小时30分钟", 9000, true, "" },  /* Mixed numerals */
   { "计时两分三十秒", 150, true, "" },
   { "计时两小时零五分", 7500, true, "" },
   { "计时一百二十分钟", 7200, true, "" },
@@ -497,8 +497,7 @@ static const struct alarm_case_s g_alarm_cases[] = {
   /* FIXED: 月 and 号 in the label are not a date. */
 
   { "晚上十点提醒我看月亮", true, 22, 0, false, 0, false, "看月亮" },
-  { "晚上八点提醒我取快递号码", true, 20, 0, false, 0, false,
-    "取快递号码" },
+  { "晚上八点提醒我取快递号码", true, 20, 0, false, 0, false, "取快递号码" },
 
   /* No usable time */
 
@@ -530,7 +529,7 @@ static const struct resolve_case_s g_resolve_cases[] = {
   { "定个十二点的闹钟", 600, "12:00" },
   { "定个十二点的闹钟", 780, "00:00" }, /* 13:00 now */
   { "定个十二点半的闹钟", 0, "00:30" },
-  { "下午三点叫我", 1200, "15:00" }     /* Not ambiguous: unaffected */
+  { "下午三点叫我", 1200, "15:00" } /* Not ambiguous: unaffected */
 };
 
 /****************************************************************************
@@ -552,15 +551,14 @@ struct volume_case_s
 static const struct volume_case_s g_volume_cases[] = {
   /* Absolute */
 
-  { "音量调到30", NY_AGENT_LOCAL_VOLUME_SET, 30, true, 50, false, 30,
-    false },
+  { "音量调到30", NY_AGENT_LOCAL_VOLUME_SET, 30, true, 50, false, 30, false },
   { "音量调到 60%", NY_AGENT_LOCAL_VOLUME_SET, 60, true, 50, false, 60,
     false },
   { "音量60％", NY_AGENT_LOCAL_VOLUME_SET, 60, true, 50, false, 60, false },
-  { "音量调到百分之五十", NY_AGENT_LOCAL_VOLUME_SET, 50, true, 20, false,
-    50, false },
-  { "音量调到百分之百", NY_AGENT_LOCAL_VOLUME_SET, 100, true, 20, false,
-    100, false },
+  { "音量调到百分之五十", NY_AGENT_LOCAL_VOLUME_SET, 50, true, 20, false, 50,
+    false },
+  { "音量调到百分之百", NY_AGENT_LOCAL_VOLUME_SET, 100, true, 20, false, 100,
+    false },
   { "音量调到一百", NY_AGENT_LOCAL_VOLUME_SET, 100, true, 20, false, 100,
     false },
   { "音量开到八十", NY_AGENT_LOCAL_VOLUME_SET, 80, true, 20, false, 80,
@@ -577,19 +575,17 @@ static const struct volume_case_s g_volume_cases[] = {
     false },
   { "音量调到一半", NY_AGENT_LOCAL_VOLUME_SET, 50, true, 80, false, 50,
     false },
-  { "volume 40", NY_AGENT_LOCAL_VOLUME_SET, 40, true, 50, false, 40,
-    false },
+  { "volume 40", NY_AGENT_LOCAL_VOLUME_SET, 40, true, 50, false, 40, false },
   { "volume to 25", NY_AGENT_LOCAL_VOLUME_SET, 25, true, 50, false, 25,
     false },
-  { "set volume to 70 percent", NY_AGENT_LOCAL_VOLUME_SET, 70, true, 50,
-    false, 70, false },
-  { "Set the volume at 80", NY_AGENT_LOCAL_VOLUME_SET, 80, true, 50, false,
-    80, false },
+  { "set volume to 70 percent", NY_AGENT_LOCAL_VOLUME_SET, 70, true, 50, false,
+    70, false },
+  { "Set the volume at 80", NY_AGENT_LOCAL_VOLUME_SET, 80, true, 50, false, 80,
+    false },
 
   /* An absolute level while muted also unmutes. */
 
-  { "音量调到30", NY_AGENT_LOCAL_VOLUME_SET, 30, true, 50, true, 30,
-    false },
+  { "音量调到30", NY_AGENT_LOCAL_VOLUME_SET, 30, true, 50, true, 30, false },
 
   /* "最小" is the quietest audible level, not silence. */
 
@@ -600,38 +596,30 @@ static const struct volume_case_s g_volume_cases[] = {
 
   { "音量调到150", NY_AGENT_LOCAL_VOLUME_SET, 150, false, 50, false, 0,
     false },
-  { "调一下音量", NY_AGENT_LOCAL_VOLUME_SET, -1, false, 50, false, 0,
-    false },
+  { "调一下音量", NY_AGENT_LOCAL_VOLUME_SET, -1, false, 50, false, 0, false },
   { "音量调到三点", NY_AGENT_LOCAL_VOLUME_SET, -1, false, 50, false, 0,
     false },
 
   /* Relative, default step */
 
-  { "声音大一点", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65,
-    false },
+  { "声音大一点", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65, false },
   { "大声点", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65, false },
   { "音量调高", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65, false },
-  { "音量调高一点", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65,
-    false },
+  { "音量调高一点", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65, false },
   { "把声音调大一点", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65,
     false },
-  { "声音太小了", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65,
+  { "声音太小了", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65, false },
+  { "turn it up", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65, false },
+  { "turn up the volume", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65,
     false },
-  { "turn it up", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65,
-    false },
-  { "turn up the volume", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false,
-    65, false },
   { "louder", NY_AGENT_LOCAL_VOLUME_UP, 15, true, 50, false, 65, false },
-  { "声音小一点", NY_AGENT_LOCAL_VOLUME_DOWN, 15, true, 50, false, 35,
-    false },
+  { "声音小一点", NY_AGENT_LOCAL_VOLUME_DOWN, 15, true, 50, false, 35, false },
   { "小声点", NY_AGENT_LOCAL_VOLUME_DOWN, 15, true, 50, false, 35, false },
   { "太吵了", NY_AGENT_LOCAL_VOLUME_DOWN, 15, true, 50, false, 35, false },
   { "太吵了小声点", NY_AGENT_LOCAL_VOLUME_DOWN, 15, true, 50, false, 35,
     false },
-  { "声音太大了", NY_AGENT_LOCAL_VOLUME_DOWN, 15, true, 50, false, 35,
-    false },
-  { "声音轻一点", NY_AGENT_LOCAL_VOLUME_DOWN, 15, true, 50, false, 35,
-    false },
+  { "声音太大了", NY_AGENT_LOCAL_VOLUME_DOWN, 15, true, 50, false, 35, false },
+  { "声音轻一点", NY_AGENT_LOCAL_VOLUME_DOWN, 15, true, 50, false, 35, false },
   { "turn it down", NY_AGENT_LOCAL_VOLUME_DOWN, 15, true, 50, false, 35,
     false },
   { "volume down", NY_AGENT_LOCAL_VOLUME_DOWN, 15, true, 50, false, 35,
@@ -639,25 +627,19 @@ static const struct volume_case_s g_volume_cases[] = {
 
   /* Relative, a step that was said */
 
-  { "音量调低20", NY_AGENT_LOCAL_VOLUME_DOWN, 20, true, 50, false, 30,
-    false },
-  { "音量降低10", NY_AGENT_LOCAL_VOLUME_DOWN, 10, true, 50, false, 40,
-    false },
-  { "音量提高二十", NY_AGENT_LOCAL_VOLUME_UP, 20, true, 50, false, 70,
-    false },
+  { "音量调低20", NY_AGENT_LOCAL_VOLUME_DOWN, 20, true, 50, false, 30, false },
+  { "音量降低10", NY_AGENT_LOCAL_VOLUME_DOWN, 10, true, 50, false, 40, false },
+  { "音量提高二十", NY_AGENT_LOCAL_VOLUME_UP, 20, true, 50, false, 70, false },
   { "音量调大5", NY_AGENT_LOCAL_VOLUME_UP, 5, true, 50, false, 55, false },
   { "turn down the volume by 10", NY_AGENT_LOCAL_VOLUME_DOWN, 10, true, 50,
     false, 40, false },
 
   /* FIXED: these set the level to 10 / 20 instead of moving it. */
 
-  { "音量增加10", NY_AGENT_LOCAL_VOLUME_UP, 10, true, 50, false, 60,
-    false },
+  { "音量增加10", NY_AGENT_LOCAL_VOLUME_UP, 10, true, 50, false, 60, false },
   { "音量加10", NY_AGENT_LOCAL_VOLUME_UP, 10, true, 50, false, 60, false },
-  { "音量减少20", NY_AGENT_LOCAL_VOLUME_DOWN, 20, true, 50, false, 30,
-    false },
-  { "声音减10", NY_AGENT_LOCAL_VOLUME_DOWN, 10, true, 50, false, 40,
-    false },
+  { "音量减少20", NY_AGENT_LOCAL_VOLUME_DOWN, 20, true, 50, false, 30, false },
+  { "声音减10", NY_AGENT_LOCAL_VOLUME_DOWN, 10, true, 50, false, 40, false },
 
   /* Clamping.  Up stops at 100.  Down stops at 5, the quietest level that
    * is still heard, and never raises a level that is already below it.
@@ -747,8 +729,8 @@ static const struct expression_case_s g_expression_cases[] = {
  */
 
 static const char *const g_expression_misses[] = {
-  "给我一个星星眼", "来个爱心眼", "表情恢复正常", "变个脸", "哭一个",
-  "look curious", "be happy"
+  "给我一个星星眼", "来个爱心眼",   "表情恢复正常", "变个脸",
+  "哭一个",         "look curious", "be happy"
 };
 
 /****************************************************************************
@@ -775,8 +757,7 @@ static const struct text_case_s g_text_cases[] = {
   { "帮我记住WiFi密码是12345678", NY_AGENT_LOCAL_REMEMBER, true,
     "WiFi密码是12345678" }, /* Case kept */
   { "记住，我对花生过敏。", NY_AGENT_LOCAL_REMEMBER, true, "我对花生过敏" },
-  { "记住：门禁密码 2580！", NY_AGENT_LOCAL_REMEMBER, true,
-    "门禁密码 2580" },
+  { "记住：门禁密码 2580！", NY_AGENT_LOCAL_REMEMBER, true, "门禁密码 2580" },
   { "帮我记下来我的车牌号是粤B12345", NY_AGENT_LOCAL_REMEMBER, true,
     "我的车牌号是粤B12345" },
   { "麻烦你帮我记一下，周三要开会", NY_AGENT_LOCAL_REMEMBER, true,
@@ -787,13 +768,12 @@ static const struct text_case_s g_text_cases[] = {
   { "记一下今天天气很好", NY_AGENT_LOCAL_REMEMBER, true, "今天天气很好" },
   { "记住我昨天把钥匙放在抽屉里了", NY_AGENT_LOCAL_REMEMBER, true,
     "我昨天把钥匙放在抽屉里了" }, /* Narration is fine inside a memory */
-  { "记住定个闹钟这句话", NY_AGENT_LOCAL_REMEMBER, true,
-    "定个闹钟这句话" },
-  { "remember that my keys are in the drawer", NY_AGENT_LOCAL_REMEMBER,
-    true, "my keys are in the drawer" },
+  { "记住定个闹钟这句话", NY_AGENT_LOCAL_REMEMBER, true, "定个闹钟这句话" },
+  { "remember that my keys are in the drawer", NY_AGENT_LOCAL_REMEMBER, true,
+    "my keys are in the drawer" },
   { "Remember I like tea", NY_AGENT_LOCAL_REMEMBER, true, "I like tea" },
-  { "Please remember that I parked on level 3", NY_AGENT_LOCAL_REMEMBER,
-    true, "I parked on level 3" },
+  { "Please remember that I parked on level 3", NY_AGENT_LOCAL_REMEMBER, true,
+    "I parked on level 3" },
   { "记住", NY_AGENT_LOCAL_REMEMBER, false, "" },
   { "记一下", NY_AGENT_LOCAL_REMEMBER, false, "" },
   { "帮我记", NY_AGENT_LOCAL_REMEMBER, false, "" },
@@ -814,14 +794,12 @@ static const struct text_case_s g_text_cases[] = {
   { "待办：个人总结", NY_AGENT_LOCAL_TASK, true, "个人总结" },
   { "待办事项里加一个个人所得税申报", NY_AGENT_LOCAL_TASK, true,
     "个人所得税申报" },
-  { "帮我记个待办，给妈妈打电话", NY_AGENT_LOCAL_TASK, true,
-    "给妈妈打电话" },
+  { "帮我记个待办，给妈妈打电话", NY_AGENT_LOCAL_TASK, true, "给妈妈打电话" },
   { "新增待办 加班写代码", NY_AGENT_LOCAL_TASK, true, "加班写代码" },
   { "加待办 取快递", NY_AGENT_LOCAL_TASK, true, "取快递" },
   { "添加待办事项：预约体检", NY_AGENT_LOCAL_TASK, true, "预约体检" },
   { "新建一个待办，买猫粮", NY_AGENT_LOCAL_TASK, true, "买猫粮" },
-  { "todo: call the dentist", NY_AGENT_LOCAL_TASK, true,
-    "call the dentist" },
+  { "todo: call the dentist", NY_AGENT_LOCAL_TASK, true, "call the dentist" },
   { "add a todo: renew passport", NY_AGENT_LOCAL_TASK, true,
     "renew passport" },
   { "New todo Buy Cat Food", NY_AGENT_LOCAL_TASK, true, "Buy Cat Food" },
@@ -840,8 +818,7 @@ static const struct text_case_s g_text_cases[] = {
 
   /* DEBATABLE: quotation marks around the item are kept. */
 
-  { "把“周五交报告”加到待办", NY_AGENT_LOCAL_TASK, true,
-    "“周五交报告”" },
+  { "把“周五交报告”加到待办", NY_AGENT_LOCAL_TASK, true, "“周五交报告”" },
 
   /* 提醒我 with neither a time nor a duration is a to-do. */
 
@@ -894,8 +871,8 @@ static void test_kinds(void)
       CHECK(intent.kind == c->kind, "[%s] is %s, expected %s", c->utterance,
             kind_name(&intent), ny_agent_local_intent_name(c->kind));
       if (intent.kind == c->kind)
-        CHECK(intent.complete == c->complete, "[%s] complete=%d",
-              c->utterance, intent.complete);
+        CHECK(intent.complete == c->complete, "[%s] complete=%d", c->utterance,
+              intent.complete);
       if (intent.kind == NY_AGENT_LOCAL_CHAT)
         {
           const char *tool = NULL;
@@ -1045,7 +1022,8 @@ static void test_alarms(void)
         if (c->repeat & (1u << day))
           {
             const cJSON *name = cJSON_GetArrayItem(repeat, listed++);
-            CHECK(cJSON_IsString(name) && !strcmp(name->valuestring, days[day]),
+            CHECK(cJSON_IsString(name) &&
+                      !strcmp(name->valuestring, days[day]),
                   "[%s] repeat day %d", c->utterance, day);
           }
       CHECK(cJSON_GetArraySize(repeat) == listed, "[%s] repeat count",
@@ -1102,7 +1080,8 @@ static void test_volume(void)
       cJSON *call = call_of(&intent, &context, &tool);
       const cJSON *arguments =
           cJSON_GetObjectItemCaseSensitive(call, "arguments");
-      const cJSON *muted = cJSON_GetObjectItemCaseSensitive(arguments, "muted");
+      const cJSON *muted =
+          cJSON_GetObjectItemCaseSensitive(arguments, "muted");
       CHECK(call != NULL && !strcmp(tool, "nyabula_music"), "[%s] tool",
             c->utterance);
       CHECK(cJSON_GetArraySize(call) == 2 &&
@@ -1125,10 +1104,10 @@ static void test_volume(void)
 
 static void test_expressions(void)
 {
-  static const char *const all[] = { "idle",   "curious", "happy", "processing",
-                                     "star",   "heart",   "sleepy", "sleep",
-                                     "angry",  "sad",     "surprise", "dizzy",
-                                     "derp" };
+  static const char *const all[] = {
+    "idle",  "curious", "happy", "processing", "star",  "heart", "sleepy",
+    "sleep", "angry",   "sad",   "surprise",   "dizzy", "derp"
+  };
   bool reached[COUNT(all)] = { false };
   for (size_t i = 0; i < COUNT(g_expression_cases); i++)
     {
@@ -1422,11 +1401,11 @@ static void test_music(void)
 
   /* Picking a file for the hint */
 
-  cJSON *library = cJSON_Parse(
-      "{\"items\":[{\"name\":\"notes.txt\",\"supported\":false},"
-      "{\"name\":\"Sunny Day.mp3\",\"supported\":true},"
-      "{\"name\":\"周杰伦 - 晴天.flac\",\"supported\":true},"
-      "{\"name\":\"Jazz Night.mp3\",\"supported\":true}]}");
+  cJSON *library =
+      cJSON_Parse("{\"items\":[{\"name\":\"notes.txt\",\"supported\":false},"
+                  "{\"name\":\"Sunny Day.mp3\",\"supported\":true},"
+                  "{\"name\":\"周杰伦 - 晴天.flac\",\"supported\":true},"
+                  "{\"name\":\"Jazz Night.mp3\",\"supported\":true}]}");
   cJSON *texts = cJSON_Parse(
       "{\"items\":[{\"name\":\"notes.txt\",\"supported\":false}]}");
   cJSON *empty = cJSON_Parse("{\"items\":[]}");
@@ -1479,13 +1458,12 @@ static void test_reads(void)
   {
     const char *utterance;
     const char *topic;
-  } cases[] = { { "现在几点了", "system.time.get" },
-                { "今天几号", "system.time.get" },
-                { "今天天气怎么样", "weather.get" },
-                { "设备状态", "device.status" },
-                { "有哪些计时器", "timer.list" },
-                { "有几个闹钟", "alarm.list" },
-                { "我有哪些待办", "task.list" } };
+  } cases[] = {
+    { "现在几点了", "system.time.get" }, { "今天几号", "system.time.get" },
+    { "今天天气怎么样", "weather.get" }, { "设备状态", "device.status" },
+    { "有哪些计时器", "timer.list" },    { "有几个闹钟", "alarm.list" },
+    { "我有哪些待办", "task.list" }
+  };
   for (size_t i = 0; i < COUNT(cases); i++)
     {
       struct ny_agent_local_intent_s intent;
@@ -1510,26 +1488,25 @@ static void test_reads(void)
 static void test_names(void)
 {
   static const char *const names[] = {
-    "chat",        "time",        "date",         "weather",
-    "status",      "timer.list",  "alarm.list",   "task.list",
-    "expression",  "timer",       "alarm",        "volume.set",
-    "volume.up",   "volume.down", "mute",         "unmute",
-    "music.play",  "music.pause", "music.resume", "music.stop",
-    "remember",    "task"
+    "chat",       "time",       "date",        "weather",      "status",
+    "timer.list", "alarm.list", "task.list",   "expression",   "timer",
+    "alarm",      "volume.set", "volume.up",   "volume.down",  "mute",
+    "unmute",     "music.play", "music.pause", "music.resume", "music.stop",
+    "remember",   "task"
   };
   CHECK(COUNT(names) == (size_t)KINDS, "name table size");
   for (int kind = 0; kind < KINDS; kind++)
     {
-      const char *list = ny_agent_local_intent_revision(
-          (enum ny_agent_local_intent_e)kind);
+      const char *list =
+          ny_agent_local_intent_revision((enum ny_agent_local_intent_e)kind);
       const char *expected = kind == NY_AGENT_LOCAL_TIMER      ? "timer.list"
                              : kind == NY_AGENT_LOCAL_ALARM    ? "alarm.list"
                              : kind == NY_AGENT_LOCAL_REMEMBER ? "memory.list"
                              : kind == NY_AGENT_LOCAL_TASK     ? "task.list"
                                                                : NULL;
-      CHECK(!strcmp(ny_agent_local_intent_name(
-                        (enum ny_agent_local_intent_e)kind),
-                    names[kind]),
+      CHECK(!strcmp(
+                ny_agent_local_intent_name((enum ny_agent_local_intent_e)kind),
+                names[kind]),
             "name of kind %d", kind);
       CHECK((list == NULL) == (expected == NULL) &&
                 (list == NULL || !strcmp(list, expected)),
@@ -1549,8 +1526,8 @@ static void test_names(void)
 struct fill_case_s
 {
   const char *utterance;
-  const char *offered;   /* Tool the model is forced to call, or NULL */
-  const char *name;      /* Tool the model answered with */
+  const char *offered; /* Tool the model is forced to call, or NULL */
+  const char *name;    /* Tool the model answered with */
   const char *arguments;
   int result;
   uint32_t seconds;
@@ -1571,8 +1548,8 @@ static const struct fill_case_s g_fill_cases[] = {
     "{\"expression\":\"anger\"}", 0, 0, -1, -1, -1, "angry" },
   { "换个表情", "set_expression", "set_expression",
     "{\"expression\":\"ANGER\"}", 0, 0, -1, -1, -1, "angry" },
-  { "换个表情", "set_expression", "set_expression",
-    "{\"expression\":\"joy\"}", 0, 0, -1, -1, -1, "happy" },
+  { "换个表情", "set_expression", "set_expression", "{\"expression\":\"joy\"}",
+    0, 0, -1, -1, -1, "happy" },
   { "换个表情", "set_expression", "set_expression",
     "{\"expression\":\"sadness\"}", 0, 0, -1, -1, -1, "sad" },
   { "换个表情", "set_expression", "set_expression",
@@ -1602,16 +1579,16 @@ static const struct fill_case_s g_fill_cases[] = {
   { "换个表情", "set_expression", "set_expression", "{\"expression\":7}",
     -EINVAL, 0, -1, -1, -1, NULL },
   { "换个表情", "set_expression", "set_expression",
-    "{\"expression\":\"happyhappyhappyhappyhappyhappyhappy\"}", -EINVAL, 0,
-    -1, -1, -1, NULL },
-  { "换个表情", "set_expression", "set_expression", "{}", -EINVAL, 0, -1,
+    "{\"expression\":\"happyhappyhappyhappyhappyhappyhappy\"}", -EINVAL, 0, -1,
     -1, -1, NULL },
-  { "换个表情", "set_expression", "set_expression", "[\"happy\"]", -EINVAL,
+  { "换个表情", "set_expression", "set_expression", "{}", -EINVAL, 0, -1, -1,
+    -1, NULL },
+  { "换个表情", "set_expression", "set_expression", "[\"happy\"]", -EINVAL, 0,
+    -1, -1, -1, NULL },
+  { "换个表情", "set_expression", "set_timer", "{\"minutes\":5}", -EINVAL, 0,
+    -1, -1, -1, NULL },
+  { "换个表情", "set_expression", NULL, "{\"expression\":\"happy\"}", -EINVAL,
     0, -1, -1, -1, NULL },
-  { "换个表情", "set_expression", "set_timer", "{\"minutes\":5}", -EINVAL,
-    0, -1, -1, -1, NULL },
-  { "换个表情", "set_expression", NULL, "{\"expression\":\"happy\"}",
-    -EINVAL, 0, -1, -1, -1, NULL },
 
   /* Timer: minutes as a number or as a string, 1 second to 24 hours. */
 
@@ -1619,41 +1596,41 @@ static const struct fill_case_s g_fill_cases[] = {
     -1, -1, -1, NULL },
   { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":\"2.5\"}", 0,
     150, -1, -1, -1, NULL },
-  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":1440}", 0,
-    86400, -1, -1, -1, NULL },
-  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":1441}",
-    -EINVAL, 0, -1, -1, -1, NULL },
-  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":0}", -EINVAL,
+  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":1440}", 0, 86400,
+    -1, -1, -1, NULL },
+  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":1441}", -EINVAL,
     0, -1, -1, -1, NULL },
-  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":-5}", -EINVAL,
+  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":0}", -EINVAL, 0,
+    -1, -1, -1, NULL },
+  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":-5}", -EINVAL, 0,
+    -1, -1, -1, NULL },
+  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":1e300}", -EINVAL,
     0, -1, -1, -1, NULL },
-  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":1e300}",
-    -EINVAL, 0, -1, -1, -1, NULL },
   { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":\"soon\"}",
     -EINVAL, 0, -1, -1, -1, NULL },
-  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":\"\"}",
-    -EINVAL, 0, -1, -1, -1, NULL },
-  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":null}",
-    -EINVAL, 0, -1, -1, -1, NULL },
-  { "定个计时器二十", "set_timer", "set_timer", "{\"seconds\":30}", -EINVAL,
+  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":\"\"}", -EINVAL,
     0, -1, -1, -1, NULL },
+  { "定个计时器二十", "set_timer", "set_timer", "{\"minutes\":null}", -EINVAL,
+    0, -1, -1, -1, NULL },
+  { "定个计时器二十", "set_timer", "set_timer", "{\"seconds\":30}", -EINVAL, 0,
+    -1, -1, -1, NULL },
 
   /* No quantity in the words: the model is not asked to invent one. */
 
-  { "帮我定个计时器", NULL, "set_timer", "{\"minutes\":5}", -EINVAL, 0, -1,
-    -1, -1, NULL },
+  { "帮我定个计时器", NULL, "set_timer", "{\"minutes\":5}", -EINVAL, 0, -1, -1,
+    -1, NULL },
 
   /* A duration that was read and refused is not read again. */
 
-  { "计时25小时", NULL, "set_timer", "{\"minutes\":5}", -EINVAL, 90000, -1,
-    -1, -1, NULL },
+  { "计时25小时", NULL, "set_timer", "{\"minutes\":5}", -EINVAL, 90000, -1, -1,
+    -1, NULL },
 
   /* DEBATABLE: "三天" has a numeral and no unit the rules know, so the model
    * is asked for minutes; whether it says 4320 (refused) or 3 is its call.
    */
 
-  { "计时三天", "set_timer", "set_timer", "{\"minutes\":4320}", -EINVAL, 0,
-    -1, -1, -1, NULL },
+  { "计时三天", "set_timer", "set_timer", "{\"minutes\":4320}", -EINVAL, 0, -1,
+    -1, -1, NULL },
 
   /* Alarm: 24-hour HH:MM and nothing after it. */
 
@@ -1675,8 +1652,8 @@ static const struct fill_case_s g_fill_cases[] = {
     -EINVAL, 0, -1, -1, -1, NULL },
   { "定个25点的闹钟", "set_alarm", "set_alarm", "{\"time\":730}", -EINVAL, 0,
     -1, -1, -1, NULL },
-  { "定个25点的闹钟", "set_alarm", "set_alarm", "{}", -EINVAL, 0, -1, -1,
-    -1, NULL },
+  { "定个25点的闹钟", "set_alarm", "set_alarm", "{}", -EINVAL, 0, -1, -1, -1,
+    NULL },
 
   /* DEBATABLE: seconds after the minutes are refused, not dropped. */
 
@@ -1685,10 +1662,10 @@ static const struct fill_case_s g_fill_cases[] = {
 
   /* No numeral, or a far date: the owner is asked, not the model. */
 
-  { "帮我定个闹钟", NULL, "set_alarm", "{\"time\":\"07:30\"}", -EINVAL, 0,
-    -1, -1, -1, NULL },
-  { "下周一早上八点叫我", NULL, "set_alarm", "{\"time\":\"07:30\"}",
-    -EINVAL, 0, -1, 8, 0, NULL },
+  { "帮我定个闹钟", NULL, "set_alarm", "{\"time\":\"07:30\"}", -EINVAL, 0, -1,
+    -1, -1, NULL },
+  { "下周一早上八点叫我", NULL, "set_alarm", "{\"time\":\"07:30\"}", -EINVAL,
+    0, -1, 8, 0, NULL },
 
   /* Volume: a whole number from 0 to 100. */
 
@@ -1696,25 +1673,25 @@ static const struct fill_case_s g_fill_cases[] = {
     -1, -1, NULL },
   { "音量调到150", "set_volume", "set_volume", "{\"percent\":\"40\"}", 0, 0,
     40, -1, -1, NULL },
-  { "音量调到150", "set_volume", "set_volume", "{\"percent\":0}", 0, 0, 0,
+  { "音量调到150", "set_volume", "set_volume", "{\"percent\":0}", 0, 0, 0, -1,
+    -1, NULL },
+  { "音量调到150", "set_volume", "set_volume", "{\"percent\":100}", 0, 0, 100,
     -1, -1, NULL },
-  { "音量调到150", "set_volume", "set_volume", "{\"percent\":100}", 0, 0,
-    100, -1, -1, NULL },
-  { "音量调到150", "set_volume", "set_volume", "{\"percent\":101}", -EINVAL,
+  { "音量调到150", "set_volume", "set_volume", "{\"percent\":101}", -EINVAL, 0,
+    150, -1, -1, NULL },
+  { "音量调到150", "set_volume", "set_volume", "{\"percent\":-1}", -EINVAL, 0,
+    150, -1, -1, NULL },
+  { "音量调到150", "set_volume", "set_volume", "{\"percent\":30.5}", -EINVAL,
     0, 150, -1, -1, NULL },
-  { "音量调到150", "set_volume", "set_volume", "{\"percent\":-1}", -EINVAL,
-    0, 150, -1, -1, NULL },
-  { "音量调到150", "set_volume", "set_volume", "{\"percent\":30.5}",
-    -EINVAL, 0, 150, -1, -1, NULL },
-  { "调一下音量", NULL, "set_volume", "{\"percent\":30}", -EINVAL, 0, -1,
-    -1, -1, NULL },
+  { "调一下音量", NULL, "set_volume", "{\"percent\":30}", -EINVAL, 0, -1, -1,
+    -1, NULL },
 
   /* Kinds the model is never asked about */
 
   { "记住", NULL, "remember", "{\"text\":\"x\"}", -EINVAL, 0, -1, -1, -1,
     NULL },
-  { "加个待办", NULL, "add_task", "{\"title\":\"x\"}", -EINVAL, 0, -1, -1,
-    -1, NULL },
+  { "加个待办", NULL, "add_task", "{\"title\":\"x\"}", -EINVAL, 0, -1, -1, -1,
+    NULL },
   { "你好呀", NULL, "set_timer", "{\"minutes\":5}", -EINVAL, 0, -1, -1, -1,
     NULL }
 };
@@ -1729,9 +1706,8 @@ static void test_fill(void)
       cJSON *arguments = cJSON_Parse(c->arguments);
       detect(c->utterance, &intent);
       const char *table = ny_agent_local_intent_forced(&intent, &offered);
-      CHECK((table != NULL) == (c->offered != NULL),
-            "[%s] forced table %s", c->utterance,
-            table ? "offered" : "withheld");
+      CHECK((table != NULL) == (c->offered != NULL), "[%s] forced table %s",
+            c->utterance, table ? "offered" : "withheld");
       if (table)
         {
           /* The table is one OpenAI function whose name is *name. */
@@ -2021,8 +1997,8 @@ static const struct fact_case_s g_fact_cases[] = {
     480, false,
     "现在有 3 个计时器：关火 剩余 4 分钟 30 秒；计时器 已暂停，剩余 1 分钟；"
     "面 已经结束" },
-  { "nyabula_read", NULL, "有哪些计时器", "{\"revision\":3,\"items\":[]}",
-    480, false, "现在没有计时器" },
+  { "nyabula_read", NULL, "有哪些计时器", "{\"revision\":3,\"items\":[]}", 480,
+    false, "现在没有计时器" },
   { "nyabula_read", NULL, "有几个闹钟",
     "{\"items\":[{\"time\":\"07:30\",\"label\":\"起床\",\"enabled\":true},"
     "{\"time\":\"22:00\",\"label\":\"\",\"enabled\":false}]}",
@@ -2049,8 +2025,7 @@ static const struct fact_case_s g_fact_cases[] = {
   /* Creates: the sentence is the request, read back from its arguments. */
 
   { "nyabula_action", NULL, "定个五分钟的计时器",
-    "{\"revision\":8,\"items\":[]}", 480, false,
-    "已经创建 5 分钟的计时器" },
+    "{\"revision\":8,\"items\":[]}", 480, false, "已经创建 5 分钟的计时器" },
   { "nyabula_action", NULL, "十分钟后提醒我关火", "{\"revision\":8}", 480,
     false, "已经创建 10 分钟的计时器（关火）" },
   { "nyabula_action", NULL, "计时一个半小时", "{}", 480, false,
@@ -2085,12 +2060,12 @@ static const struct fact_case_s g_fact_cases[] = {
   { "nyabula_music", NULL, "暂停音乐", "{}", 480, false, "已经暂停播放" },
   { "nyabula_music", NULL, "继续播放", "{}", 480, false, "已经继续播放" },
   { "nyabula_music", NULL, "停止播放", "{}", 480, false, "已经停止播放" },
-  { "nyabula_expression", NULL, "换个开心的表情", "{\"ok\":true}", 480,
-    false, "已经把表情换成“开心”" },
+  { "nyabula_expression", NULL, "换个开心的表情", "{\"ok\":true}", 480, false,
+    "已经把表情换成“开心”" },
   { "nyabula_expression", NULL, "做个晕的表情", "{}", 480, false,
     "已经把表情换成“晕乎乎”" },
-  { "nyabula_expression", "{\"expression\":\"wink\"}", NULL, "{}", 480,
-    false, "已经把表情换成“wink”" },
+  { "nyabula_expression", "{\"expression\":\"wink\"}", NULL, "{}", 480, false,
+    "已经把表情换成“wink”" },
 
   /* Failures: the executor's envelope, by error code */
 
@@ -2308,66 +2283,222 @@ static uint32_t rnd(void)
   return (uint32_t)(g_random >> 16);
 }
 
-static const char *const g_fuzz_words[] = {
-  "计时",   "计时器", "倒计时", "闹钟",   "分钟",   "分",     "小时",
-  "秒",     "半",     "个",     "点",     "一刻",   "三刻",   "刻钟",
-  "整",     "十",     "百",     "两",     "零",     "一",     "二",
-  "九",     "百分之", "百分百", "音量",   "声音",   "调到",   "大一点",
-  "小声点", "静音",   "提醒我", "叫我",   "叫醒",   "待办",   "待办事项",
-  "记住",   "帮我记", "记",     "：",     "，",     "。",     "“",
-  "”",      "后",     "之后",   "过",     "明早",   "晚上",   "下午",
-  "凌晨",   "中午",   "半夜",   "每天",   "工作日", "周末",   "下周",
-  "号",     "月",     "表情",   "眼睛",   "换",     "开心",   "星星眼",
-  "播放",   "放首",   "暂停",   "继续播放", "停止播放", "加到", "列表",
-  "昨天",   "他说",   "你觉得", "怎么样", "几点了", "天气",   "am",
-  "pm",     "a.m.",   "p.m",    "o'clock", ":",     "：",     "%",
-  "％",     "timer",  "alarm",  "volume", "remind me", "in ", " later",
-  "todo",   "to my",  "list",   "what",   "remember ", "play ", "set",
-  "up",     "down",   "by",     "minutes", "hour",  "sec",    " ",
-  "0",      "5",      "12",     "24",     "59",     "60",     "100",
-  "999",    "999999", "9999999", "1.5",   "0.0001", ".",      "😀",
-  "é",      "\xef\xbb\xbf",     "\xe2\x80\x8b"
+static const char *const g_fuzz_words[] = { "计时",
+                                            "计时器",
+                                            "倒计时",
+                                            "闹钟",
+                                            "分钟",
+                                            "分",
+                                            "小时",
+                                            "秒",
+                                            "半",
+                                            "个",
+                                            "点",
+                                            "一刻",
+                                            "三刻",
+                                            "刻钟",
+                                            "整",
+                                            "十",
+                                            "百",
+                                            "两",
+                                            "零",
+                                            "一",
+                                            "二",
+                                            "九",
+                                            "百分之",
+                                            "百分百",
+                                            "音量",
+                                            "声音",
+                                            "调到",
+                                            "大一点",
+                                            "小声点",
+                                            "静音",
+                                            "提醒我",
+                                            "叫我",
+                                            "叫醒",
+                                            "待办",
+                                            "待办事项",
+                                            "记住",
+                                            "帮我记",
+                                            "记",
+                                            "：",
+                                            "，",
+                                            "。",
+                                            "“",
+                                            "”",
+                                            "后",
+                                            "之后",
+                                            "过",
+                                            "明早",
+                                            "晚上",
+                                            "下午",
+                                            "凌晨",
+                                            "中午",
+                                            "半夜",
+                                            "每天",
+                                            "工作日",
+                                            "周末",
+                                            "下周",
+                                            "号",
+                                            "月",
+                                            "表情",
+                                            "眼睛",
+                                            "换",
+                                            "开心",
+                                            "星星眼",
+                                            "播放",
+                                            "放首",
+                                            "暂停",
+                                            "继续播放",
+                                            "停止播放",
+                                            "加到",
+                                            "列表",
+                                            "昨天",
+                                            "他说",
+                                            "你觉得",
+                                            "怎么样",
+                                            "几点了",
+                                            "天气",
+                                            "am",
+                                            "pm",
+                                            "a.m.",
+                                            "p.m",
+                                            "o'clock",
+                                            ":",
+                                            "：",
+                                            "%",
+                                            "％",
+                                            "timer",
+                                            "alarm",
+                                            "volume",
+                                            "remind me",
+                                            "in ",
+                                            " later",
+                                            "todo",
+                                            "to my",
+                                            "list",
+                                            "what",
+                                            "remember ",
+                                            "play ",
+                                            "set",
+                                            "up",
+                                            "down",
+                                            "by",
+                                            "minutes",
+                                            "hour",
+                                            "sec",
+                                            " ",
+                                            "0",
+                                            "5",
+                                            "12",
+                                            "24",
+                                            "59",
+                                            "60",
+                                            "100",
+                                            "999",
+                                            "999999",
+                                            "9999999",
+                                            "1.5",
+                                            "0.0001",
+                                            ".",
+                                            "😀",
+                                            "é",
+                                            "\xef\xbb\xbf",
+                                            "\xe2\x80\x8b" };
+
+static const char *const g_fuzz_bad[] = {
+  "\xff",         "\xc0\x80",         "\xe4\xb8", "\xf0\x9f\x98", "\x80",
+  "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xe8",     "\x01",         "\x7f"
 };
 
-static const char *const g_fuzz_bad[] = { "\xff", "\xc0\x80", "\xe4\xb8",
-                                          "\xf0\x9f\x98", "\x80",
-                                          "\xed\xa0\x80", "\xf4\x90\x80\x80",
-                                          "\xe8", "\x01", "\x7f" };
-
-static const char *const g_fuzz_tools[] = { "nyabula_read", "nyabula_action",
-                                            "nyabula_music",
-                                            "nyabula_expression", "other",
-                                            "" };
-
-static const char *const g_fuzz_keys[] = {
-  "ok",        "error",     "sideEffectApplied", "sideEffectUncertain",
-  "items",     "topic",     "arguments",  "record",      "label",
-  "time",      "repeat",    "text",       "title",       "name",
-  "volume",    "muted",     "duration_ms", "expression", "unix_ms",
-  "clock_valid", "temperature", "value",  "location",    "condition",
-  "last_error", "uptimeMs", "memory",     "freeBytes",   "cpu",
-  "percent",   "network",   "interfaces", "ipv4",        "ssid",
-  "state",     "status",    "remaining_ms", "enabled",   "track",
-  "supported", "minutes",   "revision"
+static const char *const g_fuzz_tools[] = {
+  "nyabula_read",       "nyabula_action", "nyabula_music",
+  "nyabula_expression", "other",          ""
 };
+
+static const char *const g_fuzz_keys[] = { "ok",
+                                           "error",
+                                           "sideEffectApplied",
+                                           "sideEffectUncertain",
+                                           "items",
+                                           "topic",
+                                           "arguments",
+                                           "record",
+                                           "label",
+                                           "time",
+                                           "repeat",
+                                           "text",
+                                           "title",
+                                           "name",
+                                           "volume",
+                                           "muted",
+                                           "duration_ms",
+                                           "expression",
+                                           "unix_ms",
+                                           "clock_valid",
+                                           "temperature",
+                                           "value",
+                                           "location",
+                                           "condition",
+                                           "last_error",
+                                           "uptimeMs",
+                                           "memory",
+                                           "freeBytes",
+                                           "cpu",
+                                           "percent",
+                                           "network",
+                                           "interfaces",
+                                           "ipv4",
+                                           "ssid",
+                                           "state",
+                                           "status",
+                                           "remaining_ms",
+                                           "enabled",
+                                           "track",
+                                           "supported",
+                                           "minutes",
+                                           "revision" };
 
 static const char *const g_fuzz_values[] = {
-  "system.time.get", "weather.get",   "device.status", "timer.list",
-  "alarm.list",      "task.list",     "timer.create",  "alarm.create",
-  "memory.create",   "task.create",   "music.play",    "music.volume",
-  "music.pause",     "music.resume",  "music.stop",    "music.output",
+  "system.time.get",  "weather.get",  "device.status", "timer.list",
+  "alarm.list",       "task.list",    "timer.create",  "alarm.create",
+  "memory.create",    "task.create",  "music.play",    "music.volume",
+  "music.pause",      "music.resume", "music.stop",    "music.output",
   "agent.tools.call", "done",         "cancelled",     "finished",
-  "paused",          "running",       "07:30",         "25:99",
-  "127.0.0.1",       "192.168.1.5",   "happy",         "anger",
-  "sleepy",          "关火",          "起床😀",        ""
+  "paused",           "running",      "07:30",         "25:99",
+  "127.0.0.1",        "192.168.1.5",  "happy",         "anger",
+  "sleepy",           "关火",         "起床😀",         ""
 };
 
-static const double g_fuzz_numbers[] = {
-  0,      1,     -1,    0.5,   5,     13,    -13,    -110,   100,   101,
-  1440,   1441,  1e9,   -1e9,  1e19,  -1e19, 1e300,  -1e300, 4e9,   -5e9,
-  1789819200000.0, -62135596800000.0, 253402300800000.0, 9e15, 2147483648.0,
-  -2147483649.0, 0.0001, 86400000, 3723000
-};
+static const double g_fuzz_numbers[] = { 0,
+                                         1,
+                                         -1,
+                                         0.5,
+                                         5,
+                                         13,
+                                         -13,
+                                         -110,
+                                         100,
+                                         101,
+                                         1440,
+                                         1441,
+                                         1e9,
+                                         -1e9,
+                                         1e19,
+                                         -1e19,
+                                         1e300,
+                                         -1e300,
+                                         4e9,
+                                         -5e9,
+                                         1789819200000.0,
+                                         -62135596800000.0,
+                                         253402300800000.0,
+                                         9e15,
+                                         2147483648.0,
+                                         -2147483649.0,
+                                         0.0001,
+                                         86400000,
+                                         3723000 };
 
 /* One random piece of text into out[used..], valid UTF-8 unless `bad`. */
 
@@ -2394,7 +2525,8 @@ static size_t fuzz_piece(char *out, size_t used, size_t capacity, bool bad)
     piece = g_expression_cases[rnd() % COUNT(g_expression_cases)].utterance;
   else
     {
-      snprintf(number, sizeof(number), "%u", rnd() % (rnd() % 2 ? 100 : 100000));
+      snprintf(number, sizeof(number), "%u",
+               rnd() % (rnd() % 2 ? 100 : 100000));
       piece = number;
     }
   size_t length = strlen(piece);
@@ -2509,15 +2641,15 @@ static char *fuzz_document(void)
   return exact;
 }
 
-#define FUZZ_REQUIRE(condition, what) \
-  do \
-    { \
-      if (!(condition)) \
-        { \
+#define FUZZ_REQUIRE(condition, what)                           \
+  do                                                            \
+    {                                                           \
+      if (!(condition))                                         \
+        {                                                       \
           printf("FUZZ FAIL %s\n  input: [%s]\n", what, shown); \
-          g_failures++; \
-        } \
-    } \
+          g_failures++;                                         \
+        }                                                       \
+    }                                                           \
   while (0)
 
 static void fuzz(unsigned long iterations, uint64_t seed)
@@ -2532,9 +2664,9 @@ static void fuzz(unsigned long iterations, uint64_t seed)
     {
       char text[700];
       struct ny_agent_local_context_s context = {
-        (double)(rnd() % 1000), (int)(rnd() % 1681) - 840,
-        (int)(rnd() % 1442) - 1, (int)(rnd() % 140) - 20, rnd() % 2 != 0,
-        rnd() % 5 ? "曲子.mp3" : NULL
+        (double)(rnd() % 1000),  (int)(rnd() % 1681) - 840,
+        (int)(rnd() % 1442) - 1, (int)(rnd() % 140) - 20,
+        rnd() % 2 != 0,          rnd() % 5 ? "曲子.mp3" : NULL
       };
       struct ny_agent_local_intent_s intent;
       const char *tool = NULL;
@@ -2644,8 +2776,8 @@ static void fuzz(unsigned long iterations, uint64_t seed)
         {
           size_t size = rnd() % 3 ? NY_AGENT_LOCAL_FACT_MAX
                                   : 1 + rnd() % NY_AGENT_LOCAL_FACT_MAX;
-          char *arguments = round == 0 && call ? fuzz_exact(call)
-                                               : fuzz_document();
+          char *arguments =
+              round == 0 && call ? fuzz_exact(call) : fuzz_document();
           char *result = rnd() % 10 ? fuzz_document() : fuzz_exact(text);
           const char *used = round == 0 && call
                                  ? tool

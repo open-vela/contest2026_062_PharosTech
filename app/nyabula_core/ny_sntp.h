@@ -40,7 +40,7 @@ struct ny_sntp_reply_s
   int64_t transmit_ms; /* When the server sent this reply, Unix ms */
   uint8_t stratum;
   uint8_t leap;
-  char kiss[5];        /* Kiss-o'-death code of a stratum 0 reply, or "" */
+  char kiss[5]; /* Kiss-o'-death code of a stratum 0 reply, or "" */
 };
 
 /* Fill in a client request.  The token travels in the transmit timestamp,

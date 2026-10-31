@@ -36,35 +36,35 @@
 #include <syslog.h>
 #include <unistd.h>
 
-#include "nyabula_eye_mirror.h"
 #include "ny_web.h"
 #include "ny_web_auth.h"
 #include "ny_web_mirror.h"
+#include "nyabula_eye_mirror.h"
 
 #ifdef CONFIG_NYABULA_CORE_WEB_EYEPROBE
-#  include "ny_web_eyeprobe_page.h"
+#include "ny_web_eyeprobe_page.h"
 #endif
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NY_MIRROR_PATH          "/eyes/stream"
-#define NY_MIRROR_PROBE_PAGE    "/eyeprobe"
-#define NY_MIRROR_PROBE_STREAM  "/eyeprobe/stream"
-#define NY_MIRROR_BEARER        "Bearer "
-#define NY_MIRROR_BEARER_SIZE   7
+#define NY_MIRROR_PATH         "/eyes/stream"
+#define NY_MIRROR_PROBE_PAGE   "/eyeprobe"
+#define NY_MIRROR_PROBE_STREAM "/eyeprobe/stream"
+#define NY_MIRROR_BEARER       "Bearer "
+#define NY_MIRROR_BEARER_SIZE  7
 
-#define NY_MIRROR_FPS_DEFAULT   12
-#define NY_MIRROR_FPS_MAX       20
+#define NY_MIRROR_FPS_DEFAULT  12
+#define NY_MIRROR_FPS_MAX      20
 
 /* How long one wait for a new page lasts, and after how many of them with
  * nothing to send the viewer is told that the stream is still alive.  The
  * end of a wait is also when a viewer that went away is noticed.
  */
 
-#define NY_MIRROR_WAIT_MS       500
-#define NY_MIRROR_IDLE_WAITS    4
+#define NY_MIRROR_WAIT_MS    500
+#define NY_MIRROR_IDLE_WAITS 4
 
 /****************************************************************************
  * Private Function Prototypes
@@ -218,9 +218,8 @@ static bool ny_mirror_peer_gone(int fd)
   char scratch[64];
   ssize_t count = recv(fd, scratch, sizeof(scratch), MSG_DONTWAIT);
 
-  return count == 0 ||
-         (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
-          errno != EINTR);
+  return count == 0 || (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+                        errno != EINTR);
 }
 
 /****************************************************************************
@@ -272,14 +271,12 @@ bool ny_web_mirror_claims(const char *head)
 
 int ny_web_mirror_serve(int fd, const char *head, const char *pair_token)
 {
-  static const char ok[] =
-      "HTTP/1.1 200 OK\r\n"
-      "Content-Type: application/octet-stream\r\n"
-      "Cache-Control: no-store\r\n"
-      "X-Content-Type-Options: nosniff\r\n"
-      "Connection: close\r\n\r\n";
-  static const uint8_t keepalive[NYABULA_EYE_MIRROR_HEADER] =
-  {
+  static const char ok[] = "HTTP/1.1 200 OK\r\n"
+                           "Content-Type: application/octet-stream\r\n"
+                           "Cache-Control: no-store\r\n"
+                           "X-Content-Type-Options: nosniff\r\n"
+                           "Connection: close\r\n\r\n";
+  static const uint8_t keepalive[NYABULA_EYE_MIRROR_HEADER] = {
     'N', 'E', 'M', '1', NYABULA_EYE_MIRROR_KEEPALIVE
   };
 
@@ -319,11 +316,11 @@ int ny_web_mirror_serve(int fd, const char *head, const char *pair_token)
 
   if (!ny_mirror_target_is(head, NY_MIRROR_PROBE_STREAM))
 #endif
-  if (!ny_mirror_authorized(head, pair_token))
-    {
-      return ny_mirror_reply(fd, 401, "Unauthorized",
-                             "{\"error\":\"unauthorized\"}");
-    }
+    if (!ny_mirror_authorized(head, pair_token))
+      {
+        return ny_mirror_reply(fd, 401, "Unauthorized",
+                               "{\"error\":\"unauthorized\"}");
+      }
 
   scale = ny_mirror_query(head, "scale", 1) == 2 ? 2 : 1;
   fps = ny_mirror_query(head, "fps", NY_MIRROR_FPS_DEFAULT);
@@ -348,8 +345,7 @@ int ny_web_mirror_serve(int fd, const char *head, const char *pair_token)
       const uint8_t *data;
       size_t length;
 
-      ret = nyabula_eye_mirror_next(viewer, NY_MIRROR_WAIT_MS, &data,
-                                    &length);
+      ret = nyabula_eye_mirror_next(viewer, NY_MIRROR_WAIT_MS, &data, &length);
       if (ret < 0)
         {
           break;

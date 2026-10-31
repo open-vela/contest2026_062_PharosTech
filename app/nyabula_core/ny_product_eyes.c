@@ -141,13 +141,13 @@ int ny_product_eyes_request(const struct ny_product_caller_s *caller,
 static int ny_product_iris_submit(const char *eyes, uint32_t rgb)
 {
   char json[192];
-  int length = snprintf(json, sizeof(json),
-                        "{\"source\":\"" NY_PRODUCT_IRIS_SOURCE "\","
-                        "\"id\":\"iris-%s\",\"action\":\"eyes.iris\","
-                        "\"priority\":%d,\"lease_ms\":0,"
-                        "\"params\":{\"eyes\":\"%s\",\"rgb\":\"#%06" PRIx32
-                        "\"}}",
-                        eyes, NY_PRODUCT_EYE_PRIORITY, eyes, rgb & 0xffffff);
+  int length =
+      snprintf(json, sizeof(json),
+               "{\"source\":\"" NY_PRODUCT_IRIS_SOURCE "\","
+               "\"id\":\"iris-%s\",\"action\":\"eyes.iris\","
+               "\"priority\":%d,\"lease_ms\":0,"
+               "\"params\":{\"eyes\":\"%s\",\"rgb\":\"#%06" PRIx32 "\"}}",
+               eyes, NY_PRODUCT_EYE_PRIORITY, eyes, rgb & 0xffffff);
 
   if (length < 0 || (size_t)length >= sizeof(json))
     {

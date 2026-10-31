@@ -77,7 +77,7 @@
  * pages it was last given plus one record.
  */
 
-#define NYABULA_EYE_MIRROR_VIEWERS    2
+#define NYABULA_EYE_MIRROR_VIEWERS 2
 
 /****************************************************************************
  * Public Types
@@ -90,8 +90,7 @@ struct nyabula_eye_mirror_viewer_s;
  ****************************************************************************/
 
 #ifdef __cplusplus
-extern "C"
-{
+extern "C" {
 #endif
 
 /* Codec: nyabula_eye_mirror_codec.c, free of any operating system. */
@@ -106,8 +105,7 @@ size_t nyabula_eye_mirror_bound(size_t pixels);
  */
 
 size_t nyabula_eye_mirror_encode(const uint16_t *page, uint16_t *previous,
-                                 size_t pixels, uint8_t *out,
-                                 size_t capacity);
+                                 size_t pixels, uint8_t *out, size_t capacity);
 
 /* Renderer side: nyabula_eye_mirror.c. */
 

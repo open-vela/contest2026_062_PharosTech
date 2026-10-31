@@ -19,18 +19,18 @@
 
 #define COUNT(list) (sizeof(list) / sizeof((list)[0]))
 
-#define CHECK(condition, ...)                                   \
-  do                                                            \
-    {                                                           \
-      g_checks++;                                               \
-      if (!(condition))                                         \
-        {                                                       \
-          g_failures++;                                         \
-          fprintf(stderr, "%s:%d: ", __FILE__, __LINE__);       \
-          fprintf(stderr, __VA_ARGS__);                         \
-          fprintf(stderr, "\n");                                \
-        }                                                       \
-    }                                                           \
+#define CHECK(condition, ...)                             \
+  do                                                      \
+    {                                                     \
+      g_checks++;                                         \
+      if (!(condition))                                   \
+        {                                                 \
+          g_failures++;                                   \
+          fprintf(stderr, "%s:%d: ", __FILE__, __LINE__); \
+          fprintf(stderr, __VA_ARGS__);                   \
+          fprintf(stderr, "\n");                          \
+        }                                                 \
+    }                                                     \
   while (0)
 
 #define NEAR(a, b, tolerance) (fabs((double)(a) - (double)(b)) <= (tolerance))
@@ -53,10 +53,10 @@ static uint32_t test_random(void)
 
 static uint16_t test_noisy(int value, int noise)
 {
-  int reading = value + (int)(test_random() % (uint32_t)(2 * noise + 1)) -
-                noise;
+  int reading =
+      value + (int)(test_random() % (uint32_t)(2 * noise + 1)) - noise;
 
-  return (uint16_t)(reading < 0 ? 0
+  return (uint16_t)(reading < 0                  ? 0
                     : reading > NY_LIGHT_RAW_MAX ? NY_LIGHT_RAW_MAX
                                                  : reading);
 }
@@ -202,8 +202,7 @@ static void test_range(void)
   CHECK(filter.cal.ranged && NEAR(high - low, NY_LIGHT_MIN_SPAN, 0.01) &&
             NEAR((low + high) / 2, 1500, 0.01),
         "first span %f..%f", (double)low, (double)high);
-  CHECK(NEAR(filter.level, 0.5, 0.01), "first level %f",
-        (double)filter.level);
+  CHECK(NEAR(filter.level, 0.5, 0.01), "first level %f", (double)filter.level);
 
   /* At either end of the converter the span is shifted, not cut. */
 
@@ -224,10 +223,9 @@ static void test_range(void)
   ny_light_init(&filter);
   test_feed(&filter, 400, 3, 10.0f, NY_LIGHT_PERIOD_NONE);
   test_feed(&filter, 3200, 3, 10.0f, NY_LIGHT_PERIOD_NONE);
-  CHECK(filter.cal.min < 410 && filter.cal.max > 3190,
-        "learnt %f..%f", (double)filter.cal.min, (double)filter.cal.max);
-  CHECK(filter.level > 0.99f, "brightest seen reads %f",
-        (double)filter.level);
+  CHECK(filter.cal.min < 410 && filter.cal.max > 3190, "learnt %f..%f",
+        (double)filter.cal.min, (double)filter.cal.max);
+  CHECK(filter.level > 0.99f, "brightest seen reads %f", (double)filter.level);
   test_feed(&filter, 400, 3, 10.0f, NY_LIGHT_PERIOD_NONE);
   CHECK(filter.level < 0.01f, "darkest seen reads %f", (double)filter.level);
 
@@ -307,7 +305,7 @@ static void test_polarity(void)
   for (minute = 0; minute < 1440; minute++)
     {
       enum ny_light_period_e want =
-          minute >= 600 && minute < 960   ? NY_LIGHT_PERIOD_DAY
+          minute >= 600 && minute < 960  ? NY_LIGHT_PERIOD_DAY
           : minute >= 60 && minute < 300 ? NY_LIGHT_PERIOD_NIGHT
                                          : NY_LIGHT_PERIOD_NONE;
       if (ny_light_period(minute) != want)
@@ -365,8 +363,7 @@ static void test_polarity(void)
    * and the old one stands.
    */
 
-  test_feed(&filter, 3400, 10, NY_LIGHT_EVIDENCE_CAP * 3,
-            NY_LIGHT_PERIOD_DAY);
+  test_feed(&filter, 3400, 10, NY_LIGHT_EVIDENCE_CAP * 3, NY_LIGHT_PERIOD_DAY);
   CHECK(NEAR(filter.cal.day_mean, 3400, 60), "day mean did not fade: %f",
         (double)filter.cal.day_mean);
   CHECK(filter.cal.detected == NY_LIGHT_POLARITY_LOW,
@@ -376,8 +373,7 @@ static void test_polarity(void)
 
   /* Moved to a circuit the other way round, it comes round too. */
 
-  test_feed(&filter, 3400, 10, NY_LIGHT_EVIDENCE_CAP * 3,
-            NY_LIGHT_PERIOD_DAY);
+  test_feed(&filter, 3400, 10, NY_LIGHT_EVIDENCE_CAP * 3, NY_LIGHT_PERIOD_DAY);
   test_feed(&filter, 500, 10, NY_LIGHT_EVIDENCE_CAP * 3,
             NY_LIGHT_PERIOD_NIGHT);
   CHECK(filter.cal.detected == NY_LIGHT_POLARITY_HIGH, "did not come round");
@@ -481,10 +477,11 @@ static void test_hysteresis(void)
 
   /* Both ends can be reached. */
 
-  CHECK(NEAR(ny_light_backlash(0.5f, 1.0f, NY_LIGHT_HYSTERESIS), 1.0, 1e-6) &&
-            NEAR(ny_light_backlash(0.5f, 0.0f, NY_LIGHT_HYSTERESIS), 0, 1e-6) &&
-            NEAR(ny_light_backlash(0.5f, 4.0f, NY_LIGHT_HYSTERESIS), 1.0, 1e-6),
-        "the ends");
+  CHECK(
+      NEAR(ny_light_backlash(0.5f, 1.0f, NY_LIGHT_HYSTERESIS), 1.0, 1e-6) &&
+          NEAR(ny_light_backlash(0.5f, 0.0f, NY_LIGHT_HYSTERESIS), 0, 1e-6) &&
+          NEAR(ny_light_backlash(0.5f, 4.0f, NY_LIGHT_HYSTERESIS), 1.0, 1e-6),
+      "the ends");
 
   /* When the eyes are told. */
 
@@ -572,8 +569,8 @@ static void test_hysteresis(void)
         }
     }
 
-  CHECK(filter.dilation < 0.05f && held > 0.3f,
-        "lamp on: from %f to %f", (double)held, (double)filter.dilation);
+  CHECK(filter.dilation < 0.05f && held > 0.3f, "lamp on: from %f to %f",
+        (double)held, (double)filter.dilation);
   CHECK(pushes >= 2 && pushes <= 8, "lamp on pushed %d times", pushes);
 }
 
@@ -606,8 +603,7 @@ static void test_limits(void)
 
       if ((seed & 0x3ff) == 1)
         {
-          filter.cal.polarity = (enum ny_light_polarity_e)(seed >> 12 & 3) %
-                                3;
+          filter.cal.polarity = (enum ny_light_polarity_e)(seed >> 12 & 3) % 3;
         }
 
       ny_light_sample(&filter, (uint16_t)(test_random() & 0x1fff), seconds,

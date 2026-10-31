@@ -157,8 +157,7 @@ static int nyampctl_attach(int *fd)
 
       if (ret < 0)
         {
-          fprintf(stderr, "nyampctl: compute service port failed: %d\n",
-                  -ret);
+          fprintf(stderr, "nyampctl: compute service port failed: %d\n", -ret);
           return ret;
         }
 
@@ -375,8 +374,8 @@ static int nyampctl_blob_command(int fd, int argc, char *argv[])
 #ifdef CONFIG_NYABULA_CORE_VOICE
 static int nyampctl_voice_command(int fd, int argc, char *argv[])
 {
-  unsigned int seconds = argc > 3 ? (unsigned int)strtoul(argv[3], NULL, 10)
-                                  : 0;
+  unsigned int seconds =
+      argc > 3 ? (unsigned int)strtoul(argv[3], NULL, 10) : 0;
 
   if (strcmp(argv[1], "kws") == 0 && strcmp(argv[2], "listen") == 0 &&
       argc <= 4)
@@ -384,8 +383,7 @@ static int nyampctl_voice_command(int fd, int argc, char *argv[])
       return nyampctl_kws_listen(fd, seconds == 0 ? 30 : seconds);
     }
 
-  if (strcmp(argv[1], "asr") == 0 && strcmp(argv[2], "file") == 0 &&
-      argc == 4)
+  if (strcmp(argv[1], "asr") == 0 && strcmp(argv[2], "file") == 0 && argc == 4)
     {
       return nyampctl_asr(fd, argv[3], 0);
     }
@@ -443,7 +441,7 @@ int main(int argc, char *argv[])
       && strcmp(argv[1], "kws") != 0 && strcmp(argv[1], "asr") != 0 &&
       strcmp(argv[1], "tts") != 0
 #endif
-      )
+  )
     {
       fprintf(stderr, "nyampctl: unknown command: %s\n", argv[1]);
       return 2;

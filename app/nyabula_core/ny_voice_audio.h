@@ -54,18 +54,18 @@ struct ny_voice_audio_s; /* Opaque */
 
 struct ny_voice_audio_config_s
 {
-  const char *path;   /* /dev/audio/...                                    */
+  const char *path; /* /dev/audio/...                                    */
   bool capture;
-  bool wav;           /* Playback through the PCM decoder node, which takes
-                       * the stream format from a WAV header: one is sent
-                       * ahead of the samples.
-                       */
+  bool wav; /* Playback through the PCM decoder node, which takes
+             * the stream format from a WAV header: one is sent
+             * ahead of the samples.
+             */
   uint32_t rate;
   uint8_t channels;
-  size_t chunk;       /* Bytes handed to the driver at a time.  The capture
-                       * driver fills a whole buffer before returning it, so
-                       * this is the capture latency.
-                       */
+  size_t chunk; /* Bytes handed to the driver at a time.  The capture
+                 * driver fills a whole buffer before returning it, so
+                 * this is the capture latency.
+                 */
 };
 
 /****************************************************************************

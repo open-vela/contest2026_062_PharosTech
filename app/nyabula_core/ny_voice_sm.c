@@ -327,8 +327,7 @@ static void ny_voice_sm_thinking(struct ny_voice_sm_s *sm,
 
         sm->pending = true;
         sm->pending_ms = event->now_ms;
-        ny_voice_sm_speak(sm, result, event->now_ms,
-                          NY_VOICE_SPEECH_APPROVAL);
+        ny_voice_sm_speak(sm, result, event->now_ms, NY_VOICE_SPEECH_APPROVAL);
         break;
 
       case NY_VOICE_EV_AGENT_BUSY:
@@ -570,14 +569,11 @@ void ny_voice_sm_step(struct ny_voice_sm_s *sm,
 
 const char *ny_voice_sm_state_name(enum ny_voice_state_e state)
 {
-  static const char *const names[] =
-  {
-    "off", "idle", "listening", "thinking", "speaking"
-  };
+  static const char *const names[] = { "off", "idle", "listening", "thinking",
+                                       "speaking" };
 
-  return (unsigned int)state < sizeof(names) / sizeof(names[0])
-             ? names[state]
-             : "unknown";
+  return (unsigned int)state < sizeof(names) / sizeof(names[0]) ? names[state]
+                                                                : "unknown";
 }
 
 bool ny_voice_sm_streaming(const struct ny_voice_sm_s *sm, bool duplex,

@@ -30,10 +30,10 @@
 
 #include "nyabula_eye_internal.h"
 
-#define NYABULA_EYE_TICK_MS            15
-#define NYABULA_EYE_BLINK_DURATION_MS  238
-#define NYABULA_EYE_FIRST_BLINK_MS     2500
-#define NYABULA_EYE_SLEEP_CLOSE_MS     1800
+#define NYABULA_EYE_TICK_MS           15
+#define NYABULA_EYE_BLINK_DURATION_MS 238
+#define NYABULA_EYE_FIRST_BLINK_MS    2500
+#define NYABULA_EYE_SLEEP_CLOSE_MS    1800
 
 /* Shut for a moment after start, then open along the curve sleep closes
  * on, run backwards.  The pause covers the panels settling and gives the
@@ -42,11 +42,11 @@
  * 30% faster than that.
  */
 
-#define NYABULA_EYE_WAKE_HOLD_MS       450
-#define NYABULA_EYE_WAKE_OPEN_MS       1400
-#define NYABULA_EYE_SACCADE_FIRST_MS   1200
-#define NYABULA_EYE_DEFAULT_IRIS_RGB   0x38e06e
-#define NYABULA_EYE_DEFAULT_LIGHT      0.55f
+#define NYABULA_EYE_WAKE_HOLD_MS     450
+#define NYABULA_EYE_WAKE_OPEN_MS     1400
+#define NYABULA_EYE_SACCADE_FIRST_MS 1200
+#define NYABULA_EYE_DEFAULT_IRIS_RGB 0x38e06e
+#define NYABULA_EYE_DEFAULT_LIGHT    0.55f
 
 /* How fast the light the pupil reacts to follows the commanded level, per
  * second.  A light sensor reports a few times a second, and a pupil that
@@ -873,12 +873,11 @@ void nyabula_eye_engine_render_eye(struct nyabula_eye_engine_s *engine,
   wake_ms = lv_tick_elaps(engine->start_tick);
   if (wake_ms < NYABULA_EYE_WAKE_HOLD_MS + NYABULA_EYE_WAKE_OPEN_MS)
     {
-      float opened =
-          wake_ms <= NYABULA_EYE_WAKE_HOLD_MS
-              ? 0.0f
-              : nyabula_eye_engine_bezier(
-                    (float)(wake_ms - NYABULA_EYE_WAKE_HOLD_MS) /
-                    (float)NYABULA_EYE_WAKE_OPEN_MS);
+      float opened = wake_ms <= NYABULA_EYE_WAKE_HOLD_MS
+                         ? 0.0f
+                         : nyabula_eye_engine_bezier(
+                               (float)(wake_ms - NYABULA_EYE_WAKE_HOLD_MS) /
+                               (float)NYABULA_EYE_WAKE_OPEN_MS);
       closed = fmaxf(closed, 1.0f - opened);
     }
 

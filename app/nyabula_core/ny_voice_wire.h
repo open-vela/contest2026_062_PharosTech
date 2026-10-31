@@ -96,7 +96,7 @@ struct ny_voice_wire_io_s
                    uint32_t bytes_per_second);
   void *arg;
 
-  uint8_t *arena;    /* The shared region, NULL when it is not mapped. */
+  uint8_t *arena; /* The shared region, NULL when it is not mapped. */
   size_t arena_size;
   size_t arena_header; /* Leading bytes no window may touch. */
 };
@@ -114,13 +114,13 @@ struct ny_voice_wire_s
   uint32_t generation; /* The compute generation it was opened under. */
   unsigned int head;
   unsigned int count;
-  uint32_t shed;       /* Events dropped because the stash was full. */
+  uint32_t shed; /* Events dropped because the stash was full. */
   struct ny_voice_wire_frame_s stash[NY_VOICE_WIRE_STASH];
 };
 
 struct ny_voice_wire_kws_s
 {
-  float threshold;              /* 0 selects the service default. */
+  float threshold; /* 0 selects the service default. */
   float score;
   uint16_t max_active_paths;
   uint16_t num_trailing_blanks;
@@ -147,20 +147,20 @@ struct ny_voice_wire_event_s
 
   struct nyamp_kws_detected_s detected; /* DETECTED */
 
-  uint16_t flags;                       /* PARTIAL: NYAMP_ASR_PARTIAL_* */
+  uint16_t flags; /* PARTIAL: NYAMP_ASR_PARTIAL_* */
   uint32_t consumed_samples;
   const char *text;
   size_t text_length;
 
-  struct nyamp_buffer_s buffer;         /* PCM */
+  struct nyamp_buffer_s buffer;          /* PCM */
   uint8_t descriptor[NYAMP_BUFFER_SIZE]; /* PCM: echoed by RELEASE as is */
   uint32_t sample_rate;
   uint32_t channels;
   uint32_t valid_samples;
 
-  int32_t status;                       /* FINISH */
-  uint32_t sequence;                    /* Every kind */
-  uint32_t total_samples;               /* FINISH of a TTS request */
+  int32_t status;         /* FINISH */
+  uint32_t sequence;      /* Every kind */
+  uint32_t total_samples; /* FINISH of a TTS request */
 };
 
 /****************************************************************************
@@ -168,8 +168,7 @@ struct ny_voice_wire_event_s
  ****************************************************************************/
 
 #ifdef __cplusplus
-extern "C"
-{
+extern "C" {
 #endif
 
 void ny_voice_wire_init(struct ny_voice_wire_s *wire,
@@ -198,8 +197,7 @@ int ny_voice_wire_errno(int32_t status);
 
 int ny_voice_wire_load(struct ny_voice_wire_s *wire, uint16_t service,
                        const char *directory,
-                       const struct ny_voice_wire_kws_s *kws,
-                       int timeout_ms);
+                       const struct ny_voice_wire_kws_s *kws, int timeout_ms);
 int ny_voice_wire_unload(struct ny_voice_wire_s *wire, uint16_t service);
 
 /* KWS: the always-on stream.  `samples` are 16 kHz mono; they cross the

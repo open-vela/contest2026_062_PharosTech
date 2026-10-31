@@ -34,8 +34,8 @@
  * interrupt: two operation bytes against at most two pixel values saved.
  */
 
-#define MIRROR_WORTH      3
-#define MIRROR_COUNT_MAX  65535
+#define MIRROR_WORTH     3
+#define MIRROR_COUNT_MAX 65535
 
 /****************************************************************************
  * Private Function Prototypes
@@ -84,8 +84,7 @@ static size_t mirror_flat(const uint16_t *page, size_t at, size_t pixels)
 {
   size_t end = at + 1;
 
-  while (end < pixels && end - at < MIRROR_COUNT_MAX &&
-         page[end] == page[at])
+  while (end < pixels && end - at < MIRROR_COUNT_MAX && page[end] == page[at])
     {
       end++;
     }
@@ -136,8 +135,7 @@ size_t nyabula_eye_mirror_bound(size_t pixels)
  ****************************************************************************/
 
 size_t nyabula_eye_mirror_encode(const uint16_t *page, uint16_t *previous,
-                                 size_t pixels, uint8_t *out,
-                                 size_t capacity)
+                                 size_t pixels, uint8_t *out, size_t capacity)
 {
   uint8_t *start = out;
   size_t at = 0;

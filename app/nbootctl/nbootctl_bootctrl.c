@@ -399,8 +399,8 @@ int nbootctl_handoff_read(unsigned int *medium, unsigned int *domain,
   boot_domain = (header >> 2) & 0x3;
   boot_slot = header & 0x1;
   if (boot_medium < 1 || boot_medium > 2 ||
-      boot_reason > NBOOTCTL_REASON_RAM ||
-      boot_domain > NBOOTCTL_DOMAIN_AMP || (header & 0x2) != 0)
+      boot_reason > NBOOTCTL_REASON_RAM || boot_domain > NBOOTCTL_DOMAIN_AMP ||
+      (header & 0x2) != 0)
     {
       return -EBADMSG;
     }
@@ -518,8 +518,7 @@ int nbootctl_bootctrl_snapshot(struct nbootctl_state_s *state)
     {
       nbootctl_slot_export(&record->domains[0].slots[slot],
                            &state->nuttx[slot]);
-      nbootctl_slot_export(&record->domains[1].slots[slot],
-                           &state->amp[slot]);
+      nbootctl_slot_export(&record->domains[1].slots[slot], &state->amp[slot]);
     }
 
   close_blockdriver(inode);

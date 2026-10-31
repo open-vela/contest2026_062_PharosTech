@@ -53,7 +53,7 @@
 #include <unistd.h>
 
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
-#  include "ny_compute.h"
+#include "ny_compute.h"
 #endif
 
 /****************************************************************************
@@ -135,8 +135,7 @@ static inline ssize_t nyampctl_recv(int fd, uint8_t *wire, size_t capacity,
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
   if (g_nyampctl_port != NULL)
     {
-      return ny_compute_port_recv(g_nyampctl_port, wire, capacity,
-                                  timeout_ms);
+      return ny_compute_port_recv(g_nyampctl_port, wire, capacity, timeout_ms);
     }
 #endif
 

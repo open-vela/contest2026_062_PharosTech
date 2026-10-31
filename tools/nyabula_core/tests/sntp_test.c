@@ -37,15 +37,15 @@
 #define TEST_TOKEN   0x5a17c3e9d2b4f681ULL
 #define TEST_CEILING 4102444800000LL /* 2100-01-01 */
 
-#define CHECK(condition) \
-  do \
-    { \
-      if (!(condition)) \
-        { \
+#define CHECK(condition)                                              \
+  do                                                                  \
+    {                                                                 \
+      if (!(condition))                                               \
+        {                                                             \
           printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #condition); \
-          g_failures++; \
-        } \
-    } \
+          g_failures++;                                               \
+        }                                                             \
+    }                                                                 \
   while (0)
 
 static int g_failures;
@@ -57,14 +57,11 @@ static int g_failures;
  * old, and the token echoed in the origin field.
  */
 
-static const uint8_t g_valid_reply[NY_SNTP_PACKET_SIZE] =
-{
-  0x24, 0x02, 0x06, 0xe7, 0x00, 0x00, 0x0a, 0x4c,
-  0x00, 0x00, 0x05, 0x2a, 0x64, 0x64, 0x3d, 0x58,
-  0xee, 0x58, 0xbf, 0x5b, 0x1b, 0x2c, 0x3d, 0x4e,
-  0x5a, 0x17, 0xc3, 0xe9, 0xd2, 0xb4, 0xf6, 0x81,
-  0xee, 0x58, 0xbf, 0x80, 0x40, 0x00, 0x00, 0x00,
-  0xee, 0x58, 0xbf, 0x80, 0x40, 0x01, 0xa3, 0x6e
+static const uint8_t g_valid_reply[NY_SNTP_PACKET_SIZE] = {
+  0x24, 0x02, 0x06, 0xe7, 0x00, 0x00, 0x0a, 0x4c, 0x00, 0x00, 0x05, 0x2a,
+  0x64, 0x64, 0x3d, 0x58, 0xee, 0x58, 0xbf, 0x5b, 0x1b, 0x2c, 0x3d, 0x4e,
+  0x5a, 0x17, 0xc3, 0xe9, 0xd2, 0xb4, 0xf6, 0x81, 0xee, 0x58, 0xbf, 0x80,
+  0x40, 0x00, 0x00, 0x00, 0xee, 0x58, 0xbf, 0x80, 0x40, 0x01, 0xa3, 0x6e
 };
 
 #define VALID_REPLY_MS 1789804800250LL
@@ -213,8 +210,8 @@ static void test_rejected(void)
 
   CHECK(ny_sntp_parse(g_valid_reply, NY_SNTP_PACKET_SIZE - 1, TEST_TOKEN,
                       test_floor(), TEST_CEILING, &reply) == -EMSGSIZE);
-  CHECK(ny_sntp_parse(g_valid_reply, 0, TEST_TOKEN, test_floor(),
-                      TEST_CEILING, &reply) == -EMSGSIZE);
+  CHECK(ny_sntp_parse(g_valid_reply, 0, TEST_TOKEN, test_floor(), TEST_CEILING,
+                      &reply) == -EMSGSIZE);
   CHECK(ny_sntp_parse(NULL, NY_SNTP_PACKET_SIZE, TEST_TOKEN, test_floor(),
                       TEST_CEILING, &reply) == -EMSGSIZE);
 

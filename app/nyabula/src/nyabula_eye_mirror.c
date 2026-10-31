@@ -37,7 +37,7 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define MIRROR_EYES  NYABULA_EYE_COUNT
+#define MIRROR_EYES NYABULA_EYE_COUNT
 
 /****************************************************************************
  * Private Types
@@ -49,9 +49,9 @@ struct mirror_s
 {
   pthread_mutex_t lock;
   pthread_cond_t changed;
-  volatile int viewers;          /* Read by the renderer without the lock */
-  uint16_t *page[MIRROR_EYES];   /* RGB565, width * height */
-  uint32_t serial[MIRROR_EYES];  /* 0: nothing published for this eye */
+  volatile int viewers;         /* Read by the renderer without the lock */
+  uint16_t *page[MIRROR_EYES];  /* RGB565, width * height */
+  uint32_t serial[MIRROR_EYES]; /* 0: nothing published for this eye */
   uint32_t width;
   uint32_t height;
 };
@@ -61,11 +61,11 @@ struct mirror_s
 struct nyabula_eye_mirror_viewer_s
 {
   int scale;
-  uint32_t width;                    /* After scaling; 0: nothing yet */
+  uint32_t width; /* After scaling; 0: nothing yet */
   uint32_t height;
-  uint32_t seen[MIRROR_EYES];        /* Serial of the page last given */
-  uint16_t *previous[MIRROR_EYES];   /* The page last given */
-  uint16_t *scaled;                  /* Scratch for scale 2 */
+  uint32_t seen[MIRROR_EYES];      /* Serial of the page last given */
+  uint16_t *previous[MIRROR_EYES]; /* The page last given */
+  uint16_t *scaled;                /* Scratch for scale 2 */
   uint8_t *record;
   size_t capacity;
 };
@@ -76,10 +76,10 @@ struct nyabula_eye_mirror_viewer_s
 
 static int mirror_viewer_prepare(struct nyabula_eye_mirror_viewer_s *viewer);
 static void mirror_viewer_free(struct nyabula_eye_mirror_viewer_s *viewer);
-static void mirror_halve(const uint16_t *page, uint32_t width,
-                         uint32_t height, uint16_t *out);
-static bool mirror_viewer_behind(
-    const struct nyabula_eye_mirror_viewer_s *viewer);
+static void mirror_halve(const uint16_t *page, uint32_t width, uint32_t height,
+                         uint16_t *out);
+static bool
+mirror_viewer_behind(const struct nyabula_eye_mirror_viewer_s *viewer);
 static void mirror_put16(uint8_t *out, uint32_t value);
 static void mirror_put32(uint8_t *out, uint32_t value);
 
@@ -87,8 +87,7 @@ static void mirror_put32(uint8_t *out, uint32_t value);
  * Private Data
  ****************************************************************************/
 
-static struct mirror_s g_mirror =
-{
+static struct mirror_s g_mirror = {
   .lock = PTHREAD_MUTEX_INITIALIZER,
   .changed = PTHREAD_COND_INITIALIZER,
 };
@@ -195,8 +194,8 @@ static void mirror_viewer_free(struct nyabula_eye_mirror_viewer_s *viewer)
  *
  ****************************************************************************/
 
-static void mirror_halve(const uint16_t *page, uint32_t width,
-                         uint32_t height, uint16_t *out)
+static void mirror_halve(const uint16_t *page, uint32_t width, uint32_t height,
+                         uint16_t *out)
 {
   uint32_t x;
   uint32_t y;
@@ -210,10 +209,9 @@ static void mirror_halve(const uint16_t *page, uint32_t width,
         {
           uint32_t red = (upper[x] >> 11) + (upper[x + 1] >> 11) +
                          (lower[x] >> 11) + (lower[x + 1] >> 11);
-          uint32_t green = ((upper[x] >> 5) & 0x3f) +
-                           ((upper[x + 1] >> 5) & 0x3f) +
-                           ((lower[x] >> 5) & 0x3f) +
-                           ((lower[x + 1] >> 5) & 0x3f);
+          uint32_t green =
+              ((upper[x] >> 5) & 0x3f) + ((upper[x + 1] >> 5) & 0x3f) +
+              ((lower[x] >> 5) & 0x3f) + ((lower[x + 1] >> 5) & 0x3f);
           uint32_t blue = (upper[x] & 0x1f) + (upper[x + 1] & 0x1f) +
                           (lower[x] & 0x1f) + (lower[x + 1] & 0x1f);
 
@@ -223,8 +221,8 @@ static void mirror_halve(const uint16_t *page, uint32_t width,
     }
 }
 
-static bool mirror_viewer_behind(
-    const struct nyabula_eye_mirror_viewer_s *viewer)
+static bool
+mirror_viewer_behind(const struct nyabula_eye_mirror_viewer_s *viewer)
 {
   int eye;
 
@@ -264,8 +262,8 @@ void nyabula_eye_mirror_publish(int eye, const uint8_t *argb, uint32_t width,
   uint32_t x;
   uint32_t y;
 
-  if (g_mirror.viewers <= 0 || eye < 0 || eye >= MIRROR_EYES ||
-      argb == NULL || width == 0 || height == 0)
+  if (g_mirror.viewers <= 0 || eye < 0 || eye >= MIRROR_EYES || argb == NULL ||
+      width == 0 || height == 0)
     {
       return;
     }
@@ -381,8 +379,8 @@ int nyabula_eye_mirror_next(struct nyabula_eye_mirror_viewer_s *viewer,
   pthread_mutex_lock(&g_mirror.lock);
   while (!mirror_viewer_behind(viewer))
     {
-      if (pthread_cond_timedwait(&g_mirror.changed, &g_mirror.lock,
-                                 &until) != 0)
+      if (pthread_cond_timedwait(&g_mirror.changed, &g_mirror.lock, &until) !=
+          0)
         {
           break;
         }
@@ -413,16 +411,14 @@ int nyabula_eye_mirror_next(struct nyabula_eye_mirror_viewer_s *viewer,
 
       if (viewer->scale > 1)
         {
-          mirror_halve(page, g_mirror.width, g_mirror.height,
-                       viewer->scaled);
+          mirror_halve(page, g_mirror.width, g_mirror.height, viewer->scaled);
           page = viewer->scaled;
         }
 
       size = nyabula_eye_mirror_encode(
-          page, viewer->previous[eye], pixels,
-          out + NYABULA_EYE_MIRROR_HEADER,
+          page, viewer->previous[eye], pixels, out + NYABULA_EYE_MIRROR_HEADER,
           viewer->capacity - (size_t)(out - viewer->record) -
-          NYABULA_EYE_MIRROR_HEADER);
+              NYABULA_EYE_MIRROR_HEADER);
       if (size == 0)
         {
           ret = -ENOBUFS;
