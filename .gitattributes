@@ -3,3 +3,6 @@ boards/rk3576/kickpi-k7/nboot/SHA256SUMS text eol=lf
 boards/rk3576/kickpi-k7/nboot/*.json text eol=lf
 boards/rk3576/kickpi-k7/nboot/*.bin binary
 boards/rk3576/kickpi-k7/nboot/*.dtb binary
+
+# Shell entry points must execute on Linux after Git export.
+*.sh text eol=lf
