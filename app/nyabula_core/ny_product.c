@@ -20,6 +20,9 @@
  ****************************************************************************/
 
 #include "ny_product.h"
+#ifdef CONFIG_NYABULA_CORE_DSP
+#include "ny_product_dsp.h"
+#endif
 #include "ny_access.h"
 #include "ny_plugins.h"
 #ifdef CONFIG_NYABULA_CORE_MODELS
@@ -312,6 +315,14 @@ int ny_product_request(const struct ny_product_caller_s *caller,
       *result = ny_product_runtime_status();
       return *result == NULL ? -ENOMEM : 0;
     }
+
+#ifdef CONFIG_NYABULA_CORE_DSP
+  ret = ny_product_dsp_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    {
+      return ret;
+    }
+#endif
 
   ret = ny_plugins_request(caller, topic, data, result);
   if (ret != -ENOSYS)
