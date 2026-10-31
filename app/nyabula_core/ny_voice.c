@@ -202,6 +202,10 @@
  * synthesizes the next while this one plays.
  */
 
+/* Cloud TTS decodes and resamples PCM inside the HTTPS callback chain. */
+
+#define NY_VOICE_PLAY_STACKSIZE  65536
+
 #define NY_VOICE_TTS_WINDOW      22050U
 #define NY_VOICE_OUT_CHUNK       8192U
 #define NY_VOICE_PLAY_RESERVE_MS 100U
@@ -3129,13 +3133,14 @@ static int ny_voice_task(int argc, char **argv)
       started |= 2;
     }
 
-  pthread_attr_setstacksize(&attr, 16384);
+  pthread_attr_setstacksize(&attr, NY_VOICE_PLAY_STACKSIZE);
   if (pthread_create(&play, &attr, ny_voice_play_thread, NULL) == 0)
     {
       pthread_setname_np(play, "ny_voice_play");
       started |= 4;
     }
 
+  pthread_attr_setstacksize(&attr, 16384);
   param.sched_priority = CONFIG_NYABULA_CORE_VOICE_PRIORITY - 10;
   pthread_attr_setschedparam(&attr, &param);
   if (pthread_create(&eyes, &attr, ny_voice_eyes_thread, NULL) == 0)
