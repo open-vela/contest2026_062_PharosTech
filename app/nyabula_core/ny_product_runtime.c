@@ -104,6 +104,9 @@ static int ny_product_worker(int argc, char **argv)
       if (ret == 0)
         ret = media_ret;
       ny_product_eyes_tick();
+#ifdef CONFIG_NYABULA_CORE_AGENT
+      ny_agent_eyes_tick();
+#endif
 #ifdef CONFIG_NYABULA_CORE_NAS
       int nas_ret = ny_nas_tick();
       if (ret == 0)
