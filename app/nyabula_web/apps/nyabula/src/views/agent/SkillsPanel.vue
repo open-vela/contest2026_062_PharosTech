@@ -8,6 +8,8 @@ const session = useSessionStore();
 const dialog = useDialogStore();
 const items = ref<Skill[]>([]);
 const revision = ref(0);
+const contentLimit = ref(4096);
+const importInput = ref<HTMLInputElement | null>(null);
 const editRevision = ref(0);
 const busy = ref(false);
 const error = ref('');
@@ -17,10 +19,11 @@ const form = reactive({ id: '', title: '', content: '' });
 const available = computed(() => session.connected && session.isOwner);
 const contentBytes = computed(() => new TextEncoder().encode(form.content).length);
 const canSave = computed(() => available.value && !busy.value && /^[a-z0-9_-]{1,40}$/.test(form.id) &&
-  form.title.trim().length > 0 && new TextEncoder().encode(form.title).length <= 96 && contentBytes.value > 0 && contentBytes.value <= 4096);
+  form.title.trim().length > 0 && new TextEncoder().encode(form.title).length <= 96 && contentBytes.value > 0 && contentBytes.value <= contentLimit.value);
 function apply(data: Record<string, unknown>): void {
   if (!Array.isArray(data.items) || typeof data.revision !== 'number') throw new Error('设备返回了无效的技能清单');
   items.value = data.items as Skill[]; revision.value = data.revision;
+  contentLimit.value = typeof data.contentLimit === 'number' ? data.contentLimit : 4096;
 }
 async function load(): Promise<void> {
   if (!available.value || busy.value) return;
@@ -52,6 +55,22 @@ async function change(topic: string, data: Record<string, unknown>): Promise<voi
   } finally { busy.value = false; }
 }
 function create(): void { selected.value = null; editRevision.value = revision.value; Object.assign(form, { id: '', title: '', content: '' }); editing.value = true; }
+async function importSkill(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0]; input.value = '';
+  if (!file) return;
+  try {
+    if (file.size > contentLimit.value) throw new Error('技能文件超过设备支持的 ' + contentLimit.value + ' 字节。');
+    const content = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(content)) throw new Error('请导入UTF-8文本文件。');
+    const title = content.match(/^name:\s*["']?([^"'\r\n]+)["']?\s*$/m)?.[1]?.trim()
+      || file.name.replace(/\.(md|txt)$/i, '');
+    const base = title.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 36) || 'imported-skill';
+    let id = base, suffix = 2;
+    while (items.value.some(skill => skill.id === id)) id = base + '-' + suffix++;
+    create(); Object.assign(form, { id, title, content }); error.value = '';
+  } catch (cause) { error.value = cause instanceof Error ? cause.message : String(cause); }
+}
 async function toggle(skill: Skill): Promise<void> {
   if (!skill.enabled && !await dialog.confirm('启用后，Nyabot 可在后续请求中读取技能正文。技能不会授予新工具或绕过审批；内置技能需要的部分工具可能尚未接入。', { title: '启用技能', confirmText: '启用' })) return;
   await change('agent.skills.enable', { id: skill.id, enabled: !skill.enabled });
@@ -70,14 +89,15 @@ watch(() => session.connected, connected => { if (connected) void load(); });
     <p>技能提供任务方法，不增加执行权限。新建或编辑后默认停用；启用后从下一次模型请求生效，停用阻止后续读取，不撤回模型已读到的内容。</p>
     <p v-if="!available" role="status">连接设备并以主人身份管理技能。</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <div class="actions"><MdButton :disabled="!available || busy" @click="create">新建技能</MdButton><MdButton variant="text" :disabled="!available || busy" @click="load">刷新清单</MdButton></div>
+    <div class="actions"><MdButton :disabled="!available || busy" @click="create">新建技能</MdButton><MdButton variant="tonal" :disabled="!available || busy" @click="importInput?.click()">导入 SKILL.md</MdButton><MdButton variant="text" :disabled="!available || busy" @click="load">刷新清单</MdButton></div>
+    <input ref="importInput" type="file" accept=".md,.txt,text/markdown,text/plain" hidden @change="importSkill" />
     <form v-if="editing" class="editor" @submit.prevent="canSave && change('agent.skills.save', { ...form })">
       <h3>{{ selected?.source === 'builtin' ? '内置技能原文' : selected ? '编辑自定义技能' : '创建自定义技能' }}</h3>
       <MdTextField v-model="form.id" label="技能 ID" placeholder="小写字母、数字、短横线或下划线" :disabled="!!selected || busy" />
       <MdTextField v-model="form.title" label="技能名称" :disabled="selected?.source === 'builtin' || busy" />
       <label>技能正文<textarea v-model="form.content" aria-label="技能正文" rows="10" :readonly="selected?.source === 'builtin'" :disabled="busy" /></label>
-      <p>{{ contentBytes }} / 4096 字节 · 正文按纯文本展示，不执行其中代码。</p>
-      <div class="actions"><MdButton v-if="selected?.source !== 'builtin'" :disabled="!canSave">保存并停用</MdButton><MdButton type="button" variant="text" @click="editing = false">关闭编辑器</MdButton></div>
+      <p>{{ contentBytes }} / {{ contentLimit }} 字节 · 支持文本型 SKILL.md；正文按纯文本展示，不执行其中代码。</p>
+      <div class="actions"><MdButton v-if="selected?.source !== 'builtin'" :disabled="!canSave">{{ selected ? '保存并停用' : '安装并停用' }}</MdButton><MdButton type="button" variant="text" @click="editing = false">关闭编辑器</MdButton></div>
     </form>
     <p v-if="!items.length && !busy">尚未取得技能清单。</p>
     <article v-for="skill in items" :key="skill.id" class="skill">
@@ -95,6 +115,6 @@ h2 { font: 600 22px var(--font-title); }
 .skill > div { min-width: 0; overflow-wrap: anywhere; }
 .skill p { margin: 4px 0; }
 .editor { display: flex; flex-direction: column; gap: 12px; padding: 20px 0; }
-textarea { display: block; width: 100%; box-sizing: border-box; padding: 12px; border-radius: 8px; background: var(--md-surface-container); color: var(--md-on-surface); border: 1px solid var(--md-outline); font: 15px/1.6 var(--font-body); resize: vertical; }
+textarea { display: block; width: 100%; }
 .error { color: var(--md-error); overflow-wrap: anywhere; }
 </style>
