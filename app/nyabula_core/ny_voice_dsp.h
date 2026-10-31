@@ -42,18 +42,18 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NY_VOICE_CAPTURE_RATE    16000U
-#define NY_VOICE_TTS_RATE        44100U
-#define NY_VOICE_WAV_HEADER      44U
+#define NY_VOICE_CAPTURE_RATE 16000U
+#define NY_VOICE_TTS_RATE     44100U
+#define NY_VOICE_WAV_HEADER   44U
 
 /* 44100 -> 16000 is 160/441.  Forty-eight taps at the input rate put the
  * transition band between about 5.5 and 8.5 kHz, which keeps speech intact
  * and what folds back stays above 7 kHz.
  */
 
-#define NY_VOICE_RESAMPLE_UP     160U
-#define NY_VOICE_RESAMPLE_DOWN   441U
-#define NY_VOICE_RESAMPLE_TAPS   48U
+#define NY_VOICE_RESAMPLE_UP   160U
+#define NY_VOICE_RESAMPLE_DOWN 441U
+#define NY_VOICE_RESAMPLE_TAPS 48U
 
 /****************************************************************************
  * Public Types
@@ -81,27 +81,30 @@ struct ny_voice_ring_s
 
 struct ny_voice_gate_config_s
 {
-  uint32_t min_rms;     /* Never open below this level.                  */
-  uint32_t ratio_x16;   /* Open at floor * ratio_x16 / 16.               */
-  uint32_t hang_ms;     /* Stay open this long after the last loud chunk. */
+  uint32_t min_rms;   /* Never open below this level.                  */
+  uint32_t ratio_x16; /* Open at floor * ratio_x16 / 16.               */
+  uint32_t hang_ms;   /* Stay open this long after the last loud chunk. */
 };
 
 struct ny_voice_gate_s
 {
   struct ny_voice_gate_config_s config;
-  uint32_t floor_x16;   /* Noise floor estimate, RMS * 16.               */
-  uint32_t quiet_ms;    /* Since the last loud chunk.                    */
-  bool primed;          /* The floor has seen its first chunk.           */
+  uint32_t floor_x16; /* Noise floor estimate, RMS * 16.               */
+  uint32_t quiet_ms;  /* Since the last loud chunk.                    */
+  bool primed;        /* The floor has seen its first chunk.           */
   bool open;
-  bool loud;            /* The last chunk was above the threshold.       */
+  bool loud; /* The last chunk was above the threshold.       */
 };
 
 struct ny_voice_resample_s
 {
   float history[NY_VOICE_RESAMPLE_TAPS];
-  uint32_t phase;       /* Position of the next output, in 1/160 input   */
-                        /* samples past the newest history sample + 1.   */
+  uint32_t phase; /* Position of the next output, in 1/up input   */
+                  /* samples past the newest history sample + 1.   */
   bool ready;
+  uint32_t input_rate;
+  uint32_t up;
+  uint32_t down;
   float taps[NY_VOICE_RESAMPLE_UP][NY_VOICE_RESAMPLE_TAPS];
 };
 
@@ -109,15 +112,15 @@ struct ny_voice_resample_s
 
 struct ny_voice_attach_s
 {
-  bool has_offsets;        /* NYAMP_KWS_DETECTED_HAS_OFFSETS.            */
+  bool has_offsets; /* NYAMP_KWS_DETECTED_HAS_OFFSETS.            */
   uint64_t start_sample;
   uint64_t end_sample;
   uint64_t trigger_sample;
-  uint64_t stream_next;    /* Position of the next sample to be pushed.  */
-  uint64_t stream_base;    /* First sample after the last discontinuity. */
-  uint32_t ring_samples;   /* What the compute domain keeps (10 s).      */
+  uint64_t stream_next;     /* Position of the next sample to be pushed.  */
+  uint64_t stream_base;     /* First sample after the last discontinuity. */
+  uint32_t ring_samples;    /* What the compute domain keeps (10 s).      */
   uint32_t backoff_samples; /* Taken off trigger_sample without offsets. */
-  uint32_t margin_samples; /* Kept clear of the ring's oldest sample.    */
+  uint32_t margin_samples;  /* Kept clear of the ring's oldest sample.    */
 };
 
 /****************************************************************************
@@ -125,8 +128,7 @@ struct ny_voice_attach_s
  ****************************************************************************/
 
 #ifdef __cplusplus
-extern "C"
-{
+extern "C" {
 #endif
 
 /* Sample formats.  Float to integer clips instead of wrapping and turns a
@@ -165,9 +167,8 @@ uint64_t ny_voice_ring_oldest(const struct ny_voice_ring_s *ring);
  * ahead of the writer is pulled back to it.
  */
 
-size_t ny_voice_ring_read(const struct ny_voice_ring_s *ring,
-                          uint64_t *cursor, int16_t *out, size_t count,
-                          bool *gap);
+size_t ny_voice_ring_read(const struct ny_voice_ring_s *ring, uint64_t *cursor,
+                          int16_t *out, size_t count, bool *gap);
 
 void ny_voice_gate_init(struct ny_voice_gate_s *gate,
                         const struct ny_voice_gate_config_s *config);
@@ -183,6 +184,8 @@ uint64_t ny_voice_attach_sample(const struct ny_voice_attach_s *attach,
                                 bool *from_trigger, bool *clamped);
 
 void ny_voice_resample_init(struct ny_voice_resample_s *state);
+int ny_voice_resample_rate_init(struct ny_voice_resample_s *state,
+                                uint32_t input_rate, uint32_t output_rate);
 size_t ny_voice_resample(struct ny_voice_resample_s *state, const float *in,
                          size_t count, float *out, size_t capacity);
 
