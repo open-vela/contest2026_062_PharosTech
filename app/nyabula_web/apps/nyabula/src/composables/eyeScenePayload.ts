@@ -271,11 +271,12 @@ export function captionScene(text: string, previous = ''): ScenePayload {
 }
 
 export interface WeatherSceneInput {
-  kind: string; city?: string; temperature: number; feelsLike?: number; humidity?: number; windKph?: number; visibilityKm?: number;
+  kind: string; city?: string; temperature: number; feelsLike?: number; humidity?: number; windKph?: number; visibilityKm?: number; conditionText?: string; stale?: boolean;
 }
 export function weatherScene(w: WeatherSceneInput): ScenePayload {
   return {
-    weather: w.kind, title: w.city ?? '', temperature_c: w.temperature, feels_like_c: w.feelsLike ?? w.temperature,
+    weather: w.kind, title: (w.city ?? '') + (w.stale ? ' · 缓存' : ''),
+    subtitle: w.conditionText ?? '', temperature_c: w.temperature, feels_like_c: w.feelsLike,
     humidity_percent: w.humidity, wind_kph: w.windKph, visibility_km: w.visibilityKm,
   };
 }
