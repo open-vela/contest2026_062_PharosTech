@@ -19,10 +19,9 @@
  *
  ****************************************************************************/
 
-/* Explicitly started, bounded local endpoint. An exact
- * Origin and a provisioned token are mandatory. Use a trusted tunnel for
- * non-loopback access: this endpoint does not implement TLS or pairing.
- */
+/* Bounded local endpoint. Product mode keeps the listener alive with bounded
+ * backoff; explicit operator launches remain single-attempt. Authentication
+ * and Origin checks are unchanged by listener recovery. */
 
 #include "ny_web.h"
 #include "ny_product.h"
@@ -54,6 +53,7 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/time.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -72,9 +72,16 @@
 #define NY_WEB_KEEPALIVE_PROBES     3
 #define NY_WEB_MAX_CLIENTS          8
 #define NY_WEB_STORE_WAIT_MS        15000
+#define NY_WEB_ACCEPT_RETRY_MS      100
+#define NY_WEB_ACCEPT_MAX_MS        1000
+#define NY_WEB_RESTART_MIN_MS       1000
+#define NY_WEB_RESTART_MAX_MS       30000
+#define NY_WEB_STABLE_MS            60000
+#define NY_WEB_STOP_POLL_MS         100
 
 static mutex_t g_web_lock = NXMUTEX_INITIALIZER;
 static bool g_web_running;
+static bool g_web_active;
 static bool g_web_stopping;
 static int g_web_clients[NY_WEB_MAX_CLIENTS];
 
@@ -140,6 +147,13 @@ static int nyabula_eye_ws_client(int fd, const char *token,
                                  const char *origin);
 static void *ny_web_client_worker(void *argument);
 static void ny_web_client_limits(int fd);
+static bool ny_web_stop_requested(void);
+static uint64_t ny_web_monotonic_ms(void);
+static bool ny_web_recovery_wait(unsigned int delay);
+static bool ny_web_accept_retryable(int error);
+static int ny_web_listen(const struct sockaddr_in *address, const char *token,
+                         const char *origin, bool product, const char *bind_ip,
+                         long port);
 static void ny_web_store_wait(const char *path);
 static int ny_web_token_load(const char *path, char *token);
 static int ny_web_token_create(const char *path, char *token);
@@ -1152,7 +1166,7 @@ int ny_web_stop(void)
       return ret;
     }
 
-  if (g_web_running)
+  if (g_web_active)
     {
       g_web_stopping = true;
     }
@@ -1418,146 +1432,127 @@ static int ny_web_token_create(const char *path, char *token)
 }
 
 /****************************************************************************
- * Name: ny_web_run
+ * Name: ny_web_stop_requested
  ****************************************************************************/
 
-int ny_web_run(int argc, char **argv)
+static bool ny_web_stop_requested(void)
 {
-  char token[NYABULA_WS_TOKEN_SIZE + 3];
-  const char *token_path;
-  const char *origin;
-  const char *bind_ip;
-  char *end;
-  struct sockaddr_in address;
-  long port;
-  int server;
-  int one = 1;
-  int ret;
-  bool product = argc == 1;
-  if (!product && argc != 4 && argc != 5)
+  nxmutex_lock(&g_web_lock);
+  bool stop = g_web_stopping;
+  nxmutex_unlock(&g_web_lock);
+  return stop;
+}
+
+/****************************************************************************
+ * Name: ny_web_monotonic_ms
+ ****************************************************************************/
+
+static uint64_t ny_web_monotonic_ms(void)
+{
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (uint64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+/****************************************************************************
+ * Name: ny_web_recovery_wait
+ ****************************************************************************/
+
+static bool ny_web_recovery_wait(unsigned int delay)
+{
+  uint64_t until = ny_web_monotonic_ms() + delay;
+  while (!ny_web_stop_requested())
     {
-      fprintf(stderr,
-              "Usage: nyabula_web\n"
-              "       nyabula_web <port> <token-file> <origin> [bind-ip]\n");
-      return EXIT_FAILURE;
-    }
-
-  if (product)
-    {
-      /* Started by the system with nothing to tell it.  Every address is
-       * served because the device cannot know which one it will have --
-       * the provisioning AP's today, a DHCP lease tomorrow -- and the
-       * origin is left unset, which the handshake reads as "the page must
-       * have come from the host it is now calling".
-       */
-
-      port = CONFIG_NYABULA_CORE_WEB_PORT;
-      token_path = CONFIG_NYABULA_CORE_WEB_TOKEN_PATH;
-      origin = NULL;
-      bind_ip = "0.0.0.0";
-      ny_web_store_wait(token_path);
-
-#ifdef CONFIG_NYABULA_CORE_STATE_SQLITE
-      /* The state database matters more than the token.  Opening it creates
-       * its directory, and doing that before the partition is mounted plants
-       * the directory in the pseudo filesystem instead -- right where the
-       * mount point has to go.
-       */
-
-      ny_web_store_wait(CONFIG_NYABULA_CORE_STATE_DATABASE);
-#endif
-      ny_web_auth_load(CONFIG_NYABULA_CORE_WEB_AUTH_PATH);
-    }
-  else
-    {
-      port = strtol(argv[1], &end, 10);
-      if (*end != '\0' || port < 1 || port > 65535 || strlen(argv[3]) > 255 ||
-          (strncmp(argv[3], "http://", 7) != 0 &&
-           strncmp(argv[3], "https://", 8) != 0))
+      uint64_t now = ny_web_monotonic_ms();
+      if (now >= until)
         {
-          return EXIT_FAILURE;
+          return true;
         }
 
-      token_path = argv[2];
-      origin = argv[3];
-      bind_ip = argc == 5 ? argv[4] : NULL;
+      unsigned int remaining = (unsigned int)(until - now);
+      usleep(
+          (remaining < NY_WEB_STOP_POLL_MS ? remaining : NY_WEB_STOP_POLL_MS) *
+          1000);
     }
 
-  /* Only the product start mints a token.  An operator who names a file is
-   * saying which secret to use, and quietly replacing a missing one would
-   * leave them holding a token the service no longer accepts.
-   */
+  return false;
+}
 
-  ret = ny_web_token_load(token_path, token);
-  if (ret == -ENOENT && product)
-    {
-      ret = ny_web_token_create(token_path, token);
-    }
+/****************************************************************************
+ * Name: ny_web_accept_retryable
+ ****************************************************************************/
 
-  if (ret < 0)
-    {
-      fprintf(stderr, "nyabula_web: no usable token at %s: %d\n", token_path,
-              ret);
-      return EXIT_FAILURE;
-    }
+static bool ny_web_accept_retryable(int error)
+{
+  return error == EAGAIN || error == ECONNABORTED || error == EMFILE ||
+         error == ENFILE || error == ENOBUFS || error == ENOMEM;
+}
 
-  memset(&address, 0, sizeof(address));
-  address.sin_family = AF_INET;
-  address.sin_port = htons(port);
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (bind_ip != NULL && inet_pton(AF_INET, bind_ip, &address.sin_addr) != 1)
-    {
-      return EXIT_FAILURE;
-    }
+/****************************************************************************
+ * Name: ny_web_listen
+ ****************************************************************************/
+
+static int ny_web_listen(const struct sockaddr_in *address, const char *token,
+                         const char *origin, bool product, const char *bind_ip,
+                         long port)
+{
+  int server;
+  int ret;
+  int one = 1;
+  unsigned int retry = NY_WEB_ACCEPT_RETRY_MS;
+  const char *operation = "socket";
+
   server = socket(AF_INET, SOCK_STREAM, 0);
   if (server < 0)
     {
-      return EXIT_FAILURE;
+      ret = -errno;
+      syslog(LOG_ERR, "nyabula_web: socket failed: errno=%d\n", -ret);
+      return ret;
     }
 
+  operation = "close-on-exec";
   if (fcntl(server, F_SETFD, FD_CLOEXEC) < 0)
     {
-      close(server);
-      return EXIT_FAILURE;
+      goto setup_failed;
+    }
+
+  /* poll readiness may disappear when a queued connection aborts. */
+
+  operation = "nonblocking";
+  int flags = fcntl(server, F_GETFL, 0);
+  if (flags < 0 || fcntl(server, F_SETFL, flags | O_NONBLOCK) < 0)
+    {
+      goto setup_failed;
     }
 
   setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-  if (bind(server, (struct sockaddr *)&address, sizeof(address)) < 0 ||
-      listen(server, NY_WEB_MAX_CLIENTS) < 0)
+  operation = "bind";
+  if (bind(server, (const struct sockaddr *)address, sizeof(*address)) < 0)
     {
-      close(server);
-      return EXIT_FAILURE;
+      goto setup_failed;
+    }
+
+  operation = "listen";
+  if (listen(server, NY_WEB_MAX_CLIENTS) < 0)
+    {
+      goto setup_failed;
     }
 
   nxmutex_lock(&g_web_lock);
-  if (g_web_running)
-    {
-      nxmutex_unlock(&g_web_lock);
-      close(server);
-      return EXIT_FAILURE;
-    }
-
   g_web_running = true;
-  g_web_stopping = false;
   if (product)
     {
       memcpy(g_web_product_token, token, sizeof(g_web_product_token));
     }
 
-  for (int i = 0; i < NY_WEB_MAX_CLIENTS; i++)
-    {
-      g_web_clients[i] = -1;
-    }
-
   nxmutex_unlock(&g_web_lock);
+  ret = 0;
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
-  if (ny_product_start() < 0)
+  ret = ny_product_start();
+  if (ret < 0)
     {
-      nxmutex_lock(&g_web_lock);
-      g_web_running = false;
-      nxmutex_unlock(&g_web_lock);
-      close(server);
-      return EXIT_FAILURE;
+      syslog(LOG_ERR, "nyabula_web: product start failed: %d\n", ret);
+      goto cleanup;
     }
 #endif
 
@@ -1567,28 +1562,24 @@ int ny_web_run(int argc, char **argv)
 #ifdef CONFIG_NYABULA_CORE_CLOUD
   if (product && ny_cloud_start() < 0)
     {
-      fprintf(stderr, "nyabula_web: cloud worker start failed\n");
+      syslog(LOG_WARNING, "nyabula_web: cloud worker start failed\n");
     }
 #endif
-  for (;;)
+
+  while (!ny_web_stop_requested())
     {
-      nxmutex_lock(&g_web_lock);
-      bool stop = g_web_stopping;
-      nxmutex_unlock(&g_web_lock);
-      if (stop)
-        {
-          break;
-        }
-
       struct pollfd listener = { server, POLLIN, 0 };
-      int ready = poll(&listener, 1, 100);
-      if (ready < 0 && errno == EINTR)
-        {
-          continue;
-        }
-
+      int ready = poll(&listener, 1, NY_WEB_STOP_POLL_MS);
       if (ready < 0)
         {
+          int error = errno;
+          if (error == EINTR)
+            {
+              continue;
+            }
+
+          ret = -error;
+          syslog(LOG_ERR, "nyabula_web: poll failed: errno=%d\n", error);
           break;
         }
 
@@ -1597,23 +1588,49 @@ int ny_web_run(int argc, char **argv)
           continue;
         }
 
-      if ((listener.revents & POLLIN) == 0)
+      if ((listener.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 ||
+          (listener.revents & POLLIN) == 0)
         {
+          ret = -EIO;
+          syslog(LOG_ERR, "nyabula_web: listener events=0x%x\n",
+                 (unsigned int)listener.revents);
           break;
         }
 
       int client = accept(server, NULL, NULL);
       if (client < 0)
         {
-          if (errno == EINTR)
+          int error = errno;
+          if (error == EINTR)
             {
               continue;
             }
 
+          if (ny_web_accept_retryable(error))
+            {
+              syslog(LOG_WARNING,
+                     "nyabula_web: accept errno=%d; retry in %u ms\n", error,
+                     retry);
+              if (!ny_web_recovery_wait(retry))
+                {
+                  break;
+                }
+
+              retry = retry < NY_WEB_ACCEPT_MAX_MS / 2 ? retry * 2
+                                                       : NY_WEB_ACCEPT_MAX_MS;
+              continue;
+            }
+
+          ret = -error;
+          syslog(LOG_ERR, "nyabula_web: accept failed: errno=%d\n", error);
           break;
         }
 
-      if (fcntl(client, F_SETFD, FD_CLOEXEC) < 0)
+      retry = NY_WEB_ACCEPT_RETRY_MS;
+      int client_flags = fcntl(client, F_GETFL, 0);
+      if (client_flags < 0 ||
+          fcntl(client, F_SETFL, client_flags & ~O_NONBLOCK) < 0 ||
+          fcntl(client, F_SETFD, FD_CLOEXEC) < 0)
         {
           close(client);
           continue;
@@ -1671,13 +1688,15 @@ int ny_web_run(int argc, char **argv)
         }
     }
 
+#ifdef CONFIG_NYABULA_CORE_PRODUCT
+cleanup:
+#endif
 #ifdef CONFIG_NYABULA_CORE_CLOUD
   if (product)
     {
       ny_cloud_stop();
     }
 #endif
-  memset(token, 0, sizeof(token));
   nxmutex_lock(&g_web_lock);
   memset(g_web_product_token, 0, sizeof(g_web_product_token));
   nxmutex_unlock(&g_web_lock);
@@ -1698,7 +1717,6 @@ int ny_web_run(int argc, char **argv)
       if (!active)
         {
           g_web_running = false;
-          g_web_stopping = false;
         }
 
       nxmutex_unlock(&g_web_lock);
@@ -1710,5 +1728,149 @@ int ny_web_run(int argc, char **argv)
       usleep(10000);
     }
 
-  return EXIT_SUCCESS;
+  return ret;
+
+setup_failed:
+  ret = -errno;
+  syslog(LOG_ERR, "nyabula_web: %s failed: errno=%d\n", operation, -ret);
+  close(server);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: ny_web_run
+ ****************************************************************************/
+
+int ny_web_run(int argc, char **argv)
+{
+  char token[NYABULA_WS_TOKEN_SIZE + 3] = { 0 };
+  const char *token_path;
+  const char *origin;
+  const char *bind_ip;
+  char *end;
+  struct sockaddr_in address;
+  long port;
+  int ret;
+  bool product = argc == 1;
+  unsigned int delay = NY_WEB_RESTART_MIN_MS;
+
+  if (!product && argc != 4 && argc != 5)
+    {
+      fprintf(stderr,
+              "Usage: nyabula_web\n"
+              "       nyabula_web <port> <token-file> <origin> [bind-ip]\n");
+      return EXIT_FAILURE;
+    }
+
+  if (product)
+    {
+      port = CONFIG_NYABULA_CORE_WEB_PORT;
+      token_path = CONFIG_NYABULA_CORE_WEB_TOKEN_PATH;
+      origin = NULL;
+      bind_ip = "0.0.0.0";
+    }
+  else
+    {
+      port = strtol(argv[1], &end, 10);
+      if (*end != '\0' || port < 1 || port > 65535 || strlen(argv[3]) > 255 ||
+          (strncmp(argv[3], "http://", 7) != 0 &&
+           strncmp(argv[3], "https://", 8) != 0))
+        {
+          return EXIT_FAILURE;
+        }
+
+      token_path = argv[2];
+      origin = argv[3];
+      bind_ip = argc == 5 ? argv[4] : NULL;
+    }
+
+  memset(&address, 0, sizeof(address));
+  address.sin_family = AF_INET;
+  address.sin_port = htons(port);
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (bind_ip != NULL && inet_pton(AF_INET, bind_ip, &address.sin_addr) != 1)
+    {
+      return EXIT_FAILURE;
+    }
+
+  /* One owner covers setup, serving, cleanup and recovery backoff. */
+
+  nxmutex_lock(&g_web_lock);
+  if (g_web_active)
+    {
+      nxmutex_unlock(&g_web_lock);
+      syslog(LOG_WARNING, "nyabula_web: service already active\n");
+      return EXIT_FAILURE;
+    }
+
+  g_web_active = true;
+  g_web_stopping = false;
+  for (int i = 0; i < NY_WEB_MAX_CLIENTS; i++)
+    {
+      g_web_clients[i] = -1;
+    }
+
+  nxmutex_unlock(&g_web_lock);
+  if (product)
+    {
+      ny_web_store_wait(token_path);
+#ifdef CONFIG_NYABULA_CORE_STATE_SQLITE
+      ny_web_store_wait(CONFIG_NYABULA_CORE_STATE_DATABASE);
+#endif
+      ny_web_auth_load(CONFIG_NYABULA_CORE_WEB_AUTH_PATH);
+    }
+
+  /* Reuse the same credential and auth generation on every recovery. */
+
+  ret = ny_web_token_load(token_path, token);
+  if (ret == -ENOENT && product)
+    {
+      ret = ny_web_token_create(token_path, token);
+    }
+
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "nyabula_web: credential load failed: %d\n", ret);
+      goto done;
+    }
+
+  ret = 0;
+  while (!ny_web_stop_requested())
+    {
+      uint64_t started = ny_web_monotonic_ms();
+      ret = ny_web_listen(&address, token, origin, product, bind_ip, port);
+      if (ret == 0 || !product || ny_web_stop_requested())
+        {
+          break;
+        }
+
+      if (ny_web_monotonic_ms() - started >= NY_WEB_STABLE_MS)
+        {
+          delay = NY_WEB_RESTART_MIN_MS;
+        }
+
+      syslog(LOG_ERR, "nyabula_web: listener exited: %d; restart in %u ms\n",
+             ret, delay);
+      if (!ny_web_recovery_wait(delay))
+        {
+          break;
+        }
+
+      delay = delay < NY_WEB_RESTART_MAX_MS / 2 ? delay * 2
+                                                : NY_WEB_RESTART_MAX_MS;
+    }
+
+  if (ny_web_stop_requested())
+    {
+      syslog(LOG_INFO, "nyabula_web: stopped by request\n");
+      ret = 0;
+    }
+
+done:
+  memset(token, 0, sizeof(token));
+  nxmutex_lock(&g_web_lock);
+  g_web_active = false;
+  g_web_stopping = false;
+  nxmutex_unlock(&g_web_lock);
+  return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }
