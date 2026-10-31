@@ -178,6 +178,7 @@ static int rk3576_usb_epcmd(uint8_t phyep, uint32_t cmd, uint32_t p0,
 /* Core bring-up */
 
 static int rk3576_usb_coreinit(struct rk3576_usb_s *priv);
+static int rk3576_usb_epresources(void);
 static void rk3576_usb_ep0out_arm_setup(struct rk3576_usb_s *priv);
 static int rk3576_usb_epconfig(struct rk3576_ep_s *privep, uint8_t eptype,
                                uint16_t maxpacket, bool modify);
@@ -328,10 +329,43 @@ static int rk3576_usb_epcmd(uint8_t phyep, uint32_t cmd, uint32_t p0,
 }
 
 /****************************************************************************
+ * Name: rk3576_usb_epresources
+ *
+ * Description:
+ *   Assign one transfer resource per physical endpoint after a core reset.
+ *   Resources survive USB bus reset, disconnect and endpoint disable.  A
+ *   repeated SETTRANSFRESOURCE during enumeration fails on this controller.
+ *
+ ****************************************************************************/
+
+static int rk3576_usb_epresources(void)
+{
+  unsigned int i;
+  int ret;
+
+  ret = rk3576_usb_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0, NULL);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  for (i = 0; i < RK3576_NPHYEPS; i++)
+    {
+      ret = rk3576_usb_epcmd(i, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0, NULL);
+      if (ret < 0)
+        {
+          return ret;
+        }
+    }
+
+  return OK;
+}
+
+/****************************************************************************
  * Name: rk3576_usb_epconfig
  *
  * Description:
- *   Issue DEPCFG + DEPXFERCFG for one physical endpoint.
+ *   Configure an endpoint without reallocating its persistent resource.
  *
  ****************************************************************************/
 
@@ -340,7 +374,6 @@ static int rk3576_usb_epconfig(struct rk3576_ep_s *privep, uint8_t eptype,
 {
   uint32_t p0;
   uint32_t p1;
-  int ret;
 
   p0 = (modify ? DEPCFG_P0_ACTION_MODIFY : DEPCFG_P0_ACTION_INIT) |
        DEPCFG_P0_TYPE(eptype) | DEPCFG_P0_MPS(maxpacket);
@@ -355,14 +388,7 @@ static int rk3576_usb_epconfig(struct rk3576_ep_s *privep, uint8_t eptype,
   p1 = DEPCFG_P1_XFERCMPLEN | DEPCFG_P1_XFERNRDYEN |
        DEPCFG_P1_EPNUM(privep->phyep);
 
-  ret = rk3576_usb_epcmd(privep->phyep, DEPCMD_SETEPCONFIG, p0, p1, 0, NULL);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  return rk3576_usb_epcmd(privep->phyep, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0,
-                          NULL);
+  return rk3576_usb_epcmd(privep->phyep, DEPCMD_SETEPCONFIG, p0, p1, 0, NULL);
 }
 
 /****************************************************************************
@@ -1076,11 +1102,9 @@ static int rk3576_usb_coreinit(struct rk3576_usb_s *priv)
   reg |= DCFG_DEVSPD_HS;
   rk3576_usb_putreg(reg, DWC3_DCFG);
 
-  /* Start endpoint configuration: DEPSTARTCFG with resource index 0
-   * assigns transfer resources for ep0 OUT/IN.
-   */
+  /* Allocate transfer resources once for this core lifetime. */
 
-  ret = rk3576_usb_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0, NULL);
+  ret = rk3576_usb_epresources();
   if (ret < 0)
     {
       return ret;
@@ -1132,11 +1156,7 @@ static int rk3576_ep_configure(struct usbdev_ep_s *ep,
   uint32_t reg;
   int ret;
 
-  /* No DEPSTARTCFG here: on this core revision (3.00a) transfer
-   * resources are pre-allocated and Start New Configuration is issued
-   * only once, with resource index 0, at controller initialization.
-   * Each endpoint still gets its own DEPXFERCFG (in epconfig below).
-   */
+  /* Transfer resources were assigned at controller initialization. */
 
   ret = rk3576_usb_epconfig(privep, eptype, maxpacket, false);
   if (ret < 0)
