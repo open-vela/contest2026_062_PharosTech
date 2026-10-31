@@ -788,6 +788,7 @@ int ny_package_rollback(const char *id)
   char plugin_root[PATH_MAX];
   char unused[PATH_MAX];
   char version[NY_PLUGIN_VERSION_SIZE + 1];
+  struct stat st;
   int ret;
 
   nxmutex_lock(&g_package_lock);
@@ -848,6 +849,18 @@ int ny_package_resolve(const char *id, char *path, size_t size)
   nxmutex_lock(&g_package_lock);
   ret = ny_package_join(plugin_root, sizeof(plugin_root),
                         CONFIG_NYABULA_CORE_PACKAGE_STORE, id);
+  if (ret >= 0)
+    {
+      /* FatFs open() reports ENOTDIR for a missing intermediate directory.
+       * Check the package itself so a first install remains ENOENT, while
+       * a real non-directory object still fails without being replaced.
+       */
+
+      ret = lstat(plugin_root, &st) < 0 ? -errno
+            : !S_ISDIR(st.st_mode)      ? -ENOTDIR
+                                        : 0;
+    }
+
   if (ret >= 0)
     {
       ret = ny_package_read_marker(plugin_root, "current", version,
