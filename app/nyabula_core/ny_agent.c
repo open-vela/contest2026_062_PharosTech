@@ -64,6 +64,7 @@ static char g_agent_active[64];
 static char g_agent_cancel[64];
 static char g_agent_principal[64];
 static char g_agent_channel_context[2048];
+static struct ny_agent_activity_s g_agent_activity = { .state = "idle" };
 
 static const char *ny_agent_string(const cJSON *object, const char *key);
 static bool ny_agent_id_valid(const char *value);
@@ -76,6 +77,7 @@ static bool ny_agent_configured(void);
 static char *ny_agent_history(cJSON *root, const char *conversation,
                               const char *principal);
 static int ny_agent_context_provider(char *buf, size_t size);
+static void ny_agent_activity_set(const char *state);
 static int ny_agent_trim(cJSON *root, const char *protected_id, size_t limit);
 static char *ny_agent_tools(void);
 static int ny_agent_tool_execute(const char *name, const char *input,
@@ -225,6 +227,34 @@ static int ny_agent_trim(cJSON *root, const char *protected_id, size_t limit)
         cJSON_DeleteItemFromArray(runs, index);
       }
   return -ENOSPC;
+}
+
+/****************************************************************************
+ * Name: ny_agent_activity_set
+ * Description: Called with g_agent_lock held; never starts an Agent run.
+ ****************************************************************************/
+
+static void ny_agent_activity_set(const char *state)
+{
+  if (strcmp(g_agent_activity.state, state))
+    {
+      snprintf(g_agent_activity.state, sizeof(g_agent_activity.state), "%s",
+               state);
+      g_agent_activity.changed_ms = ny_product_time_ms(true);
+    }
+}
+
+/****************************************************************************
+ * Name: ny_agent_activity_get
+ ****************************************************************************/
+
+void ny_agent_activity_get(struct ny_agent_activity_s *activity)
+{
+  nxmutex_lock(&g_agent_lock);
+  *activity = g_agent_activity;
+  if (g_agent_active[0] && g_agent_cancel[0])
+    snprintf(activity->state, sizeof(activity->state), "cancelling");
+  nxmutex_unlock(&g_agent_lock);
 }
 
 /****************************************************************************
@@ -594,7 +624,12 @@ static int ny_agent_tool_execute(const char *name, const char *input,
           if (ret == 0)
             ret = ny_product_store_write("agent", root, revision, &revision);
           if (ret == 0)
-            step_index = index;
+            {
+              step_index = index;
+              g_agent_activity.steps = index + 1;
+              ny_agent_activity_set(write && !principal[0] ? "waiting_approval"
+                                                           : "running");
+            }
         }
     }
   cJSON_Delete(root);
@@ -604,7 +639,12 @@ static int ny_agent_tool_execute(const char *name, const char *input,
       (write || skill || catalog || expression || builtin_read || media))
     ret = -EACCES;
   if (ret == 0 && write)
-    ret = ny_agent_wait_approval(run_id, step_index);
+    {
+      ret = ny_agent_wait_approval(run_id, step_index);
+      nxmutex_lock(&g_agent_lock);
+      ny_agent_activity_set("running");
+      nxmutex_unlock(&g_agent_lock);
+    }
 
   cJSON *result = NULL;
   cJSON *empty = cJSON_CreateObject();
@@ -773,6 +813,8 @@ static int ny_agent_worker(int argc, char **argv)
                         ? -ENOMEM
                         : ny_product_store_write("agent", root, revision,
                                                  &revision);
+              if (ret == 0)
+                ny_agent_activity_set("running");
             }
           cJSON_Delete(root);
           if (ret < 0)
@@ -849,6 +891,7 @@ static int ny_agent_worker(int argc, char **argv)
 
           if (ret == 0 && run != NULL)
             {
+              ny_agent_activity_set(ny_agent_string(run, "state"));
               snprintf(channel, sizeof(channel), "%s",
                        ny_agent_string(run, "channel"));
               snprintf(channel_chat, sizeof(channel_chat), "%s",
@@ -1123,6 +1166,8 @@ static int ny_agent_submit(const struct ny_product_caller_s *caller,
         }
       else
         {
+          g_agent_activity.steps = 0;
+          ny_agent_activity_set("queued");
           message.content = NULL;
           message.history_json = NULL;
           *result = cJSON_Duplicate(run, true);
