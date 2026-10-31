@@ -7,6 +7,12 @@ import { usePluginNav, usePluginPermissions } from './plugins.logic';
 /** Short explanation per permission id (Chinese copy lives here, not in the
  * protocol table). Unknown ids fall back to a generic line. */
 const PERMISSION_DESC: Record<string, string> = {
+  'core.log': '写入插件运行日志。',
+  'storage.read': '读取此插件的私有数据。',
+  'storage.write': '写入此插件的私有数据。',
+  'ui.page': '发布组件式插件页面。',
+  'ui.html': '发布隔离的 HTML 插件页面。',
+  'ui.notify': '发送通知和眼睛显示指令。',
   'servo.control': '驱动舵机做动作，可能让机器人移动身体或头部。',
   'storage.private': '在插件私有目录读写文件。',
   'storage.shared.read': '读取所有插件共享的存储区。',
@@ -16,12 +22,17 @@ const PERMISSION_DESC: Record<string, string> = {
   'network.request': '通过 HTTP 访问互联网。',
   'network.raw_socket': '建立原始 TCP/UDP 连接，风险较高。',
   'bluetooth.scan': '扫描附近的蓝牙设备。',
-  'bluetooth.connect': '连接蓝牙设备并收发数据。',
+  'bluetooth.read': '读取蓝牙状态和已记住的设备，不含通话内容与配对数字。',
+  'bluetooth.connect': '配对、连接、断开或忘记蓝牙设备。',
+  'bluetooth.call': '读取通话状态与号码、拒接或挂断；接听还需要麦克风权限。',
+  'audio.read': '读取声卡、播放与 DSP 状态和音乐列表。',
+  'audio.control': '调整声卡路由、音量、声道与均衡器。麦克风设置另需录音权限。',
+  'usb.access': '访问已注册的 USB 音频设备；USB 分频播放还需要音频播放权限。',
   'wifi.status': '读取 WiFi 连接状态与信号。',
   'wifi.control': '切换网络、连接或断开 WiFi。',
   'audio.play': '通过扬声器播放声音。',
-  'audio.capture': '使用麦克风录音。',
-  'camera.capture': '使用摄像头拍照或录像。',
+  'audio.capture': '读取已开启麦克风的短音频片段；关闭或静音时不会采集。',
+  'camera.capture': '允许调用摄像头采集；当前固件尚未提供采集服务，授权后仍会返回不支持。',
   'location.read': '读取设备位置信息。',
   'ui.card': '在眼睛屏幕上显示卡片。',
   'ui.overlay': '在界面顶层绘制悬浮内容。',
@@ -39,8 +50,8 @@ export function permissionDesc(id: string): string {
 
 /** Rough sensitivity hint for the copy column. */
 export function permissionRisk(id: string): 'high' | 'mid' | 'low' {
-  if (/raw_socket|camera|audio\.capture|system\.settings|secrets|gpio\.write|servo/.test(id)) return 'high';
-  if (/write|control|invoke|overlay|location|bluetooth\.connect|wake_lock/.test(id)) return 'mid';
+  if (/raw_socket|camera|audio\.capture|bluetooth\.call|system\.settings|secrets|gpio\.write|servo/.test(id)) return 'high';
+  if (/write|control|invoke|overlay|location|bluetooth\.connect|usb\.access|wake_lock/.test(id)) return 'mid';
   return 'low';
 }
 

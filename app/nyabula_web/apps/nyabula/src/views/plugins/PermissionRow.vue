@@ -14,8 +14,9 @@ const emit = defineEmits<{ (e: 'toggle', v: boolean): void }>();
     <span class="perm-text">
       <span class="perm-zh">{{ permissionZh(name) }}</span>
       <span class="perm-id mono">{{ name }}</span>
+      <span v-if="busy" class="pending" role="status">排队保存中…</span>
     </span>
-    <MdSwitch :model-value="granted" :disabled="disabled || busy" @update:model-value="emit('toggle', $event)" />
+    <MdSwitch :aria-label="permissionZh(name)" :aria-busy="!!busy" :model-value="granted" :disabled="disabled || busy" @update:model-value="emit('toggle', $event)" />
   </div>
 </template>
 
@@ -48,4 +49,5 @@ const emit = defineEmits<{ (e: 'toggle', v: boolean): void }>();
 .perm-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .perm-zh { font-weight: 600; font-size: 14px; color: var(--md-on-surface); }
 .perm-id { font-size: 11.5px; color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending { font-size: 12px; color: var(--md-primary); }
 </style>

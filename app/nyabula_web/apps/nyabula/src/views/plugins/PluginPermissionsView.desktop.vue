@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PluginLifecycle from './PluginLifecycle.vue';
 /* Desktop: two columns — switch list left, explanation of the focused
  * permission right; bulk actions in the context panel. */
 import { computed, ref } from 'vue';
@@ -24,6 +25,7 @@ const RISK_TONE = { high: 'err', mid: 'warn', low: 'ok' } as const;
       </div>
       <MdButton variant="text" @click="v.openPlugin(v.id.value)"><span class="row" style="gap: 4px"><UiIcon name="widgets" :size="18" /> 打开插件页</span></MdButton>
     </div>
+    <PluginLifecycle :id="id" />
 
     <div v-if="v.loading.value && !v.plugin.value" class="stack"><Skeleton v-for="i in 5" :key="i" height="60px" radius="var(--radius-m)" /></div>
     <EmptyState v-else-if="v.errorText.value && !v.plugin.value" tone="error" title="加载失败" :hint="v.errorText.value" action-text="重试" @action="v.retry" />

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PluginLifecycle from './PluginLifecycle.vue';
 /* Phone: switch list; tapping the text opens a sheet with the explanation. */
 import { ref } from 'vue';
 import { BottomSheet, EmptyState, MdButton, Skeleton, UiIcon, permissionIcon, permissionZh } from '@nyabula/ui';
@@ -18,6 +19,7 @@ const RISK_TONE = { high: 'err', mid: 'warn', low: 'ok' } as const;
       <span class="sum-main">已授 {{ v.summary.value.granted }}/{{ v.summary.value.total }}</span>
       <span v-if="v.disabledHint.value" class="muted sum-hint"><UiIcon name="lock" :size="13" /> {{ v.disabledHint.value }}</span>
     </div>
+    <PluginLifecycle :id="id" />
 
     <div v-if="v.loading.value && !v.plugin.value" class="stack"><Skeleton v-for="i in 5" :key="i" height="58px" radius="var(--radius-m)" /></div>
     <EmptyState v-else-if="v.errorText.value && !v.plugin.value" tone="error" title="加载失败" :hint="v.errorText.value" action-text="重试" @action="v.retry" />
@@ -55,7 +57,7 @@ const RISK_TONE = { high: 'err', mid: 'warn', low: 'ok' } as const;
 .item :deep(.perm-row) { padding-right: 44px; }
 .info-btn {
   position: absolute;
-  right: 60px;
+  right: 8px;
   top: 50%;
   transform: translateY(-50%);
   border: none;
