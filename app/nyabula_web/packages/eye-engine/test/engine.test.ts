@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { EyeEngine } from '../src/engine.js';
 import type { EyeState } from '../src/types.js';
 
@@ -371,4 +371,51 @@ describe('pairing QR', () => {
     // tick() = step + render; drives drawPairingScene (QR + big digits).
     expect(() => (e as unknown as { tick(): void }).tick()).not.toThrow();
   });
+});
+
+it('shares a canvas renderer only for its lifetime and keeps presentation out of state', () => {
+ const source = Object.assign(stubCanvas(), { width: 800, height: 480 });
+ const engine = new EyeEngine(source);
+ expect(EyeEngine.forCanvas(source)).toBe(engine);
+ engine.setMode('curious'); engine.step(.2);
+ const before = { mode: (engine as any).mode, cur: { ...(engine as any).cur } };
+ const destination = { width: 0, height: 0, getContext: () => null } as unknown as HTMLCanvasElement;
+ engine.copyPresentationFrame(destination, 1, 1);
+ expect((engine as any).bare).toBe(0);
+ expect({ mode: (engine as any).mode, cur: { ...(engine as any).cur } }).toEqual(before);
+ expect([destination.width, destination.height]).toEqual([800, 480]);
+ engine.destroy(); expect(EyeEngine.forCanvas(source)).toBeUndefined();
+});
+
+it('holds the intro pose and interpolates to live params without changing device state', () => {
+ const e = new EyeEngine(stubCanvas());
+ e.setMode('happy'); e.step(1);
+ const mode = e.mode, target = { ...e.tgt };
+ const pose = e.capturePresentation();
+ expect(e.mode).toBe(mode); expect(e.tgt).toEqual(target);
+ pose.params.pupilW = .2; pose.irisLeft = '#000000';
+ e.cur.pupilW = .8; e.irisHexL = '#ffffff';
+ const seen: { pupil: number; color: string }[] = [];
+ const render = vi.spyOn(e as any, 'render').mockImplementation(() => { seen.push({ pupil: e.cur.pupilW, color: e.irisHexL }); });
+ const canvas = { width: 0, height: 0, getContext: () => null } as unknown as HTMLCanvasElement;
+ for (const progress of [0, .5, 1]) {
+  e.copyPresentationFrame(canvas, 0, 0, pose, progress);
+  expect(e.cur.pupilW).toBe(.8); expect(e.irisHexL).toBe('#ffffff');
+ }
+ expect(seen[0]).toEqual({ pupil: .2, color: '#000000' });
+ expect(seen[1]).toEqual({ pupil: .5, color: '#808080' });
+ expect(seen[2]).toEqual({ pupil: .8, color: '#ffffff' });
+ render.mockRestore(); e.destroy();
+});
+
+it('includes an in-progress blink in the exact handoff pose', () => {
+ const e = new EyeEngine(stubCanvas());
+ (e as any).presentationBlink = .6; (e as any).blinkEyes = 1;
+ const pose = e.capturePresentation(); expect(pose.blink).toEqual([.6, 0]);
+ (e as any).presentationBlink = 0;
+ const render = vi.spyOn(e as any, 'render').mockImplementation(() => {});
+ const canvas = { width: 0, height: 0, getContext: () => null } as unknown as HTMLCanvasElement;
+ e.copyPresentationFrame(canvas, 0, 0, pose, .5);
+ expect(render.mock.calls[0][2]).toEqual([.3, 0]);
+ render.mockRestore(); e.destroy();
 });
