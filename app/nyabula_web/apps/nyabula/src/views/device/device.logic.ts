@@ -2,7 +2,7 @@
  * (built-in DEVICE_SECTIONS + host settings contributions) and navigation. */
 import { computed, type Component } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { DEVICE_SECTIONS } from '../../nav';
+import { DEVICE_SECTION_GROUPS, DEVICE_SECTIONS } from '../../nav';
 import { hostRegistry } from '../../host/registry';
 import { useSessionStore } from '../../stores/session';
 import OverviewSection from './sections/OverviewSection.vue';
@@ -21,6 +21,8 @@ export interface DeviceSection {
   id: string;
   label: string;
   icon: string;
+  /** One-line description (built-in sections). */
+  desc?: string;
   component: Component;
   /** Contributed by a host extension (hostRegistry.settings). */
   extension?: boolean;
@@ -49,6 +51,17 @@ export function useDevicePage(props: { section?: string }) {
     ...DEVICE_SECTIONS.map((s) => ({ ...s, component: BUILTIN[s.id] ?? ReservedSection })),
     ...hostRegistry.settings().map((s) => ({ id: s.id, label: s.label, icon: s.icon ?? 'extension', component: s.component, extension: true })),
   ]);
+  /** Directory groups; host extensions get a group of their own. */
+  const groups = computed(() => {
+    const out = DEVICE_SECTION_GROUPS.map((g) => ({
+      id: g.id as string,
+      label: g.label,
+      items: sections.value.filter((s) => !s.extension && DEVICE_SECTIONS.find((d) => d.id === s.id)?.group === g.id),
+    }));
+    const ext = sections.value.filter((s) => s.extension);
+    if (ext.length) out.push({ id: 'extension', label: '扩展', items: ext });
+    return out.filter((g) => g.items.length);
+  });
 
   /** Requested section id from props/route; null when unspecified (phone shows the directory). */
   const requested = computed<string | null>(() => {
@@ -62,5 +75,5 @@ export function useDevicePage(props: { section?: string }) {
     void router.replace({ name: 'device', params: id ? { key, section: id } : { key } });
   }
 
-  return { session, sections, requested, current, go };
+  return { session, sections, groups, requested, current, go };
 }
