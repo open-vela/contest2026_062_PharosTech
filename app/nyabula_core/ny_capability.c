@@ -33,6 +33,7 @@
 
 #include "ny_broker.h"
 #include "ny_capability.h"
+#include "ny_ui.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -83,6 +84,9 @@ static JSValue ny_capability_ui_notify(JSContext *context,
 static JSValue ny_capability_ai_invoke(JSContext *context,
                                        JSValueConst this_value, int argc,
                                        JSValueConst *argv);
+static JSValue ny_capability_ui_render(JSContext *context,
+                                       JSValueConst this_value, int argc,
+                                       JSValueConst *argv);
 static JSValue ny_capability_ui_eye(JSContext *context,
                                     JSValueConst this_value, int argc,
                                     JSValueConst *argv);
@@ -116,6 +120,7 @@ static const struct ny_capability_binding_s g_network_bindings[] = {
 static const struct ny_capability_binding_s g_ui_bindings[] = {
   { "notify", ny_capability_ui_notify, 1 },
   { "eye", ny_capability_ui_eye, 1 },
+  { "render", ny_capability_ui_render, 1 },
 };
 
 static const struct ny_capability_binding_s g_ai_bindings[] = {
@@ -407,6 +412,52 @@ static JSValue ny_capability_ui_notify(JSContext *context,
   JS_FreeCString(context, message);
   return ret >= 0 ? ny_capability_settled_promise(plugin, false, JS_UNDEFINED)
                   : JS_ThrowInternalError(context, "UI broker unavailable");
+}
+
+/****************************************************************************
+ * Name: ny_capability_ui_render
+ ****************************************************************************/
+
+static JSValue ny_capability_ui_render(JSContext *context,
+                                       JSValueConst this_value, int argc,
+                                       JSValueConst *argv)
+{
+  struct ny_plugin_s *plugin = ny_capability_plugin(context);
+  struct ny_broker_client_s client;
+  JSValue json;
+  const char *text;
+  size_t length;
+  int ret;
+  if (argc != 1 || !JS_IsObject(argv[0]))
+    {
+      return JS_ThrowTypeError(context, "ui.render requires a NyaUI document");
+    }
+
+  json = JS_JSONStringify(context, argv[0], JS_UNDEFINED, JS_UNDEFINED);
+  if (JS_IsException(json))
+    {
+      return json;
+    }
+
+  text = JS_ToCStringLen(context, &length, json);
+  if (text == NULL)
+    {
+      JS_FreeValue(context, json);
+      return JS_EXCEPTION;
+    }
+
+  ny_capability_client(plugin, &client);
+  ret = ny_ui_publish(&client, plugin->generation, text, length);
+  JS_FreeCString(context, text);
+  JS_FreeValue(context, json);
+  if (ret == -EACCES)
+    {
+      return ny_capability_denied(context, "ui.page or ui.html");
+    }
+
+  return ret < 0
+             ? JS_ThrowInternalError(context, "UI document rejected: %d", ret)
+             : JS_UNDEFINED;
 }
 
 static JSValue ny_capability_ui_eye(JSContext *context,
