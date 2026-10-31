@@ -10,6 +10,7 @@ import { EyeEngine, type EyeState } from '@nyabula/eye-engine';
 const props = defineProps<{
   eyeState?: EyeState | null;
   clockOffsetMs?: number;
+  toyMode?: boolean;
   /** Canvas backdrop. Default 'transparent': only the two round eyes are
    *  painted, so they float over whatever the host renders behind them. */
   background?: string;
@@ -36,6 +37,7 @@ onMounted(() => {
   const cv = canvasRef.value!;
   engine = new EyeEngine(cv, {
     background: props.background ?? 'transparent',
+    toyMode: props.toyMode,
     onInteraction: (x, y, phase) => {
       if (phase === 'up') {
         cancelPendingLook();
@@ -63,6 +65,11 @@ onMounted(() => {
   if (props.eyeState) engine.applyRemoteState(props.eyeState, props.clockOffsetMs ?? 0);
   engine.start();
   emit('ready', engine);
+});
+
+watch(() => props.toyMode, (value) => {
+  if (!value) cancelPendingLook();
+  engine?.setToyMode(value ?? false);
 });
 
 watch(
