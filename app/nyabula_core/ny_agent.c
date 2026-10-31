@@ -54,6 +54,7 @@
 #define NY_AGENT_TEXT_LIMIT   2048
 #define NY_AGENT_RESULT_LIMIT 8192
 #define NY_AGENT_ACCEPT_LIMIT 12000
+#define NY_AGENT_STEP_LIMIT   32
 
 static mutex_t g_agent_lock = NXMUTEX_INITIALIZER;
 static bool g_agent_started;
@@ -75,6 +76,7 @@ static bool ny_agent_configured(void);
 static char *ny_agent_history(cJSON *root, const char *conversation,
                               const char *principal);
 static int ny_agent_context_provider(char *buf, size_t size);
+static int ny_agent_trim(cJSON *root, const char *protected_id, size_t limit);
 static char *ny_agent_tools(void);
 static int ny_agent_tool_execute(const char *name, const char *input,
                                  char *output, size_t capacity);
@@ -184,6 +186,45 @@ static bool ny_agent_cancelled(const char *id)
   snprintf(principal, sizeof(principal), "%s", g_agent_principal);
   nxmutex_unlock(&g_agent_lock);
   return cancelled || (principal[0] && !ny_mcp_in_active(principal));
+}
+
+/****************************************************************************
+ * Name: ny_agent_trim
+ ****************************************************************************/
+
+static int ny_agent_trim(cJSON *root, const char *protected_id, size_t limit)
+{
+  const cJSON *protected = ny_agent_find(root, protected_id);
+  const char *conversation = ny_agent_string(protected, "conversationId");
+  for (int pass = 0; pass < 2; pass++)
+    for (;;)
+      {
+        char *encoded = cJSON_PrintUnformatted(root);
+        if (!encoded)
+          return -ENOMEM;
+        bool fits = strlen(encoded) <= limit;
+        free(encoded);
+        if (fits)
+          return 0;
+        cJSON *runs = cJSON_GetObjectItemCaseSensitive(root, "runs");
+        cJSON *old;
+        int index = 0;
+        cJSON_ArrayForEach(old, runs)
+        {
+          const char *state = ny_agent_string(old, "state");
+          if (old != protected &&
+              (pass ||
+               strcmp(ny_agent_string(old, "conversationId"), conversation)) &&
+              strcmp(state, "queued") && strcmp(state, "running") &&
+              strcmp(state, "waiting_approval") && strcmp(state, "cancelling"))
+            break;
+          index++;
+        }
+        if (!old)
+          break;
+        cJSON_DeleteItemFromArray(runs, index);
+      }
+  return -ENOSPC;
 }
 
 /****************************************************************************
@@ -397,7 +438,7 @@ static int ny_agent_decide(const cJSON *data, cJSON **result)
   const cJSON *number = cJSON_GetObjectItemCaseSensitive(data, "step");
   if (!cJSON_IsNumber(number) || !isfinite(number->valuedouble) ||
       floor(number->valuedouble) != number->valuedouble ||
-      number->valuedouble < 0 || number->valuedouble >= 16 ||
+      number->valuedouble < 0 || number->valuedouble >= NY_AGENT_STEP_LIMIT ||
       (strcmp(decision, "allow") != 0 && strcmp(decision, "deny") != 0))
     return -EINVAL;
   if (strcmp(run_id, g_agent_active) != 0 || g_agent_cancel[0])
@@ -449,9 +490,8 @@ static int ny_agent_tool_execute(const char *name, const char *input,
     "alarm.list"
   };
   static const char *const writes[] = {
-    "memory.create", "task.create",        "calendar.create",
-    "timer.create",  "alarm.create",       "agent.mcp.out.call",
-    "agent.tools.call"
+    "memory.create", "task.create",        "calendar.create", "timer.create",
+    "alarm.create",  "agent.mcp.out.call", "agent.tools.call"
   };
   static const char *const media_topics[] = { "music.play",   "music.pause",
                                               "music.resume", "music.stop",
@@ -548,13 +588,11 @@ static int ny_agent_tool_execute(const char *name, const char *input,
       else
         {
           int index = cJSON_GetArraySize(steps) - 1;
-          char *encoded = cJSON_PrintUnformatted(root);
-          ret =
-              encoded == NULL ? -ENOMEM
-              : index >= 16 || strlen(encoded) > 14000
-                  ? -ENOSPC
-                  : ny_product_store_write("agent", root, revision, &revision);
-          free(encoded);
+          ret = index >= NY_AGENT_STEP_LIMIT
+                    ? -ENOSPC
+                    : ny_agent_trim(root, g_agent_active, 14000);
+          if (ret == 0)
+            ret = ny_product_store_write("agent", root, revision, &revision);
           if (ret == 0)
             step_index = index;
         }
