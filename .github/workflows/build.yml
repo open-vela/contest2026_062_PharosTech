@@ -74,10 +74,12 @@ jobs:
           ctest --test-dir out/models --output-on-failure
 
   core_build_contract:
-    name: Core dependency configuration
+    name: Core and platform build contracts
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Check platform Kconfig and driver registration
+        run: python3 tools/tests/test_platform_cmake.py
       - name: Preserve WAMR-owned context configuration
         run: |
           for context in 0 1; do
