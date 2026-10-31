@@ -130,3 +130,23 @@ test('authenticate rejects with the device error and stops retries on EACCES', a
     await assert.rejects(client.authenticate(SESSION), (e) => e.code === 'ENOTCONN');
   } finally { client.close(); }
 });
+
+test('legacy pairing replaces the explicit null token and survives reconnect', async () => {
+  const log = fakeDevice();
+  const client = new NyaLinkClient({ manualHello: true, reconnectBaseMs: 5 });
+  try {
+    client.connect('ws://fixture');
+    await until(() => client.awaitingAuth);
+    log.sockets[0].send = function(raw) {
+      const request = JSON.parse(raw);
+      if (request.topic === 'sys.pair') return this.reply(request, 'res', { token: SESSION, role: 'owner' });
+      return this.reply(request, 'res', request.data.token === SESSION ? { role: 'owner' } : { pairingRequired: true });
+    };
+    await client.authenticate(null);
+    assert.equal(client.state, 'pairing-required');
+    await client.pair('123456', 'test');
+    assert.equal(client.state, 'connected');
+    log.sockets[0].close();
+    await until(() => log.sockets.length === 2 && client.state === 'connected');
+  } finally { client.close(); }
+});
