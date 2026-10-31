@@ -42,8 +42,7 @@
  *   cloud.status      any role   the stored relay settings
  *   cloud.config      owner      {"enabled": bool, "url": "ws[s]://..."}
  *
- * Nothing here pretends: the firmware has no online update service and no
- * relay client, and the answers say so.
+ * Cloud transport is optional; builds without it report unsupported.
  *
  * The update.* topics other than status exist only with NYABULA_CORE_OTA.
  * Without it they fall through as unknown, which is how the panel tells a
@@ -86,6 +85,9 @@
 #include "ny_product_store.h"
 
 #include <nuttx/config.h>
+#ifdef CONFIG_NYABULA_CORE_CLOUD
+#include "ny_cloud.h"
+#endif
 #include <nuttx/mutex.h>
 
 #include <dirent.h>
@@ -103,12 +105,12 @@
 #include <unistd.h>
 
 #ifdef CONFIG_NYABULA_CORE_OTA
-#  include <pthread.h>
-#  include <sys/boardctl.h>
+#include <pthread.h>
+#include <sys/boardctl.h>
 
-#  include "nbootctl_bootctrl.h"
-#  include "nbootctl_part.h"
-#  include "ny_web_ota.h"
+#include "nbootctl_bootctrl.h"
+#include "nbootctl_part.h"
+#include "ny_web_ota.h"
 #endif
 
 /****************************************************************************
@@ -137,8 +139,8 @@
  * is for people, so it is in the language of the panel.
  */
 
-#define NY_MAINT_FORCE_NOTICE \
-  "该分区的文件系统仍处于挂载状态，设备不会卸载它。新内容直接写到已挂载的" \
+#define NY_MAINT_FORCE_NOTICE                                                                                    \
+  "该分区的文件系统仍处于挂载状态，设备不会卸载它。新内容直接写到已挂载的"    \
   "文件系统之下：重启前这个文件系统读到的内容不可信，它的任何一次写入都可能" \
   "破坏刚写入的镜像。写入完成后请立即重启。"
 
@@ -183,10 +185,10 @@ enum ny_maint_apply_e
 struct ny_maint_apply_s
 {
   enum ny_maint_apply_e state;
-  int error;                 /* positive errno of the last failure, or 0 */
-  const char *reason;        /* short word for the panel, "" when none */
-  const struct ny_web_ota_target_s *target;  /* NULL before the first one */
-  bool forced;               /* written under a mounted filesystem */
+  int error;          /* positive errno of the last failure, or 0 */
+  const char *reason; /* short word for the panel, "" when none */
+  const struct ny_web_ota_target_s *target; /* NULL before the first one */
+  bool forced; /* written under a mounted filesystem */
   unsigned int medium;
 
   /* Of the target's own domain; NBOOTCTL_SLOT_NONE when nothing runs there. */
@@ -202,9 +204,9 @@ struct ny_maint_apply_s
 enum ny_maint_refusal_e
 {
   NY_MAINT_REFUSAL_NONE = 0,
-  NY_MAINT_REFUSAL_BLOCKED,     /* never written from here */
-  NY_MAINT_REFUSAL_NO_HANDOFF,  /* the running slot is not known */
-  NY_MAINT_REFUSAL_RUNNING,     /* holds the image that is running */
+  NY_MAINT_REFUSAL_BLOCKED,    /* never written from here */
+  NY_MAINT_REFUSAL_NO_HANDOFF, /* the running slot is not known */
+  NY_MAINT_REFUSAL_RUNNING,    /* holds the image that is running */
 };
 #endif
 
@@ -212,14 +214,12 @@ enum ny_maint_refusal_e
  * Private Data
  ****************************************************************************/
 
-static const struct ny_maint_volume_s g_maint_volumes[] =
-{
+static const struct ny_maint_volume_s g_maint_volumes[] = {
   { "data", "数据", "/data" },
   { "config", "配置", "/config" },
 };
 
-static const struct ny_maint_usage_s g_maint_usage[] =
-{
+static const struct ny_maint_usage_s g_maint_usage[] = {
   { "www", "控制面板", "/data/www", false },
   { "models", "模型", "/data/models", false },
   { "music", "音乐", "/data/music", false },
@@ -231,7 +231,7 @@ static const struct ny_maint_usage_s g_maint_usage[] =
 
 static mutex_t g_maint_log_lock = NXMUTEX_INITIALIZER;
 static struct ny_maint_log_s *g_maint_log;
-static uint32_t g_maint_log_next = 1;  /* seq of the next line stored */
+static uint32_t g_maint_log_next = 1; /* seq of the next line stored */
 static uint32_t g_maint_log_count;
 static int g_maint_log_fd = -1;
 static char g_maint_log_partial[NY_MAINT_LOG_WIDTH];
@@ -239,8 +239,7 @@ static size_t g_maint_log_partial_used;
 
 #ifdef CONFIG_NYABULA_CORE_OTA
 static mutex_t g_maint_apply_lock = NXMUTEX_INITIALIZER;
-static struct ny_maint_apply_s g_maint_apply =
-{
+static struct ny_maint_apply_s g_maint_apply = {
   .reason = "",
 };
 #endif
@@ -273,7 +272,8 @@ static uint64_t ny_maint_walk(const char *path, int depth, bool remove_files)
     {
       char child[PATH_MAX];
       struct stat status;
-      if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0 ||
+      if (strcmp(entry->d_name, ".") == 0 ||
+          strcmp(entry->d_name, "..") == 0 ||
           snprintf(child, sizeof(child), "%s/%s", path, entry->d_name) >=
               (int)sizeof(child) ||
           stat(child, &status) < 0)
@@ -340,8 +340,8 @@ static cJSON *ny_maint_storage(void)
       cJSON_AddStringToObject(row, "path", g_maint_volumes[i].path);
       cJSON_AddNumberToObject(row, "total", block * (double)info.f_blocks);
       cJSON_AddNumberToObject(row, "free", block * (double)info.f_bavail);
-      cJSON_AddNumberToObject(
-          row, "used", block * (double)(info.f_blocks - info.f_bfree));
+      cJSON_AddNumberToObject(row, "used",
+                              block * (double)(info.f_blocks - info.f_bfree));
       cJSON_AddItemToArray(volumes, row);
     }
 
@@ -413,8 +413,7 @@ static enum ny_maint_refusal_e
 ny_maint_refusal(const struct ny_web_ota_target_s *target, bool handoff,
                  unsigned int running_domain, unsigned int running_slot)
 {
-  static const char *const partitions[2][2] =
-  {
+  static const char *const partitions[2][2] = {
     { "nuttx_a", "nuttx_b" },
     { "amp_a", "amp_b" },
   };
@@ -438,8 +437,7 @@ ny_maint_refusal(const struct ny_web_ota_target_s *target, bool handoff,
 
   if (target->kind == NY_WEB_OTA_KIND_PARTITION && running_domain <= 1 &&
       running_slot <= 1 &&
-      strcmp(target->partition,
-             partitions[running_domain][running_slot]) == 0)
+      strcmp(target->partition, partitions[running_domain][running_slot]) == 0)
     {
       return NY_MAINT_REFUSAL_RUNNING;
     }
@@ -473,8 +471,8 @@ static unsigned int ny_maint_stage_slot(const struct nbootctl_state_s *state,
 {
   unsigned int running = nbootctl_running_slot(state->running_domain,
                                                state->running_slot, domain);
-  unsigned int active = domain == NBOOTCTL_DOMAIN_AMP ? state->amp_active
-                                                      : state->nuttx_active;
+  unsigned int active =
+      domain == NBOOTCTL_DOMAIN_AMP ? state->amp_active : state->nuttx_active;
 
   return running <= 1 ? 1 - running : 1 - active;
 }
@@ -554,19 +552,21 @@ static void ny_maint_target_rows(cJSON *root,
                                  const struct nbootctl_state_s *state,
                                  bool usable)
 {
-  static const char *const kinds[] =
-  {
-    "slot", "nboot", "partition",
+  static const char *const kinds[] = {
+    "slot",
+    "nboot",
+    "partition",
   };
 
-  static const char *const formats[] =
-  {
+  static const char *const formats[] = {
     "raw", "arm64", "fit", "bootctrl", "fat",
   };
 
-  static const char *const reasons[] =
-  {
-    "", "blocked", "no-handoff", "running",
+  static const char *const reasons[] = {
+    "",
+    "blocked",
+    "no-handoff",
+    "running",
   };
 
   const struct ny_web_ota_target_s *target;
@@ -574,12 +574,11 @@ static void ny_maint_target_rows(cJSON *root,
   uint64_t room = ny_maint_staging_room();
 
   cJSON_AddNumberToObject(root, "stagingFree", (double)room);
-  for (size_t i = 0; rows != NULL &&
-                     (target = ny_web_ota_target_at(i)) != NULL; i++)
+  for (size_t i = 0;
+       rows != NULL && (target = ny_web_ota_target_at(i)) != NULL; i++)
     {
-      enum ny_maint_refusal_e refusal =
-          ny_maint_refusal(target, usable, state->running_domain,
-                           state->running_slot);
+      enum ny_maint_refusal_e refusal = ny_maint_refusal(
+          target, usable, state->running_domain, state->running_slot);
       uint64_t capacity = ny_web_ota_target_capacity(target);
       const char *slot = "";
       cJSON *row = cJSON_CreateObject();
@@ -634,9 +633,11 @@ static void ny_maint_target_rows(cJSON *root,
 
 static void ny_maint_update_slots(cJSON *root, cJSON *current)
 {
-  static const char *const states[] =
-  {
-    "idle", "writing", "done", "failed",
+  static const char *const states[] = {
+    "idle",
+    "writing",
+    "done",
+    "failed",
   };
 
   struct nbootctl_state_s state;
@@ -671,12 +672,10 @@ static void ny_maint_update_slots(cJSON *root, cJSON *current)
   if (usable)
     {
       const struct nbootctl_slot_state_s *amp = &state.amp[state.amp_active];
-      unsigned int nuttx_running =
-          nbootctl_running_slot(state.running_domain, state.running_slot,
-                                NBOOTCTL_DOMAIN_NUTTX);
-      unsigned int amp_running =
-          nbootctl_running_slot(state.running_domain, state.running_slot,
-                                NBOOTCTL_DOMAIN_AMP);
+      unsigned int nuttx_running = nbootctl_running_slot(
+          state.running_domain, state.running_slot, NBOOTCTL_DOMAIN_NUTTX);
+      unsigned int amp_running = nbootctl_running_slot(
+          state.running_domain, state.running_slot, NBOOTCTL_DOMAIN_AMP);
 
       ny_maint_slot_rows(slots, state.nuttx, state.nuttx_active,
                          nuttx_running <= 1 ? (int)nuttx_running : -1);
@@ -894,8 +893,7 @@ static void *ny_maint_apply_worker(void *argument)
              */
 
             ret = nbootctl_bootctrl_stage(job->medium, target->domain,
-                                          job->running_slot,
-                                          NY_WEB_OTA_FILE);
+                                          job->running_slot, NY_WEB_OTA_FILE);
             break;
 
           case NY_WEB_OTA_KIND_NBOOT:
@@ -926,10 +924,9 @@ static void *ny_maint_apply_worker(void *argument)
         }
       else
         {
-          reason = ret == -EFBIG ? "too-large"
-                   : ret == -EBADMSG || ret == -EKEYREJECTED
-                       ? "verify"
-                       : "io";
+          reason = ret == -EFBIG                             ? "too-large"
+                   : ret == -EBADMSG || ret == -EKEYREJECTED ? "verify"
+                                                             : "io";
         }
     }
 
@@ -1095,9 +1092,7 @@ static int ny_maint_apply(const cJSON *data, cJSON **result)
   if (ret < 0)
     {
       ny_web_ota_release();
-      return ret == -ENOEXEC  ? -EMEDIUMTYPE
-             : ret == -ENOENT ? -ENODATA
-                              : ret;
+      return ret == -ENOEXEC ? -EMEDIUMTYPE : ret == -ENOENT ? -ENODATA : ret;
     }
 
   nxmutex_lock(&g_maint_apply_lock);
@@ -1288,8 +1283,7 @@ static int ny_maint_reboot(cJSON **result)
     }
 
   cJSON_AddBoolToObject(*result, "rebooting", true);
-  cJSON_AddNumberToObject(*result, "delayMs",
-                          NY_MAINT_REBOOT_DELAY_US / 1000);
+  cJSON_AddNumberToObject(*result, "delayMs", NY_MAINT_REBOOT_DELAY_US / 1000);
   return 0;
 }
 #endif /* CONFIG_NYABULA_CORE_OTA */
@@ -1437,7 +1431,7 @@ static int ny_maint_logs(const cJSON *data, cJSON **result)
   uint32_t first = after + 1 > oldest ? after + 1 : oldest;
   if (after >= g_maint_log_next)
     {
-      first = oldest;  /* the device restarted; start over */
+      first = oldest; /* the device restarted; start over */
     }
 
   if (g_maint_log_next - first > limit)
@@ -1476,8 +1470,11 @@ static int ny_maint_logs(const cJSON *data, cJSON **result)
  * Name: ny_maint_cloud
  ****************************************************************************/
 
-static int ny_maint_cloud(const cJSON *update, cJSON **result)
+static int ny_maint_cloud(const cJSON *update, cJSON **result, bool owner)
 {
+#ifdef CONFIG_NYABULA_CORE_CLOUD
+  return ny_cloud_config(update, result, owner);
+#else
   cJSON *stored = NULL;
   uint64_t revision = 0;
   bool enabled = false;
@@ -1556,6 +1553,7 @@ static int ny_maint_cloud(const cJSON *update, cJSON **result)
                           "relay client is not part of this firmware");
   *result = root;
   return 0;
+#endif
 }
 
 /****************************************************************************
@@ -1658,12 +1656,12 @@ int ny_product_maintenance_request(const struct ny_product_caller_s *caller,
 
   if (strcmp(topic, "cloud.status") == 0)
     {
-      return ny_maint_cloud(NULL, result);
+      return ny_maint_cloud(NULL, result, owner);
     }
 
   if (strcmp(topic, "cloud.config") == 0)
     {
-      return owner ? ny_maint_cloud(data, result) : -EACCES;
+      return owner ? ny_maint_cloud(data, result, owner) : -EACCES;
     }
 
   return -ENOSYS;

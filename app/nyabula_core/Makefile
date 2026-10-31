@@ -91,6 +91,9 @@ ifeq ($(CONFIG_NYABULA_CORE_WEB),y)
 CSRCS += ny_web.c ny_web_auth.c ny_web_http.c ny_websocket.c
 CSRCS += ny_web_mirror.c
 endif
+ifeq ($(CONFIG_NYABULA_CORE_CLOUD),y)
+CSRCS += ny_cloud.c
+endif
 
 ifeq ($(CONFIG_NYABULA_CORE_PRODUCT),y)
 CSRCS += ny_plugins.c ny_plugin_upload.c ny_access.c ny_product_store.c ny_product_records.c ny_product_cli.c ny_product.c

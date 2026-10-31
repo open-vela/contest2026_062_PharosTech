@@ -37,8 +37,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
-#include <netinet/tcp.h>
 #include <nuttx/config.h>
+#ifdef CONFIG_NYABULA_CORE_CLOUD
+#include "ny_cloud.h"
+#endif
+#include <netinet/tcp.h>
 #include <nuttx/mutex.h>
 #include <nyabula_eye_service.h>
 #include <nyabula_eye_wire.h>
@@ -1561,6 +1564,12 @@ int ny_web_run(int argc, char **argv)
   printf("nyabula_web: %s:%ld, %s origin\n",
          bind_ip != NULL ? bind_ip : "127.0.0.1", port,
          origin != NULL ? origin : "same-host");
+#ifdef CONFIG_NYABULA_CORE_CLOUD
+  if (product && ny_cloud_start() < 0)
+    {
+      fprintf(stderr, "nyabula_web: cloud worker start failed\n");
+    }
+#endif
   for (;;)
     {
       nxmutex_lock(&g_web_lock);
@@ -1662,6 +1671,12 @@ int ny_web_run(int argc, char **argv)
         }
     }
 
+#ifdef CONFIG_NYABULA_CORE_CLOUD
+  if (product)
+    {
+      ny_cloud_stop();
+    }
+#endif
   memset(token, 0, sizeof(token));
   nxmutex_lock(&g_web_lock);
   memset(g_web_product_token, 0, sizeof(g_web_product_token));
