@@ -1,0 +1,9 @@
+{
+  "name": "@nyabula/simulator-workbench",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": { "build": "vite build", "typecheck": "vue-tsc --noEmit -p tsconfig.json" },
+  "dependencies": { "@nyabula/nyaui-vue": "workspace:*", "@nyabula/ui": "workspace:*", "@nyabula/eye-engine": "workspace:*", "vue": "^3.5.13", "pinia": "^2.2.8" },
+  "devDependencies": { "@vitejs/plugin-vue": "^5.2.1", "vite": "^5.4.19", "typescript": "^5.6.3", "vue-tsc": "^2.1.10" }
+}

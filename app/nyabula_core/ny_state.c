@@ -283,6 +283,99 @@ int ny_state_write(const char *key, const void *value, size_t length)
   return ny_state_write_many(&update, 1);
 }
 
+/****************************************************************************
+ * Name: ny_state_delete
+ ****************************************************************************/
+
+int ny_state_delete(const char *key)
+{
+  if (ny_state_key(key) < 0)
+    return -EINVAL;
+  sqlite3 *database = NULL;
+  sqlite3_stmt *statement = NULL;
+  nxmutex_lock(&g_state_lock);
+  int ret = ny_state_open(&database);
+  if (ret == 0)
+    {
+      int result = sqlite3_prepare_v2(database, "DELETE FROM state WHERE k=?1",
+                                      -1, &statement, NULL);
+      if (result == SQLITE_OK)
+        result = sqlite3_bind_text(statement, 1, key, -1, SQLITE_STATIC);
+      if (result == SQLITE_OK)
+        result = sqlite3_step(statement);
+      ret = ny_state_error(result);
+    }
+  sqlite3_finalize(statement);
+  sqlite3_close(database);
+  nxmutex_unlock(&g_state_lock);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: ny_state_copy_prefix
+ ****************************************************************************/
+
+int ny_state_copy_prefix(const char *source, const char *destination)
+{
+  if (ny_state_key(source) < 0 || ny_state_key(destination) < 0)
+    return -EINVAL;
+  size_t source_size = strlen(source);
+  size_t destination_size = strlen(destination);
+  if (source_size < 2 || destination_size < 2 ||
+      source[source_size - 1] != '/' ||
+      destination[destination_size - 1] != '/' ||
+      !strncmp(source, destination, source_size) ||
+      !strncmp(source, destination, destination_size))
+    return -EINVAL;
+  sqlite3 *database = NULL;
+  sqlite3_stmt *statement = NULL;
+  nxmutex_lock(&g_state_lock);
+  int ret = ny_state_open(&database);
+  if (ret < 0)
+    goto out;
+  ret = ny_state_error(
+      sqlite3_exec(database, "BEGIN IMMEDIATE", NULL, NULL, NULL));
+  if (ret < 0)
+    goto out;
+  int result = sqlite3_prepare_v2(
+      database, "DELETE FROM state WHERE substr(k,1,length(?1))=?1", -1,
+      &statement, NULL);
+  if (result == SQLITE_OK)
+    result = sqlite3_bind_text(statement, 1, destination, -1, SQLITE_STATIC);
+  if (result == SQLITE_OK)
+    result = sqlite3_step(statement);
+  ret = ny_state_error(result);
+  sqlite3_finalize(statement);
+  statement = NULL;
+  if (ret == 0)
+    {
+      result = sqlite3_prepare_v2(
+          database,
+          "INSERT INTO state(k,v) SELECT ?2 || substr(k,length(?1)+1),v "
+          "FROM state WHERE substr(k,1,length(?1))=?1",
+          -1, &statement, NULL);
+      if (result == SQLITE_OK)
+        result = sqlite3_bind_text(statement, 1, source, -1, SQLITE_STATIC);
+      if (result == SQLITE_OK)
+        result =
+            sqlite3_bind_text(statement, 2, destination, -1, SQLITE_STATIC);
+      if (result == SQLITE_OK)
+        result = sqlite3_step(statement);
+      ret = ny_state_error(result);
+    }
+  sqlite3_finalize(statement);
+  statement = NULL;
+  if (ret == 0)
+    ret = ny_state_error(sqlite3_exec(database, "COMMIT", NULL, NULL, NULL));
+  if (ret < 0)
+    sqlite3_exec(database, "ROLLBACK", NULL, NULL, NULL);
+out:
+  sqlite3_finalize(statement);
+  sqlite3_close(database);
+  nxmutex_unlock(&g_state_lock);
+  return ret;
+}
+
 static int ny_state_update(sqlite3 *database,
                            const struct ny_state_update_s *updates,
                            size_t count)

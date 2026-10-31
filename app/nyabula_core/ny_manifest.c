@@ -60,6 +60,22 @@ static const struct ny_permission_name_s g_permission_names[] = {
   { "network.request", NY_PERMISSION_NETWORK_REQUEST },
   { "ui.notify", NY_PERMISSION_UI_NOTIFY },
   { "ai.invoke", NY_PERMISSION_AI_INVOKE },
+  { "ui.page", NY_PERMISSION_UI_PAGE },
+  { "ui.html", NY_PERMISSION_UI_HTML },
+  { "bluetooth.read", NY_PERMISSION_BLUETOOTH_READ },
+  { "bluetooth.connect", NY_PERMISSION_BLUETOOTH_CONNECT },
+  { "bluetooth.call", NY_PERMISSION_BLUETOOTH_CALL },
+  { "audio.read", NY_PERMISSION_AUDIO_READ },
+  { "audio.control", NY_PERMISSION_AUDIO_CONTROL },
+  { "audio.play", NY_PERMISSION_AUDIO_PLAY },
+  { "audio.capture", NY_PERMISSION_AUDIO_CAPTURE },
+  { "usb.access", NY_PERMISSION_USB_ACCESS },
+  { "camera.capture", NY_PERMISSION_CAMERA_CAPTURE },
+  { "weather.read", NY_PERMISSION_WEATHER_READ },
+  { "device.read", NY_PERMISSION_DEVICE_READ },
+  { "nas.read", NY_PERMISSION_NAS_READ },
+  { "nas.write", NY_PERMISSION_NAS_WRITE },
+  { "nas.manage", NY_PERMISSION_NAS_MANAGE },
 };
 
 /****************************************************************************
@@ -76,6 +92,8 @@ static int ny_manifest_parse_permissions(const cJSON *root,
                                          uint64_t *permissions);
 static int ny_manifest_parse_limits(const cJSON *root,
                                     struct ny_plugin_config_s *config);
+static int ny_manifest_parse_icon(const cJSON *root,
+                                  struct ny_plugin_config_s *config);
 
 /****************************************************************************
  * Private Functions
@@ -341,6 +359,117 @@ static int ny_manifest_parse_limits(const cJSON *root,
 }
 
 /****************************************************************************
+ * Name: ny_manifest_parse_icon
+ ****************************************************************************/
+
+static int ny_manifest_parse_icon(const cJSON *root,
+                                  struct ny_plugin_config_s *config)
+{
+  const cJSON *icon = cJSON_GetObjectItemCaseSensitive(root, "icon");
+  const char *part;
+  const char *end;
+  size_t length;
+  unsigned long codepoint;
+  char *tail;
+
+  strlcpy(config->icon, "extension", sizeof(config->icon));
+  if (icon == NULL)
+    {
+      return 0;
+    }
+
+  if (cJSON_IsString(icon))
+    {
+      if (icon->valuestring == NULL || icon->valuestring[0] == '\0' ||
+          strlen(icon->valuestring) > 64)
+        {
+          return -EINVAL;
+        }
+
+      for (part = icon->valuestring; *part != '\0'; part++)
+        {
+          if (!isalnum((unsigned char)*part) && *part != '_' && *part != '-')
+            {
+              return -EINVAL;
+            }
+        }
+
+      strlcpy(config->icon, icon->valuestring, sizeof(config->icon));
+      return 0;
+    }
+
+  if (!cJSON_IsObject(icon) || ny_manifest_member_count(icon, "type") != 1 ||
+      ny_manifest_member_count(icon, "path") != 1 ||
+      ny_manifest_member_count(icon, "codepoint") > 1 ||
+      ny_manifest_copy_string(icon, "type", config->icon_type,
+                              sizeof(config->icon_type)) < 0 ||
+      ny_manifest_copy_string(icon, "path", config->icon,
+                              sizeof(config->icon)) < 0 ||
+      (strcmp(config->icon_type, "image") != 0 &&
+       strcmp(config->icon_type, "iconfont") != 0) ||
+      strncmp(config->icon, "assets/", 7) != 0)
+    {
+      return -EINVAL;
+    }
+
+  for (part = config->icon; *part != '\0'; part = end + 1)
+    {
+      end = strchr(part, '/');
+      length = end != NULL ? (size_t)(end - part) : strlen(part);
+      if (length == 0 || (length == 1 && part[0] == '.') ||
+          (length == 2 && part[0] == '.' && part[1] == '.'))
+        {
+          return -EINVAL;
+        }
+
+      if (end == NULL)
+        {
+          break;
+        }
+    }
+
+  for (part = config->icon; *part != '\0'; part++)
+    {
+      if ((unsigned char)*part < 32 || *part == '\\' || *part == ':')
+        {
+          return -EINVAL;
+        }
+    }
+
+  if (part[-1] == '/')
+    {
+      return -EINVAL;
+    }
+
+  if (strcmp(config->icon_type, "iconfont") == 0)
+    {
+      if (ny_manifest_copy_string(icon, "codepoint", config->icon_codepoint,
+                                  sizeof(config->icon_codepoint)) < 0 ||
+          config->icon_codepoint[0] == '\0')
+        {
+          return -EINVAL;
+        }
+
+      for (part = config->icon_codepoint; *part != '\0'; part++)
+        {
+          if (!isxdigit((unsigned char)*part))
+            {
+              return -EINVAL;
+            }
+        }
+
+      codepoint = strtoul(config->icon_codepoint, &tail, 16);
+      if (*tail != '\0' || codepoint < 32 || codepoint > 0x10ffff ||
+          (codepoint >= 0xd800 && codepoint <= 0xdfff))
+        {
+          return -EINVAL;
+        }
+    }
+
+  return 0;
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -411,6 +540,8 @@ int ny_manifest_load(const char *package_path,
       ny_manifest_member_count(root, "entry") != 1 ||
       ny_manifest_member_count(root, "runtime") != 1 ||
       ny_manifest_member_count(root, "apiVersion") != 1 ||
+      ny_manifest_member_count(root, "name") > 1 ||
+      ny_manifest_member_count(root, "icon") > 1 ||
       ny_manifest_member_count(root, "background") > 1 ||
       ny_manifest_member_count(root, "permissions") > 1 ||
       ny_manifest_member_count(root, "limits") > 1)
@@ -423,6 +554,24 @@ int ny_manifest_load(const char *package_path,
   if (ret < 0 || !ny_manifest_valid_id(config->id))
     {
       ret = -EINVAL;
+      goto out;
+    }
+
+  strlcpy(config->name, config->id, sizeof(config->name));
+  if (cJSON_GetObjectItemCaseSensitive(root, "name") != NULL)
+    {
+      ret = ny_manifest_copy_string(root, "name", config->name,
+                                    sizeof(config->name));
+      if (ret < 0 || config->name[0] == '\0')
+        {
+          ret = -EINVAL;
+          goto out;
+        }
+    }
+
+  ret = ny_manifest_parse_icon(root, config);
+  if (ret < 0)
+    {
       goto out;
     }
 

@@ -1,0 +1,57 @@
+--- a/src/llm/llm_proxy.c
++++ b/src/llm/llm_proxy.c
+@@ -844,6 +844,7 @@
+         cJSON_AddItemToObject(body, "tools", tools_arr);
+     }
+ 
++    int offered_tools = cJSON_GetArraySize(cJSON_GetObjectItem(body, "tools"));
+     char* post_data = cJSON_PrintUnformatted(body);
+ 
+     cJSON_Delete(body);
+@@ -852,8 +853,8 @@
+     }
+ 
+     syslog(LOG_INFO,
+-        "[%s] OpenAI API with tools (model: %s, %d bytes)\n",
+-        TAG, model, (int)strlen(post_data));
++        "[%s] OpenAI API with tools (model: %s, tools: %d, %d bytes)\n",
++        TAG, model, offered_tools, (int)strlen(post_data));
+ 
+     resp_buf_t rb = { 0 };
+     int status = 0;
+@@ -916,7 +917,13 @@
+     resp->tool_use = (finish && cJSON_IsString(finish)
+         && strcmp(finish->valuestring, "tool_calls") == 0);
+ 
++    bool finish_tools = resp->tool_use;
++    bool finish_stop = finish && cJSON_IsString(finish)
++        && strcmp(finish->valuestring, "stop") == 0;
+     cJSON* message = cJSON_GetObjectItem(choice, "message");
++    cJSON* wire_tools = cJSON_GetObjectItem(message, "tool_calls");
++    int wire_count = !wire_tools || cJSON_IsNull(wire_tools) ? 0
++        : cJSON_IsArray(wire_tools) ? cJSON_GetArraySize(wire_tools) : -1;
+ 
+     if (message) {
+         cJSON* text_content = cJSON_GetObjectItem(message, "content");
+@@ -1007,12 +1014,21 @@
+             resp->total_tokens = (int)tt->valuedouble;
+     }
+ 
++    /* Count protocol fields only. Never log prompts, arguments, results,
++     * reasoning text, credentials or the raw response body here.
++     */
++    int structured_count = resp->call_count;
++
+     /* XML fallback parsers for non-standard models */
+     parse_xml_tool_calls(resp);
+     parse_ns_xml_tool_calls(resp);
+ 
+     cJSON_Delete(root);
+ 
++    syslog(LOG_INFO,
++        "[%s] Tool trace: offered=%d wire=%d structured=%d total=%d "
++        "finish_tools=%d finish_stop=%d\n", TAG, offered_tools, wire_count,
++        structured_count, resp->call_count, finish_tools, finish_stop);
+     syslog(LOG_INFO,
+         "[%s] Response: %d bytes text, %d tool calls, finish=%s\n",
+         TAG, (int)resp->text_len, resp->call_count,

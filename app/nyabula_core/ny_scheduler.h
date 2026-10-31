@@ -22,6 +22,8 @@
 #ifndef __PACKAGES_DEMOS_CONTEST2026_062_NYABULA_CORE_NY_SCHEDULER_H
 #define __PACKAGES_DEMOS_CONTEST2026_062_NYABULA_CORE_NY_SCHEDULER_H
 
+#include "ny_manifest.h"
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -29,10 +31,27 @@
  * Public Function Prototypes
  ****************************************************************************/
 
+struct ny_scheduler_status_s
+{
+  char state[16];
+  char version[NY_PLUGIN_VERSION_SIZE];
+  uint32_t generation;
+  uint64_t permissions;
+  size_t queued;
+  bool dispatching;
+  int last_error;
+  char last_error_text[256];
+};
+
+int ny_scheduler_status(const char *id, struct ny_scheduler_status_s *status);
 int ny_scheduler_start(const char *id, const char *path);
 int ny_scheduler_start_package(const char *package_path);
 int ny_scheduler_start_installed(const char *package_path,
                                  const char *storage_root);
+int ny_scheduler_start_installed_report(const char *package_path,
+                                        const char *storage_root,
+                                        uint64_t permission_mask, char *error,
+                                        size_t capacity);
 int ny_scheduler_dispatch(const char *id, const char *event);
 /* Task-context provider entry: copies bytes; never accepts JS values. */
 

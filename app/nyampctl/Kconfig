@@ -3,7 +3,11 @@ config EXAMPLES_NYAMPCTL
 	default n
 	depends on RPMSG_CHAR
 	---help---
-		Build the nyampctl health diagnostic for the Linux AMP compute domain.
+		Build the nyampctl diagnostic for the Linux AMP compute domain:
+		health, info, llm, blob and shmem commands.  It builds alone
+		for the minimal AMP profile; when NYABULA_CORE_COMPUTE is also
+		enabled it goes through that service, which then owns the
+		endpoint.
 
 if EXAMPLES_NYAMPCTL
 
@@ -17,6 +21,7 @@ config EXAMPLES_NYAMPCTL_PRIORITY
 
 config EXAMPLES_NYAMPCTL_STACKSIZE
 	int "Task stack size"
+	default 8192 if NYABULA_CORE_VOICE
 	default 4096
 
 endif

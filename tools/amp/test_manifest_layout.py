@@ -54,7 +54,10 @@ class ManifestLayoutTest(unittest.TestCase):
             "function(nuttx_add_application)\n"
             '  cmake_parse_arguments(APP "" "MODULE;NAME;STACKSIZE;PRIORITY" '
             '"SRCS;INCLUDE_DIRECTORIES" ${ARGN})\n'
-            "  list(GET APP_SRCS 1 protocol_source)\n"
+            # The codec is found by name, not by position: the application's
+            # own sources come and go around it.
+            '  list(FILTER APP_SRCS INCLUDE REGEX "nyamp_protocol[.]c$")\n'
+            "  list(GET APP_SRCS 0 protocol_source)\n"
             '  add_library(protocol STATIC "${protocol_source}")\n'
             "  target_include_directories(protocol PRIVATE ${APP_INCLUDE_DIRECTORIES})\n"
             "endfunction()\n"

@@ -1,0 +1,84 @@
+--- a/Kconfig
++++ b/Kconfig
+@@ -300,6 +300,14 @@
+ 		Use on IPv4-provisioned devices to avoid unreachable IPv6 delays.
+ 		Proxy connections and TLS hostname verification are unchanged.
+ 
++config AI_AGENT_NONSTREAM_RESPONSE_SIZE
++	int "Complete non-streaming response buffer size"
++	default 8192
++	range 8192 524288
++	---help---
++		Bound the entire JSON response, including reasoning and generated
++		tool arguments. Oversize or incomplete HTTP bodies fail explicitly.
++
+ config AI_AGENT_TLS_CONN_POOL_SIZE
+ 	int "TLS connection pool size"
+ 	default 2
+--- a/include/agent_config.h
++++ b/include/agent_config.h
+@@ -140,6 +140,11 @@
+ #define AGENT_LLM_MAX_RETRIES 3
+ #define AGENT_LLM_RETRY_BASE_SEC 2
+ #define AGENT_LLM_STREAM_BUF_SIZE (8 * 1024)
++#ifdef CONFIG_AI_AGENT_NONSTREAM_RESPONSE_SIZE
++#define AGENT_LLM_NONSTREAM_RESPONSE_SIZE CONFIG_AI_AGENT_NONSTREAM_RESPONSE_SIZE
++#else
++#define AGENT_LLM_NONSTREAM_RESPONSE_SIZE (8 * 1024)
++#endif
+ #define AGENT_LLM_MAX_RESP_SIZE \
+     (512 * 1024) /* hard cap for growable resp buffer */
+ 
+--- a/src/llm/llm_proxy.c
++++ b/src/llm/llm_proxy.c
+@@ -380,7 +380,7 @@
+      * TLS layer.  Previously we allocated a separate raw_buf and then
+      * copied into resp_buf — doubling peak memory usage.  Now the
+      * resp_buf IS the raw buffer, eliminating the copy. */
+-    size_t raw_cap = AGENT_LLM_STREAM_BUF_SIZE;
++    size_t raw_cap = AGENT_LLM_NONSTREAM_RESPONSE_SIZE;
+     if (resp_buf_init(rb, raw_cap) != OK)
+         return ERROR;
+ 
+@@ -400,6 +400,7 @@
+     }
+ 
+     vela_header_t hdrs[] = { { "Authorization", auth_header },
++        { "Content-Type", "application/json" },
+         { provider[0] ? "X-Model-Provider-Id" : NULL,
+             provider[0] ? provider : NULL },
+         { NULL, NULL } };
+@@ -410,21 +411,27 @@
+     use_tls = strcmp(llm_host, "127.0.0.1") != 0;
+ #endif
+ 
++    struct vela_http_response_s metadata;
+     if (use_tls) {
+-        status = vela_https_post_json(llm_host, llm_port, llm_path, hdrs, post_data,
+-            rb->data, raw_cap);
++        status = vela_https_request_once(llm_host, llm_port, llm_path,
++            hdrs, post_data, rb->data, raw_cap, &metadata, NULL, NULL);
+     } else {
+-        status = vela_http_post_json(llm_host, llm_port, llm_path, hdrs, post_data,
+-            rb->data, raw_cap);
++#ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
++        status = vela_http_loopback_post_once(llm_port, llm_path, hdrs,
++            post_data, rb->data, raw_cap, &metadata, NULL, NULL);
++#else
++        status = VELA_TLS_ERR_CONNECT;
++#endif
+     }
+ 
+     if (status < 0) {
++        syslog(LOG_ERR, "[%s] Complete response read failed: %d (limit %zu)\n",
++            TAG, status, raw_cap);
+         resp_buf_free(rb);
+         return ERROR;
+     }
+ 
+-    /* Update length — TLS layer NUL-terminated the buffer */
+-    rb->len = strlen(rb->data);
++    rb->len = metadata.body_length;
+ 
+     *out_status = status;
+     return OK;

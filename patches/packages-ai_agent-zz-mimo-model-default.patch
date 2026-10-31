@@ -1,0 +1,11 @@
+--- a/include/agent_config.h
++++ b/include/agent_config.h
+@@ -156,7 +156,7 @@
+ /* ── MiMo (Xiaomi MiMo platform) ───────────────────────────── */
+ #define AGENT_LLM_MIMO_HOST "api.xiaomimimo.com"
+ #define AGENT_LLM_MIMO_PATH "/v1/chat/completions"
+-#define AGENT_LLM_MIMO_MODEL "mimo-v2-flash"
++#define AGENT_LLM_MIMO_MODEL "mimo-v2.6-flash"
+ 
+ /* ── Message Bus ────────────────────────────────────────────── */
+ #define AGENT_BUS_QUEUE_LEN 16

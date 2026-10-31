@@ -26,6 +26,7 @@
  * Included Files
  ****************************************************************************/
 
+#include <stdbool.h>
 #include <stddef.h>
 
 /****************************************************************************
@@ -35,10 +36,19 @@
 int ny_package_install(const char *source);
 int ny_package_activate(const char *id, const char *version);
 int ny_package_rollback(const char *id);
+int ny_package_deactivate(const char *id);
 int ny_package_resolve(const char *id, char *path, size_t size);
 int ny_package_resolve_version(const char *id, const char *version, char *path,
                                size_t size);
 int ny_package_storage_root(const char *id, char *path, size_t size);
+/* The visitor borrows strings while the package store lock is held.
+ * It must not call another ny_package_* function.
+ */
+
+typedef int (*ny_package_visitor_t)(const char *id, const char *version,
+                                    const char *path, bool current,
+                                    bool last_good, void *opaque);
+int ny_package_visit(ny_package_visitor_t visitor, void *opaque);
 int ny_package_list(void);
 
 #endif /* __PACKAGES_DEMOS_CONTEST2026_062_NYABULA_CORE_NY_PACKAGE_H */

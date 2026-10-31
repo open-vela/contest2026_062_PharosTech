@@ -8,4 +8,10 @@
 # mode it is reached from the board's CMakeLists (see
 # boards/rk3576/kickpi-k7/CMakeLists.txt) and recurses into the driver layer.
 
-nuttx_add_subdirectory()
+# A preceding Make build may leave a source-tree platform link which the
+# NuttX driver glob also visits. Register these sources only once.
+get_property(platform_added GLOBAL PROPERTY NYABULA_PLATFORM_DRIVERS_ADDED)
+if(NOT platform_added)
+  set_property(GLOBAL PROPERTY NYABULA_PLATFORM_DRIVERS_ADDED TRUE)
+  nuttx_add_subdirectory()
+endif()

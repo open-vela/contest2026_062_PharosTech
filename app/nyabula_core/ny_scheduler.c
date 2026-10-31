@@ -40,6 +40,7 @@
 #include "ny_permission.h"
 #include "ny_runtime.h"
 #include "ny_scheduler.h"
+#include "ny_ui.h"
 #include "ny_wasm.h"
 
 /****************************************************************************
@@ -73,6 +74,7 @@ struct ny_scheduler_slot_s
   bool stopping;
   bool task_stopped;
   bool accept_completions;
+  bool dispatching;
   uint32_t generation;
   size_t completion_head;
   size_t completion_count;
@@ -83,6 +85,7 @@ struct ny_scheduler_slot_s
 #endif
   int start_result;
   int exit_result;
+  char last_error_text[256];
   enum ny_plugin_state_e state;
   struct ny_plugin_config_s config;
   char id[NY_PLUGIN_ID_SIZE];
@@ -129,7 +132,8 @@ static int ny_scheduler_wasm_pump(void *opaque, uint64_t deadline_ns);
 static void *ny_scheduler_pthread(void *argument);
 #endif
 static void ny_scheduler_clear_locked(struct ny_scheduler_slot_s *slot);
-static int ny_scheduler_start_config(const struct ny_plugin_config_s *config);
+static int ny_scheduler_start_config(const struct ny_plugin_config_s *config,
+                                     char *error, size_t capacity);
 
 /****************************************************************************
  * Private Functions
@@ -409,6 +413,8 @@ static int ny_scheduler_worker(int argc, char *argv[])
 
   nxmutex_lock(&g_scheduler_lock);
   slot->start_result = ret;
+  memcpy(slot->last_error_text, slot->plugin.last_error_text,
+         sizeof(slot->last_error_text));
   slot->state = slot->config.runtime == NY_PLUGIN_RUNTIME_WAMR
                     ? ret < 0 ? NY_PLUGIN_FAILED : NY_PLUGIN_RUNNING
                     : slot->plugin.state;
@@ -464,12 +470,17 @@ static int ny_scheduler_worker(int argc, char *argv[])
       event = slot->events[slot->head];
       slot->head = (slot->head + 1) % CONFIG_NYABULA_CORE_EVENT_DEPTH;
       slot->count--;
+      slot->dispatching = true;
       nxmutex_unlock(&g_scheduler_lock);
 
       ret = slot->config.runtime == NY_PLUGIN_RUNTIME_WAMR
                 ? ny_wasm_dispatch(&slot->wasm, event.payload)
                 : ny_plugin_dispatch(&slot->plugin, event.payload);
       nxmutex_lock(&g_scheduler_lock);
+      slot->dispatching = false;
+      slot->exit_result = ret;
+      memcpy(slot->last_error_text, slot->plugin.last_error_text,
+             sizeof(slot->last_error_text));
       slot->state = slot->config.runtime == NY_PLUGIN_RUNTIME_WAMR
                         ? ret < 0 ? NY_PLUGIN_FAILED : NY_PLUGIN_RUNNING
                         : slot->plugin.state;
@@ -484,6 +495,8 @@ static int ny_scheduler_worker(int argc, char *argv[])
     }
 
   slot->exit_result = ret;
+  memcpy(slot->last_error_text, slot->plugin.last_error_text,
+         sizeof(slot->last_error_text));
   slot->state = ret < 0 ? NY_PLUGIN_FAILED : NY_PLUGIN_STOPPED;
   nxmutex_unlock(&g_scheduler_lock);
 
@@ -550,7 +563,7 @@ int ny_scheduler_start(const char *id, const char *path)
 
   ny_manifest_default_config(&config, path);
   strlcpy(config.id, id, sizeof(config.id));
-  return ny_scheduler_start_config(&config);
+  return ny_scheduler_start_config(&config, NULL, 0);
 }
 
 int ny_scheduler_start_package(const char *package_path)
@@ -559,11 +572,24 @@ int ny_scheduler_start_package(const char *package_path)
   int ret;
 
   ret = ny_manifest_load(package_path, &config);
-  return ret < 0 ? ret : ny_scheduler_start_config(&config);
+  return ret < 0 ? ret : ny_scheduler_start_config(&config, NULL, 0);
 }
 
 int ny_scheduler_start_installed(const char *package_path,
                                  const char *storage_root)
+{
+  return ny_scheduler_start_installed_report(package_path, storage_root,
+                                             UINT64_MAX, NULL, 0);
+}
+
+/****************************************************************************
+ * Name: ny_scheduler_start_installed_report
+ ****************************************************************************/
+
+int ny_scheduler_start_installed_report(const char *package_path,
+                                        const char *storage_root,
+                                        uint64_t permission_mask, char *error,
+                                        size_t capacity)
 {
   struct ny_plugin_config_s config;
   int ret;
@@ -578,7 +604,8 @@ int ny_scheduler_start_installed(const char *package_path,
   if (ret >= 0)
     {
       strlcpy(config.storage_root, storage_root, sizeof(config.storage_root));
-      ret = ny_scheduler_start_config(&config);
+      config.permissions &= permission_mask;
+      ret = ny_scheduler_start_config(&config, error, capacity);
     }
 
   return ret;
@@ -588,6 +615,7 @@ int ny_scheduler_refresh_permissions(const char *id)
 {
   struct ny_scheduler_slot_s *slot;
   struct ny_plugin_config_s config;
+  uint64_t previous_permissions;
   pid_t pid;
   int ret;
 
@@ -605,6 +633,7 @@ int ny_scheduler_refresh_permissions(const char *id)
     }
 
   config = slot->config;
+  previous_permissions = config.permissions;
   pid = slot->pid;
   nxmutex_unlock(&g_scheduler_lock);
 
@@ -633,6 +662,9 @@ int ny_scheduler_refresh_permissions(const char *id)
     }
 
   nxmutex_unlock(&g_scheduler_lock);
+  if ((previous_permissions & ~config.permissions &
+       (NY_PERMISSION_UI_PAGE | NY_PERMISSION_UI_HTML)) != 0)
+    ny_ui_clear(id, 0);
   return 0;
 }
 
@@ -640,7 +672,8 @@ int ny_scheduler_refresh_permissions(const char *id)
  * Private Functions
  ****************************************************************************/
 
-static int ny_scheduler_start_config(const struct ny_plugin_config_s *config)
+static int ny_scheduler_start_config(const struct ny_plugin_config_s *config,
+                                     char *error, size_t capacity)
 {
   struct ny_scheduler_slot_s *slot;
 #ifdef CONFIG_BUILD_KERNEL
@@ -781,6 +814,8 @@ static int ny_scheduler_start_config(const struct ny_plugin_config_s *config)
 
   nxmutex_lock(&g_scheduler_lock);
   ret = slot->start_result;
+  if (error && capacity)
+    snprintf(error, capacity, "%s", slot->last_error_text);
   sem_post(&slot->start_consumed);
   if (ret < 0)
     {
@@ -1049,4 +1084,38 @@ void ny_scheduler_list(void)
     }
 
   nxmutex_unlock(&g_scheduler_lock);
+}
+
+/****************************************************************************
+ * Name: ny_scheduler_status
+ ****************************************************************************/
+
+int ny_scheduler_status(const char *id, struct ny_scheduler_status_s *status)
+{
+  struct ny_scheduler_slot_s *slot;
+  if (id == NULL || status == NULL)
+    {
+      return -EINVAL;
+    }
+
+  memset(status, 0, sizeof(*status));
+  strlcpy(status->state, "stopped", sizeof(status->state));
+  nxmutex_lock(&g_scheduler_lock);
+  slot = ny_scheduler_find_locked(id);
+  if (slot != NULL)
+    {
+      strlcpy(status->state, ny_scheduler_state_name(slot->state),
+              sizeof(status->state));
+      strlcpy(status->version, slot->config.version, sizeof(status->version));
+      status->generation = slot->generation;
+      status->permissions = slot->config.permissions;
+      status->queued = slot->count;
+      status->dispatching = slot->dispatching;
+      status->last_error = slot->exit_result;
+      snprintf(status->last_error_text, sizeof(status->last_error_text), "%s",
+               slot->last_error_text);
+    }
+
+  nxmutex_unlock(&g_scheduler_lock);
+  return slot != NULL ? 0 : -ENOENT;
 }

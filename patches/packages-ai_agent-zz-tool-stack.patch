@@ -1,0 +1,42 @@
+--- a/Kconfig
++++ b/Kconfig
+@@ -49,6 +49,14 @@
+ config EXAMPLES_AI_AGENT_VELA_STACKSIZE
+ 	int "Agent main stack size"
+ 	default 32768
++
++config AI_AGENT_TOOL_STACKSIZE
++	int "Parallel tool worker stack size"
++	default 16384
++	range 8192 262144
++	---help---
++		Stack for each parallel tool callback. Providers that verify signed
++		packages or use database-backed services may need a larger stack.
+ 
+ config EXAMPLES_AI_AGENT_VELA_DATA_DIR
+ 	string "Persistent data directory"
+--- a/include/agent_config.h
++++ b/include/agent_config.h
+@@ -161,6 +161,11 @@
+ /* ── Message Bus ────────────────────────────────────────────── */
+ #define AGENT_BUS_QUEUE_LEN 16
+ #define AGENT_BUS_PUSH_TIMEOUT_MS 5000
++#ifdef CONFIG_AI_AGENT_TOOL_STACKSIZE
++#define AGENT_TOOL_STACKSIZE CONFIG_AI_AGENT_TOOL_STACKSIZE
++#else
++#define AGENT_TOOL_STACKSIZE (16 * 1024)
++#endif
+ #define AGENT_OUTBOUND_STACK (16 * 1024)
+ #define AGENT_OUTBOUND_PRIO 50
+ #define AGENT_OUTBOUND_CORE 0
+--- a/src/core/agent_loop.c
++++ b/src/core/agent_loop.c
+@@ -257,7 +257,7 @@
+ 
+         pthread_attr_t attr;
+         pthread_attr_init(&attr);
+-        pthread_attr_setstacksize(&attr, 16 * 1024);
++        pthread_attr_setstacksize(&attr, AGENT_TOOL_STACKSIZE);
+         if (pthread_create(&threads[i], &attr,
+                 tool_exec_thread, &tasks[i])
+             != 0) {

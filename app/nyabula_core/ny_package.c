@@ -61,6 +61,9 @@ static mutex_t g_package_lock = NXMUTEX_INITIALIZER;
  * Private Function Prototypes
  ****************************************************************************/
 
+static int ny_package_print(const char *id, const char *version,
+                            const char *path, bool current, bool last_good,
+                            void *opaque);
 static bool ny_package_valid_version(const char *version);
 static bool ny_package_valid_id(const char *id);
 static bool ny_package_mutable_name(const char *name);
@@ -808,10 +811,37 @@ int ny_package_rollback(const char *id)
   return ret;
 }
 
+/****************************************************************************
+ * Name: ny_package_deactivate
+ ****************************************************************************/
+
+int ny_package_deactivate(const char *id)
+{
+  if (!ny_package_valid_id(id))
+    return -EINVAL;
+  char root[PATH_MAX], path[PATH_MAX];
+  nxmutex_lock(&g_package_lock);
+  int ret = ny_package_join(root, sizeof(root),
+                            CONFIG_NYABULA_CORE_PACKAGE_STORE, id);
+  if (ret == 0)
+    ret = ny_package_join(path, sizeof(path), root, "current");
+  if (ret == 0)
+    {
+#ifdef CONFIG_NYABULA_CORE_STATE_SQLITE
+      ret = ny_state_delete(path);
+#endif
+      if (ret == 0 && unlink(path) < 0 && errno != ENOENT)
+        ret = -errno;
+    }
+  nxmutex_unlock(&g_package_lock);
+  return ret;
+}
+
 int ny_package_resolve(const char *id, char *path, size_t size)
 {
   char plugin_root[PATH_MAX];
   char version[NY_PLUGIN_VERSION_SIZE + 1];
+  struct stat st;
   int ret;
 
   if (path == NULL || size == 0 || !ny_package_valid_id(id))
@@ -822,6 +852,18 @@ int ny_package_resolve(const char *id, char *path, size_t size)
   nxmutex_lock(&g_package_lock);
   ret = ny_package_join(plugin_root, sizeof(plugin_root),
                         CONFIG_NYABULA_CORE_PACKAGE_STORE, id);
+  if (ret >= 0)
+    {
+      /* FatFs open() reports ENOTDIR for a missing intermediate directory.
+       * Check the package itself so a first install remains ENOENT, while
+       * a real non-directory object still fails without being replaced.
+       */
+
+      ret = lstat(plugin_root, &st) < 0 ? -errno
+            : !S_ISDIR(st.st_mode)      ? -ENOTDIR
+                                        : 0;
+    }
+
   if (ret >= 0)
     {
       ret = ny_package_read_marker(plugin_root, "current", version,
@@ -883,7 +925,7 @@ int ny_package_storage_root(const char *id, char *path, size_t size)
   return ret;
 }
 
-int ny_package_list(void)
+int ny_package_visit(ny_package_visitor_t visitor, void *opaque)
 {
   struct dirent *plugin_entry;
   DIR *store;
@@ -975,10 +1017,14 @@ int ny_package_list(void)
               break;
             }
 
-          printf("%s %s current=%s last-good=%s\n", plugin_entry->d_name,
-                 version_entry->d_name,
-                 strcmp(version_entry->d_name, current) == 0 ? "yes" : "no",
-                 strcmp(version_entry->d_name, last_good) == 0 ? "yes" : "no");
+          ret = visitor(plugin_entry->d_name, version_entry->d_name,
+                        version_path,
+                        strcmp(version_entry->d_name, current) == 0,
+                        strcmp(version_entry->d_name, last_good) == 0, opaque);
+          if (ret < 0)
+            {
+              break;
+            }
         }
 
       closedir(directory);
@@ -994,3 +1040,20 @@ out:
   nxmutex_unlock(&g_package_lock);
   return ret;
 }
+
+/****************************************************************************
+ * Name: ny_package_print
+ ****************************************************************************/
+
+static int ny_package_print(const char *id, const char *version,
+                            const char *path, bool current, bool last_good,
+                            void *opaque)
+{
+  (void)path;
+  (void)opaque;
+  printf("%s %s current=%s last-good=%s\n", id, version,
+         current ? "yes" : "no", last_good ? "yes" : "no");
+  return 0;
+}
+
+int ny_package_list(void) { return ny_package_visit(ny_package_print, NULL); }

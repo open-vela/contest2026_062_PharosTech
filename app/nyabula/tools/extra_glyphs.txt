@@ -1,0 +1,10 @@
+Characters the Eye Engine must be able to draw although they do not occur
+in its own sources.  generate_fonts.py is given this file with --html and
+adds every character in it to the glyph subsets.  Keep each entry next to a
+note of where the text comes from.
+
+app/nyabula_core/ny_product_network.c (captions above the pairing codes):
+1 扫码连接热点
+2 扫码开始设置
+扫码打开控制面板
+网络已连接

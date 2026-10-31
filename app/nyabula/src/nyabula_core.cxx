@@ -308,6 +308,7 @@ static void nyabula_core_apply_winners(struct nyabula_core_s *core,
                                         transition_ms);
       core->expression_winner = expression;
       core->snapshot.expression = value;
+      core->snapshot.expression_since_ms = now;
       core->snapshot.revision++;
     }
 
@@ -345,6 +346,7 @@ static void nyabula_core_apply_winners(struct nyabula_core_s *core,
         }
 
       core->scene_winner = scene;
+      core->snapshot.scene_since_ms = now;
       core->snapshot.revision++;
     }
 
@@ -428,9 +430,21 @@ static int nyabula_core_process(struct nyabula_core_s *core,
         }
 
       case NYABULA_CORE_ACTION_GAZE:
-        return nyabula_eye_engine_set_gaze(
-            core->eye_engine, command->data.gaze.x, command->data.gaze.y,
-            command->data.gaze.hold_ms);
+        {
+          int ret = nyabula_eye_engine_set_gaze(
+              core->eye_engine, command->data.gaze.x, command->data.gaze.y,
+              command->data.gaze.hold_ms);
+          if (ret == 0)
+            {
+              core->snapshot.gaze_x = command->data.gaze.x;
+              core->snapshot.gaze_y = command->data.gaze.y;
+              core->snapshot.gaze_until_ms = now + command->data.gaze.hold_ms;
+              core->snapshot.gaze_active = command->data.gaze.hold_ms > 0;
+              core->snapshot.revision++;
+            }
+
+          return ret;
+        }
 
       case NYABULA_CORE_ACTION_AUTO_BLINK:
         nyabula_eye_engine_set_auto_blink(core->eye_engine,
@@ -579,6 +593,18 @@ nyabula_core_create(struct nyabula_eye_engine_s *eye_engine)
   core->snapshot.ambient_light = 1.0f;
   core->snapshot.iris_rgb[NYABULA_EYE_LEFT] = 0x56ffb2;
   core->snapshot.iris_rgb[NYABULA_EYE_RIGHT] = 0x56ffb2;
+
+  /* The snapshot is what every client is told the eyes look like, so make
+   * it true.  The engine has defaults of its own -- a dimmer light and a
+   * darker iris -- and until something sent an explicit command the panels
+   * showed those while the snapshot reported these: a pupil four times as
+   * wide on the device as in any preview of it.
+   */
+
+  nyabula_eye_engine_set_ambient_light(eye_engine,
+                                       core->snapshot.ambient_light);
+  nyabula_eye_engine_set_iris_color(eye_engine, NYABULA_EYE_MASK_BOTH,
+                                    core->snapshot.iris_rgb[NYABULA_EYE_LEFT]);
   return core;
 }
 
@@ -639,6 +665,11 @@ extern "C" void nyabula_core_tick(struct nyabula_core_s *core)
     }
   now = nyabula_core_now_ms();
   core->snapshot.uptime_ms = now;
+  if (core->snapshot.gaze_active && now >= core->snapshot.gaze_until_ms)
+    {
+      core->snapshot.gaze_active = false;
+      core->snapshot.revision++;
+    }
 
   while (core->queue_depth > 0)
     {
@@ -655,7 +686,18 @@ extern "C" void nyabula_core_tick(struct nyabula_core_s *core)
                                     : "eye engine rejected command";
         }
 
-      nyabula_core_set_result(core, command.request_id, status, error);
+      /* last_request_id is how a caller that gave its command an id learns
+       * what became of it.  A command without one has nobody waiting, and
+       * recording its success would only erase the answer somebody else is
+       * polling for: the light sensor sends such commands all day, and the
+       * agent's eyes.expression waits on exactly this field.  A failure is
+       * still recorded, there is no other place it would show.
+       */
+
+      if (command.request_id[0] != '\0' || status < 0)
+        {
+          nyabula_core_set_result(core, command.request_id, status, error);
+        }
     }
 
   core->snapshot.queue_depth = core->queue_depth;

@@ -1,0 +1,73 @@
+--- a/Kconfig
++++ b/Kconfig
+@@ -292,6 +292,14 @@
+ 		Each tool slot uses ~452 bytes BSS. Reduce on
+ 		memory-constrained boards.
+ 
++config AI_AGENT_IPV4_FIRST
++	bool "Prefer IPv4 for direct TLS connections"
++	default n
++	---help---
++		Try IPv4 addresses before the normal dual-stack connection path.
++		Use on IPv4-provisioned devices to avoid unreachable IPv6 delays.
++		Proxy connections and TLS hostname verification are unchanged.
++
+ config AI_AGENT_TLS_CONN_POOL_SIZE
+ 	int "TLS connection pool size"
+ 	default 2
+--- a/src/infra/vela_tls.c
++++ b/src/infra/vela_tls.c
+@@ -31,6 +31,7 @@
+ 
+ /* POSIX networking */
+ #include <netdb.h>
++#include <netinet/in.h>
+ #include <sys/socket.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+@@ -232,6 +233,35 @@
+     pthread_mutex_unlock(&s_pool_lock);
+ }
+ 
++static int vela_tls_net_connect(mbedtls_net_context *net,
++    const char *host, const char *port);
++
++static int vela_tls_net_connect(mbedtls_net_context *net,
++    const char *host, const char *port)
++{
++#ifdef CONFIG_AI_AGENT_IPV4_FIRST
++    struct addrinfo hints = { .ai_family = AF_INET,
++        .ai_socktype = SOCK_STREAM, .ai_protocol = IPPROTO_TCP };
++    struct addrinfo *addresses = NULL;
++    if (getaddrinfo(host, port, &hints, &addresses) == 0) {
++        for (struct addrinfo *address = addresses; address;
++             address = address->ai_next) {
++            int fd = socket(address->ai_family, address->ai_socktype,
++                address->ai_protocol);
++            if (fd < 0) continue;
++            if (connect(fd, address->ai_addr, address->ai_addrlen) == 0) {
++                net->fd = fd;
++                freeaddrinfo(addresses);
++                return 0;
++            }
++            close(fd);
++        }
++        freeaddrinfo(addresses);
++    }
++#endif
++    return mbedtls_net_connect(net, host, port, MBEDTLS_NET_PROTO_TCP);
++}
++
+ static int tls_ctx_connect(tls_ctx_t* ctx, const char* host, const char* port)
+ {
+     int ret;
+@@ -284,8 +314,7 @@
+         syslog(LOG_INFO, "[%s] Using proxy tunnel fd=%d for %s:%s\n",
+             TAG, tunnel_fd, host, port);
+     } else {
+-        if ((ret = mbedtls_net_connect(&ctx->net, host, port,
+-                 MBEDTLS_NET_PROTO_TCP))
++        if ((ret = vela_tls_net_connect(&ctx->net, host, port))
+             != 0) {
+             syslog(LOG_ERR, "[%s] net_connect %s:%s ret=0x%x\n",
+                 TAG, host, port, -ret);

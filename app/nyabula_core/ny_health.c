@@ -66,6 +66,7 @@ static int ny_health_path(const char *id, const char *version, char *path,
 static int ny_health_mkdir(const char *path);
 static int ny_health_mkdir_parents(const char *path);
 static int ny_health_ensure_store(const char *id);
+static bool ny_health_legacy_absent(const char *path);
 static int ny_health_read(const char *path, unsigned int *failures);
 static int ny_health_write(const char *path, unsigned int failures);
 static int ny_health_sync_parent(const char *path);
@@ -200,6 +201,39 @@ static int ny_health_ensure_store(const char *id)
   return 0;
 }
 
+/****************************************************************************
+ * Name: ny_health_legacy_absent
+ *
+ * FAT may report ENOTDIR for a missing ancestor. Distinguish that from an
+ * existing non-directory ancestor before treating a legacy record as absent.
+ ****************************************************************************/
+
+static bool ny_health_legacy_absent(const char *path)
+{
+  char copy[PATH_MAX];
+  char *cursor;
+  struct stat status;
+
+  if (path[0] != '/' || strlcpy(copy, path, sizeof(copy)) >= sizeof(copy))
+    return false;
+
+  cursor = copy + 1;
+  while (true)
+    {
+      char *separator = strchr(cursor, '/');
+      if (separator != NULL)
+        *separator = '\0';
+      if (lstat(copy, &status) < 0)
+        return errno == ENOENT;
+      if (separator == NULL)
+        return false;
+      if (!S_ISDIR(status.st_mode))
+        return false;
+      *separator = '/';
+      cursor = separator + 1;
+    }
+}
+
 static int ny_health_read(const char *path, unsigned int *failures)
 {
   char content[24];
@@ -227,13 +261,15 @@ static int ny_health_read(const char *path, unsigned int *failures)
   fd = open(path, O_RDONLY | O_NOFOLLOW);
   if (fd < 0)
     {
-      if (errno == ENOENT)
+      int error = errno;
+      if (error == ENOENT ||
+          (error == ENOTDIR && ny_health_legacy_absent(path)))
         {
           *failures = 0;
           return 0;
         }
 
-      return -errno;
+      return -error;
     }
 
   while (offset + 1 < sizeof(content))

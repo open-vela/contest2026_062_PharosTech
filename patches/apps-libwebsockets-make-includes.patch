@@ -1,0 +1,15 @@
+--- a/netutils/libwebsockets/Make.defs
++++ b/netutils/libwebsockets/Make.defs
+@@ -1,9 +1,11 @@
+ ifeq ($(CONFIG_NETUTILS_LIBWEBSOCKETS),y)
+ CONFIGURED_APPS += $(APPDIR)/netutils/libwebsockets
+ 
+-# Allows `<libwebsockets/<>.h>` import.
++# Export both the public API and its NuttX configuration header.
+ 
++CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/netutils/libwebsockets
+ CFLAGS +=  ${INCDIR_PREFIX}$(APPDIR)/netutils/libwebsockets/libwebsockets/include
++CXXFLAGS += ${INCDIR_PREFIX}$(APPDIR)/netutils/libwebsockets
+ CXXFLAGS +=  ${INCDIR_PREFIX}$(APPDIR)/netutils/libwebsockets/libwebsockets/include
+ 
+ endif

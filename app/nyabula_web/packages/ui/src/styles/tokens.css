@@ -1,0 +1,79 @@
+/* Material Design 3 style tokens generated from seed color #62DFAF.
+ * Dark theme is the default; light theme via [data-theme="light"]. */
+:root {
+  /* dark scheme (default) */
+  --md-primary: #62dfaf;
+  --md-on-primary: #003826;
+  --md-primary-container: #005139;
+  --md-on-primary-container: #7ffcca;
+  --md-secondary: #b3ccbe;
+  --md-on-secondary: #1f352b;
+  --md-secondary-container: #354b41;
+  --md-on-secondary-container: #cfe9da;
+  --md-tertiary: #a4cddf;
+  --md-on-tertiary: #063543;
+  --md-surface: #0f1512;
+  --md-surface-dim: #0b100d;
+  --md-surface-container: #1b211e;
+  --md-surface-container-high: #252b28;
+  --md-surface-container-highest: #303633;
+  --md-on-surface: #dee4df;
+  --md-on-surface-variant: #8f9a92;
+  --md-outline: #5a655e;
+  --md-outline-variant: #404b45;
+  --md-error: #ffb4ab;
+  --md-on-error: #690005;
+  --md-success: #62dfaf;
+  --md-warning: #ffd94d;
+  --md-scrim: rgba(0, 0, 0, 0.5);
+  --md-primary-rgb: 98, 223, 175;
+  --md-primary-deep: #006c4c;
+  --md-glass: rgba(20, 24, 28, 0.55);
+  --logo-bg: #202126;
+  --logo-shade: #404248;
+  --logo-ink: #f6f6f3;
+  --logo-nose: var(--md-primary);
+  --md-elev-1: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --md-elev-2: 0 2px 8px rgba(0, 0, 0, 0.45);
+  --radius-s: 8px;
+  --radius-m: 14px;
+  --radius-l: 22px;
+  --radius-full: 999px;
+  --font-title: 'Alimama ShuHeiTi', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+  --font-body: 'MiSans', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --md-primary: #006c4c;
+  --md-on-primary: #ffffff;
+  --md-primary-container: #7ffcca;
+  --md-on-primary-container: #002115;
+  --md-secondary: #4d6357;
+  --md-on-secondary: #ffffff;
+  --md-secondary-container: #cfe9da;
+  --md-on-secondary-container: #0a1f16;
+  --md-tertiary: #3d6472;
+  --md-on-tertiary: #ffffff;
+  --md-surface: #f5fbf5;
+  --md-surface-dim: #d6dcd6;
+  --md-surface-container: #eaefe9;
+  --md-surface-container-high: #e4eae4;
+  --md-surface-container-highest: #dee4de;
+  --md-on-surface: #171d19;
+  --md-on-surface-variant: #404b45;
+  --md-outline: #707a73;
+  --md-outline-variant: #bfc9c1;
+  --md-error: #ba1a1a;
+  --md-on-error: #ffffff;
+  --md-scrim: rgba(0, 0, 0, 0.32);
+  --md-primary-rgb: 0, 108, 76;
+  --md-primary-deep: #006c4c;
+  --md-glass: rgba(255, 255, 255, 0.55);
+  --logo-bg: #ffffff;
+  --logo-shade: #ededed;
+  --logo-ink: #000000;
+  --md-elev-1: 0 1px 3px rgba(0, 0, 0, 0.15);
+  --md-elev-2: 0 2px 8px rgba(0, 0, 0, 0.18);
+  color-scheme: light;
+}

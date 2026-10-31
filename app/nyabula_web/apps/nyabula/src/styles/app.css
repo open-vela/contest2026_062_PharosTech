@@ -1,0 +1,203 @@
+/* App-level layout helpers shared by all shells and page variants. */
+:root {
+  --shell-rail: 84px;
+  --shell-rail-wide: 196px;
+  --shell-bar: 60px;
+  --shell-bottom: 64px;
+  --shell-context: 340px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  /* Distance of floating corner buttons from BOTH viewport edges. */
+  --fab-gap: 16px;
+  /* Aliases for names some pages use; they follow the theme's own tokens. */
+  --md-surface-container-low: color-mix(in srgb, var(--md-surface) 55%, var(--md-surface-container));
+  --md-surface-container-lowest: var(--md-surface-dim);
+  --dur-short: var(--dur-fast);
+  --dur-medium: var(--dur);
+  --ease-standard: var(--ease-out);
+  --font-mono: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+}
+
+.page {
+  padding: 20px 24px 40px;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+}
+.page.narrow { max-width: 760px; }
+.page-title {
+  font: 600 22px var(--font-title);
+  color: var(--md-on-surface);
+  margin: 0 0 4px;
+}
+.page-sub {
+  color: var(--md-on-surface-variant);
+  font-size: 13.5px;
+  margin: 0 0 18px;
+}
+.section-title {
+  font: 600 13px var(--font-body);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--md-on-surface-variant);
+  margin: 18px 0 10px;
+}
+.grid-cards {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+.muted { color: var(--md-on-surface-variant); }
+.mono { font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; }
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: var(--md-surface-container-highest);
+  color: var(--md-on-surface-variant);
+}
+.tag.ok { background: color-mix(in srgb, var(--md-success) 22%, transparent); color: var(--md-success); }
+.tag.warn { background: color-mix(in srgb, var(--md-warning) 22%, transparent); color: var(--md-warning); }
+.tag.err { background: color-mix(in srgb, var(--md-error) 22%, transparent); color: var(--md-error); }
+.tag.info { background: color-mix(in srgb, var(--md-tertiary) 22%, transparent); color: var(--md-tertiary); }
+.kv { display: flex; flex-direction: column; gap: 10px; margin: 0; }
+.kv > div { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+.kv dt { color: var(--md-on-surface-variant); font-size: 13px; }
+.kv dd { margin: 0; color: var(--md-on-surface); font-size: 13.5px; font-weight: 600; word-break: break-all; text-align: right; }
+.list-tile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-m);
+  background: var(--md-surface-container);
+  color: var(--md-on-surface);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--dur-fast), transform var(--dur-fast) var(--ease-out);
+  border: none;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+}
+.list-tile:hover { background: var(--md-surface-container-high); }
+.list-tile:active { transform: scale(0.99); }
+.list-tile .tile-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: var(--md-secondary-container);
+  color: var(--md-on-secondary-container);
+  flex: none;
+}
+.list-tile .tile-body { flex: 1; min-width: 0; }
+/* Title and subtitle are spans inside buttons / links: stack them. */
+.list-tile .tile-title, .list-tile .tile-sub { display: block; }
+.list-tile .tile-title { font-weight: 600; font-size: 14.5px; }
+.list-tile .tile-sub { font-size: 12.5px; color: var(--md-on-surface-variant); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list-tile .tile-trail { color: var(--md-on-surface-variant); display: inline-flex; align-items: center; gap: 6px; }
+.stack { display: flex; flex-direction: column; gap: 10px; }
+.row { display: flex; align-items: center; gap: 10px; }
+.row.between { justify-content: space-between; }
+.row.wrap { flex-wrap: wrap; }
+.contract-only {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px dashed var(--md-outline);
+  color: var(--md-on-surface-variant);
+}
+
+/* ---------- Surface roles ----------
+ * Page-level containers (class "ui-panel") that every skin restyles (nebula: glass,
+ * instrument: hairline panel with corner ticks). Pages keep layout
+ * (padding, gap, grid) in their own scoped CSS and only add the class;
+ * skin rules are wrapped in :where() so local state modifiers still win. */
+:where(.ui-panel) {
+  background: var(--md-surface-container);
+  color: var(--md-on-surface);
+  border-radius: var(--radius-l);
+}
+/* A recessed well inside a panel (lists, previews, read-outs). */
+:where(.ui-panel-inset) {
+  background: var(--md-surface-container-high);
+  border-radius: var(--radius-m);
+}
+
+/* ---------- Native form controls ----------
+ * One look for raw <select>/<textarea>/<input> used by feature and agent
+ * panels (MdTextField has its own box). Zero specificity so a page can
+ * still size them; untyped inputs opt in with class="field". */
+:where(select, textarea, input[type='number'], input[type='email'], input[type='password'], input[type='url'], input[type='search'], input[type='time'], input[type='date'], input[type='datetime-local'], input.field):not(:where(.tf-box *)) {
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--radius-m);
+  background-color: var(--md-surface-container-high);
+  color: var(--md-on-surface);
+  font: 500 14px/1.5 var(--font-body);
+  outline: none;
+  transition: border-color var(--dur-fast, 0.15s), box-shadow var(--dur-fast, 0.15s);
+}
+:where(select, textarea, input[type='number'], input[type='email'], input[type='password'], input[type='url'], input[type='search'], input[type='time'], input[type='date'], input[type='datetime-local'], input.field):not(:where(.tf-box *)):focus-visible {
+  border-color: var(--md-primary);
+  box-shadow: 0 0 0 3px rgba(var(--md-primary-rgb), 0.18);
+}
+:where(select, textarea, input.field):disabled { opacity: 0.55; cursor: not-allowed; }
+:where(textarea) { resize: vertical; line-height: 1.6; }
+:where(select) {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 36px;
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--md-on-surface-variant) 50%),
+    linear-gradient(135deg, var(--md-on-surface-variant) 50%, transparent 50%);
+  background-position: calc(100% - 19px) 52%, calc(100% - 14px) 52%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+:where(select) option { background: var(--md-surface-container-high); color: var(--md-on-surface); }
+:where(input[type='range']) { accent-color: var(--md-primary); }
+:where(input[type='checkbox'], input[type='radio']) { accent-color: var(--md-primary); width: 18px; height: 18px; }
+
+/* ---------- Side directory (device settings, account) ---------- */
+.side-nav { display: flex; flex-direction: column; gap: 2px; }
+.side-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 9px 14px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--md-on-surface-variant);
+  font: 500 14px var(--font-body);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast), color var(--dur-fast);
+}
+.side-nav-item:hover { background: var(--md-surface-container); color: var(--md-on-surface); }
+.side-nav-item.on { background: var(--md-secondary-container); color: var(--md-on-secondary-container); font-weight: 600; }
+.side-nav-item .side-nav-label { flex: 1; min-width: 0; }
+.side-nav-item .side-nav-sub { display: block; font-size: 11.5px; font-weight: 400; color: var(--md-on-surface-variant); margin-top: 1px; }
+.side-nav-group {
+  margin: 14px 14px 6px;
+  font: 600 11px var(--font-body);
+  letter-spacing: 0.12em;
+  color: var(--md-outline);
+}
+.side-nav-group:first-child { margin-top: 0; }
