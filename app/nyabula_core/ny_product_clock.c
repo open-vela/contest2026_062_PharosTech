@@ -50,7 +50,7 @@
 #include <unistd.h>
 
 #ifdef CONFIG_RTC_DRIVER
-#  include <nuttx/timers/rtc.h>
+#include <nuttx/timers/rtc.h>
 #endif
 
 /****************************************************************************
@@ -58,7 +58,7 @@
  ****************************************************************************/
 
 #ifndef CONFIG_NYABULA_CORE_CLOCK_RTC_PATH
-#  define CONFIG_NYABULA_CORE_CLOCK_RTC_PATH "/dev/rtc0"
+#define CONFIG_NYABULA_CORE_CLOCK_RTC_PATH "/dev/rtc0"
 #endif
 
 /* The floor used when the build date cannot be had, and always on the
@@ -93,11 +93,11 @@
 struct ny_clock_s
 {
   bool ready;
-  bool rtc_trusted;      /* The RTC says its time has been set */
+  bool rtc_trusted; /* The RTC says its time has been set */
   uint64_t floor_ms;
   enum ny_product_clock_source_e set_by; /* NONE until set in this boot */
   uint64_t synced_at_ms;
-  uint32_t generation;   /* Counts the steps worth telling others about */
+  uint32_t generation; /* Counts the steps worth telling others about */
   uint64_t step_before_ms;
   uint64_t step_after_ms;
 };
@@ -119,10 +119,8 @@ static enum ny_product_clock_source_e ny_clock_source_locked(void);
 static mutex_t g_clock_lock = NXMUTEX_INITIALIZER;
 static struct ny_clock_s g_clock;
 
-static const char *const g_clock_source_names[] =
-{
-  "none", "rtc", "panel", "sntp"
-};
+static const char *const g_clock_source_names[] = { "none", "rtc", "panel",
+                                                    "sntp" };
 
 /****************************************************************************
  * Private Functions
@@ -203,9 +201,10 @@ static void ny_clock_rtc_store(const struct timespec *now)
   int fd = open(CONFIG_NYABULA_CORE_CLOCK_RTC_PATH, O_RDWR | O_CLOEXEC);
   if (fd < 0)
     {
-      syslog(LOG_WARNING, "nyclock: no RTC at %s (%d), the time will not "
-             "survive a power cycle\n", CONFIG_NYABULA_CORE_CLOCK_RTC_PATH,
-             -errno);
+      syslog(LOG_WARNING,
+             "nyclock: no RTC at %s (%d), the time will not "
+             "survive a power cycle\n",
+             CONFIG_NYABULA_CORE_CLOCK_RTC_PATH, -errno);
       return;
     }
 
@@ -245,8 +244,10 @@ static void ny_clock_rtc_store(const struct timespec *now)
   ret = ioctl(fd, RTC_SET_TIME, (unsigned long)(uintptr_t)&rtc);
   if (ret < 0)
     {
-      syslog(LOG_ERR, "nyclock: RTC write failed (%d), the time will not "
-             "survive a power cycle\n", -errno);
+      syslog(LOG_ERR,
+             "nyclock: RTC write failed (%d), the time will not "
+             "survive a power cycle\n",
+             -errno);
     }
   else
     {
@@ -306,8 +307,7 @@ static enum ny_product_clock_source_e ny_clock_source_locked(void)
       return g_clock.set_by;
     }
 
-  return g_clock.rtc_trusted &&
-                 ny_product_time_ms(false) >= g_clock.floor_ms
+  return g_clock.rtc_trusted && ny_product_time_ms(false) >= g_clock.floor_ms
              ? NY_PRODUCT_CLOCK_RTC
              : NY_PRODUCT_CLOCK_NONE;
 }
@@ -497,12 +497,15 @@ bool ny_product_clock_describe(cJSON *root)
   synced_at_ms = g_clock.synced_at_ms;
   floor_ms = g_clock.floor_ms;
   nxmutex_unlock(&g_clock_lock);
-  return cJSON_AddBoolToObject(root, "clock_valid",
+  char utc[40];
+  ny_clock_iso(ny_product_time_ms(false), utc, sizeof(utc));
+  return cJSON_AddStringToObject(root, "utc", utc) != NULL &&
+         cJSON_AddBoolToObject(root, "clock_valid",
                                source != NY_PRODUCT_CLOCK_NONE) != NULL &&
          cJSON_AddStringToObject(root, "clock_source",
                                  g_clock_source_names[source]) != NULL &&
-         cJSON_AddNumberToObject(root, "synced_at_ms",
-                                 (double)synced_at_ms) != NULL &&
-         cJSON_AddNumberToObject(root, "clock_floor_ms",
-                                 (double)floor_ms) != NULL;
+         cJSON_AddNumberToObject(root, "synced_at_ms", (double)synced_at_ms) !=
+             NULL &&
+         cJSON_AddNumberToObject(root, "clock_floor_ms", (double)floor_ms) !=
+             NULL;
 }
