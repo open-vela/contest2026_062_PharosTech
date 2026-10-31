@@ -837,12 +837,12 @@ static void rk3576_usb_devevent(struct rk3576_usb_s *priv, uint32_t evt)
             {
               struct rk3576_ep_s *privep = &priv->eps[i];
 
+              /* End the hardware transfer before retiring its resource
+               * index.  USB reset does not terminate DWC3 transfers.
+               */
+
+              rk3576_ep_disable(&privep->ep);
               privep->stalled = false;
-              privep->busy = false;
-              while (sq_peek(&privep->reqq) != NULL)
-                {
-                  rk3576_usb_reqcomplete(privep, -ESHUTDOWN);
-                }
             }
 
           if (priv->driver != NULL)
