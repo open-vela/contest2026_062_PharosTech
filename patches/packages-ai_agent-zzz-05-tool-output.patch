@@ -1,0 +1,45 @@
+--- a/Kconfig
++++ b/Kconfig
+@@ -308,6 +308,14 @@
+ 		Bound the entire JSON response, including reasoning and generated
+ 		tool arguments. Oversize or incomplete HTTP bodies fail explicitly.
+ 
++config AI_AGENT_TOOL_OUTPUT_SIZE
++	int "Single tool result buffer size"
++	default 8192
++	range 8192 131072
++	---help---
++		Bound a serialized tool result, including returned source code and
++		UI documents. Parallel tool buffers are at least this size.
++
+ config AI_AGENT_MAX_TOOL_ITER
+ 	int "Maximum model tool iterations"
+ 	default 10
+--- a/include/agent_config.h
++++ b/include/agent_config.h
+@@ -186,6 +186,11 @@
+ #define AGENT_TOOL_STACKSIZE CONFIG_AI_AGENT_TOOL_STACKSIZE
+ #else
+ #define AGENT_TOOL_STACKSIZE (16 * 1024)
++#endif
++#ifdef CONFIG_AI_AGENT_TOOL_OUTPUT_SIZE
++#define AGENT_TOOL_OUTPUT_SIZE CONFIG_AI_AGENT_TOOL_OUTPUT_SIZE
++#else
++#define AGENT_TOOL_OUTPUT_SIZE (8 * 1024)
+ #endif
+ #define AGENT_OUTBOUND_STACK (16 * 1024)
+ #define AGENT_OUTBOUND_PRIO 50
+--- a/src/core/agent_loop.c
++++ b/src/core/agent_loop.c
+@@ -51,8 +51,9 @@
+ static pthread_mutex_t s_loop_state_lock = PTHREAD_MUTEX_INITIALIZER;
+ static int s_loop_state;
+ 
+-#define TOOL_OUTPUT_SIZE (8 * 1024)
+-#define TOOL_OUTPUT_SIZE_LARGE (16 * 1024)
++#define TOOL_OUTPUT_SIZE AGENT_TOOL_OUTPUT_SIZE
++#define TOOL_OUTPUT_SIZE_LARGE \
++    (AGENT_TOOL_OUTPUT_SIZE > 16 * 1024 ? AGENT_TOOL_OUTPUT_SIZE : 16 * 1024)
+ #define TOOL_OUTPUT_SIZE_MIN (2 * 1024)
+ 
+ /* ── Forward declarations ──────────────────────────────────── */
