@@ -14,8 +14,9 @@ watch(() => props.page.refocus.value, () => void nextTick(() => field.value?.foc
 
 <template>
   <div class="stack body">
+    <MdSwitch v-model="page.member.value" label="使用成员凭证登录" />
     <!-- The only place that asks for the QR code: nothing to log in to yet. -->
-    <MdCard v-if="page.noPassword.value">
+    <MdCard v-if="page.noPassword.value && !page.member.value">
       <EmptyState
         icon="qr_code"
         title="这台设备还没有设置访问密码"
@@ -32,15 +33,15 @@ watch(() => props.page.refocus.value, () => void nextTick(() => field.value?.foc
         <MdTextField
           ref="field"
           v-model="page.password.value"
-          label="访问密码"
+          :label="page.member.value ? '成员凭证' : '访问密码'"
           :type="page.show.value ? 'text' : 'password'"
           icon="key"
           autocomplete="current-password"
-          :disabled="page.locked.value || page.busy.value"
+          :disabled="(!page.member.value && page.locked.value) || page.busy.value"
         />
         <MdSwitch v-model="page.show.value" class="show" label="显示密码" />
 
-        <p v-if="page.locked.value" class="notice" role="status">
+        <p v-if="page.locked.value && !page.member.value" class="notice" role="status">
           <UiIcon name="lock" :size="18" /> <span>输错的次数太多了，请等 {{ page.lockText.value }} 后再试。</span>
         </p>
         <p v-else-if="page.error.value" class="notice err" role="alert">

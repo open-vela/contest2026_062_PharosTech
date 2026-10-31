@@ -29,6 +29,7 @@ export function useLoginPage() {
   const ff = inject<ReturnType<typeof useFormFactor>>('formFactor');
 
   const password = ref('');
+  const member = ref(false);
   const show = ref(false);
   const busy = ref(false);
   const checking = ref(false);
@@ -47,7 +48,7 @@ export function useLoginPage() {
   const noPassword = computed(() => access.authState?.passwordSet === false);
   /** A computer cannot scan a code: say to do the first step from a phone. */
   const onComputer = computed(() => ff?.formFactor.value !== 'phone');
-  const canSubmit = computed(() => !busy.value && !checking.value && !locked.value && !noPassword.value && password.value.length > 0);
+  const canSubmit = computed(() => !busy.value && !checking.value && (member.value || (!locked.value && !noPassword.value)) && password.value.length > 0);
 
   /** Reads sys.auth.state on a short-lived socket; the page holds none while idle. */
   async function check(force = false): Promise<void> {
@@ -67,13 +68,16 @@ export function useLoginPage() {
     busy.value = true;
     error.value = null;
     try {
-      await access.login(password.value);
+      if (member.value) await access.loginMember(password.value.trim());
+      else await access.login(password.value);
       password.value = '';
       await router.replace(access.nextLocation());
     } catch (e) {
       const code = errorCode(e);
       now.value = Date.now();
-      if (code === 'EAUTH') {
+      if (member.value) {
+        error.value = '成员凭证无效或已被撤销，请向设备主人索取新凭证。';
+      } else if (code === 'EAUTH') {
         error.value = '密码不对，请再试一次。';
         password.value = '';
         refocus.value++;
@@ -96,7 +100,7 @@ export function useLoginPage() {
   });
   onBeforeUnmount(() => window.clearInterval(ticker));
 
-  return { password, show, busy, checking, error, refocus, locked, lockText, noPassword, onComputer, canSubmit, check, submit };
+  return { member, password, show, busy, checking, error, refocus, locked, lockText, noPassword, onComputer, canSubmit, check, submit };
 }
 
 export type LoginPage = ReturnType<typeof useLoginPage>;
