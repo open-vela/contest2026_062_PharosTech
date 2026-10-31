@@ -80,7 +80,7 @@ router.beforeEach(async (to) => {
       return { path: to.path, query: rest, hash: to.hash, replace: true };
     }
     // Reads cached state only: the boot view decides once, nothing waits here.
-    const target = guardRedirect(typeof to.name === 'string' ? to.name : null, access.phase, access.online);
+    const target = guardRedirect(typeof to.name === 'string' ? to.name : null, access.phase, session.isOwner ? access.online : null);
     if (target) {
       if (access.phase === 'boot') access.rememberPath(to.fullPath);
       return target === 'home' ? { name: 'home', params: { key: SELF_KEY }, replace: true } : { name: target, replace: true };
