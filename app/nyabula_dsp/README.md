@@ -1,14 +1,14 @@
-# Nyabula 软件 DSP：阶段一
+# Nyabula 软件 DSP
 
 独立 C99 DSP 核心 + 调用同一动态库的 Python 离线 WAV 工具。
 不修改 NuttX 的 `audio/pcm_decode.c`、ES8388、SAI 或 USB 驱动。
-本阶段不注册板上应用，不改变 manifest、defconfig 或现有播放路径。
+库仍可独立宿主构建；产品 Core 已让蓝牙、TTS 与文件播放接入公共 DSP 出口。使用入口、设备路由与验收边界见 [音频服务](../../docs/audio-plugin-services-20261018.md)。
 
 ## 已实现的处理合同
 
 - 固定 48 kHz；C API 输入为交错立体声 float32，范围 [-1, 1]。
 - 输出顺序：左高通、右高通、单声道低通，交错三通道。
-- 全局主增益之后，每个输入声道有最多四段 peaking EQ。
+- 全局主增益之后，每个输入声道在扩展接口中最多16段 EQ（旧接口为 peaking；`nyadsp_create_eq` 为四段类型扩展，`nyadsp_create_input_eq` 接受1–16段；均可指定低/高架或关闭）。
 - 低频输入为 `(L + R) / 2`，不是直接相加；反相信号会抵消。
 - 左右各两级二阶 Butterworth 高通、低频两级低通，构成 LR4。
 - 每个输出有最多四段 peaking EQ、独立增益、极性和整数帧延迟。
@@ -38,7 +38,7 @@ ctest --test-dir out/audio-dsp --output-on-failure
 
 库为 `out/audio-dsp/libnyadsp.so`。Windows 可以使用 CMake/MSVC
 生成 `nyadsp.dll` 后传给 Python；此阶段只验证了 Linux 宿主构建，
-没有把 Windows 原生或 ARM64 板测标为通过。
+Windows 原生动态库尚未验收；产品 ARM64 B53 板测见音频服务文档。
 
 ASan/UBSan 仅加在原生边界测试程序，不加在 Python 加载的动态库；
 动态库的频响和文件回归由另一个 CTest 运行。测试不依赖 NumPy、
@@ -104,24 +104,25 @@ python3 tools/nyabula_dsp/render.py input.wav out/rendered \
 未知字段拒绝，避免拼写错误静默失效。未提供的合法字段用默认值；
 零增益 EQ 段是精确直通。
 
-配置仅在实例创建时生效；本阶段没有运行中参数替换或平滑切换。
-不能在实时线程直接重新创建实例或修改内部系数。后续实时服务接入时，
-需要控制队列和明确的过渡/淡化策略。
+单个实例配置仍不可变。产品播放器在处理块边界建立新实例，预热延迟与滤波历史，
+再交叉淡化切换；不在旧实例中并发修改系数。新增 `nyadsp_create_stereo()`
+保留全频左右声道 EQ 并静音低频，不改变原有 `nyadsp_create()` 的 2.1 合同。
+`nyadsp_clock_process()` 为 USB 低频提供独立的队列反馈重采样。
 
-## 后续接入边界
+`nyadsp_create_input_eq_split()` 在原16段输入EQ构造入口上增加可选的
+`nyadsp_crossover_s`，分别配置板载LR4高通和低音LR4低通，均为40–5000Hz。
+传入NULL继续使用原 `config.crossover_hz`；原配置结构、ABI版本及所有旧构造
+入口不变。相同截止点与旧构造输出逐样本相同；不同截止点支持重叠或间隔，
+不自动改变输出增益、延时、极性或限幅。全频立体声与安全旁路仍保持原语义。
 
-1. 先接一个 ES8388 输出，验证设备生命周期和旁路。
-2. 再接 USB，分别管理队列、固定延迟和采样时钟漂移。
-   这里的整数延迟只补固定时间差，不是自适应重采样。
-3. 再接采集/扫频工具，生成设备校准；音效预设与用户 EQ 独立于校准。
-4. WebUI 只发控制请求，不在音频回调读文件或处理网络。
+## 产品接入与后续板测
 
-当前不包含混音、TTS/A2DP 输入适配、USB 输出、录音、自动校准、
-声学预设、WebUI 或“真实听感已经提升”的结论。
+产品接入包含 ES8388 + USB 输出生命周期、WAV 输入、设置持久化、WebUI、
+双设备队列反馈时钟修正与通话优先抢占。宿主回归和产品交叉编译见音频服务文档。
 
-## 算法依据
+尚待真实板卡验证：双设备时钟与端到端延迟、USB 热拔插、实际箱体分频和安全增益。
+TTS、A2DP 和文件播放共用 `ny_dsp_output`；`nyadsp_resample` 以整数相位和48抽头窗函数 sinc 转换8–192 kHz输入至48 kHz。48 kHz输入精确直通。HFP保持原有8/16 kHz路径。
 
-滤波器系数使用公开的双线性变换/RBJ peaking EQ 公式，自行实现：
-[Audio EQ Cookbook](https://webaudio.github.io/Audio-EQ-Cookbook/audio-eq-cookbook.html)。
-测试独立计算 LR4 的频率幅度关系，并对 EQ 中心增益、分块不变性、
-左右隔离、反相合成、延迟、复位、限幅与异常文件路径做回归。
+`nyadsp_create_eq(config, kinds, fullrange, error)` 为新增入口，不改变 ABI v1 配置结构、旧构造函数和离线工具合同。四个 kinds 为 OFF/PEAK/LOW_SHELF/HIGH_SHELF；架式采用 RBJ Q 参数。
+
+16段产品设置使用 `eqBands16`，旧 `eqBands`/`eqDb` 与ABI v1结构继续保留；B54实测迁移与实时预览见音频服务文档。
