@@ -89,6 +89,9 @@ void nyadsp_default_config(struct nyadsp_config_s *config);
 
 struct nyadsp_s *nyadsp_create(const struct nyadsp_config_s *config,
                                int *error);
+/* Full-range stereo keeps the existing 2.1 config ABI and mutes bass. */
+struct nyadsp_s *nyadsp_create_stereo(const struct nyadsp_config_s *config,
+                                      int *error);
 void nyadsp_reset(struct nyadsp_s *dsp);
 void nyadsp_destroy(struct nyadsp_s *dsp);
 
