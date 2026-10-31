@@ -4,10 +4,11 @@ import { storeToRefs } from 'pinia';
 import { useRoute } from 'vue-router';
 import { useSessionStore } from '../../stores/session';
 import { useNyabotStore } from '../../stores/nyabot';
+import { runOutcome } from './runOutcome';
 
 export interface ChatMessage {
   id: string; role: 'user' | 'agent'; text: string; pending: boolean;
-  unsupported?: boolean; error?: string; at: number;
+  unsupported?: boolean; error?: string; at: number; outcome?: string[];
 }
 export const RUN_LABELS: Record<string, string> = {
   queued: '已排队', running: '执行中', cancelling: '取消中，等待执行确认', succeeded: '已完成',
@@ -32,7 +33,8 @@ export function useAgentPage() {
     { id: run.id, role: 'agent', text: ['cancelled', 'unknown'].includes(run.state)
         ? RUN_LABELS[run.state] : run.reply || RUN_LABELS[run.state] || run.state,
       pending: ['queued', 'running', 'cancelling'].includes(run.state),
-      error: run.state === 'failed' ? run.reply || '执行失败' : undefined, at: run.finishedAt ?? run.createdAt },
+      error: run.state === 'failed' ? run.reply || '执行失败' : undefined, at: run.finishedAt ?? run.createdAt,
+      outcome: runOutcome(run) },
   ]));
   return { session, bot, messages, draft, sending, canSend,
     unsupported: computed(() => false), send: bot.submit, clear: bot.newConversation, quickPrompts: QUICK_PROMPTS };

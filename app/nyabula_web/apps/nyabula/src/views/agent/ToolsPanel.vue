@@ -14,7 +14,7 @@ const error = ref('');
 const message = ref('');
 const keys = ['serp', 'exa', 'tavily', 'news'] as const;
 const labels = { serp: 'SerpAPI', exa: 'Exa', tavily: 'Tavily', news: 'NewsAPI' };
-const toolLabels: Record<string, string> = { read_file: '读取文件', list_dir: '查看目录', write_file: '写入文件', edit_file: '编辑文件', run_shell: 'Shell 命令', web_search: '网页搜索', news_search: '新闻搜索', get_weather: '查询天气', fetch_url: '读取网页' };
+const toolLabels: Record<string, string> = { mimo_vision: '图片理解（MiMo）', read_file: '读取文件', list_dir: '查看目录', write_file: '写入文件', edit_file: '编辑文件', run_shell: 'Shell 命令', web_search: '网页搜索', news_search: '新闻搜索', get_weather: '查询天气', fetch_url: '读取网页' };
 const configured = ref<Record<string, boolean>>({});
 const secrets = reactive({ serp: '', exa: '', tavily: '', news: '' });
 const clear = reactive({ serp: false, exa: false, tavily: false, news: false });
@@ -70,7 +70,7 @@ watch([() => session.client, available], () => { catalog.value = null; void load
     <p>复用 openvela ai_agent 工具。文件统一保存在工作目录，读操作可直接使用；模型写文件和执行 Shell 时沿用任务审批。</p>
     <p v-if="catalog">工作目录：<code>{{ catalog.workspace }}</code>；Shell：{{ catalog.shellPolicy === 2 ? '当前固件禁用' : catalog.shellPolicy === 0 ? '允许列表模式，命令还需固件支持' : '开发模式' }}。</p>
     <p v-if="error" role="alert" class="error">{{ error }}</p>
-    <div class="catalog"><article v-for="tool in catalog?.items" :key="tool.name">
+    <div class="catalog"><article v-for="tool in catalog?.items" :key="tool.name" class="ui-panel">
       <strong>{{ toolLabels[tool.name] ?? tool.name }}</strong><code>{{ tool.name }}</code>
       <span>{{ tool.approval ? '模型调用需审批' : '读取工具' }}</span>
       <pre>{{ JSON.stringify(tool.example) }}</pre>
@@ -98,13 +98,13 @@ watch([() => session.client, available], () => { catalog.value = null; void load
 <style scoped>
 .tools-panel { max-width: 900px; width: 100%; margin: 0 auto; line-height: 1.6; }
 .catalog { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 12px; }
-article { display: flex; flex-direction: column; gap: 4px; padding: 16px; background: var(--md-surface-container); border-radius: 12px; min-width: 0; }
+article { display: flex; flex-direction: column; gap: 4px; padding: 16px; min-width: 0; }
 article span { font-size: 13px; color: var(--md-on-surface-variant); }
 code, pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 form { display: flex; flex-direction: column; gap: 16px; }
 .provider { display: flex; flex-direction: column; gap: 8px; }
 label:has(input[type="checkbox"]), details > label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 44px; }
-select, textarea { padding: 12px; border: 1px solid var(--md-outline); border-radius: 8px; background: var(--md-surface); color: var(--md-on-surface); font: inherit; min-height: 44px; }
+
 textarea { width: 100%; resize: vertical; }
 details { margin-top: 28px; }
 summary { min-height: 44px; cursor: pointer; }

@@ -62,7 +62,7 @@ watch(() => [session.client, session.connected], () => { saved.value = null; mes
 form { display: flex; flex-direction: column; gap: 16px; }
 label { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 .guidance { align-items: stretch; flex-direction: column; }
-select, textarea { min-height: 44px; padding: 10px; border: 1px solid var(--md-outline); border-radius: 8px; color: var(--md-on-surface); background: var(--md-surface); font: inherit; }
+
 textarea { resize: vertical; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .error { color: var(--md-error); }
