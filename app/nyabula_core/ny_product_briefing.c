@@ -218,7 +218,11 @@ static int ny_briefing_generate(const struct ny_product_caller_s *caller,
                         records, "last_error")) != 0)
                        ? "（缓存可能过时）"
                        : "");
-          if (!ny_briefing_add(items, "天气", text, "QWeather"))
+          if (!ny_briefing_add(
+                  items, "天气", text,
+                  !strcmp(ny_briefing_text(records, "provider"), "open-meteo")
+                      ? "Open-Meteo"
+                      : "QWeather"))
             ret = -ENOMEM;
         }
       else if (!ny_briefing_add(items, "天气",
