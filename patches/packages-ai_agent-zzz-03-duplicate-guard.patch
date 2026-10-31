@@ -1,0 +1,28 @@
+--- a/src/core/agent_loop.c
++++ b/src/core/agent_loop.c
+@@ -947,7 +947,9 @@
+         resp->calls[0].name,
+         resp->calls[0].input ? resp->calls[0].input : "");
+ 
+-    if (strcmp(cur_sig, prev_sig) == 0) {
++    /* A truncated source prefix is not an exact tool request. */
++    bool complete = !resp->calls[0].input || strlen(resp->calls[0].input) <= 400;
++    if (complete && strcmp(cur_sig, prev_sig) == 0) {
+         (*dup_count)++;
+         if (*dup_count >= 2) {
+             syslog(LOG_WARNING,
+@@ -958,8 +960,12 @@
+     } else {
+         *dup_count = 0;
+     }
+-    strncpy(prev_sig, cur_sig, 511);
+-    prev_sig[511] = '\0';
++    if (complete) {
++        strncpy(prev_sig, cur_sig, 511);
++        prev_sig[511] = '\0';
++    } else {
++        prev_sig[0] = '\0';
++    }
+ 
+     /* Name-only repeat detection */
+     if (strcmp(resp->calls[0].name, prev_name) == 0) {
