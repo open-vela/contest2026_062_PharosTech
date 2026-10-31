@@ -1,0 +1,15 @@
+--- a/interpreters/wamr/CMakeLists.txt
++++ b/interpreters/wamr/CMakeLists.txt
+@@ -62,5 +62,7 @@
+-  # WAMR defines this switch only when enabled, but its public headers use
+-  # it in #if expressions. Keep disabled builds valid under -Wundef.
+-  if(NOT WAMR_BUILD_MODULE_INST_CONTEXT EQUAL 1)
+-    add_compile_definitions(WASM_ENABLE_MODULE_INST_CONTEXT=0)
+-  endif()
++  # WAMR can select its switch inside a nested CMake scope. Inspect the
++  # effective definition instead of a caller-scope configuration variable.
++  get_directory_property(wamr_context_definitions COMPILE_DEFINITIONS)
++  if(NOT "${wamr_context_definitions}" MATCHES
++     "(^|;)WASM_ENABLE_MODULE_INST_CONTEXT(=|;|$)")
++    add_compile_definitions(WASM_ENABLE_MODULE_INST_CONTEXT=0)
++  endif()

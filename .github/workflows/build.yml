@@ -72,6 +72,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Check WAMR dependency context fallback
+        run: python3 tools/tests/test_wamr_context_patch.py
       - name: Preserve WAMR-owned context configuration
         run: |
           for context in 0 1; do
