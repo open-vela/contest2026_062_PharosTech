@@ -25,6 +25,7 @@
  */
 
 #include "ny_web.h"
+#include "ny_ui.h"
 #include "ny_web_auth.h"
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
 #include "ny_access.h"
@@ -109,6 +110,7 @@ struct nyabula_eye_ws_session_s
   size_t used;
   uint64_t fragment_deadline;
   uint64_t revision;
+  uint64_t ui_revision;
   bool published;
   uint64_t window;
   unsigned int requests;
@@ -122,6 +124,7 @@ static int nyabula_eye_ws_error(int fd, struct nyabula_eye_ws_session_s *s,
                                 const char *id, const char *topic,
                                 const char *code);
 static bool nyabula_eye_ws_auth(const char *actual, const char *expected);
+static int ny_web_ui_changed(int fd, struct nyabula_eye_ws_session_s *s);
 static bool ny_web_session_current(struct nyabula_eye_ws_session_s *s);
 static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
                                   const char *token);
@@ -700,6 +703,11 @@ static int nyabula_eye_ws_client(int fd, const char *token, const char *origin)
         {
           struct nyabula_core_snapshot_s snapshot;
           next_state = now + NYABULA_WS_STATE_MS;
+          ret = ny_web_ui_changed(fd, s);
+          if (ret < 0)
+            {
+              break;
+            }
           if (nyabula_eye_service_snapshot(&snapshot) < 0)
             {
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
@@ -849,6 +857,36 @@ static int nyabula_eye_ws_client(int fd, const char *token, const char *origin)
     }
 
   free(s);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: ny_web_ui_changed
+ ****************************************************************************/
+
+static int ny_web_ui_changed(int fd, struct nyabula_eye_ws_session_s *s)
+{
+  uint64_t revision = ny_ui_revision();
+  cJSON *data;
+  int ret;
+  if (s->ui_revision == revision)
+    {
+      return 0;
+    }
+
+  data = cJSON_CreateObject();
+  if (data == NULL || !cJSON_AddNumberToObject(data, "revision", revision))
+    {
+      cJSON_Delete(data);
+      return -ENOMEM;
+    }
+
+  ret = nyabula_eye_ws_emit(fd, s, "event", NULL, "ui.changed", data);
+  if (ret == 0)
+    {
+      s->ui_revision = revision;
+    }
+
   return ret;
 }
 
