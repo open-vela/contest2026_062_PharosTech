@@ -86,12 +86,13 @@ int ny_product_cli(const char *topic, const char *path)
 
   ret = ny_product_request(&caller, topic, data, &result);
   cJSON_Delete(data);
-  if (ret == 0)
+  if (result != NULL)
     {
       output = cJSON_PrintUnformatted(result);
       if (output == NULL)
         {
-          ret = -ENOMEM;
+          if (ret == 0)
+            ret = -ENOMEM;
         }
       else
         {
