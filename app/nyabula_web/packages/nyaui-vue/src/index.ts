@@ -27,6 +27,7 @@ export type {
   NyaHtmlSendOptions,
   NyaHtmlEventMessage,
   NyaHtmlReadyMessage,
+  NyaHtmlResizeMessage,
   NyaHtmlPatchMessage,
   NyaHtmlThemeMessage,
   NyaHtmlFrameToHost,
