@@ -5,7 +5,7 @@ import { useSessionStore } from './session';
 export interface WeatherQuantity { value: number; unit: string }
 export interface WeatherCondition { text: string; code: string }
 export interface WeatherLocation { name: string; adm1: string; adm2: string; country: string; tz: string }
-export interface WeatherBase { fetched_at?: number; last_error?: number; location?: WeatherLocation; metadata?: { attributions?: string[]; zeroResult?: boolean } }
+export interface WeatherBase { fetched_at?: number; last_error?: number; location?: WeatherLocation; provider?: string; dataKind?: string; metadata?: { attributions?: string[]; zeroResult?: boolean } }
 export interface WeatherCurrent extends WeatherBase {
   temperature?: WeatherQuantity; feelsLike?: WeatherQuantity; humidity?: number; condition?: WeatherCondition;
   wind?: { speed: WeatherQuantity; scale: number; direction: { compass: string } };
@@ -13,7 +13,7 @@ export interface WeatherCurrent extends WeatherBase {
 }
 export interface WeatherDay {
   forecastStartTime: string; temperatureMax: WeatherQuantity; temperatureMin: WeatherQuantity;
-  daytime: { condition: WeatherCondition }; nighttime: { condition: WeatherCondition };
+  daytime: { condition: WeatherCondition }; nighttime?: { condition: WeatherCondition };
   astro?: { sunrise?: string; sunset?: string; moonPhase?: string };
 }
 export interface WeatherHour { forecastTime?: string; forecastStartTime?: string; temperature: WeatherQuantity; condition: WeatherCondition }
@@ -21,6 +21,7 @@ export interface WeatherAlert { id: string; headline: string; description: strin
 export interface WeatherStatus {
   revision: number; host: string; city: string; province: string; enabled: boolean; key_set: boolean;
   refreshing: boolean; last_error: number; clock_valid: boolean; errors?: Record<string, number>;
+  provider?: 'qweather' | 'open-meteo'; alertsSupported?: boolean;
 }
 
 export const useWeatherStore = defineStore('weather', () => {
@@ -81,6 +82,15 @@ export const useWeatherStore = defineStore('weather', () => {
 });
 
 export function weatherKind(code?: string): 'sunny' | 'cloudy' | 'rain' | 'snow' | 'storm' | 'fog' {
+  if (code?.startsWith('wmo-')) {
+    const wmo = Number(code.slice(4));
+    if (wmo === 0 || wmo === 1) return 'sunny';
+    if ([45, 48].includes(wmo)) return 'fog';
+    if ([95, 96, 97, 99].includes(wmo)) return 'storm';
+    if ([71, 73, 75, 77, 85, 86].includes(wmo)) return 'snow';
+    if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82].includes(wmo)) return 'rain';
+    return 'cloudy';
+  }
   const value = Number(code);
   if (value === 100 || value === 150) return 'sunny';
   if (value === 302 || value === 303 || value === 304) return 'storm';

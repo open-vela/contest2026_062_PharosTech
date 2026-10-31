@@ -82,6 +82,8 @@ export function useWeatherScene(type: string) {
     const wind = now.wind?.speed;
     return weatherScene({
       kind: weatherKind(now.condition?.code), city: now.location?.name, temperature: now.temperature.value,
+      conditionText: now.condition?.text,
+      stale: !now.fetched_at || Date.now() - now.fetched_at > 1200000 || !!now.last_error,
       feelsLike: now.feelsLike?.value, humidity: now.humidity,
       windKph: wind ? wind.value * (KPH[wind.unit] ?? 1) : undefined,
       visibilityKm: now.visibility ? now.visibility.value * (now.visibility.unit === 'm' ? 0.001 : 1) : undefined,
