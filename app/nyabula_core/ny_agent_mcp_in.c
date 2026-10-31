@@ -312,12 +312,7 @@ int ny_mcp_in_read(const char *principal, const char *topic, cJSON **result)
         !strcmp(topic, g_in_tools[i].topic) &&
         ny_in_scope(client, g_in_tools[i].name))
       {
-        cJSON *empty = cJSON_CreateObject();
-        const struct ny_product_caller_s caller = { principal,
-                                                    NY_PRODUCT_FAMILY, false };
-        ret = empty ? ny_product_request(&caller, topic, empty, result)
-                    : -ENOMEM;
-        cJSON_Delete(empty);
+        ret = ny_product_scoped_read(principal, topic, result);
         break;
       }
   cJSON_Delete(root);
@@ -639,16 +634,13 @@ static cJSON *ny_in_call(cJSON *root, cJSON *client, const cJSON *params,
   /* A bounded fixed table, never caller-supplied Core topics or roles.
    * Keep the policy lock through dispatch so completed revocation wins.
    */
-  cJSON *data = cJSON_CreateObject();
   cJSON *output = NULL;
   const struct ny_product_caller_s caller = { ny_in_string(client, "id"),
                                               NY_PRODUCT_FAMILY, false };
   if (ret == 0)
-    ret = agent  ? ny_agent_remote_request(ny_in_string(client, "principal"),
-                                           tool->topic, arguments, &output)
-          : data ? ny_product_request(&caller, tool->topic, data, &output)
-                 : -ENOMEM;
-  cJSON_Delete(data);
+    ret = agent ? ny_agent_remote_request(ny_in_string(client, "principal"),
+                                          tool->topic, arguments, &output)
+                : ny_product_scoped_read(caller.id, tool->topic, &output);
   cJSON *audit = cJSON_GetObjectItemCaseSensitive(root, "audit");
   cJSON *event = cJSON_CreateObject();
   if (!event || !cJSON_AddStringToObject(event, "client", caller.id) ||

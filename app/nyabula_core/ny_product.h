@@ -81,6 +81,13 @@ bool ny_product_timesync_describe(cJSON *root);
 #endif
 int ny_product_request(const struct ny_product_caller_s *caller,
                        const char *topic, const cJSON *data, cJSON **result);
+
+/* Internal MCP dispatch after credential scope validation. Fixed read-only
+ * records only; not a browser role or a generic access-policy bypass.
+ */
+
+int ny_product_scoped_read(const char *principal, const char *topic,
+                           cJSON **result);
 int ny_product_timers_request(const struct ny_product_caller_s *caller,
                               const char *topic, const cJSON *data,
                               cJSON **result);

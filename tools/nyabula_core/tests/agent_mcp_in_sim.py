@@ -87,7 +87,7 @@ def main():
             assert [tool['name'] for tool in catalog] == ['nyabula_time']
             assert catalog[0]['annotations']['readOnlyHint']
             out = rpc('tools/call', {'name': 'nyabula_time', 'arguments': {}})['result']
-            assert not out['isError']
+            assert not out['isError'], out
             assert json.loads(out['content'][0]['text'])['clock_valid']
             for name in ['nyabula_tasks', 'agent.chat', 'agent.approval.decide',
                          'agent.mcp.out.call', 'memory.list', 'shell']:
