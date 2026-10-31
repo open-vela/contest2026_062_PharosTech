@@ -92,6 +92,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check platform Kconfig and driver registration
         run: python3 tools/tests/test_platform_cmake.py
+      - name: Check USB interrupt serialization
+        run: python3 tools/tests/test_usb_irq_serialization.py
       - name: Check WAMR dependency context fallback
         run: python3 tools/tests/test_wamr_context_patch.py
       - name: Preserve WAMR-owned context configuration
