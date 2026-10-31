@@ -1202,8 +1202,8 @@ int nyamp_blob_open_decode(uint32_t *flags, const char **name,
                            size_t *name_length, const uint8_t *payload,
                            size_t payload_size)
 {
-  int result = nyamp_blob_text_decode(flags, name, name_length, payload,
-                                      payload_size);
+  int result =
+      nyamp_blob_text_decode(flags, name, name_length, payload, payload_size);
 
   if (result != NYAMP_OK)
     {
@@ -1786,8 +1786,7 @@ int nyamp_blob_bench_report_encode(
 }
 
 int nyamp_blob_bench_report_decode(struct nyamp_blob_bench_report_s *report,
-                                   const uint8_t *payload,
-                                   size_t payload_size)
+                                   const uint8_t *payload, size_t payload_size)
 {
   int result;
 
@@ -2497,8 +2496,8 @@ int nyamp_kws_push_encode(uint8_t *payload, size_t payload_capacity,
       return NYAMP_EMSGSIZE;
     }
 
-  result = nyamp_buffer_encode(payload, payload_capacity, &used,
-                               &push->buffer);
+  result =
+      nyamp_buffer_encode(payload, payload_capacity, &used, &push->buffer);
   if (result != NYAMP_OK)
     {
       return result;
@@ -2786,8 +2785,7 @@ int nyamp_kws_labels_decode(uint16_t *count, const uint8_t *body,
       return NYAMP_EINVAL;
     }
 
-  result =
-      nyamp_payload_ready(body, body_size, NYAMP_KWS_LABELS_HEADER_SIZE);
+  result = nyamp_payload_ready(body, body_size, NYAMP_KWS_LABELS_HEADER_SIZE);
   if (result != NYAMP_OK)
     {
       return result;
@@ -2804,8 +2802,8 @@ int nyamp_kws_labels_decode(uint16_t *count, const uint8_t *body,
       const char *label;
       uint16_t length;
 
-      result = nyamp_kws_labels_next(&label, &length, &position, body,
-                                     body_size);
+      result =
+          nyamp_kws_labels_next(&label, &length, &position, body, body_size);
       if (result != NYAMP_OK)
         {
           return result;
