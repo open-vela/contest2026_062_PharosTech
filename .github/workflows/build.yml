@@ -274,6 +274,12 @@ jobs:
             ${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}/app/nyabula/src/generated/fonts/font-manifest.json
           if-no-files-found: error
 
+      - name: Release uploaded CMake build tree
+        run: |
+          cd ${{ env.OPENVELA_DIR }}
+          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} distclean --cmake
+          df -h .
+
       # Makefile 构建
       - name: Build (Makefile)
         id: make_build
