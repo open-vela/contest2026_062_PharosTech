@@ -7,7 +7,7 @@ const { quickActions } = props.page;
 </script>
 
 <template>
-  <div class="qa" :class="{ horizontal }" :style="columns ? { gridTemplateColumns: `repeat(${columns}, 1fr)` } : undefined">
+  <div class="qa" :class="{ horizontal }" :style="columns ? { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` } : undefined">
     <button v-for="a in quickActions" :key="a.id" class="qa-item hover-lift" @click="a.run()">
       <span class="qa-icon"><UiIcon :name="a.icon" :size="22" /></span>
       <span class="qa-text">
@@ -24,6 +24,7 @@ const { quickActions } = props.page;
 .qa.horizontal::-webkit-scrollbar { display: none; }
 .qa.horizontal .qa-item { flex: none; min-width: 132px; }
 .qa-item {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -37,7 +38,7 @@ const { quickActions } = props.page;
   font: inherit;
 }
 .qa-icon { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--md-primary-container); color: var(--md-on-primary-container); flex: none; }
-.qa-text { display: flex; flex-direction: column; min-width: 0; }
+.qa-text { display: flex; flex: 1; flex-direction: column; min-width: 0; }
 .qa-label { font: 600 14px var(--font-body); }
 .qa-hint { font-size: 12px; color: var(--md-on-surface-variant); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>

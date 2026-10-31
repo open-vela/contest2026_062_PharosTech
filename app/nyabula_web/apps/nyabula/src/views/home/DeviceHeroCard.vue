@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { roleLabel } from '@nyabula/ui';
 /* Device at a glance: name, state, role, core version, battery, WiFi,
  * uptime. Compact mode stacks facts for narrow columns. */
 import { computed } from 'vue';
@@ -24,7 +25,7 @@ const wifiKey = computed(() => `WiFi${wifi.value.rssi !== null ? ` · ${wifi.val
         <h2 class="hero-name" :title="deviceName">{{ deviceName }}</h2>
         <div class="row wrap" style="gap: 6px">
           <span class="tag" :class="stateTone"><span class="dot" />{{ stateLabel }}</span>
-          <span v-if="session.role" class="tag">{{ session.role }}</span>
+          <span v-if="session.role" class="tag">{{ roleLabel(session.role) }}</span>
           <span v-if="coreVersion" class="tag mono">Core {{ coreVersion }}</span>
           <span v-if="session.transport === 'cloud'" class="tag info"><UiIcon name="cloud" :size="13" /> 云中继</span>
         </div>
