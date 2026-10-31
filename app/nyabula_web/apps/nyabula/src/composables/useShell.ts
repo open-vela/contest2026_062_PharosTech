@@ -1,6 +1,6 @@
 /* Shell helpers shared by the three layouts: current nav id, device-scoped
  * navigation, connection tone/label. */
-import { computed } from 'vue';
+import { computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { PRIMARY_NAV, type NavItem } from '../nav';
 import { hasAppBack } from '../lib/shellNavigation';
@@ -12,6 +12,13 @@ export function useShell() {
   const router = useRouter();
   const session = useSessionStore();
   const dev = useDevStore();
+  // The app scrolls inside its main pane, not the browser window handled
+  // by router.scrollBehavior. A new route must not inherit an old offset.
+  watch(() => route.fullPath, () => {
+    const main = document.querySelector<HTMLElement>('.app-shell main');
+    if (main) main.scrollTop = 0;
+  }, { flush: 'post' });
+
   const activeNav = computed(() => (route.meta.nav as string | undefined) ?? (route.name === 'connect' ? 'connect' : undefined));
   const inDevice = computed(() => typeof route.params.key === 'string');
   const deviceKey = computed(() => session.deviceKey ?? (dev.enabled ? PREVIEW_KEY : session.lastDeviceKey));
