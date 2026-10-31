@@ -4,3 +4,6 @@ boards/rk3576/kickpi-k7/nboot/*.json text eol=lf
 boards/rk3576/kickpi-k7/nboot/*.bin binary
 boards/rk3576/kickpi-k7/nboot/*.dtb binary
 tools/apply_dependency_patches.sh text eol=lf
+
+# Shell entry points must execute on Linux after Git export.
+*.sh text eol=lf
