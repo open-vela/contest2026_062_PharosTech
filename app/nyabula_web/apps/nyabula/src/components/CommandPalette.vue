@@ -8,7 +8,8 @@ import { UiIcon } from '@nyabula/ui';
 import { PRIMARY_NAV } from '../nav';
 import { useSessionStore } from '../stores/session';
 import { MODE_LABELS, SCENE_META, useEyeStore } from '../stores/eye';
-import { usePluginsStore } from '../stores/plugins';
+import PluginIcon from './PluginIcon.vue';
+import { usePluginsStore, type PluginInfo } from '../stores/plugins';
 import { hostRegistry } from '../host/registry';
 
 const props = defineProps<{ modelValue: boolean }>();
@@ -21,7 +22,7 @@ const q = ref('');
 const cursor = ref(0);
 const input = ref<HTMLInputElement | null>(null);
 
-interface Cmd { id: string; group: string; label: string; icon: string; hint?: string; run: () => void }
+interface Cmd { id: string; group: string; label: string; icon: string; plugin?: PluginInfo; hint?: string; run: () => void }
 
 const commands = computed<Cmd[]>(() => {
   const key = session.deviceKey ?? session.lastDeviceKey;
@@ -36,7 +37,7 @@ const commands = computed<Cmd[]>(() => {
     for (const s of SCENES) out.push({ id: `scene:${s}`, group: '场景', label: SCENE_META[s]?.label ?? s, icon: SCENE_META[s]?.icon ?? 'widgets', hint: s, run: () => eye.setScene(s) });
     out.push({ id: 'scene:none', group: '场景', label: '退出场景', icon: 'close', run: () => eye.setScene(null) });
     for (const p of plugins.list) {
-      out.push({ id: `plugin:${p.id}`, group: '插件', label: p.name, icon: p.icon ?? 'extension', hint: p.id, run: () => key && router.push({ name: 'plugin', params: { key, id: p.id } }) });
+      out.push({ id: `plugin:${p.id}`, group: '插件', label: p.name, icon: 'extension', plugin: p, hint: p.id, run: () => key && router.push({ name: 'plugin', params: { key, id: p.id } }) });
       for (const a of p.actions ?? []) {
         out.push({ id: `action:${p.id}:${a.id}`, group: '快捷操作', label: `${p.name} · ${a.label}`, icon: a.icon ?? 'bolt', run: () => plugins.sendEvent(p.id, { componentId: a.id, event: 'tap', command: a.command }) });
       }
@@ -91,7 +92,7 @@ function onKey(e: KeyboardEvent) {
               @mouseenter="cursor = i"
               @click="run(c)"
             >
-              <UiIcon :name="c.icon" :size="18" />
+              <PluginIcon v-if="c.plugin" :plugin="c.plugin" :size="18" /><UiIcon v-else :name="c.icon" :size="18" />
               <span class="cp-label">{{ c.label }}</span>
               <span v-if="c.hint" class="cp-hint mono">{{ c.hint }}</span>
               <span class="cp-group">{{ c.group }}</span>
