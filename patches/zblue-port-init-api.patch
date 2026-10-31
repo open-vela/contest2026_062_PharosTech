@@ -1,0 +1,12 @@
+--- a/port/include/zephyr/init.h
++++ b/port/include/zephyr/init.h
+@@ -47,6 +47,9 @@
+  * @{
+  */
+ 
++/* The NuttX host explicitly initializes the registered port services. */
++void z_sys_init(void);
++
+ struct device;
+ 
+ /**
