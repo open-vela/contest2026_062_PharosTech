@@ -21,6 +21,7 @@ import {
 import { MATERIAL_ICONS } from './materialIcons.js';
 import { makePairingQr, pairingQrText, type PairingQr } from './pairingQr.js';
 import type { EyeState } from './types.js';
+import { taskSceneData } from './taskScene.js';
 import { weatherSceneData } from './weatherScene.js';
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -2329,23 +2330,16 @@ export class EyeEngine {
   }
 
   private drawTaskScene(ctx: CanvasRenderingContext2D, IR: number, IC: RGB, side: number, minimal: boolean): void {
-    const metas: Record<string, [number, string, string]> = {
-      running: [0.62, '3/5', '执行中'],
-      queued: [0.14, '1/5', '排队中'],
-      confirm: [0.46, '2/5', '等待确认'],
-      done: [1, '5/5', '已完成'],
-      failed: [0.68, '3/5', '执行失败'],
-    };
-    const meta = metas[this.taskState] ?? metas.running;
+    const presentation = taskSceneData(this.scenePayload, this.taskState);
     const C = this.sceneGlow(ctx, IC, 0.55);
-    const progress = meta[0];
+    const progress = presentation.progress;
     this.drawSceneBackdrop(ctx, IR, minimal);
     ctx.shadowBlur = 0;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     if (side < 0) {
       if (this.taskPrevState) this.drawTaskStateVisual(ctx, IR, C, this.taskPrevState, 1 - sceneEase(this.optionFade), 1);
-      this.drawTaskStateVisual(ctx, IR, C, this.taskState, sceneEase(this.optionFade));
+      this.drawTaskStateVisual(ctx, IR, C, presentation.state, sceneEase(this.optionFade));
     } else {
       ctx.globalAlpha *= sceneEase(this.optionFade);
       ctx.strokeStyle = rgba(C, 0.18);
@@ -2355,14 +2349,20 @@ export class EyeEngine {
       ctx.stroke();
       ctx.strokeStyle = rgba(C, 0.88);
       ctx.beginPath();
-      ctx.arc(0, 0, IR * 0.55, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+      const start = presentation.indeterminate ? this.tNow * 1.8 : -Math.PI / 2;
+      const span = presentation.indeterminate ? Math.PI * 0.55 : progress * Math.PI * 2;
+      ctx.arc(0, 0, IR * 0.55, start, start + span);
       ctx.stroke();
       ctx.fillStyle = rgba(C, 0.98);
       ctx.font = fontEnglish(IR * 0.39);
-      ctx.fillText(meta[1], 0, -IR * 0.04);
+      ctx.fillText(presentation.value, 0, -IR * 0.08);
       ctx.fillStyle = rgba(C, 0.52);
       ctx.font = fontTitle(IR * 0.10);
-      ctx.fillText(meta[2], 0, IR * 0.29);
+      ctx.fillText(presentation.title, 0, IR * 0.24);
+      if (presentation.detail) {
+        ctx.font = fontBody(IR * 0.09);
+        ctx.fillText(presentation.detail, 0, IR * 0.44, IR * 1.5);
+      }
     }
   }
 
