@@ -1,0 +1,68 @@
+--- a/Kconfig
++++ b/Kconfig
+@@ -308,6 +308,21 @@
+ 		Bound the entire JSON response, including reasoning and generated
+ 		tool arguments. Oversize or incomplete HTTP bodies fail explicitly.
+ 
++config AI_AGENT_MAX_TOOL_ITER
++	int "Maximum model tool iterations"
++	default 10
++	range 2 32
++
++config AI_AGENT_TOOL_NAME_REPEAT_MAX
++	int "Name-only repeat limit (zero disables)"
++	default 4
++	range 0 32
++
++config AI_AGENT_TOOL_RATE_MAX_CALLS
++	int "Maximum tool calls per minute"
++	default 10
++	range 1 128
++
+ config AI_AGENT_TLS_CONN_POOL_SIZE
+ 	int "TLS connection pool size"
+ 	default 2
+--- a/include/agent_config.h
++++ b/include/agent_config.h
+@@ -106,9 +106,17 @@
+ #define AGENT_AI_AGENT_PRIO 60
+ #define AGENT_AI_AGENT_CORE 0
+ #define AGENT_AI_AGENT_MAX_HISTORY 10
++#ifdef CONFIG_AI_AGENT_MAX_TOOL_ITER
++#define AGENT_AI_AGENT_MAX_TOOL_ITER CONFIG_AI_AGENT_MAX_TOOL_ITER
++#else
+ #define AGENT_AI_AGENT_MAX_TOOL_ITER 10
++#endif
+ #define AGENT_MAX_TOOL_CALLS 2
++#ifdef CONFIG_AI_AGENT_TOOL_NAME_REPEAT_MAX
++#define AGENT_TOOL_NAME_REPEAT_MAX CONFIG_AI_AGENT_TOOL_NAME_REPEAT_MAX
++#else
+ #define AGENT_TOOL_NAME_REPEAT_MAX 4
++#endif
+ 
+ /* ── LLM Watchdog ──────────────────────────────────────────── */
+ /* Agent-level timeout for a single LLM call (seconds).
+@@ -403,7 +411,11 @@
+ /* ── Tool Guard (security) ──────────────────────────────────── */
+ #define AGENT_TOOL_MAX_INPUT_LEN (32 * 1024)
+ #define AGENT_TOOL_RATE_LIMIT_WINDOW_SEC 60
++#ifdef CONFIG_AI_AGENT_TOOL_RATE_MAX_CALLS
++#define AGENT_TOOL_RATE_LIMIT_MAX_CALLS CONFIG_AI_AGENT_TOOL_RATE_MAX_CALLS
++#else
+ #define AGENT_TOOL_RATE_LIMIT_MAX_CALLS 10
++#endif
+ 
+ /* ── Shell security policy ──────────────────────────────────── */
+ #define AGENT_SHELL_SECURITY_ALLOWLIST 0 /* Whitelist mode (production) */
+--- a/src/core/agent_loop.c
++++ b/src/core/agent_loop.c
+@@ -964,7 +964,8 @@
+     /* Name-only repeat detection */
+     if (strcmp(resp->calls[0].name, prev_name) == 0) {
+         (*name_repeat)++;
+-        if (*name_repeat >= AGENT_TOOL_NAME_REPEAT_MAX) {
++        if (AGENT_TOOL_NAME_REPEAT_MAX > 0 &&
++            *name_repeat >= AGENT_TOOL_NAME_REPEAT_MAX) {
+             syslog(LOG_WARNING,
+                 "[%s] Tool name repeat limit (%s called %d times)\n",
+                 TAG, resp->calls[0].name, *name_repeat + 1);
