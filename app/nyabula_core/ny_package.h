@@ -35,6 +35,7 @@
 int ny_package_install(const char *source);
 int ny_package_activate(const char *id, const char *version);
 int ny_package_rollback(const char *id);
+int ny_package_deactivate(const char *id);
 int ny_package_resolve(const char *id, char *path, size_t size);
 int ny_package_resolve_version(const char *id, const char *version, char *path,
                                size_t size);
