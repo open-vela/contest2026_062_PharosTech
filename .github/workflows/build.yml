@@ -267,7 +267,7 @@ jobs:
         if: matrix.config == 'configs/core_eye' || matrix.config == 'configs/core_services' || matrix.config == 'configs/product_amp'
         uses: actions/upload-artifact@v4
         with:
-          name: core-eye-font-notices
+          name: ${{ env.CONFIG_SLUG }}-font-notices
           path: |
             ${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}/app/nyabula/res/fonts/NOTICE-NOTO-SANS.txt
             ${{ env.OPENVELA_DIR }}/${{ env.REPO_NAME }}/app/nyabula/res/fonts/LICENSE-NOTO-SANS.txt
