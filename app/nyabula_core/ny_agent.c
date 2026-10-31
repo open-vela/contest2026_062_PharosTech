@@ -318,7 +318,23 @@ static char *ny_agent_tools(void)
   if (principal[0])
     return ny_mcp_in_model_tools(principal);
   return strdup(
-      "[{"
+      "[{\"name\":\"nyabula_panel_login\","
+      "\"description\":\"Show the panel login QR on the physical device for "
+      "five minutes when the owner asks to log in, view or reset the panel "
+      "password. Scan it to choose a new password. Never returns "
+      "credentials.\","
+      "\"input_schema\":{\"type\":\"object\",\"properties\":{},"
+      "\"additionalProperties\":false}},"
+      "{\"name\":\"nyabula_thinking\","
+      "\"description\":\"Set MiMo thinking for subsequent model requests. "
+      "Use none to disable, enabled to enable. Other levels are saved as "
+      "preferences but MiMo currently treats all enabled levels identically. "
+      "Does not change other providers. No separate approval needed.\","
+      "\"input_schema\":{\"type\":\"object\",\"properties\":{"
+      "\"level\":{\"type\":\"string\",\"enum\":[\"none\",\"enabled\","
+      "\"minimal\",\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"]}},"
+      "\"required\":[\"level\"],\"additionalProperties\":false}},"
+      "{"
       "\"name\":\"nyabula_read\","
       "\"description\":\"Read current Core records. Never changes data.\","
       "\"input_schema\":{\"type\":\"object\",\"properties\":{"
@@ -326,7 +342,7 @@ static char *ny_agent_tools(void)
       "\"sys.info\",\"system.time.get\",\"memory.list\","
       "\"task.list\",\"calendar.list\",\"timer.list\",\"eyes.status\","
       "\"agent.tools.catalog\",\"device.status\",\"music.status\",\"music."
-      "library\",\"weather.get\",\"alarm.list\"]}},"
+      "library\",\"weather.get\",\"alarm.list\",\"agent.skills.list\"]}},"
       "\"required\":[\"topic\"],\"additionalProperties\":false}},"
       "{\"name\":\"nyabula_action\","
       "\"description\":\"Submit an exact operation for owner approval. "
@@ -344,15 +360,18 @@ static char *ny_agent_tools(void)
       "\"input_schema\":{\"type\":\"object\",\"properties\":{"
       "\"topic\":{\"type\":\"string\",\"enum\":[\"memory.create\","
       "\"task.create\",\"calendar.create\",\"timer.create\","
-      "\"alarm.create\",\"agent.mcp.out.call\",\"agent.tools.call\"]},"
+      "\"alarm.create\",\"agent.mcp.out.call\",\"agent.tools.call\","
+      "\"agent.skills.save\",\"agent.skills.enable\"]},"
       "\"arguments\":{\"type\":\"object\"}},"
       "\"required\":[\"topic\",\"arguments\"],\"additionalProperties\":false}}"
       ","
       "{\"name\":\"nyabula_skill_read\","
       "\"description\":\"Read an enabled skill by exact ID from the system "
-      "index.\","
+      "index. If nextOffset is returned, continue reading with offset until "
+      "the whole skill is read.\","
       "\"input_schema\":{\"type\":\"object\",\"properties\":{"
-      "\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],"
+      "\"id\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\","
+      "\"minimum\":0,\"maximum\":8192}},\"required\":[\"id\"],"
       "\"additionalProperties\":false}},"
       "{\"name\":\"nyabula_mcp_catalog\","
       "\"description\":\"List authorized MCP servers with empty input; "
@@ -386,10 +405,46 @@ static char *ny_agent_tools(void)
       "topic agent.tools.call and arguments {name,arguments}.\","
       "\"input_schema\":{\"type\":\"object\",\"properties\":{"
       "\"name\":{\"type\":\"string\",\"enum\":[\"read_file\",\"list_dir\","
-      "\"web_search\",\"news_search\",\"get_weather\",\"fetch_url\"]},"
+      "\"web_search\",\"news_search\",\"get_weather\",\"fetch_url\",\"mimo_"
+      "vision\"]},"
       "\"arguments\":{\"type\":\"object\"}},\"required\":[\"name\","
       "\"arguments\"],"
       "\"additionalProperties\":false}}"
+#ifdef CONFIG_NYABULA_CORE_AUTHOR
+      ",{\"name\":\"nyabula_plugin\","
+      "\"description\":\"Create or iterate a useful on-device sandboxed "
+      "plugin "
+      "when the owner asks. Read contract first; inspect existing source "
+      "before editing. deploy signs, installs, tests startup and restores "
+      "previous code/data on failure. Only owner-enabled safe permissions "
+      "can be granted automatically. Read tree and test declared UI events "
+      "to verify behavior. No shell, arbitrary files or self-elevation.\","
+      "\"input_schema\":{\"type\":\"object\",\"properties\":{"
+      "\"operation\":{\"type\":\"string\",\"enum\":[\"contract\",\"list\","
+      "\"inspect\",\"deploy\",\"tree\",\"test\"]},"
+      "\"arguments\":{\"type\":\"object\",\"properties\":{"
+      "\"id\":{\"type\":\"string\",\"pattern\":\"^agent-[a-z0-9-]+$\","
+      "\"description\":\"Required for inspect, deploy, tree and test; nested "
+      "inside arguments\"},"
+      "\"name\":{\"type\":\"string\"},\"source\":{\"type\":\"string\","
+      "\"description\":\"Complete plain JavaScript ES module; at most 8192 "
+      "UTF-8 bytes\"},"
+      "\"permissions\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
+      "\"baseVersion\":{\"type\":\"string\",\"description\":\"Empty string "
+      "for first install; exact inspected version for updates\"},"
+      "\"event\":{\"type\":\"object\",\"description\":\"Required for test. "
+      "Use the published componentId and event binding, not command.\","
+      "\"properties\":{\"componentId\":{\"type\":\"string\"},"
+      "\"view\":{\"type\":\"string\",\"enum\":[\"component\",\"html\"]},"
+      "\"event\":{\"type\":\"string\",\"description\":\"Declared binding "
+      "name, usually tap; HTML uses its declared event name\"},"
+      "\"values\":{\"type\":\"object\",\"description\":\"Input field ID to "
+      "value map\"}},"
+      "\"required\":[\"event\"],\"additionalProperties\":false}},"
+      "\"additionalProperties\":false}},"
+      "\"required\":[\"operation\",\"arguments\"],\"additionalProperties\":"
+      "false}}"
+#endif
 #ifdef CONFIG_NYABULA_CORE_MEDIA
       ",{\"name\":\"nyabula_music\","
       "\"description\":\"Control local audio playback. Read music.library and "
@@ -524,14 +579,16 @@ static int ny_agent_tool_execute(const char *name, const char *input,
                                  char *output, size_t capacity)
 {
   static const char *const allowed[] = {
-    "sys.info",      "system.time.get", "memory.list",   "task.list",
-    "calendar.list", "timer.list",      "eyes.status",   "agent.tools.catalog",
-    "device.status", "music.status",    "music.library", "weather.get",
-    "alarm.list"
+    "sys.info",     "system.time.get",     "memory.list",
+    "task.list",    "calendar.list",       "timer.list",
+    "eyes.status",  "agent.tools.catalog", "device.status",
+    "music.status", "music.library",       "weather.get",
+    "alarm.list",   "agent.skills.list"
   };
   static const char *const writes[] = {
-    "memory.create", "task.create",        "calendar.create", "timer.create",
-    "alarm.create",  "agent.mcp.out.call", "agent.tools.call"
+    "memory.create",    "task.create",       "calendar.create",
+    "timer.create",     "alarm.create",      "agent.mcp.out.call",
+    "agent.tools.call", "agent.skills.save", "agent.skills.enable"
   };
   static const char *const media_topics[] = { "music.play",   "music.pause",
                                               "music.resume", "music.stop",
@@ -540,22 +597,41 @@ static int ny_agent_tool_execute(const char *name, const char *input,
   bool skill = strcmp(name, "nyabula_skill_read") == 0;
   bool catalog = strcmp(name, "nyabula_mcp_catalog") == 0;
   bool expression = strcmp(name, "nyabula_expression") == 0;
+  bool pairing = strcmp(name, "nyabula_panel_login") == 0;
+  bool thinking = strcmp(name, "nyabula_thinking") == 0;
   bool builtin_read = strcmp(name, "nyabula_tool") == 0;
   bool media = strcmp(name, "nyabula_music") == 0;
-  if (!write && !skill && !catalog && !expression && !builtin_read && !media &&
-      strcmp(name, "nyabula_read") != 0)
+  bool plugin = strcmp(name, "nyabula_plugin") == 0;
+  if (!write && !skill && !catalog && !expression && !thinking && !pairing &&
+      !builtin_read && !media && !plugin && strcmp(name, "nyabula_read") != 0)
     return ERROR;
-  cJSON *data = input != NULL && strlen(input) < 2048 &&
+  cJSON *data = input != NULL &&
+                        strlen(input) < (plugin || write ? 24576 : 2048) &&
                         ny_product_json_check(input, strlen(input)) == 0
                     ? cJSON_Parse(input)
                     : NULL;
   const char *topic = builtin_read ? "agent.tools.read"
+                      : pairing    ? "panel.pair.show"
+                      : thinking   ? "agent.config.thinking.set"
                       : expression ? "eyes.expression"
                       : skill      ? "agent.skills.read"
                       : catalog    ? "agent.mcp.out.catalog"
                                    : ny_agent_string(data, "topic");
+  if (plugin)
+    {
+      const char *operation = ny_agent_string(data, "operation");
+      topic = !strcmp(operation, "contract")  ? "plugin.author.contract"
+              : !strcmp(operation, "list")    ? "plugin.author.list"
+              : !strcmp(operation, "inspect") ? "plugin.author.inspect"
+              : !strcmp(operation, "deploy")  ? "plugin.author.deploy"
+              : !strcmp(operation, "tree")    ? "plugin.author.tree"
+              : !strcmp(operation, "test")    ? "plugin.author.test"
+                                              : "";
+    }
   bool remote = write && strcmp(topic, "agent.mcp.out.call") == 0;
-  bool allowed_topic = skill || catalog || expression || builtin_read;
+  bool allowed_topic =
+      skill || catalog || expression || thinking || pairing || builtin_read;
+  allowed_topic |= plugin && topic[0];
   size_t count = media   ? sizeof(media_topics) / sizeof(media_topics[0])
                  : write ? sizeof(writes) / sizeof(writes[0])
                          : sizeof(allowed) / sizeof(allowed[0]);
@@ -569,13 +645,16 @@ static int ny_agent_tool_execute(const char *name, const char *input,
     }
 
   cJSON *arguments = cJSON_GetObjectItemCaseSensitive(data, "arguments");
-  int ret =
-      allowed_topic && cJSON_IsObject(data) &&
-              (catalog || cJSON_GetArraySize(data) ==
-                              (write || builtin_read || media ? 2 : 1)) &&
-              (!(write || media) || cJSON_IsObject(arguments))
-          ? 0
-          : -EINVAL;
+  int ret = allowed_topic && cJSON_IsObject(data) &&
+                    (catalog ||
+                     (skill && cJSON_GetArraySize(data) == 2 &&
+                      cJSON_IsNumber(
+                          cJSON_GetObjectItemCaseSensitive(data, "offset"))) ||
+                     cJSON_GetArraySize(data) ==
+                         (write || builtin_read || media || plugin ? 2 : 1)) &&
+                    (!(write || media || plugin) || cJSON_IsObject(arguments))
+                ? 0
+                : -EINVAL;
   char caller_id[64] = { 0 };
   char run_id[64] = { 0 };
   char principal[64] = { 0 };
@@ -602,6 +681,10 @@ static int ny_agent_tool_execute(const char *name, const char *input,
       bool valid = steps != NULL && step != NULL;
       valid &= cJSON_AddStringToObject(step, "tool", name) != NULL;
       valid &= cJSON_AddStringToObject(step, "topic", topic) != NULL;
+      if (plugin)
+        valid &=
+            cJSON_AddStringToObject(step, "pluginId",
+                                    ny_agent_string(arguments, "id")) != NULL;
       valid &= cJSON_AddStringToObject(
                    step, "state",
                    write && !principal[0] ? "pending" : "started") != NULL;
@@ -646,7 +729,8 @@ static int ny_agent_tool_execute(const char *name, const char *input,
   root = NULL;
   nxmutex_unlock(&g_agent_lock);
   if (ret == 0 && principal[0] &&
-      (write || skill || catalog || expression || builtin_read || media))
+      (write || skill || catalog || expression || thinking || pairing ||
+       builtin_read || media || plugin))
     ret = -EACCES;
   if (ret == 0 && write)
     {
@@ -667,14 +751,20 @@ static int ny_agent_tool_execute(const char *name, const char *input,
           : empty == NULL
               ? -ENOMEM
               : ny_product_request(&caller, topic,
-                                   skill || expression || builtin_read ? data
-                                   : write || media ? arguments
-                                                    : empty,
+                                   skill || expression || thinking ||
+                                           pairing || builtin_read
+                                       ? data
+                                   : write || media || plugin ? arguments
+                                                              : empty,
                                    &result);
-  bool applied = (write || expression || media) && ret == 0;
+  bool plugin_effect = plugin && (!strcmp(topic, "plugin.author.deploy") ||
+                                  !strcmp(topic, "plugin.author.test"));
+  bool applied =
+      (write || expression || thinking || pairing || media || plugin_effect) &&
+      ret == 0;
   bool described_error =
       ret < 0 && result != NULL &&
-      (builtin_read || !strcmp(topic, "agent.tools.call")) &&
+      (builtin_read || plugin || !strcmp(topic, "agent.tools.call")) &&
       cJSON_PrintPreallocated(result, output, capacity, false);
   cJSON_Delete(empty);
   cJSON_Delete(data);
@@ -699,10 +789,29 @@ static int ny_agent_tool_execute(const char *name, const char *input,
                                       ret == 0 || applied ? "succeeded"
                                                           : "failed") != NULL;
           valid &= cJSON_AddNumberToObject(step, "error", ret) != NULL;
+          if (valid && ret == 0 && plugin &&
+              !strcmp(ny_agent_string(step, "topic"), "plugin.author.deploy"))
+            {
+              cJSON *previous;
+              cJSON_ArrayForEach(
+                  previous,
+                  steps) if (previous != step &&
+                             !strcmp(ny_agent_string(previous, "state"),
+                                     "failed") &&
+                             !strcmp(ny_agent_string(previous, "topic"),
+                                     "plugin.author.deploy") &&
+                             !strcmp(ny_agent_string(previous, "pluginId"),
+                                     ny_agent_string(step, "pluginId")))
+              {
+                cJSON_DeleteItemFromObjectCaseSensitive(previous, "state");
+                valid &= cJSON_AddStringToObject(previous, "state",
+                                                 "recovered") != NULL;
+              }
+            }
           if (uncertain)
             valid &= cJSON_AddBoolToObject(step, "sideEffectUncertain",
                                            true) != NULL;
-          else if (write || expression || media)
+          else if (write || expression || media || plugin_effect)
             valid &= cJSON_AddBoolToObject(step, "sideEffectApplied",
                                            applied) != NULL;
           saved = valid ? ny_product_store_write("agent", root, revision,
@@ -859,7 +968,8 @@ static int ny_agent_worker(int argc, char **argv)
               cJSON_ArrayForEach(
                   step, cJSON_GetObjectItemCaseSensitive(run, "steps"))
               {
-                if (strcmp(ny_agent_string(step, "state"), "succeeded") != 0)
+                if (strcmp(ny_agent_string(step, "state"), "succeeded") != 0 &&
+                    strcmp(ny_agent_string(step, "state"), "recovered") != 0)
                   step_failed = true;
               }
               const char *state = message.cancelled ? "cancelled"
@@ -1386,7 +1496,10 @@ int ny_agent_request(const struct ny_product_caller_s *caller,
       ret = !g_agent_ready ? -EAGAIN
             : g_agent_active[0] && strcmp(topic, "agent.config.get") &&
                     strcmp(topic, "agent.config.router.get") &&
-                    strcmp(topic, "agent.config.ondevice.get")
+                    strcmp(topic, "agent.config.ondevice.get") &&
+                    strcmp(topic, "agent.config.thinking.get") &&
+                    strcmp(topic, "agent.config.thinking.set") &&
+                    strcmp(topic, "agent.config.mimo.get")
                 ? -EBUSY
                 : ny_agent_config(caller, topic, data, result);
       nxmutex_unlock(&g_agent_lock);

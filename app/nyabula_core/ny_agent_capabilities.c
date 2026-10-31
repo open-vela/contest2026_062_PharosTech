@@ -55,9 +55,24 @@ cJSON *ny_agent_capabilities(void)
     { "music", "tools", "not_compiled", false, false },
 #endif
     { "skills", "skills", "owner_managed_guidance", true, true },
+#ifdef CONFIG_NYABULA_CORE_AUTHOR
+    { "plugin-authoring", "tools", "owner_enabled_sandbox_authoring", true,
+      true },
+#else
+    { "plugin-authoring", "tools", "not_compiled", false, false },
+#endif
     { "memory-persona", "memory", "core_profile_context", true, true },
     { "cron-heartbeat", "automation", "core_durable_scheduler", true, true },
-    { "voice-asr-tts", "channels", "audio_provider_required", true, false },
+#ifdef CONFIG_NYABULA_CORE_VOICE
+    { "voice-asr-tts", "channels", "core_voice_pipeline", true, true },
+#else
+    { "voice-asr-tts", "channels", "not_compiled", false, false },
+#endif
+#ifdef CONFIG_NYABULA_CORE_NAS
+    { "usb-nas", "tools", "owner_usb_file_share", true, true },
+#else
+    { "usb-nas", "tools", "not_compiled", false, false },
+#endif
 #ifdef CONFIG_AI_AGENT_CAMERA
     { "vision-camera", "channels", "hardware_provider_required", true, false },
 #else
