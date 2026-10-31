@@ -601,25 +601,55 @@ uint64_t ny_voice_attach_sample(const struct ny_voice_attach_s *attach,
 
 void ny_voice_resample_init(struct ny_voice_resample_s *state)
 {
-  double cutoff = NY_VOICE_RESAMPLE_EDGE / (double)NY_VOICE_TTS_RATE;
+  ny_voice_resample_rate_init(state, NY_VOICE_TTS_RATE, NY_VOICE_CAPTURE_RATE);
+}
+
+int ny_voice_resample_rate_init(struct ny_voice_resample_s *state,
+                                uint32_t input_rate, uint32_t output_rate)
+{
+  uint32_t up;
+  uint32_t down;
+  if (input_rate == 44100 && output_rate == 16000)
+    {
+      up = NY_VOICE_RESAMPLE_UP;
+      down = NY_VOICE_RESAMPLE_DOWN;
+    }
+  else if (input_rate == 24000 && output_rate == 16000)
+    {
+      up = 2;
+      down = 3;
+    }
+  else if (input_rate == 24000 && output_rate == 44100)
+    {
+      up = 147;
+      down = 80;
+    }
+  else
+    return -1;
+  double edge = output_rate == 16000 ? NY_VOICE_RESAMPLE_EDGE : 10500.0;
+  double cutoff = edge / (double)input_rate;
   unsigned int phase;
   unsigned int tap;
 
   memset(state->history, 0, sizeof(state->history));
-  state->phase = NY_VOICE_RESAMPLE_UP * NY_VOICE_RESAMPLE_TAPS;
-  if (state->ready)
+  state->phase = up * NY_VOICE_RESAMPLE_TAPS;
+  if (state->ready && state->input_rate == input_rate && state->up == up &&
+      state->down == down)
     {
-      return;
+      return 0;
     }
+  state->input_rate = input_rate;
+  state->up = up;
+  state->down = down;
 
-  for (phase = 0; phase < NY_VOICE_RESAMPLE_UP; phase++)
+  for (phase = 0; phase < up; phase++)
     {
       double sum = 0.0;
 
       for (tap = 0; tap < NY_VOICE_RESAMPLE_TAPS; tap++)
         {
-          double at = (double)phase / NY_VOICE_RESAMPLE_UP +
-                      NY_VOICE_RESAMPLE_TAPS / 2.0 - 1.0 - (double)tap;
+          double at = (double)phase / up + NY_VOICE_RESAMPLE_TAPS / 2.0 - 1.0 -
+                      (double)tap;
           double angle = 2.0 * NY_VOICE_PI * cutoff * at;
           double sinc = fabs(at) < 1e-9 ? 1.0 : sin(angle) / angle;
           double window = 0.5 * (1.0 + cos(2.0 * NY_VOICE_PI * at /
@@ -642,6 +672,7 @@ void ny_voice_resample_init(struct ny_voice_resample_s *state)
     }
 
   state->ready = true;
+  return 0;
 }
 
 size_t ny_voice_resample(struct ny_voice_resample_s *state, const float *in,
@@ -657,7 +688,7 @@ size_t ny_voice_resample(struct ny_voice_resample_s *state, const float *in,
       size_t length = NY_VOICE_RESAMPLE_TAPS + take;
 
       /* block[b] is the input sample TAPS - b positions before the first
-       * new one; state->phase counts from block[0] in 1/160 samples.
+       * new one; state->phase counts from block[0] in 1/up samples.
        */
 
       memcpy(block, state->history, sizeof(state->history));
@@ -665,8 +696,8 @@ size_t ny_voice_resample(struct ny_voice_resample_s *state, const float *in,
 
       for (;;)
         {
-          size_t centre = state->phase / NY_VOICE_RESAMPLE_UP;
-          const float *taps = state->taps[state->phase % NY_VOICE_RESAMPLE_UP];
+          size_t centre = state->phase / state->up;
+          const float *taps = state->taps[state->phase % state->up];
           const float *window;
           float sum = 0.0f;
           unsigned int tap;
@@ -682,7 +713,7 @@ size_t ny_voice_resample(struct ny_voice_resample_s *state, const float *in,
                * still run through the history so the stream stays aligned.
                */
 
-              state->phase += NY_VOICE_RESAMPLE_DOWN;
+              state->phase += state->down;
               continue;
             }
 
@@ -693,11 +724,11 @@ size_t ny_voice_resample(struct ny_voice_resample_s *state, const float *in,
             }
 
           out[produced++] = sum;
-          state->phase += NY_VOICE_RESAMPLE_DOWN;
+          state->phase += state->down;
         }
 
       memcpy(state->history, block + take, sizeof(state->history));
-      state->phase -= (uint32_t)(take * NY_VOICE_RESAMPLE_UP);
+      state->phase -= (uint32_t)(take * state->up);
       in += take;
       count -= take;
     }

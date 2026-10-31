@@ -99,9 +99,12 @@ struct ny_voice_gate_s
 struct ny_voice_resample_s
 {
   float history[NY_VOICE_RESAMPLE_TAPS];
-  uint32_t phase; /* Position of the next output, in 1/160 input   */
+  uint32_t phase; /* Position of the next output, in 1/up input   */
                   /* samples past the newest history sample + 1.   */
   bool ready;
+  uint32_t input_rate;
+  uint32_t up;
+  uint32_t down;
   float taps[NY_VOICE_RESAMPLE_UP][NY_VOICE_RESAMPLE_TAPS];
 };
 
@@ -181,6 +184,8 @@ uint64_t ny_voice_attach_sample(const struct ny_voice_attach_s *attach,
                                 bool *from_trigger, bool *clamped);
 
 void ny_voice_resample_init(struct ny_voice_resample_s *state);
+int ny_voice_resample_rate_init(struct ny_voice_resample_s *state,
+                                uint32_t input_rate, uint32_t output_rate);
 size_t ny_voice_resample(struct ny_voice_resample_s *state, const float *in,
                          size_t count, float *out, size_t capacity);
 

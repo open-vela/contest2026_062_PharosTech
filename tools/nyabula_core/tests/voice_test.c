@@ -1110,6 +1110,46 @@ static void test_machine(void)
   CHECK(round == 200000, "storm ended early");
 }
 
+static void test_mimo_resample(void)
+{
+  struct ny_voice_resample_s state = { 0 };
+  float input[240];
+  float output[512];
+  const uint32_t rates[] = { 16000, 44100 };
+  for (size_t mode = 0; mode < 2; mode++)
+    {
+      CHECK(ny_voice_resample_rate_init(&state, 24000, rates[mode]) == 0,
+            "MiMo input rate accepted");
+      size_t total = 0;
+      double power = 0;
+      size_t measured = 0;
+      for (size_t block = 0; block < 100; block++)
+        {
+          for (size_t i = 0; i < COUNT(input); i++)
+            input[i] = (float)sin(2.0 * 3.141592653589793 * 1000.0 *
+                                  (block * COUNT(input) + i) / 24000.0);
+          size_t count = ny_voice_resample(&state, input, COUNT(input), output,
+                                           COUNT(output));
+          total += count;
+          if (block > 2)
+            for (size_t i = 0; i < count; i++)
+              {
+                power += output[i] * output[i];
+                measured++;
+              }
+        }
+      CHECK(total > rates[mode] - 60 && total <= rates[mode],
+            "24 kHz -> %u duration: %zu samples", rates[mode], total);
+      CHECK(power / measured > 0.48 && power / measured < 0.52,
+            "MiMo resampling retains speech amplitude");
+    }
+  ny_voice_resample_init(&state);
+  CHECK(state.up == 160 && state.down == 441 && state.input_rate == 44100,
+        "local TTS restored after MiMo");
+  CHECK(ny_voice_resample_rate_init(&state, 0, 16000) < 0,
+        "invalid input rate rejected");
+}
+
 int main(void)
 {
   test_formats();
@@ -1117,6 +1157,7 @@ int main(void)
   test_attach();
   test_gate();
   test_resample();
+  test_mimo_resample();
   test_sentences();
   test_machine();
   printf("voice_test: %lu checks, %lu failures\n", g_checks, g_failures);
