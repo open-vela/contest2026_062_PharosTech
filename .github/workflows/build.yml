@@ -277,7 +277,7 @@ jobs:
       - name: Release uploaded CMake build tree
         run: |
           cd ${{ env.OPENVELA_DIR }}
-          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} distclean --cmake
+          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} --cmake distclean
           df -h .
 
       # Makefile 构建
