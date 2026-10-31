@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PluginIcon from '../../components/PluginIcon.vue';
 import { MdCard, UiIcon } from '@nyabula/ui';
 import type { useHomePage } from './home.logic';
 
@@ -14,7 +15,7 @@ const { plugins, pluginCount, runningCount, go } = props.page;
     </div>
     <div v-if="plugins.list.length" class="chips">
       <button v-for="p in plugins.list.slice(0, 6)" :key="p.id" class="pchip" @click="go('plugin', { id: p.id })">
-        <UiIcon :name="p.icon ?? 'extension'" :size="16" />{{ p.name }}
+        <PluginIcon :plugin="p" :size="16" />{{ p.name }}
       </button>
     </div>
     <p v-else class="muted" style="font-size: 13px; margin: 0">尚未安装插件。</p>

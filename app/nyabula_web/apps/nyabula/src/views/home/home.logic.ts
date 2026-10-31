@@ -1,6 +1,7 @@
 /* Home dashboard: device at a glance, live eye preview, quick actions,
  * attention items, widgets and a lightweight activity feed. */
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { permissionZh } from '@nyabula/ui';
 import { useRouter } from 'vue-router';
 import { useSessionStore } from '../../stores/session';
 import { MODE_LABELS, SCENE_META, useEyeStore } from '../../stores/eye';
@@ -9,6 +10,7 @@ import { useAccountStore } from '../../stores/account';
 import { useAsyncTask } from '../../composables/useRequest';
 import { batteryOf, fmtUptime, wifiOf, rssiBars, type SysInfo } from '../device/sections/sysinfo';
 import { parseCloudStatus, type CloudStatus } from '../../lib/deviceMaint';
+import { isRunning } from '../plugins/plugins.logic';
 
 export interface ActivityItem {
   id: number;
@@ -86,7 +88,7 @@ export function useHomePage() {
 
   /* ---- plugins summary ---- */
   const pluginCount = computed(() => plugins.list.length);
-  const runningCount = computed(() => plugins.list.filter((p) => (p.state ?? 'running') === 'running').length);
+  const runningCount = computed(() => plugins.list.filter((p) => isRunning(p.state)).length);
   const missingPerms = computed(() =>
     plugins.list
       .map((p) => ({ plugin: p, missing: (p.permissions ?? []).filter((x) => !x.granted) }))
@@ -112,7 +114,7 @@ export function useHomePage() {
         id: `perm:${m.plugin.id}`,
         icon: 'shield',
         title: `${m.plugin.name} 缺少 ${m.missing.length} 项权限`,
-        sub: m.missing.map((x) => x.name).join('、'),
+        sub: m.missing.map((x) => permissionZh(x.name)).join('、'),
         tone: 'info',
         run: () => go('plugin-permissions', { id: m.plugin.id }),
       });
