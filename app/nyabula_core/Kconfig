@@ -66,6 +66,22 @@ config NYABULA_CORE_WEATHER
 		Run configurable weather polling with verified HTTPS, bounded JSON
 		responses and persistent alert deduplication. No bundled credentials.
 
+config NYABULA_CORE_NAS
+	bool "Authenticated USB disk file sharing"
+	default y if NYABULA_CORE_AGENT
+	depends on NYABULA_CORE_PRODUCT && NYABULA_CORE_WEB && FS_FATFS
+	depends on USBHOST_MSC || ARCH_SIM
+	select USBHOST_MSC_NOTIFIER if USBHOST_MSC
+	---help---
+		Owner-enabled FAT/exFAT USB sharing over the existing authenticated
+		HTTP service. Read-only by default; uploads never overwrite files.
+		No format, raw-block write, internal-storage or anonymous access.
+
+config NYABULA_CORE_NAS_MOUNT
+	string "Private USB share mount point"
+	default "/mnt/nyabula-usb"
+	depends on NYABULA_CORE_NAS
+
 config NYABULA_CORE_WAMR
 	bool "Enable WAMR plugin runtime"
 	default y

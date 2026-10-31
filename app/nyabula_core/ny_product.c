@@ -28,6 +28,9 @@
 #ifdef CONFIG_NYABULA_CORE_AGENT
 #include "ny_agent.h"
 #endif
+#ifdef CONFIG_NYABULA_CORE_NAS
+#include "ny_nas.h"
+#endif
 #ifdef CONFIG_NYABULA_CORE_LIGHT
 #include "ny_product_light.h"
 #endif
@@ -316,6 +319,11 @@ int ny_product_request(const struct ny_product_caller_s *caller,
       return ret;
     }
 
+#ifdef CONFIG_NYABULA_CORE_NAS
+  ret = ny_nas_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
   ret = ny_product_system(caller, topic, data, result);
   if (ret != -ENOSYS)
     {
