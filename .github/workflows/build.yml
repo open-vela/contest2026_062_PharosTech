@@ -194,7 +194,7 @@ jobs:
         run: |
           ROOT="${{ env.OPENVELA_DIR }}"
           TEAM="$ROOT/${{ env.REPO_NAME }}"
-          patch --batch -d "$ROOT/apps" -p1 --forward < "$TEAM/patches/apps-wamr-context-default.patch"
+          bash "$TEAM/tools/apply_dependency_patches.sh" "$ROOT"
           patch --batch -d "$ROOT/nuttx" -p1 --forward < "$TEAM/patches/nuttx-audio-fake-stop.patch"
           echo 'CXXFLAGS=-D_LIBCPP_WORKAROUND_OBJCXX_COMPILER_INTRINSICS' >> "$GITHUB_ENV"
 
