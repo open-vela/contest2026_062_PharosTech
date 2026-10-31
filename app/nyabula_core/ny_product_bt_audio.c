@@ -262,6 +262,7 @@ static void ny_bt_audio_media_service(struct ny_bt_audio_worker_s *worker)
       if (worker->speaker == NULL)
         {
           struct ny_audio_stream_config_s config = {
+            .dsp_source = "bluetooth",
             .path = CONFIG_NYABULA_CORE_BT_OUTPUT_DEVICE,
             .capture = false,
             .wav = true,
