@@ -376,6 +376,11 @@ static void ny_bt_audio_media_service(struct ny_bt_audio_worker_s *worker)
           else
             {
               g_bt_audio.status.media_frames++;
+              g_bt_audio.status.media_sbc_rate = format.rate;
+              g_bt_audio.status.media_sbc_channels = format.channels;
+              g_bt_audio.status.media_sbc_bitpool = format.bitpool;
+              g_bt_audio.status.media_sbc_blocks = format.blocks;
+              g_bt_audio.status.media_sbc_subbands = format.subbands;
             }
 
           nxmutex_unlock(&g_bt_audio.lock);
