@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PluginLifecycle from './PluginLifecycle.vue';
 /* Tablet: single column of cards, each = switch row + inline description. */
 import { EmptyState, MdButton, MdCard, Skeleton, UiIcon } from '@nyabula/ui';
 import PermissionRow from './PermissionRow.vue';
@@ -22,6 +23,7 @@ const RISK_TONE = { high: 'err', mid: 'warn', low: 'ok' } as const;
         <MdButton variant="icon" aria-label="打开插件页" @click="v.openPlugin(v.id.value)"><UiIcon name="widgets" :size="20" /></MdButton>
       </div>
     </div>
+    <PluginLifecycle :id="id" />
     <p v-if="v.disabledHint.value" class="muted note"><UiIcon name="lock" :size="14" /> {{ v.disabledHint.value }}</p>
 
     <div v-if="v.loading.value && !v.plugin.value" class="stack"><Skeleton v-for="i in 4" :key="i" height="120px" radius="var(--radius-l, 18px)" /></div>
