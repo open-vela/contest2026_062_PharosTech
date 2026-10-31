@@ -283,6 +283,34 @@ int ny_state_write(const char *key, const void *value, size_t length)
   return ny_state_write_many(&update, 1);
 }
 
+/****************************************************************************
+ * Name: ny_state_delete
+ ****************************************************************************/
+
+int ny_state_delete(const char *key)
+{
+  if (ny_state_key(key) < 0)
+    return -EINVAL;
+  sqlite3 *database = NULL;
+  sqlite3_stmt *statement = NULL;
+  nxmutex_lock(&g_state_lock);
+  int ret = ny_state_open(&database);
+  if (ret == 0)
+    {
+      int result = sqlite3_prepare_v2(database, "DELETE FROM state WHERE k=?1",
+                                      -1, &statement, NULL);
+      if (result == SQLITE_OK)
+        result = sqlite3_bind_text(statement, 1, key, -1, SQLITE_STATIC);
+      if (result == SQLITE_OK)
+        result = sqlite3_step(statement);
+      ret = ny_state_error(result);
+    }
+  sqlite3_finalize(statement);
+  sqlite3_close(database);
+  nxmutex_unlock(&g_state_lock);
+  return ret;
+}
+
 static int ny_state_update(sqlite3 *database,
                            const struct ny_state_update_s *updates,
                            size_t count)

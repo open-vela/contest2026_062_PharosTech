@@ -39,4 +39,6 @@ int ny_state_write_many(const struct ny_state_update_s *updates, size_t count);
 int ny_state_storage_write(const char *key, const void *value, size_t length,
                            size_t byte_limit, size_t key_limit);
 
+int ny_state_delete(const char *key);
+
 #endif
