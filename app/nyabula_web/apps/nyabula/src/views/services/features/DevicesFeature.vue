@@ -47,7 +47,7 @@ const subtitle = computed(() => !device.available ? '需要以主人身份连接
       <NkStatTile :value="counts.storage" unit="个" label="存储" icon="storage" />
       <NkStatTile :value="counts.network" unit="个" label="网络" icon="wifi" />
     </div>
-    <section class="card">
+    <section class="ui-panel card">
       <NkListSection title="已接入硬件" :card="false">
         <NkRow v-for="d in rows" :key="d.id" :icon="d.icon" :title="d.name" :sub="d.sub">
           <span class="state" :class="{ on: d.online }">{{ d.online ? '在线' : '离线' }}</span>
@@ -64,8 +64,7 @@ const subtitle = computed(() => !device.available ? '需要以主人身份连接
 .feature { display: flex; flex-direction: column; gap: 16px; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .stats { display: flex; gap: 10px; }
 .tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }

@@ -25,7 +25,7 @@ const Mini: Component | null = props.def.mini && !planned
 </script>
 
 <template>
-  <section class="fc" :class="{ active, planned }" :aria-disabled="planned || undefined">
+  <section class="ui-panel fc" :class="{ active, planned }" :aria-disabled="planned || undefined">
     <header class="fc-head">
       <button class="fc-id" @click="emit('open')">
         <span class="fc-icon"><UiIcon :name="def.icon" :size="20" /></span>
@@ -57,13 +57,10 @@ const Mini: Component | null = props.def.mini && !planned
   flex-direction: column;
   gap: 10px;
   padding: 12px 14px 14px;
-  border-radius: var(--radius-l);
-  background: var(--md-surface-container);
-  border: 1px solid transparent;
-  transition: background var(--dur-fast), border-color var(--dur-fast);
+  transition: background var(--dur-fast), box-shadow var(--dur-fast);
   min-height: 150px;
 }
-.fc.active { border-color: rgba(var(--md-primary-rgb), 0.45); }
+.fc.active { box-shadow: inset 0 0 0 1px rgba(var(--md-primary-rgb), 0.55), 0 0 24px -12px rgba(var(--md-primary-rgb), 0.8); }
 /* Planned: present but clearly not usable. */
 .fc.planned { min-height: 0; background: transparent; border: 1px dashed var(--md-outline-variant); }
 /* Dimmed element by element, not as a whole card: the preview button is the

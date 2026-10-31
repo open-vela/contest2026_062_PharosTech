@@ -49,7 +49,7 @@ async function cancel() { await timer.action('delete'); }
     <NkChipSelect :model-value="timer.selected.value" :options="timer.choices.value" label="设备睡眠定时器" @update:model-value="timer.select" />
     <p v-if="timer.core.error.value" role="alert" class="muted">{{ timer.core.error.value }}</p>
     <div class="grid">
-      <section class="card ring-card">
+      <section class="ui-panel card ring-card">
         <NkProgressRing :value="armed ? progress : 1" :size="ff === 'phone' ? 220 : 260" :stroke="14" :tone="expired ? 'ok' : 'primary'">
           <div class="ring-inner">
             <span class="big mono">{{ display }}</span>
@@ -66,7 +66,7 @@ async function cancel() { await timer.action('delete'); }
         <MdButton v-if="armed" variant="outlined" :disabled="timer.core.busy.value || !timer.core.available.value" @click="cancel">清除此计时器</MdButton>
         <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <h3 class="section-title">时长</h3>
         <NkChipSelect :model-value="chip" :options="CHIPS" :disabled="armed" @update:model-value="onChip" />
         <NkDial v-model="seconds" :min="60" :max="4 * 3600" :step="60" :disabled="armed" />
@@ -82,8 +82,7 @@ async function cancel() { await timer.action('delete'); }
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .ring-card { align-items: center; }
 .ring-inner { display: flex; flex-direction: column; align-items: center; gap: 4px; }
