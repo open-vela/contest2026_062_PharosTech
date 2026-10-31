@@ -47,6 +47,9 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
         ${NUTTX_APPS_DIR}/../packages/ai_agent/src
         ${NUTTX_APPS_DIR}/netutils/cjson/cJSON)
   endif()
+  if(CONFIG_NYABULA_CORE_AUTHOR)
+    list(APPEND NYABULA_CORE_SRCS ny_author.c)
+  endif()
   if(CONFIG_NYABULA_CORE_WEB)
     list(APPEND NYABULA_CORE_SRCS ny_web.c ny_web_auth.c ny_web_http.c ny_websocket.c
          ny_web_mirror.c)
