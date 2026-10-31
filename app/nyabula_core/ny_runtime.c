@@ -37,6 +37,7 @@
 #include "ny_http.h"
 #include "ny_module.h"
 #include "ny_runtime.h"
+#include "ny_ui.h"
 
 /****************************************************************************
  * Private Data
@@ -1129,6 +1130,11 @@ void ny_plugin_destroy(struct ny_plugin_s *plugin)
   if (plugin == NULL)
     {
       return;
+    }
+
+  if (plugin->generation != 0)
+    {
+      ny_ui_clear(plugin->id, plugin->generation);
     }
 
   if (plugin->context != NULL)
