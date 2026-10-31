@@ -212,6 +212,7 @@ export class NyaLinkClient {
     if (!token) {
       throw new NyaLinkError('EAUTH', 'pair response missing token');
     }
+    this.suppliedToken = token;
     await this.opts.saveToken?.(this.url, token);
     this.role = (res.role as string) ?? 'owner';
     // Re-hello with the fresh token so the session is fully established:
