@@ -37,16 +37,32 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define NY_PLUGIN_ID_SIZE             64
-#define NY_PLUGIN_VERSION_SIZE        32
-#define NY_PLUGIN_API_VERSION         1
+#define NY_PLUGIN_ID_SIZE               64
+#define NY_PLUGIN_VERSION_SIZE          32
+#define NY_PLUGIN_API_VERSION           1
 
-#define NY_PERMISSION_CORE_LOG        (1ull << 0)
-#define NY_PERMISSION_STORAGE_READ    (1ull << 1)
-#define NY_PERMISSION_STORAGE_WRITE   (1ull << 2)
-#define NY_PERMISSION_NETWORK_REQUEST (1ull << 3)
-#define NY_PERMISSION_UI_NOTIFY       (1ull << 4)
-#define NY_PERMISSION_AI_INVOKE       (1ull << 5)
+#define NY_PERMISSION_CORE_LOG          (1ull << 0)
+#define NY_PERMISSION_STORAGE_READ      (1ull << 1)
+#define NY_PERMISSION_STORAGE_WRITE     (1ull << 2)
+#define NY_PERMISSION_NETWORK_REQUEST   (1ull << 3)
+#define NY_PERMISSION_UI_NOTIFY         (1ull << 4)
+#define NY_PERMISSION_AI_INVOKE         (1ull << 5)
+#define NY_PERMISSION_UI_PAGE           (1ull << 6)
+#define NY_PERMISSION_UI_HTML           (1ull << 7)
+#define NY_PERMISSION_BLUETOOTH_READ    (1ull << 8)
+#define NY_PERMISSION_BLUETOOTH_CONNECT (1ull << 9)
+#define NY_PERMISSION_BLUETOOTH_CALL    (1ull << 10)
+#define NY_PERMISSION_AUDIO_READ        (1ull << 11)
+#define NY_PERMISSION_AUDIO_CONTROL     (1ull << 12)
+#define NY_PERMISSION_AUDIO_PLAY        (1ull << 13)
+#define NY_PERMISSION_AUDIO_CAPTURE     (1ull << 14)
+#define NY_PERMISSION_USB_ACCESS        (1ull << 15)
+#define NY_PERMISSION_CAMERA_CAPTURE    (1ull << 16)
+#define NY_PERMISSION_WEATHER_READ      (1ull << 17)
+#define NY_PERMISSION_DEVICE_READ       (1ull << 18)
+#define NY_PERMISSION_NAS_READ          (1ull << 19)
+#define NY_PERMISSION_NAS_WRITE         (1ull << 20)
+#define NY_PERMISSION_NAS_MANAGE        (1ull << 21)
 
 /****************************************************************************
  * Public Types
