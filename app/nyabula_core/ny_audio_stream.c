@@ -206,6 +206,20 @@ static int ny_audio_stream_pump(struct ny_audio_stream_s *stream,
       unsigned int index;
       ssize_t size;
 
+      /* An absolute timeout of "now" can still sleep for one scheduler
+       * tick. This stream is the queue's sole reader: inspect availability
+       * before nonblocking receives, and wait only when explicitly asked.
+       */
+
+      if (handled > 0 || timeout_ms <= 0)
+        {
+          struct mq_attr attr;
+          if (mq_getattr(stream->mq, &attr) < 0 || attr.mq_curmsgs == 0)
+            {
+              break;
+            }
+        }
+
       clock_gettime(CLOCK_REALTIME, &until);
       if (handled == 0 && timeout_ms > 0)
         {
