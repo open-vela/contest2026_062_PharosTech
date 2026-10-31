@@ -88,6 +88,56 @@ def write_wave(path, rate=48000, channels=2, width=2, frames=3001):
 
 
 class ResponseTests(unittest.TestCase):
+    def test_independent_crossover_response_and_legacy_abi(self):
+        class Split(ct.Structure):
+            _fields_ = [("satellite_highpass_hz", ct.c_float),
+                        ("bass_lowpass_hz", ct.c_float)]
+        create = LIB.nyadsp_create_input_eq_split
+        create.argtypes = [ct.POINTER(render.Config), ct.POINTER(render.Equalizer),
+                          ct.POINTER(ct.c_int), ct.c_size_t, ct.POINTER(Split),
+                          ct.c_int, ct.POINTER(ct.c_int)]
+        create.restype = ct.c_void_p
+        config = render.make_config(LIB, base())
+        bands = (render.Equalizer * 4)(*[render.Equalizer(1000, 1, 0) for _ in range(4)])
+        def measured(high, low, frequency, fullrange=0):
+            split = Split(high, low)
+            instance = engine()
+            instance.close()
+            instance.handle = create(ct.byref(config), bands, None, 4,
+                                     ct.byref(split), fullrange, None)
+            self.assertTrue(instance.handle)
+            try:
+                samples = tone(frequency)
+                output = process(instance, samples)
+                instance.reset()
+                self.assertEqual(process(instance, samples[:2048]), output[:3072])
+                return output
+            finally:
+                instance.close()
+        for frequency in (100, 250, 350, 500, 1000):
+            output = measured(250, 500, frequency)
+            high, right, low = [component(output[ch::3], frequency) / .02 for ch in range(3)]
+            r_high = math.tan(math.pi*frequency/render.RATE)/math.tan(math.pi*250/render.RATE)
+            r_low = math.tan(math.pi*frequency/render.RATE)/math.tan(math.pi*500/render.RATE)
+            self.assertAlmostEqual(abs(high), r_high**4/(1+r_high**4), delta=.003)
+            self.assertAlmostEqual(abs(low), 1/(1+r_low**4), delta=.003)
+            self.assertEqual(high, right)
+            if frequency == 350:
+                self.assertGreater(abs(high), .75)
+                self.assertGreater(abs(low), .75)
+        old = engine()
+        try:
+            self.assertEqual(measured(500, 500, 350), process(old, tone(350)))
+        finally:
+            old.close()
+        dry = measured(250, 500, 100, 1)
+        self.assertAlmostEqual(abs(component(dry[::3], 100))/.02, 1, delta=.003)
+        self.assertTrue(all(value == 0 for value in dry[2::3]))
+        for bad in (39, 5001, float('nan'), float('inf')):
+            for high, low in ((bad, 500), (250, bad)):
+                split = Split(high, low)
+                self.assertFalse(create(ct.byref(config), bands, None, 4,
+                                        ct.byref(split), 0, None))
 
     def test_extended_input_bank_and_legacy_abi(self):
         LIB.nyadsp_create_input_eq.argtypes = [ct.POINTER(render.Config), ct.POINTER(render.Equalizer), ct.POINTER(ct.c_int), ct.c_size_t, ct.c_int, ct.POINTER(ct.c_int)]
