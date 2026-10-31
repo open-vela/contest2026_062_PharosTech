@@ -24,6 +24,16 @@
 
 #include "ny_product.h"
 
+struct ny_agent_activity_s
+{
+  char state[24];
+  unsigned int steps;
+  uint64_t changed_ms;
+};
+
+void ny_agent_activity_get(struct ny_agent_activity_s *activity);
+int ny_agent_eyes_tick(void);
+
 int ny_agent_request(const struct ny_product_caller_s *caller,
                      const char *topic, const cJSON *data, cJSON **result);
 cJSON *ny_agent_capabilities(void);
