@@ -72,7 +72,7 @@ ifeq ($(CONFIG_NYABULA_CORE_NAS),y)
 CSRCS += ny_nas.c ny_web_nas.c
 endif
 ifeq ($(CONFIG_NYABULA_CORE_AGENT),y)
-CSRCS += ny_agent.c ny_agent_capabilities.c ny_agent_config.c ny_agent_skills.c ny_agent_automation.c ny_agent_mcp_wire.c ny_agent_mcp.c ny_agent_mcp_in.c
+CSRCS += ny_agent.c ny_agent_capabilities.c ny_agent_config.c ny_mimo.c ny_agent_skills.c ny_agent_automation.c ny_agent_mcp_wire.c ny_agent_mcp.c ny_agent_mcp_in.c
 CSRCS += ny_agent_profile.c ny_agent_channels.c ny_agent_builtin.c ny_agent_weixin.c ny_agent_feishu.c ny_agent_node.c
 CSRCS += ny_agent_local.c ny_agent_local_intent.c
 CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/../packages/ai_agent/include
