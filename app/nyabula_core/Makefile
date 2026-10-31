@@ -59,7 +59,7 @@ MODULE += y
 MAINSRC += ny_eye_ws_compat_main.c
 endif
 endif
-CSRCS   = ny_broker.c ny_capability.c ny_health.c ny_manifest.c ny_module.c
+CSRCS   = ny_broker.c ny_hardware.c ny_capability.c ny_health.c ny_manifest.c ny_module.c
 CSRCS  += ny_package.c ny_ui.c
 CSRCS  += ny_permission.c
 CSRCS  += ny_provider.c
