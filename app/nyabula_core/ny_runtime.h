@@ -100,6 +100,7 @@ struct ny_plugin_s
   char root[PATH_MAX];
   char storage_root[PATH_MAX];
   char path[PATH_MAX];
+  char last_error_text[256];
   struct ny_plugin_pending_s pending[NY_PLUGIN_MAX_PENDING];
 };
 
