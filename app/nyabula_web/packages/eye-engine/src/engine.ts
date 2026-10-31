@@ -21,6 +21,7 @@ import {
 import { MATERIAL_ICONS } from './materialIcons.js';
 import { makePairingQr, pairingQrText, type PairingQr } from './pairingQr.js';
 import type { EyeState } from './types.js';
+import { weatherSceneData } from './weatherScene.js';
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
@@ -141,15 +142,6 @@ const [SCENE_EASE_C1, SCENE_EASE_C2] = TIMING.sceneEase;
 function sceneEase(t: number): number {
   return cubicBezier01(clamp(t, 0, 1), SCENE_EASE_C1, SCENE_EASE_C2);
 }
-
-const WEATHER_META: Record<string, string[]> = {
-  sunny: ['28°', '晴朗', '紫外', '4', '体感', '29°'],
-  cloudy: ['21°', '多云', '湿度', '66%', '体感', '20°'],
-  rain: ['23°', '小雨', '湿度', '78%', '体感', '22°'],
-  storm: ['19°', '雷雨', '风速', '24', '湿度', '86%'],
-  snow: ['1°', '降雪', '湿度', '91%', '体感', '-2°'],
-  fog: ['16°', '有雾', '能见', '0.8', '湿度', '95%'],
-};
 
 interface ZzzParticle {
   side: number;
@@ -1898,7 +1890,7 @@ export class EyeEngine {
   }
 
   private drawWeatherReadout(ctx: CanvasRenderingContext2D, IR: number, C: number[], kind: string): void {
-    const m = WEATHER_META[kind] ?? WEATHER_META.rain;
+    const data = weatherSceneData(this.scenePayload, kind);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineCap = 'round';
@@ -1913,18 +1905,22 @@ export class EyeEngine {
     ctx.stroke();
     ctx.fillStyle = rgba(C, 0.98);
     ctx.font = fontEnglish(IR * 0.50);
-    ctx.fillText(m[0], 0, -IR * 0.10);
+    ctx.fillText(data.value, 0, -IR * 0.10);
+    if (data.city) {
+      ctx.font = fontBody(IR * 0.08);
+      ctx.fillText(data.city, 0, -IR * 0.47, IR * 1.5);
+    }
     ctx.font = fontTitle(IR * 0.125);
     ctx.fillStyle = rgba(C, 0.64);
-    ctx.fillText(m[1], 0, IR * 0.23);
+    ctx.fillText(data.title, 0, IR * 0.23);
     ctx.font = fontBody(IR * 0.072);
     ctx.fillStyle = rgba(C, 0.40);
-    ctx.fillText(m[2], -IR * 0.23, IR * 0.39);
-    ctx.fillText(m[4], IR * 0.23, IR * 0.39);
+    ctx.fillText(data.leftLabel, -IR * 0.23, IR * 0.39);
+    ctx.fillText(data.rightLabel, IR * 0.23, IR * 0.39);
     ctx.font = fontEnglish(IR * 0.115);
     ctx.fillStyle = rgba(C, 0.72);
-    ctx.fillText(m[3], -IR * 0.23, IR * 0.50);
-    ctx.fillText(m[5], IR * 0.23, IR * 0.50);
+    ctx.fillText(data.left, -IR * 0.23, IR * 0.50);
+    ctx.fillText(data.right, IR * 0.23, IR * 0.50);
   }
 
   private drawWeatherState(ctx: CanvasRenderingContext2D, IR: number, C: number[], side: number, kind: string, alpha: number): void {
