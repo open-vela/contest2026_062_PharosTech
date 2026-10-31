@@ -65,6 +65,8 @@ struct ny_audio_stream_config_s
 
 struct ny_audio_stream_stats_s
 {
+  size_t
+      queued_bytes; /* Submitted to hardware; excludes partial DSP blocks. */
   uint32_t chunks;  /* Chunks through the driver */
   uint32_t starved; /* Playback: times every chunk had been played before
                      * the next one was written.
@@ -131,8 +133,8 @@ ssize_t ny_audio_stream_read(struct ny_audio_stream_s *stream, void *pcm,
  * Name: ny_audio_stream_queued
  *
  * Description:
- *   Playback: bytes written that the driver has not returned yet, which is
- *   the output latency.
+ *   Playback: PCM bytes accepted but not returned, including a partial
+ *   application chunk and excluding any WAV header.
  *
  ****************************************************************************/
 

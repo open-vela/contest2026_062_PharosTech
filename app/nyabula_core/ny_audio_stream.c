@@ -64,6 +64,7 @@ enum ny_audio_stream_state_e
 struct ny_audio_stream_buffer_s
 {
   struct ap_buffer_s *apb;
+  size_t submitted; /* Upper half clears nbytes before DEQUEUE. */
   enum ny_audio_stream_state_e state;
   uint32_t order; /* Capture: arrival order */
 };
@@ -149,7 +150,12 @@ static int ny_audio_stream_enqueue(struct ny_audio_stream_s *stream, int index)
   buffer->state = NY_AUDIO_STREAM_QUEUED;
   if (!stream->config.capture)
     {
-      stream->queued += buffer->apb->nbytes;
+      buffer->submitted = desc.numbytes;
+      if (stream->config.wav && !stream->header_sent)
+        {
+          buffer->submitted -= NY_PCM_WAV_HEADER_BYTES;
+        }
+      stream->queued += buffer->submitted;
     }
 
   return 0;
@@ -261,7 +267,8 @@ static int ny_audio_stream_pump(struct ny_audio_stream_s *stream,
           else
             {
               buffer->state = NY_AUDIO_STREAM_FREE;
-              stream->queued -= buffer->apb->nbytes;
+              stream->queued -= buffer->submitted;
+              buffer->submitted = 0;
               buffer->apb->nbytes = 0;
               if (stream->queued == 0 && stream->started)
                 {
@@ -623,7 +630,16 @@ size_t ny_audio_stream_queued(struct ny_audio_stream_s *stream)
     }
 
   ny_audio_stream_pump(stream, 0);
-  return stream->queued;
+  size_t queued = stream->queued;
+  if (stream->current >= 0)
+    {
+      queued += stream->buffers[stream->current].apb->nbytes;
+      if (stream->config.wav && !stream->header_sent)
+        {
+          queued -= NY_PCM_WAV_HEADER_BYTES;
+        }
+    }
+  return queued;
 }
 
 /****************************************************************************
@@ -639,7 +655,9 @@ void ny_audio_stream_stats(struct ny_audio_stream_s *stream,
     }
   else
     {
+      ny_audio_stream_pump(stream, 0);
       *stats = stream->stats;
+      stats->queued_bytes = stream->queued;
     }
 }
 
