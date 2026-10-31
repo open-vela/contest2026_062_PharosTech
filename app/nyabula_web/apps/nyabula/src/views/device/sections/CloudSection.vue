@@ -29,6 +29,13 @@ const STATE_META: Record<CloudState, { title: string; tag: string; tone: string;
 const meta = computed(() => STATE_META[status.value?.state ?? 'disabled']);
 const unsupported = computed(() => status.value?.state === 'unsupported');
 const deviceId = computed(() => status.value?.deviceId ?? session.device?.id ?? null);
+const cloudConsoleUrl = computed(() => {
+  try {
+    const target = new URL(status.value?.url ?? '');
+    if (!['ws:', 'wss:'].includes(target.protocol)) return null;
+    return `${target.protocol === 'wss:' ? 'https:' : 'http:'}//${target.host}/`;
+  } catch { return null; }
+});
 
 const enabled = ref(false);
 const url = ref('');
@@ -96,8 +103,8 @@ async function copy(text: string): Promise<void> {
           </div>
         </dl>
         <p v-if="status.claimCode" class="muted claim-hint">
-          设备尚未被认领。在账号页输入认领码即可绑定到你的账号。
-          <RouterLink :to="{ name: 'account' }" class="link">去账号页认领 <UiIcon name="arrow_forward" :size="14" /></RouterLink>
+          在 Cloud 控制台使用设备 ID 和认领码绑定设备；远程控制仍需设备访问密码。
+          <a v-if="cloudConsoleUrl" :href="cloudConsoleUrl" target="_blank" rel="noopener" class="link">打开 Cloud 控制台 <UiIcon name="arrow_forward" :size="14" /></a>
         </p>
         <div class="row" style="justify-content: flex-end; margin-top: 8px">
           <MdButton variant="text" :disabled="task.busy.value" @click="task.run()">{{ task.busy.value ? '刷新中…' : '刷新' }}</MdButton>
