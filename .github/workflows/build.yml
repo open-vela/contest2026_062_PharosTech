@@ -136,7 +136,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git curl cmake python3 libc++abi-dev build-essential
+            git curl cmake python3 libc++abi-dev libunwind-dev build-essential
 
       # 安装 repo 工具
       - name: Install repo
