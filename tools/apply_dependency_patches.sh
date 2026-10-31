@@ -75,3 +75,7 @@ done
 if [ -f "$patch_dir/nuttx-bluetooth-sco.patch" ]; then
   apply_one "$workspace/nuttx" "$patch_dir/nuttx-bluetooth-sco.patch"
 fi
+if [ -f "$patch_dir/nuttx-usb-audio-packet-boundary.patch" ] &&
+   [ -f "$workspace/nuttx/drivers/usbhost/usbhost_audio.c" ]; then
+  apply_one "$workspace/nuttx" "$patch_dir/nuttx-usb-audio-packet-boundary.patch"
+fi
