@@ -40,6 +40,7 @@
 #include "ny_permission.h"
 #include "ny_runtime.h"
 #include "ny_scheduler.h"
+#include "ny_ui.h"
 #include "ny_wasm.h"
 
 /****************************************************************************
@@ -614,6 +615,7 @@ int ny_scheduler_refresh_permissions(const char *id)
 {
   struct ny_scheduler_slot_s *slot;
   struct ny_plugin_config_s config;
+  uint64_t previous_permissions;
   pid_t pid;
   int ret;
 
@@ -631,6 +633,7 @@ int ny_scheduler_refresh_permissions(const char *id)
     }
 
   config = slot->config;
+  previous_permissions = config.permissions;
   pid = slot->pid;
   nxmutex_unlock(&g_scheduler_lock);
 
@@ -659,6 +662,9 @@ int ny_scheduler_refresh_permissions(const char *id)
     }
 
   nxmutex_unlock(&g_scheduler_lock);
+  if ((previous_permissions & ~config.permissions &
+       (NY_PERMISSION_UI_PAGE | NY_PERMISSION_UI_HTML)) != 0)
+    ny_ui_clear(id, 0);
   return 0;
 }
 

@@ -28,6 +28,7 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
       ny_manifest.c
       ny_module.c
       ny_package.c
+      ny_ui.c
       ny_permission.c
       ny_provider.c
       ny_runtime.c
