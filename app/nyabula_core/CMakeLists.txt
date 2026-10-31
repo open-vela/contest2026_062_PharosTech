@@ -70,6 +70,16 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     if(CONFIG_NYABULA_CORE_LIGHT)
       list(APPEND NYABULA_CORE_SRCS ny_product_light.c ny_light_math.c)
     endif()
+    if(CONFIG_NYABULA_CORE_BT OR CONFIG_NYABULA_CORE_DSP)
+      list(APPEND NYABULA_CORE_SRCS ny_audio_stream.c ny_pcm.c)
+    endif()
+    if(CONFIG_NYABULA_CORE_DSP)
+      get_filename_component(NYCORE_SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR} REALPATH)
+      set(NYCORE_DSP_DIR ${NYCORE_SOURCE_DIR}/../nyabula_dsp)
+      list(APPEND NYABULA_CORE_SRCS ny_product_dsp.c
+           ${NYCORE_DSP_DIR}/nyadsp.c ${NYCORE_DSP_DIR}/nyadsp_clock.c
+           ${NYCORE_DSP_DIR}/nyadsp_resample.c ny_dsp_output.c)
+    endif()
     if(CONFIG_NYABULA_CORE_NETWORK)
       list(APPEND NYABULA_CORE_SRCS ny_product_network.c)
     endif()
@@ -170,7 +180,7 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     ${NYCORE_SQLITE_DIR}
     ${NYCORE_NBOOTCTL_DIR}
     ${NYCORE_NYAMP_DIR}
-
+    ${NYCORE_DSP_DIR}
     ${NUTTX_APPS_DIR}/crypto/libsodium/libsodium/src/libsodium/include
     ${NUTTX_APPS_DIR}/interpreters/wamr/wamr/core/iwasm/include
     DEPENDS

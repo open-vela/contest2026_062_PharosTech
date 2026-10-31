@@ -25,8 +25,11 @@
  ****************************************************************************/
 
 #include "ny_audio_stream.h"
+#ifdef CONFIG_NYABULA_CORE_DSP
+#include "ny_dsp_output.h"
+#endif
 
-#ifdef CONFIG_NYABULA_CORE_BT
+#if defined(CONFIG_NYABULA_CORE_BT) || defined(CONFIG_NYABULA_CORE_DSP)
 
 #include <errno.h>
 #include <fcntl.h>
@@ -72,6 +75,9 @@ struct ny_audio_stream_buffer_s
 struct ny_audio_stream_s
 {
   struct ny_audio_stream_config_s config;
+#ifdef CONFIG_NYABULA_CORE_DSP
+  struct ny_dsp_output_s *dsp;
+#endif
   struct ny_audio_stream_buffer_s buffers[NY_AUDIO_STREAM_BUFFERS_MAX];
   struct ny_audio_stream_stats_s stats;
   unsigned int count;
@@ -360,6 +366,21 @@ int ny_audio_stream_open(struct ny_audio_stream_s **result,
   stream->config = *config;
   stream->current = -1;
   stream->mq = (mqd_t)-1;
+  stream->fd = -1;
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (!config->capture && config->dsp_source != NULL)
+    {
+      ret = ny_dsp_output_open(&stream->dsp, config);
+      if (ret < 0)
+        {
+          free(stream);
+          return ret;
+        }
+
+      *result = stream;
+      return 0;
+    }
+#endif
   stream->fd = open(config->path, O_RDWR | O_CLOEXEC);
   if (stream->fd < 0)
     {
@@ -477,6 +498,52 @@ failed:
 }
 
 /****************************************************************************
+ * Name: ny_audio_stream_unity
+ *
+ * Description:
+ *   Establish a known hardware baseline for a software-controlled output.
+ *   Devices without feature units need no hardware volume operation.
+ ****************************************************************************/
+
+int ny_audio_stream_unity(struct ny_audio_stream_s *stream)
+{
+  struct audio_caps_s caps;
+  struct audio_caps_desc_s desc;
+  memset(&caps, 0, sizeof(caps));
+  caps.ac_len = sizeof(caps);
+  caps.ac_type = AUDIO_TYPE_FEATURE;
+  caps.ac_subtype = AUDIO_FU_UNDEF;
+  if (ioctl(stream->fd, AUDIOIOC_GETCAPS, (unsigned long)&caps) < 0)
+    {
+      return -errno;
+    }
+
+  memset(&desc, 0, sizeof(desc));
+  desc.caps.ac_len = sizeof(desc.caps);
+  desc.caps.ac_type = AUDIO_TYPE_FEATURE;
+  if ((caps.ac_controls.hw[0] & AUDIO_FU_VOLUME) != 0)
+    {
+      desc.caps.ac_format.hw = AUDIO_FU_VOLUME;
+      desc.caps.ac_controls.hw[0] = 1000;
+      if (ioctl(stream->fd, AUDIOIOC_CONFIGURE, (unsigned long)&desc) < 0)
+        {
+          return -errno;
+        }
+    }
+
+  if ((caps.ac_controls.hw[0] & AUDIO_FU_MUTE) != 0)
+    {
+      desc.caps.ac_format.hw = AUDIO_FU_MUTE;
+      desc.caps.ac_controls.hw[0] = 0;
+      if (ioctl(stream->fd, AUDIOIOC_CONFIGURE, (unsigned long)&desc) < 0)
+        {
+          return -errno;
+        }
+    }
+  return 0;
+}
+
+/****************************************************************************
  * Name: ny_audio_stream_write
  ****************************************************************************/
 
@@ -491,6 +558,12 @@ ssize_t ny_audio_stream_write(struct ny_audio_stream_s *stream,
       return -EINVAL;
     }
 
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (stream->dsp != NULL)
+    {
+      return ny_dsp_output_write(stream->dsp, pcm, bytes, timeout_ms);
+    }
+#endif
   while (done < bytes)
     {
       struct ap_buffer_s *apb;
@@ -654,6 +727,12 @@ size_t ny_audio_stream_queued(struct ny_audio_stream_s *stream)
       return 0;
     }
 
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (stream->dsp != NULL)
+    {
+      return ny_dsp_output_queued(stream->dsp);
+    }
+#endif
   ny_audio_stream_pump(stream, 0);
   size_t queued = stream->queued;
   if (stream->current >= 0)
@@ -680,6 +759,13 @@ void ny_audio_stream_stats(struct ny_audio_stream_s *stream,
     }
   else
     {
+#ifdef CONFIG_NYABULA_CORE_DSP
+      if (stream->dsp != NULL)
+        {
+          ny_dsp_output_stats(stream->dsp, stats);
+          return;
+        }
+#endif
       ny_audio_stream_pump(stream, 0);
       *stats = stream->stats;
       stats->queued_bytes = stream->queued;
@@ -699,6 +785,14 @@ void ny_audio_stream_close(struct ny_audio_stream_s *stream)
       return;
     }
 
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (stream->dsp != NULL)
+    {
+      ny_dsp_output_close(stream->dsp);
+      free(stream);
+      return;
+    }
+#endif
   if (stream->started)
     {
       struct timespec begin;
@@ -772,51 +866,7 @@ void ny_audio_stream_close(struct ny_audio_stream_s *stream)
   free(stream);
 }
 
-/****************************************************************************
- * Name: ny_audio_stream_unity
- *
- * Description:
- *   Establish a known hardware baseline for a software-controlled output.
- *   Devices without feature units need no hardware volume operation.
- ****************************************************************************/
-
-int ny_audio_stream_unity(struct ny_audio_stream_s *stream)
-{
-  struct audio_caps_s caps;
-  struct audio_caps_desc_s desc;
-  memset(&caps, 0, sizeof(caps));
-  caps.ac_len = sizeof(caps);
-  caps.ac_type = AUDIO_TYPE_FEATURE;
-  caps.ac_subtype = AUDIO_FU_UNDEF;
-  if (ioctl(stream->fd, AUDIOIOC_GETCAPS, (unsigned long)&caps) < 0)
-    {
-      return -errno;
-    }
-
-  memset(&desc, 0, sizeof(desc));
-  desc.caps.ac_len = sizeof(desc.caps);
-  desc.caps.ac_type = AUDIO_TYPE_FEATURE;
-  if ((caps.ac_controls.hw[0] & AUDIO_FU_VOLUME) != 0)
-    {
-      desc.caps.ac_format.hw = AUDIO_FU_VOLUME;
-      desc.caps.ac_controls.hw[0] = 1000;
-      if (ioctl(stream->fd, AUDIOIOC_CONFIGURE, (unsigned long)&desc) < 0)
-        {
-          return -errno;
-        }
-    }
-
-  if ((caps.ac_controls.hw[0] & AUDIO_FU_MUTE) != 0)
-    {
-      desc.caps.ac_format.hw = AUDIO_FU_MUTE;
-      desc.caps.ac_controls.hw[0] = 0;
-      if (ioctl(stream->fd, AUDIOIOC_CONFIGURE, (unsigned long)&desc) < 0)
-        {
-          return -errno;
-        }
-    }
-  return 0;
-}
+#endif /* CONFIG_NYABULA_CORE_BT || CONFIG_NYABULA_CORE_DSP */
 
 /****************************************************************************
  * Name: ny_audio_stream_drain
@@ -831,6 +881,12 @@ int ny_audio_stream_drain(struct ny_audio_stream_s *stream, int timeout_ms)
       return -EINVAL;
     }
 
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (stream->dsp != NULL)
+    {
+      return ny_dsp_output_drain(stream->dsp, timeout_ms);
+    }
+#endif
   if (stream->current >= 0)
     {
       int index = stream->current;
@@ -900,6 +956,12 @@ int ny_audio_stream_pause(struct ny_audio_stream_s *stream, bool paused)
       return -EINVAL;
     }
 
+#ifdef CONFIG_NYABULA_CORE_DSP
+  if (stream->dsp != NULL)
+    {
+      return ny_dsp_output_pause(stream->dsp, paused);
+    }
+#endif
   if (!stream->started)
     {
       return 0;
@@ -913,5 +975,3 @@ int ny_audio_stream_pause(struct ny_audio_stream_s *stream, bool paused)
   return -ENOTSUP;
 #endif
 }
-
-#endif /* CONFIG_NYABULA_CORE_BT */

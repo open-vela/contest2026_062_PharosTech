@@ -96,6 +96,15 @@ endif
 ifeq ($(CONFIG_NYABULA_CORE_LIGHT),y)
 CSRCS += ny_product_light.c ny_light_math.c
 endif
+ifneq ($(filter y,$(CONFIG_NYABULA_CORE_BT) $(CONFIG_NYABULA_CORE_DSP)),)
+CSRCS += ny_audio_stream.c ny_pcm.c
+endif
+ifeq ($(CONFIG_NYABULA_CORE_DSP),y)
+NYCORE_DSP_DIR := $(realpath $(CURDIR))/../nyabula_dsp
+VPATH += $(NYCORE_DSP_DIR)
+CFLAGS += ${INCDIR_PREFIX}$(NYCORE_DSP_DIR)
+CSRCS += ny_product_dsp.c nyadsp.c nyadsp_clock.c nyadsp_resample.c ny_dsp_output.c
+endif
 ifeq ($(CONFIG_NYABULA_CORE_NETWORK),y)
 CSRCS += ny_product_network.c
 endif

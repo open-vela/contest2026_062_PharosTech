@@ -584,6 +584,22 @@ config NYABULA_CORE_VOICE_STACKSIZE
 
 endif # NYABULA_CORE_VOICE
 
+config NYABULA_CORE_DSP
+	bool "48 kHz DSP player with USB 2.1 crossover"
+	default n
+	depends on NYABULA_CORE_PRODUCT && NYABULA_CORE_AUDIO
+	depends on NYABULA_CORE_MEDIA && !DISABLE_PTHREAD
+	---help---
+		Explicit DSP playback of 48 kHz S16 stereo WAV tracks from the
+		media directory. PEQ and LR4 crossover feed ES8388 satellites
+		and optional USB bass output. Ordinary media and voice paths
+		keep their original format and processing contracts.
+
+config NYABULA_CORE_DSP_BASS_DEVICE
+	string "USB bass playback node"
+	default "/dev/audio/usbp0"
+	depends on NYABULA_CORE_DSP
+
 config NYABULA_CORE_STORAGE_BYTES_LIMIT
 	int "Maximum stored value bytes per plugin"
 	default 65536

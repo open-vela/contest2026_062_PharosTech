@@ -47,6 +47,8 @@ static int ny_product_store_load(const char *key, cJSON **value,
 static int ny_product_store_key(const char *domain, char *key, size_t capacity)
 {
   static const char *const domains[] = { "access",
+                                         "dsp",
+                                         "dsp-presets",
                                          "plugin-author",
                                          "plugin-author-transaction",
                                          "nas",
