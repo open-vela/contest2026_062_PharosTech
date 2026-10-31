@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import PluginIcon from '../../components/PluginIcon.vue';
+import PluginLifecycle from './PluginLifecycle.vue';
 /* Phone: page fills the screen (AppBar already provides back); a fixed
  * bottom button opens the permission sheet. */
 import { ref } from 'vue';
-import { NyaUiPage } from '@nyabula/nyaui-vue';
+import { NyaUiSurface as NyaUiPage } from '@nyabula/nyaui-vue';
 import { BottomSheet, EmptyState, MdButton, Skeleton, UiIcon } from '@nyabula/ui';
 import PluginPermissionPanel from './PluginPermissionPanel.vue';
 import { usePluginPageView } from './PluginPageView.logic';
@@ -16,12 +18,14 @@ const sheet = ref(false);
 <template>
   <div class="plugin-phone">
     <div class="row between head">
-      <span class="row title"><UiIcon :name="page.plugin.value?.icon ?? 'extension'" :size="20" /> {{ page.title.value }}</span>
+      <span class="row title"><PluginIcon :plugin="page.plugin.value" :size="20" /> {{ page.title.value }}</span>
       <MdButton variant="icon" :disabled="page.loading.value" aria-label="重新加载" @click="page.retry"><UiIcon name="refresh" :size="20" /></MdButton>
     </div>
+    <PluginLifecycle :id="id" />
 
+    <EmptyState v-if="page.plugin.value?.state === 'stopped'" icon="stop" title="插件已停止" hint="授权所需能力后，点击上方启动插件。" />
     <EmptyState
-      v-if="page.errorText.value && !page.tree.value"
+      v-else-if="page.errorText.value && !page.tree.value"
       tone="error"
       icon="extension"
       title="插件页面加载失败"
@@ -32,7 +36,7 @@ const sheet = ref(false);
     <Skeleton v-else-if="!page.tree.value" :lines="8" />
     <template v-else>
       <p v-if="!page.session.canControl" class="muted readonly">当前为访客身份，页面只读</p>
-      <NyaUiPage :tree="page.tree.value" :busy="page.busy.value" @command="page.onCommand" />
+      <NyaUiPage :plugin-id="id" :tree="page.tree.value" :busy="page.busy.value" @command="page.onCommand" />
     </template>
 
     <div class="bottom-bar">

@@ -3,6 +3,9 @@
  * refresh button reloads. */
 import { ref } from 'vue';
 import { EmptyState, MdButton, Skeleton, UiIcon } from '@nyabula/ui';
+import PluginCard from './PluginCard.vue';
+import PluginInstall from './PluginInstall.vue';
+import PluginAuthorPanel from './PluginAuthorPanel.vue';
 import { usePluginsPage } from './PluginsView.logic';
 import { permSummary, stateLabel, stateTone } from './plugins.logic';
 
@@ -36,6 +39,7 @@ async function onTouchEnd() {
 
 <template>
   <div class="plugins-phone" @touchstart.passive="onTouchStart" @touchmove.passive="onTouchMove" @touchend="onTouchEnd" @touchcancel="onTouchEnd">
+    <PluginInstall />
     <div class="pull" :style="{ height: pull + 'px', opacity: pull ? 1 : 0 }">
       <UiIcon name="refresh" :size="18" :class="{ spin: page.loading.value }" />
       <span>{{ pull >= 64 ? '松开刷新' : '下拉刷新' }}</span>
@@ -50,27 +54,14 @@ async function onTouchEnd() {
       </MdButton>
     </div>
 
+    <PluginAuthorPanel />
     <div v-if="page.showSkeleton.value" class="stack">
       <Skeleton v-for="i in 6" :key="i" height="66px" radius="var(--radius-m)" />
     </div>
     <EmptyState v-else-if="page.showError.value" tone="error" title="插件列表加载失败" :hint="page.error.value ?? undefined" action-text="重试" @action="page.refresh" />
     <EmptyState v-else-if="page.showEmpty.value" icon="extension" title="还没有插件" hint="设备上尚未安装任何插件" action-text="刷新" @action="page.refresh" />
     <div v-else class="stack">
-      <button v-for="p in page.items.value" :key="p.id" class="list-tile" @click="page.openPlugin(p.id)">
-        <span class="tile-icon"><UiIcon :name="p.icon ?? 'extension'" :size="20" /></span>
-        <span class="tile-body">
-          <span class="tile-title">{{ p.name }}</span>
-          <span class="tile-sub">
-            <span v-if="p.version" class="mono">v{{ p.version }} · </span>
-            <template v-if="permSummary(p).total">已授 {{ permSummary(p).granted }}/{{ permSummary(p).total }}</template>
-            <template v-else>无需权限</template>
-          </span>
-        </span>
-        <span class="tile-trail">
-          <span class="tag" :class="stateTone(p.state)">{{ stateLabel(p.state) }}</span>
-          <UiIcon name="chevron_right" :size="18" />
-        </span>
-      </button>
+      <PluginCard v-for="p in page.items.value" :key="p.id" :plugin="p" @open="page.openPlugin(p.id)" />
     </div>
   </div>
 </template>

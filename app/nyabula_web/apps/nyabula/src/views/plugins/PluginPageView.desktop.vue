@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import PluginIcon from '../../components/PluginIcon.vue';
+import PluginLifecycle from './PluginLifecycle.vue';
 /* Desktop: NyaUI page centered; context panel = permission switches +
  * collapsible developer raw-tree JSON. */
-import { NyaUiPage } from '@nyabula/nyaui-vue';
+import { NyaUiSurface as NyaUiPage } from '@nyabula/nyaui-vue';
 import { EmptyState, MdButton, MdCard, Skeleton, UiIcon } from '@nyabula/ui';
 import ContextSlot from '../../components/ContextSlot.vue';
 import PluginPermissionPanel from './PluginPermissionPanel.vue';
@@ -17,7 +19,7 @@ const { page, perms } = v;
   <div class="page narrow plugin-page">
     <div class="row between head">
       <div class="row">
-        <span class="icon"><UiIcon :name="page.plugin.value?.icon ?? 'extension'" :size="22" /></span>
+        <span class="icon"><PluginIcon :plugin="page.plugin.value" :size="22" /></span>
         <div>
           <h2 class="page-title">{{ page.title.value }}</h2>
           <p class="page-sub">
@@ -28,9 +30,11 @@ const { page, perms } = v;
       </div>
       <MdButton variant="icon" :disabled="page.loading.value" aria-label="重新加载" @click="page.retry"><UiIcon name="refresh" :size="20" /></MdButton>
     </div>
+    <PluginLifecycle :id="id" />
 
+    <EmptyState v-if="page.plugin.value?.state === 'stopped'" icon="stop" title="插件已停止" hint="授权所需能力后，点击上方启动插件。" />
     <EmptyState
-      v-if="page.errorText.value && !page.tree.value"
+      v-else-if="page.errorText.value && !page.tree.value"
       tone="error"
       icon="extension"
       title="插件页面加载失败"
@@ -41,7 +45,7 @@ const { page, perms } = v;
     <Skeleton v-else-if="!page.tree.value" :lines="8" />
     <div v-else class="stage">
       <p v-if="!page.session.canControl" class="muted readonly">当前为访客身份，页面只读</p>
-      <NyaUiPage :tree="page.tree.value" :busy="page.busy.value" @command="page.onCommand" />
+      <NyaUiPage :plugin-id="id" :tree="page.tree.value" :busy="page.busy.value" @command="page.onCommand" />
     </div>
 
     <ContextSlot>
@@ -75,9 +79,8 @@ const { page, perms } = v;
   color: var(--md-on-primary-container);
 }
 .stage {
-  background: var(--md-surface-container-low);
-  border-radius: var(--radius-l, 18px);
-  padding: 18px;
+  background: transparent;
+  padding: 0;
 }
 .readonly { font-size: 12.5px; margin: 0 0 10px; }
 .small { font-size: 12px; margin: 10px 0 4px; }

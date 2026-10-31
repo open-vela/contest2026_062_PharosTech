@@ -1,10 +1,13 @@
 <script setup lang="ts">
+import PluginIcon from '../../components/PluginIcon.vue';
 /* Tablet: landscape = master (list) / detail (NyaUI preview of the selected
  * plugin); portrait = plain card list. */
 import { computed, inject } from 'vue';
 import { EmptyState, MdButton, Skeleton, UiIcon } from '@nyabula/ui';
 import PluginCard from './PluginCard.vue';
 import PluginPagePane from './PluginPagePane.vue';
+import PluginInstall from './PluginInstall.vue';
+import PluginAuthorPanel from './PluginAuthorPanel.vue';
 import { usePluginsPage } from './PluginsView.logic';
 import { hasPage, permSummary, stateLabel, stateTone } from './plugins.logic';
 import type { useFormFactor } from '../../composables/useFormFactor';
@@ -17,6 +20,7 @@ const portrait = computed(() => ff.orientation.value === 'portrait');
 <template>
   <div class="plugins-tablet" :class="{ portrait }">
     <section class="master">
+      <PluginInstall />
       <div class="row between head">
         <div>
           <h2 class="page-title">插件</h2>
@@ -25,6 +29,7 @@ const portrait = computed(() => ff.orientation.value === 'portrait');
         <MdButton variant="icon" :disabled="page.loading.value" aria-label="刷新" @click="page.refresh"><UiIcon name="refresh" :size="20" /></MdButton>
       </div>
 
+      <PluginAuthorPanel />
       <div v-if="page.showSkeleton.value" class="stack">
         <Skeleton v-for="i in 5" :key="i" height="72px" radius="var(--radius-m)" />
       </div>
@@ -35,23 +40,7 @@ const portrait = computed(() => ff.orientation.value === 'portrait');
           <PluginCard v-for="p in page.items.value" :key="p.id" :plugin="p" @open="page.openPlugin(p.id)" />
         </div>
         <div v-else class="stack">
-          <button
-            v-for="p in page.items.value"
-            :key="p.id"
-            class="list-tile"
-            :class="{ active: page.selectedId.value === p.id }"
-            @click="page.selectedId.value = p.id"
-          >
-            <span class="tile-icon"><UiIcon :name="p.icon ?? 'extension'" :size="20" /></span>
-            <span class="tile-body">
-              <span class="tile-title">{{ p.name }}</span>
-              <span class="tile-sub">
-                <span v-if="p.version" class="mono">v{{ p.version }}</span>
-                · 已授 {{ permSummary(p).granted }}/{{ permSummary(p).total }}
-              </span>
-            </span>
-            <span class="tile-trail"><span class="tag" :class="stateTone(p.state)">{{ stateLabel(p.state) }}</span></span>
-          </button>
+          <PluginCard v-for="p in page.items.value" :key="p.id" :plugin="p" :active="page.selectedId.value === p.id" @open="page.selectedId.value = p.id" />
         </div>
       </template>
     </section>
@@ -60,7 +49,7 @@ const portrait = computed(() => ff.orientation.value === 'portrait');
       <template v-if="page.selected.value">
         <div class="row between detail-head">
           <div class="row">
-            <UiIcon :name="page.selected.value.icon ?? 'extension'" :size="22" />
+            <PluginIcon :plugin="page.selected.value" :size="22" />
             <span class="detail-title">{{ page.selected.value.name }}</span>
           </div>
           <MdButton variant="tonal" @click="page.openPlugin(page.selected.value.id)">打开</MdButton>

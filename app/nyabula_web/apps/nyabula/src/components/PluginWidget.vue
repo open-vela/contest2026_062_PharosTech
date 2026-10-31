@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import PluginIcon from './PluginIcon.vue';
 /* One plugin widget: ui.tree {surface:"widget"} rendered with NyaUI. */
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { NyaUiPage, type NyaUiCommand, type NyaUiTree } from '@nyabula/nyaui-vue';
+import { NyaUiSurface as NyaUiPage, type NyaUiCommand, type NyaUiTree } from '@nyabula/nyaui-vue';
 import { MdCard, Skeleton, UiIcon } from '@nyabula/ui';
 import { usePluginsStore, type PluginInfo } from '../stores/plugins';
 import { useSessionStore } from '../stores/session';
@@ -35,11 +36,11 @@ function open() {
 <template>
   <MdCard class="pw">
     <button class="pw-head" @click="open">
-      <UiIcon :name="plugin.icon ?? 'extension'" :size="18" />
+      <PluginIcon :plugin="plugin" :size="18" />
       <span>{{ plugin.name }}</span>
       <UiIcon name="chevron_right" :size="16" class="muted" />
     </button>
-    <NyaUiPage v-if="tree" :tree="tree" :busy="busy" @command="onCommand" />
+    <NyaUiPage :plugin-id="plugin.id" v-if="tree" :tree="tree" :busy="busy" @command="onCommand" />
     <p v-else-if="failed" class="muted" style="font-size: 12.5px; margin: 0">此插件未提供小组件</p>
     <Skeleton v-else :lines="3" />
   </MdCard>

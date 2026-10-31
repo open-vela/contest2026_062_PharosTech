@@ -3,7 +3,7 @@
  * and command forwarding. Used by the page view variants and the tablet
  * master-detail preview. */
 import { toRef } from 'vue';
-import { NyaUiPage } from '@nyabula/nyaui-vue';
+import { NyaUiSurface as NyaUiPage } from '@nyabula/nyaui-vue';
 import { EmptyState, Skeleton } from '@nyabula/ui';
 import { usePluginPage } from './plugins.logic';
 
@@ -26,7 +26,7 @@ defineExpose({ page });
     <Skeleton v-else-if="!page.tree.value" :lines="6" />
     <template v-else>
       <p v-if="!page.session.canControl" class="muted readonly">当前为访客身份，页面只读</p>
-      <NyaUiPage :tree="page.tree.value" :busy="page.busy.value" @command="page.onCommand" />
+      <NyaUiPage :plugin-id="id" :tree="page.tree.value" :busy="page.busy.value" @command="page.onCommand" />
     </template>
   </div>
 </template>
