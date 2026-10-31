@@ -55,9 +55,11 @@ struct ny_audio_stream_config_s
              */
   uint32_t rate;
   uint8_t channels;
-  size_t chunk;         /* Bytes handed to the driver at a time: the unit of
-                         * latency in both directions.
-                         */
+  size_t chunk; /* Bytes handed to the driver at a time: the unit of
+                 * latency in both directions.
+                 */
+  unsigned int
+      prefill; /* Playback chunks before START; 0 starts immediately. */
   unsigned int buffers; /* Chunks that may be queued; 0 takes the driver's
                          * own count.
                          */
