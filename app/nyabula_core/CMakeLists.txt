@@ -53,7 +53,7 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
   endif()
   if(CONFIG_NYABULA_CORE_PRODUCT)
     list(APPEND NYABULA_CORE_SRCS ny_product_store.c ny_product_records.c
- ny_plugin_upload.c ny_access.c
+         ny_plugins.c ny_plugin_upload.c ny_access.c
          ny_product_cli.c ny_product.c ny_product_timers.c ny_product_runtime.c
          ny_product_alarms.c ny_product_notifications.c ny_product_briefing.c
          ny_product_eyes.c ny_product_device.c ny_product_media.c
