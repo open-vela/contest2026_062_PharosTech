@@ -21,6 +21,7 @@ const ff = inject<ReturnType<typeof useFormFactor>>('formFactor')!;
 
 <template>
   <div class="home-desktop">
+    <div class="home-grid">
     <div class="col main">
       <DeviceHeroCard :page="page" v-reveal />
       <section v-reveal="60">
@@ -35,6 +36,7 @@ const ff = inject<ReturnType<typeof useFormFactor>>('formFactor')!;
       <AttentionList :page="page" v-reveal="100" />
       <PluginsSummaryCard :page="page" v-reveal="140" />
     </div>
+    </div>
     <ContextSlot>
       <ActivityFeed :page="page" :limit="12" />
     </ContextSlot>
@@ -42,13 +44,21 @@ const ff = inject<ReturnType<typeof useFormFactor>>('formFactor')!;
 </template>
 
 <style scoped>
+/* The grid answers to its own width, not the window's: a narrow desktop
+ * window (or an open context column) stacks the two columns. */
 .home-desktop {
-  display: grid;
-  grid-template-columns: minmax(0, 7fr) minmax(320px, 5fr);
-  gap: 20px;
+  container-type: inline-size;
   padding: 20px 24px 40px;
   max-width: 1400px;
   margin: 0 auto;
+}
+.home-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(320px, 5fr);
+  gap: 20px;
+}
+@container (max-width: 820px) {
+  .home-grid { grid-template-columns: minmax(0, 1fr); }
 }
 .col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
 </style>

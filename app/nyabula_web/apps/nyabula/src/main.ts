@@ -3,6 +3,7 @@ import { createPinia } from 'pinia';
 import '@nyabula/ui/styles/tokens.css';
 import '@nyabula/ui/styles/base.css';
 import '@nyabula/ui/styles/motion.css';
+import '@nyabula/ui/styles/skins.css';
 import './styles/app.css';
 import { useThemeStore, useLoadingStore, vReveal } from '@nyabula/ui';
 import App from './App.vue';

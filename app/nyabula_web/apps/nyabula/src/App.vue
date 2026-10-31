@@ -5,12 +5,14 @@
  * provisioning) get no shell at all on any form factor. */
 import { computed, provide, watch } from 'vue';
 import { useRoute } from 'vue-router';
-import { AppLoading, AppModal, RouteLoading, ToastHost, useDialogStore, useLoadingStore } from '@nyabula/ui';
+import { AppLoading, AppModal, RouteLoading, ToastHost, useDialogStore, useLoadingStore, useThemeStore } from '@nyabula/ui';
+import { APP_SKINS } from './skins/registry';
 import { useFormFactor } from './composables/useFormFactor';
 import DesktopShell from './layouts/DesktopShell.vue';
 import TabletShell from './layouts/TabletShell.vue';
 import PhoneShell from './layouts/PhoneShell.vue';
 import BareShell from './layouts/BareShell.vue';
+import { useDeviceAccessStore } from './stores/deviceAccess';
 import { useDeviceAccessGuard } from './composables/useDeviceAccessGuard';
 import NotificationCenter from './components/NotificationCenter.vue';
 
@@ -19,8 +21,12 @@ provide('formFactor', ff);
 
 const route = useRoute();
 /* Device build: also bare before the first route resolves, so the app shell never flashes. */
+const deviceAccess = __NYA_DEVICE__ ? useDeviceAccessStore() : null;
+const bootPending = computed(() => __NYA_DEVICE__ && !deviceAccess?.unreachable && (!route.name || route.name === 'connect'));
 const bare = computed(() => route.meta.bare === true || (__NYA_DEVICE__ && route.matched.length === 0));
-const shell = computed(() => (bare.value ? BareShell : ff.formFactor.value === 'desktop' ? DesktopShell : ff.formFactor.value === 'tablet' ? TabletShell : PhoneShell));
+const theme = useThemeStore();
+const classicShells = { desktop: DesktopShell, tablet: TabletShell, phone: PhoneShell };
+const shell = computed(() => bare.value ? BareShell : APP_SKINS[theme.skin].shells?.[ff.formFactor.value] ?? classicShells[ff.formFactor.value]);
 if (__NYA_DEVICE__) useDeviceAccessGuard();
 const dialog = useDialogStore();
 const loading = useLoadingStore();
@@ -39,7 +45,7 @@ watch(
 </script>
 
 <template>
-  <div class="app-shell" :class="{ shrunk, covered }">
+  <div class="app-shell" :class="{ shrunk, covered }" :data-boot-pending="bootPending">
     <component :is="shell" />
   </div>
   <ToastHost :bottom="bare ? 'calc(24px + var(--safe-b))' : ff.isPhone.value ? 'calc(var(--shell-bottom) + 12px + var(--safe-b))' : '24px'" />

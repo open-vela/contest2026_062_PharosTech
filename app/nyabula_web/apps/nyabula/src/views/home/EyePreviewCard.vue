@@ -3,6 +3,7 @@
  * expression strip. Click the stage to open the full eye control page. */
 import { EyeCanvas, MdCard, MdChip, PairOverlay, UiIcon } from '@nyabula/ui';
 import { ref } from 'vue';
+import EyeMirrorCard from '../eye/EyeMirrorCard.vue';
 import type { useHomePage } from './home.logic';
 
 const props = defineProps<{ page: ReturnType<typeof useHomePage>; height?: string }>();
@@ -34,7 +35,8 @@ async function doPair(code: string) {
       <button class="link" @click="go('eye')">完整控制 <UiIcon name="chevron_right" :size="16" /></button>
     </div>
     <div class="stage" :style="{ height: height ?? '220px' }" @click="session.connected && go('eye')">
-      <EyeCanvas v-if="eye.ready" :eye-state="eye.lastState" :clock-offset-ms="eye.nativeCore ? 0 : session.clockOffsetMs()" @look="eye.look" />
+      <EyeMirrorCard v-if="eye.ready && eye.nativeQr" embedded auto-start />
+      <EyeCanvas v-else-if="eye.ready" :eye-state="eye.lastState" :clock-offset-ms="eye.nativeCore ? 0 : session.clockOffsetMs()" @look="eye.look" />
       <div v-else class="placeholder">
         <UiIcon name="visibility" :size="34" />
         <span>{{ session.connected ? '眼睛服务未启动' : session.state === 'pairing-required' ? '等待配对' : '设备离线' }}</span>
