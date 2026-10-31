@@ -1,0 +1,26 @@
+--- a/CMakeLists.default.txt
++++ b/CMakeLists.default.txt
+@@ -780,6 +780,10 @@
+     zblue/port/subsys/fs/fs.c
+   )
+ 
++  if(CONFIG_BT_H4)
++    list(APPEND CSRCS zblue/port/drivers/bluetooth/hci/h4.c)
++  endif()
++
+   if(CONFIG_BT_SAMPLE)
+     set(ZBLUE_STACKSIZE ${CONFIG_BT_SAMPLE_STACKSIZE})
+   else()
+--- a/Makefile.default
++++ b/Makefile.default
+@@ -724,6 +724,10 @@
+ CSRCS += zblue/port/lib/os/assert.c
+ CSRCS += zblue/port/sections/defines.c
+ CSRCS += zblue/port/subsys/fs/fs.c
++
++ifeq ($(CONFIG_BT_H4),y)
++CSRCS += zblue/port/drivers/bluetooth/hci/h4.c
++endif
+ 
+ ifeq ($(CONFIG_BT_H4),y)
+   CSRCS += zblue/port/drivers/bluetooth/hci/h4.c
