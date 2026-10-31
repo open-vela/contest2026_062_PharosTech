@@ -22,8 +22,8 @@
 
 #ifndef __NYADSP_CLOCK_H
 #define __NYADSP_CLOCK_H
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
 struct nyadsp_clock_s
 {
   double position;
@@ -33,7 +33,7 @@ struct nyadsp_clock_s
 };
 void nyadsp_clock_init(struct nyadsp_clock_s *clock);
 size_t nyadsp_clock_process(struct nyadsp_clock_s *clock,
-                           const float *interleaved, size_t frames,
-                           float *mono, size_t capacity,
-                           size_t queued_frames, size_t target_frames);
+                            const float *interleaved, size_t frames,
+                            float *mono, size_t capacity, size_t queued_frames,
+                            size_t target_frames);
 #endif

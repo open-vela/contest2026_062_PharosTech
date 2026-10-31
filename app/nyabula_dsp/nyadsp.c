@@ -379,9 +379,9 @@ void nyadsp_default_config(struct nyadsp_config_s *config)
  ****************************************************************************/
 
 struct nyadsp_s *nyadsp_create_input_eq_split(
-  const struct nyadsp_config_s *config, const struct nyadsp_eq_s *bands,
-  const enum nyadsp_filter_e *kinds, size_t count,
-  const struct nyadsp_crossover_s *crossover, int fullrange, int *error)
+    const struct nyadsp_config_s *config, const struct nyadsp_eq_s *bands,
+    const enum nyadsp_filter_e *kinds, size_t count,
+    const struct nyadsp_crossover_s *crossover, int fullrange, int *error)
 {
   struct nyadsp_s *dsp;
   size_t channel;
@@ -435,8 +435,8 @@ struct nyadsp_s *nyadsp_create_input_eq_split(
       float cutoff = config->crossover_hz;
       if (crossover != NULL)
         {
-          cutoff = channel < 2 ? crossover->satellite_highpass_hz :
-                                 crossover->bass_lowpass_hz;
+          cutoff = channel < 2 ? crossover->satellite_highpass_hz
+                               : crossover->bass_lowpass_hz;
         }
 
       dsp->gain[channel] =
@@ -462,8 +462,8 @@ struct nyadsp_s *nyadsp_create_input_eq_split(
 
       for (band = 0; band < 2; band++)
         {
-          nyadsp_make_crossover(&dsp->crossover[channel][band],
-                                cutoff, channel < 2);
+          nyadsp_make_crossover(&dsp->crossover[channel][band], cutoff,
+                                channel < 2);
         }
 
       for (band = 0; band < NYADSP_EQ_BANDS; band++)
