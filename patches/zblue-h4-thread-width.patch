@@ -1,0 +1,25 @@
+--- a/port/drivers/bluetooth/hci/h4.c
++++ b/port/drivers/bluetooth/hci/h4.c
+@@ -385,6 +385,7 @@
+ static int h4_open(const struct device *dev, bt_hci_recv_t recv, void *hci_data)
+ {
+ 	int ret;
++	intptr_t thread;
+ 	struct h4_data *h4 = dev->data;
+ 	char dev_name[32];
+ 
+@@ -409,11 +410,12 @@
+ 	h4->hci_data = hci_data;
+ 	LOG_DBG("H4: %s opened as fd %d", dev_name, h4->fd);
+ 
+-	ret = (int)k_thread_create(&h4->rx_thread_data, h4->rx_thread_stack,
++	thread = (intptr_t)k_thread_create(&h4->rx_thread_data, h4->rx_thread_stack,
+ 				   K_THREAD_STACK_SIZEOF(h4->rx_thread_stack), h4_rx_thread, (void *)dev, NULL,
+ 				   NULL, K_PRIO_COOP(CONFIG_BT_RX_PRIO), 0, K_NO_WAIT);
+ 
+-	if (ret < 0) {
++	if (thread < 0) {
++		ret = (int)thread;
+ 		goto bail;
+ 	} else {
+ 		ret = 0;
