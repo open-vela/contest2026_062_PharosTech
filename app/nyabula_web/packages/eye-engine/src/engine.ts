@@ -163,6 +163,8 @@ export interface EyeEngineOptions {
   attachPointer?: boolean;
   /** Also react locally to pointer (lookAt) in addition to onInteraction. */
   localLook?: boolean;
+  /** Opt-in mouse hover tracking; drag behavior remains unchanged. */
+  toyMode?: boolean;
   /**
    * Canvas background. 'transparent' (default) clears the frame instead of
    * painting a full black backdrop, so the two eyes float over whatever the
@@ -673,6 +675,11 @@ export class EyeEngine {
     this.modeT = 0;
   }
 
+  setToyMode(enabled: boolean): void {
+    this.opts.toyMode = enabled;
+    if (!enabled) this.releaseLook();
+  }
+
   private attachPointer(): void {
     const cv = this.canvas;
     const norm = (e: PointerEvent) => {
@@ -693,7 +700,7 @@ export class EyeEngine {
       this.opts.onInteraction?.(nx, ny, 'down');
     };
     const onMove = (e: PointerEvent) => {
-      if (pointerId !== e.pointerId) return;
+      if (pointerId !== e.pointerId && !(this.opts.toyMode && pointerId === null && e.isPrimary && e.pointerType === 'mouse')) return;
       const { nx, ny } = norm(e);
       if (this.opts.localLook !== false) this.lookAt(nx, ny);
       this.opts.onInteraction?.(nx, ny, 'move');
@@ -705,12 +712,20 @@ export class EyeEngine {
       const { nx, ny } = norm(e);
       this.opts.onInteraction?.(nx, ny, 'up');
     };
+    const onLeave = (e: PointerEvent) => {
+      if (pointerId !== null || !this.opts.toyMode) return;
+      this.releaseLook();
+      const { nx, ny } = norm(e);
+      this.opts.onInteraction?.(nx, ny, 'up');
+    };
+    cv.addEventListener('pointerleave', onLeave);
     cv.addEventListener('pointerdown', onDown);
     cv.addEventListener('pointermove', onMove);
     cv.addEventListener('pointerup', onUp);
     cv.addEventListener('pointercancel', onUp);
     cv.addEventListener('lostpointercapture', onUp);
     this.detachFns.push(() => {
+      cv.removeEventListener('pointerleave', onLeave);
       cv.removeEventListener('pointerdown', onDown);
       cv.removeEventListener('pointermove', onMove);
       cv.removeEventListener('pointerup', onUp);
