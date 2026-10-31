@@ -38,7 +38,7 @@ async function reset(){await timer.action('delete');}
     <NkChipSelect :model-value="timer.selected.value" :options="timer.choices.value" label="设备计时器" @update:model-value="timer.select" />
     <p v-if="timer.core.error.value" role="alert" class="muted">{{ timer.core.error.value }}</p>
     <div class="grid">
-      <section class="card ring-card">
+      <section class="ui-panel card ring-card">
         <NkProgressRing :value="armed ? progress : 1" :size="ff === 'phone' ? 220 : 260" :stroke="14" :tone="finished ? 'ok' : 'primary'">
           <div class="ring-inner">
             <span class="big mono">{{ display }}</span>
@@ -58,7 +58,7 @@ async function reset(){await timer.action('delete');}
         <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
         <p class="muted hint">{{ onEyes ? '猫眼上的读数每秒同步一次；离开「功能」页后停止同步。' : armed ? '计时由设备运行，可随时显示到猫眼。' : '开始计时后可显示到猫眼。' }}</p>
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <h3 class="section-title">设定时长</h3>
         <NkDial v-model="seconds" :presets="PRESETS" :disabled="armed" :min="1" />
         <MdTextField v-model="label" label="标签" placeholder="如：泡茶、番茄钟" :disabled="armed" />
@@ -73,8 +73,7 @@ async function reset(){await timer.action('delete');}
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .ring-card { align-items: center; }
 .ring-inner { display: flex; flex-direction: column; align-items: center; gap: 4px; }

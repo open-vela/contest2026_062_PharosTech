@@ -130,7 +130,7 @@ function refresh(): void { void media.refresh(); void audio.refresh(); }
 .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .device-choice { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
-select { min-height: 44px; padding: 10px; border-radius: 8px; border: 1px solid var(--md-outline); background: var(--md-surface); color: var(--md-on-surface); font: inherit; }
+
 .disclosure { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0; border: 0; background: none; color: var(--md-primary); font: inherit; cursor: pointer; }
 .error { color: var(--md-error); }
 </style>

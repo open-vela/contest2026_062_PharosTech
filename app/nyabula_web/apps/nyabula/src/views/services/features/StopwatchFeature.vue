@@ -56,7 +56,7 @@ async function reset() {
     </div>
     <p v-if="timer.core.error.value" role="alert" class="muted">{{ timer.core.error.value }}</p>
     <div class="grid">
-      <section class="card clock-card">
+      <section class="ui-panel card clock-card">
         <div class="clock" :class="{ live: running }">
           <span class="big mono">{{ display }}</span>
           <span class="muted">{{ running ? `第 ${laps.length + 1} 段进行中` : laps.length ? `已记录 ${laps.length} 段` : '按开始计时' }}</span>
@@ -74,7 +74,7 @@ async function reset() {
         <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
         <p v-if="onEyes" class="muted">猫眼上的读数每秒同步一次；离开「功能」页后停止同步。</p>
       </section>
-      <section class="card laps-card">
+      <section class="ui-panel card laps-card">
         <NkListSection title="分段" :card="false">
           <p v-if="!laps.length" class="muted empty">计时中点「分段」记录一圈</p>
           <div v-for="l in laps" :key="l.n" class="lap-row">
@@ -99,8 +99,7 @@ async function reset() {
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .clock-card { align-items: center; justify-content: center; }
 .clock { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 24px 0; }

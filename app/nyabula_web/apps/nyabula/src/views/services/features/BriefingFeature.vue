@@ -43,7 +43,7 @@ const eveningModel = computed({ get:() => String(schedule.evening_minute), set:(
     <p v-if="briefing.error" role="alert">{{ briefing.error }}</p>
     <p class="muted">简报由设备上的天气缓存、未来 24 小时日程、未完成待办和用户明确保存的记忆生成。内容均标明来源；不会把模型推测写成事实。</p>
     <div class="grid">
-      <section class="card now">
+      <section class="ui-panel card now">
         <NkProgressRing :value="items.length ? ((briefing.state?.index ?? 0) + 1) / items.length : 0" :size="ff === 'phone' ? 180 : 220" :stroke="12" tone="primary">
           <div><strong class="big">{{ items.length ? (briefing.state?.index ?? 0) + 1 : 0 }}</strong><span> / {{ items.length }}</span></div>
         </NkProgressRing>
@@ -55,7 +55,7 @@ const eveningModel = computed({ get:() => String(schedule.evening_minute), set:(
         <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
         <p class="muted">「逐条显示」由设备依次播报各条标题；「在设备上显示」把简报进度卡留在猫眼上，并随当前条目更新。</p>
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <NkListSection title="简报条目" :card="false">
           <article v-for="(item, index) in items" :key="item.id" class="item" :class="{ current:index === briefing.state?.index }">
             <strong>{{ item.title }}</strong><p>{{ item.text }}</p><small>来源：{{ source(item.source) }}</small>
@@ -75,7 +75,7 @@ const eveningModel = computed({ get:() => String(schedule.evening_minute), set:(
 
 <style scoped>
 .feature,.card { display:flex; flex-direction:column; gap:16px; }.grid { display:grid; gap:16px; }.desktop .grid,.tablet .grid { grid-template-columns:1fr 1.25fr; }
-.card { padding:16px; border-radius:var(--radius-l); background:var(--md-surface-container); }.now { align-items:center; text-align:center; }
+.card { padding:16px; }.now { align-items:center; text-align:center; }
 .item { padding:12px; border-radius:var(--radius-m); background:var(--md-surface-container-high); }.item.current { background:var(--md-secondary-container); }
 .big { font-size:40px; }h3,p { margin:0; }small,.muted { color:var(--md-on-surface-variant); }
 </style>

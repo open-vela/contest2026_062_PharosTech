@@ -50,7 +50,7 @@ function hide(): void {
       <MdButton variant="icon" aria-label="刷新" :disabled="task.busy.value" @click="task.run()"><UiIcon name="refresh" :size="22" /></MdButton>
     </NkHeader>
     <div class="grid">
-      <section class="card center">
+      <section class="ui-panel card center">
         <Skeleton v-if="task.busy.value && !info" :lines="4" />
         <template v-else>
           <div class="gauge-wrap">
@@ -64,7 +64,7 @@ function hide(): void {
         </template>
         <NkActionBar primary-text="显示电量" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" :disabled="!known" @primary="push" @secondary="hide" />
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <NkKeyValue :items="kv" />
         <NkListSection title="电源">
           <NkToggleRow v-model="state.saver" icon="power" title="省电模式" sub="降低屏幕亮度和动画频率" />
@@ -82,8 +82,7 @@ function hide(): void {
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .center { align-items: center; }
 .center > * { width: 100%; }

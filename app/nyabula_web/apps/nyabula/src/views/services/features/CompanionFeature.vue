@@ -48,14 +48,14 @@ const quietEndModel=computed({ get:()=>String(form.quiet_end), set:(value:string
     <NkHeader icon="companion" title="主动陪伴" :subtitle="subtitle" :tone="form.enabled && !companion.state?.quiet_now ? 'ok' : 'default'" />
     <p v-if="companion.error" role="alert">{{ companion.error }}</p>
     <div class="grid">
-      <section class="card hero" :class="{ on:form.enabled }">
+      <section class="ui-panel card hero" :class="{ on:form.enabled }">
         <div class="hero-icon"><UiIcon :name="modeDef.icon" :size="40" /></div>
         <h2>{{ modeDef.label }}</h2><p>{{ modeDef.blurb }}</p>
         <NkToggleRow v-model="form.enabled" title="允许主动陪伴" sub="默认关闭；打开后规则保存在设备端" />
         <MdButton variant="tonal" :disabled="!form.enabled || companion.state?.quiet_now || companion.busy" @click="companion.act('run', {})">现在问候一次</MdButton>
         <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <NkListSection title="怎么陪" :card="false">
           <NkChipSelect v-model="form.mode" :options="MODES" />
           <NkSliderRow v-model="form.minimum_interval_minutes" title="最短互动间隔" :min="30" :max="720" :step="30" unit=" 分钟" />
@@ -68,7 +68,7 @@ const quietEndModel=computed({ get:()=>String(form.quiet_end), set:(value:string
         </NkListSection>
       </section>
     </div>
-    <section class="card policy">
+    <section class="ui-panel card policy">
       <h3>隐私与行为边界</h3>
       <p>仅使用设备提供的天气、闹钟、日程、待办和用户明确保存的记忆。不会声称看见你、推断情绪、诊断健康，也不会自动写入长期记忆。主动消息进入设备通知中心并简要显示到猫眼；微信和飞书默认不发送。</p>
       <p v-if="companion.state?.last_error" role="alert">最近一次生成失败（{{ companion.state.last_error }}），一分钟后再试，不计作已送达消息。</p>
@@ -78,6 +78,6 @@ const quietEndModel=computed({ get:()=>String(form.quiet_end), set:(value:string
 
 <style scoped>
 .feature,.card { display:flex; flex-direction:column; gap:16px; }.grid { display:grid; gap:16px; }.desktop .grid,.tablet .grid { grid-template-columns:1fr 1.2fr; }
-.card { padding:16px; border-radius:var(--radius-l); background:var(--md-surface-container); }.hero { align-items:center; text-align:center; }.hero.on { background:var(--md-primary-container); }
+.card { padding:16px; }.hero { align-items:center; text-align:center; }.hero.on { background:var(--md-primary-container); }
 .hero-icon { width:88px; height:88px; display:grid; place-items:center; border-radius:50%; background:var(--md-surface-container-highest); }.hero h2,.hero p,.policy p,h3 { margin:0; }.muted { color:var(--md-on-surface-variant); }
 </style>

@@ -56,7 +56,7 @@ const hide = () => scene.hide();
     <p v-if="device.error" role="alert">{{ device.error }}</p>
     <p v-if="device.snapshot?.simulator" class="muted">当前为 NuttX 模拟器实时数据，不代表 K7 板上资源。</p>
     <div class="grid">
-      <section class="card">
+      <section class="ui-panel card">
         <div class="gauges">
           <div class="g"><NkGauge v-if="cpu !== null" :value="cpu" label="CPU 采样" :size="ff === 'phone' ? 130 : 150" :warn-at="70" :error-at="90" /><span v-else>CPU 采样未提供</span></div>
           <div class="g"><NkGauge v-if="memory !== null" :value="memory" label="内存" :size="ff === 'phone' ? 130 : 150" :warn-at="75" :error-at="90" /><span v-else>内存数据未提供</span></div>
@@ -65,7 +65,7 @@ const hide = () => scene.hide();
         <MdButton variant="text" :disabled="!device.available || device.busy" @click="device.refresh()">刷新设备诊断</MdButton>
         <NkActionBar primary-text="显示到眼睛" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" :disabled="!scene.canShow.value" @primary="push" @secondary="hide" />
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <Skeleton v-if="task.busy.value && !info" :lines="4" />
         <NkKeyValue v-else :items="kv" />
         <NkListSection title="存储空间">
@@ -90,8 +90,7 @@ const hide = () => scene.hide();
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .gauges { display: flex; justify-content: space-around; gap: 12px; }
 .g { display: flex; justify-content: center; }

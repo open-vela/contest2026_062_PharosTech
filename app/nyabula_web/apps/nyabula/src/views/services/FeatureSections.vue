@@ -19,7 +19,7 @@ defineProps<{
   <section class="stage" aria-labelledby="stage-ready">
     <header class="stage-head">
       <h2 id="stage-ready" class="stage-title">已实现</h2>
-      <span class="stage-count">{{ page.readyCount }} 项 · 已接入设备，可显示到猫眼</span>
+      <span class="stage-count">{{ page.readyCount }} 项 · 功能控制与设备状态</span>
     </header>
     <NkListSection v-for="g in page.readyGroups" :key="g.group" :title="g.group" :card="false">
       <div class="tiles" :style="{ gridTemplateColumns: columns }">

@@ -31,7 +31,7 @@ function setAsleep(v: boolean): void {
   <div class="feature" :class="ff">
     <NkHeader icon="moon" title="休眠" :subtitle="subtitle" :tone="asleep ? 'ok' : 'default'" />
     <div class="grid">
-      <section class="card">
+      <section class="ui-panel card">
         <div class="hero" :class="{ asleep }">
           <span class="hero-icon"><UiIcon :name="asleep ? 'moon' : 'light_mode'" :size="40" /></span>
           <div>
@@ -44,7 +44,7 @@ function setAsleep(v: boolean): void {
         </NkListSection>
         <p class="muted small">休眠是设备上的眼睛表情，关闭网页后保持；唤醒会把表情交还给猫猫自己。睡眠定时到点也会进入这里的休眠。</p>
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <NkListSection title="规划中" :card="false">
           <NkRow v-for="p in PLANNED" :key="p.title" :icon="p.icon" :title="p.title" :sub="p.sub"><span class="tag">规划中</span></NkRow>
         </NkListSection>
@@ -60,8 +60,7 @@ function setAsleep(v: boolean): void {
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .hero { display: flex; align-items: center; gap: 14px; padding: 4px; }
 .hero-icon {

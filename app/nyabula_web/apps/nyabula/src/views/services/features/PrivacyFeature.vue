@@ -37,7 +37,7 @@ function hide(): void {
   <div class="feature" :class="ff">
     <NkHeader icon="privacy" title="隐私" :subtitle="subtitle" :tone="state.privacyMode ? 'warn' : active ? 'ok' : 'default'" />
     <div class="grid">
-      <section class="card">
+      <section class="ui-panel card">
         <div class="master" :class="{ on: state.privacyMode }">
           <span class="master-icon"><UiIcon :name="state.privacyMode ? 'shield' : 'security'" :size="36" /></span>
           <div class="master-text">
@@ -51,7 +51,7 @@ function hide(): void {
         <NkBanner v-if="state.privacyMode" tone="warn" text="隐私模式下，下方开关暂不生效。" />
         <NkActionBar primary-text="显示到眼睛" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" @primary="push" @secondary="hide" />
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <NkListSection title="感知权限">
           <NkToggleRow v-model="state.camera" icon="camera" title="摄像头" sub="用于认主、表情识别" :disabled="state.privacyMode" />
           <NkToggleRow v-model="state.mic" icon="mic" title="麦克风" sub="用于语音唤醒与对话" :disabled="state.privacyMode" />
@@ -69,8 +69,7 @@ function hide(): void {
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .master { display: flex; align-items: center; gap: 14px; padding: 8px 4px; }
 .master-icon {

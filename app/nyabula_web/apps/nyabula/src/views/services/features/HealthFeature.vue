@@ -34,7 +34,7 @@ function hide(): void {
   <div class="feature" :class="ff">
     <NkHeader icon="heart_rate" title="健康" :subtitle="subtitle" :tone="active ? 'ok' : 'default'" />
     <div class="grid">
-      <section class="card center">
+      <section class="ui-panel card center">
         <div class="gauge-wrap">
           <NkGauge :value="gaugeValue" :size="ff === 'phone' ? 200 : 240" :stroke="16" label="心率" unit="" :warn-at="72" :error-at="80" />
         </div>
@@ -46,7 +46,7 @@ function hide(): void {
         <NkSliderRow v-model="state.heartRate" title="演示心率" unit="" :min="40" :max="180" />
         <NkActionBar primary-text="显示到眼睛" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" @primary="push" @secondary="hide" />
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <div class="stats">
           <NkStatTile :value="state.steps" unit="步" label="今日步数" icon="trending_up" trend="up" :trend-text="`目标 ${stepPct}%`" />
           <NkStatTile :value="state.sitMinutes" unit="分钟" label="已久坐" icon="schedule" :trend="state.sitMinutes >= state.sitLimit ? 'up' : 'flat'" :trend-text="state.sitMinutes >= state.sitLimit ? '该起来活动了' : '状态良好'" />
@@ -70,8 +70,7 @@ function hide(): void {
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .center { align-items: center; }
 .center > * { width: 100%; }

@@ -46,7 +46,7 @@ const STEPS = [
   <div class="feature" :class="ff">
     <NkHeader icon="qr_code" title="配对" :subtitle="subtitle" :tone="showing ? 'ok' : needsPairing ? 'warn' : 'default'" />
     <div class="grid">
-      <section class="card center">
+      <section class="ui-panel card center">
         <div class="stage" :class="{ on: showing }">
           <UiIcon name="qr_code" :size="64" />
           <div class="stage-text">{{ showing ? '二维码显示中，请查看猫眼' : '二维码只在设备屏幕显示' }}</div>
@@ -54,7 +54,7 @@ const STEPS = [
         </div>
         <NkBanner v-if="needsPairing" tone="warn" text="当前连接需要配对，请扫描猫眼上的二维码。" />
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <NkKeyValue :items="kv" />
         <NkListSection title="配对步骤">
           <NkRow v-for="(s, i) in STEPS" :key="i" :icon="s.icon" :title="`${i + 1}. ${s.title}`" :sub="s.sub" />
@@ -70,8 +70,7 @@ const STEPS = [
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .center > * { width: 100%; }
 .stage {

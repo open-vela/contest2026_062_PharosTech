@@ -59,7 +59,7 @@ const hide = () => scene.hide();
     <NkHeader icon="memory" title="记忆" :subtitle="subtitle" :tone="active ? 'ok' : 'default'" />
     <p v-if="core.error.value" role="alert" class="muted">{{ core.error.value }}</p>
     <div class="grid">
-      <section class="card">
+      <section class="ui-panel card">
         <MdTextField v-model="query" label="搜索" placeholder="搜索记忆内容或标签" icon="search" />
         <NkChipSelect v-model="filterTag" :options="[{ id: '', label: '全部' }, ...TAGS]" label="按标签" />
         <div class="cards">
@@ -73,7 +73,7 @@ const hide = () => scene.hide();
           <p v-if="!filtered.length" class="muted">没有匹配的记忆。</p>
         </div>
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <h3 class="section-title">回顾</h3>
         <div v-if="current" class="recall">
           <p class="recall-text">{{ current.text }}</p>
@@ -99,8 +99,7 @@ const hide = () => scene.hide();
 .feature.desktop .grid, .feature.tablet .grid { grid-template-columns: 1.2fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .cards { display: grid; grid-template-columns: 1fr; gap: 10px; }
 .feature.desktop .cards { grid-template-columns: 1fr 1fr; }

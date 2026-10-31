@@ -68,7 +68,7 @@ const hide=()=>scene.hide();
     <NkHeader icon="task_alt" title="任务" :subtitle="subtitle" :tone="active ? 'ok' : 'default'" />
     <p v-if="core.error.value" role="alert" class="muted">{{ core.error.value }}</p>
     <div class="grid">
-      <section class="card summary">
+      <section class="ui-panel card summary">
         <NkProgressRing :value="ratio" :size="ff === 'phone' ? 160 : 200" :stroke="12" :tone="ratio >= 1 && total ? 'ok' : 'primary'">
           <div class="ring-inner">
             <span class="big mono">{{ doneCount }}<span class="muted small">/{{ total }}</span></span>
@@ -85,7 +85,7 @@ const hide=()=>scene.hide();
         <p v-else class="muted">新建一个待办后可推送到眼睛。</p>
         <NkActionBar primary-text="推送当前任务" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" :disabled="!scene.canShow.value" @primary="push" @secondary="hide" />
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <NkListSection title="待办" :card="false">
           <div v-for="t in state.tasks" :key="t.id" class="task" :class="{ sel: t.id === state.selected, done: t.done }">
             <button type="button" class="check" :disabled="core.busy.value" :aria-label="t.done ? '标记未完成' : '标记完成'" @click="toggle(t)">
@@ -114,8 +114,7 @@ const hide=()=>scene.hide();
 .feature.desktop .grid, .feature.tablet .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .summary { align-items: center; }
 .ring-inner { display: flex; flex-direction: column; align-items: center; }

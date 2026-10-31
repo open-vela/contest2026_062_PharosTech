@@ -47,7 +47,7 @@ const hide = () => scene.hide();
     </NkHeader>
     <p v-if="device.error" role="alert">{{ device.error }}</p>
     <div class="grid">
-      <section class="card">
+      <section class="ui-panel card">
         <Skeleton v-if="task.busy.value && !info" :lines="4" />
         <template v-else>
           <div class="hero">
@@ -63,7 +63,7 @@ const hide = () => scene.hide();
         </template>
         <NkActionBar primary-text="显示网络" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" :disabled="!scene.canShow.value" @primary="push" @secondary="hide" />
       </section>
-      <section class="card">
+      <section class="ui-panel card">
         <NkListSection title="真实网络接口">
           <NkRow v-for="item in device.snapshot?.network.interfaces" :key="item.index" icon="lan" :title="item.name" :sub="`${item.ipv4 ?? '未分配 IPv4'}${item.loopback ? ' · 回环' : ''}`"><span>{{ item.up === true ? '已启用' : item.up === false ? '未启用' : '状态未知' }}</span></NkRow>
           <p v-if="!device.snapshot?.network.interfaces.length" class="muted">{{ device.snapshot?.network.available ? '未发现接口' : '接口枚举未提供' }}</p>
@@ -81,8 +81,7 @@ const hide = () => scene.hide();
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; border-radius: var(--radius-l);
-  background: var(--md-surface-container); color: var(--md-on-surface);
+  padding: 16px;
 }
 .hero { display: flex; align-items: center; gap: 16px; padding: 8px 4px; }
 .hero-title { font-size: 20px; font-weight: 700; }
