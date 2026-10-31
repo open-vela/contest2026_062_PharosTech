@@ -24,10 +24,10 @@ const section = ref<AccountSection>('overview');
   </div>
 
   <div v-else class="acct-desktop">
-    <nav class="dir">
-      <button v-for="s in ACCOUNT_SECTIONS" :key="s.id" class="dir-item" :class="{ on: section === s.id }" @click="section = s.id">
+    <nav class="side-nav dir" aria-label="账号目录">
+      <button v-for="s in ACCOUNT_SECTIONS" :key="s.id" class="side-nav-item" :class="{ on: section === s.id }" @click="section = s.id">
         <UiIcon :name="s.icon" :size="20" />
-        <span>{{ s.label }}</span>
+        <span class="side-nav-label">{{ s.label }}</span>
         <span v-if="s.id === 'devices' && page.account.devices.length" class="tag">{{ page.account.devices.length }}</span>
       </button>
     </nav>
@@ -76,24 +76,7 @@ const section = ref<AccountSection>('overview');
   max-width: 1200px;
   margin: 0 auto;
 }
-.dir { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 20px; align-self: start; }
-.dir-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-radius: var(--radius-m);
-  border: none;
-  background: transparent;
-  color: var(--md-on-surface-variant);
-  font: 600 14px var(--font-body);
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--dur-fast), color var(--dur-fast);
-}
-.dir-item span:nth-child(2) { flex: 1; }
-.dir-item:hover { background: var(--md-surface-container); }
-.dir-item.on { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
+.dir { position: sticky; top: 20px; align-self: start; }
 .content { min-width: 0; }
 .claim-card { max-width: 480px; }
 </style>
