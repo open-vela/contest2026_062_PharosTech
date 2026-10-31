@@ -59,6 +59,27 @@ class PatchTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(target.read_text(), 'conflicting transport\n')
 
+    def test_bluetooth_targets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            patches = root / 'patches'
+            patches.mkdir()
+            for name, directory in [
+                ('external-zblue-transport.patch', 'apps/external/zblue'),
+                ('zblue-controller.patch', 'apps/external/zblue/zblue'),
+                ('nuttx-bluetooth-sco.patch', 'nuttx'),
+            ]:
+                target = root / directory
+                target.mkdir(parents=True, exist_ok=True)
+                (target / 'test.c').write_text('before\n')
+                (patches / name).write_text(
+                    '--- a/test.c\n+++ b/test.c\n@@ -1 +1 @@\n-before\n+after\n')
+            command = ['bash', str(SCRIPT), str(root), str(patches)]
+            for unused in range(2):
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / 'nuttx/test.c').read_text(), 'after\n')
+
     def test_apply_repeat_and_conflict(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

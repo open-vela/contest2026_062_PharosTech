@@ -54,3 +54,16 @@ if (( ${#agent_patches[@]} )); then
     fi
   done
 fi
+
+# Native Bluetooth transport and persistent settings used by product_amp.
+for patch_file in "$patch_dir"/external-zblue-*.patch; do
+  [ -f "$patch_file" ] || continue
+  apply_one "$workspace/apps/external/zblue" "$patch_file"
+done
+for patch_file in "$patch_dir"/zblue-*.patch; do
+  [ -f "$patch_file" ] || continue
+  apply_one "$workspace/apps/external/zblue/zblue" "$patch_file"
+done
+if [ -f "$patch_dir/nuttx-bluetooth-sco.patch" ]; then
+  apply_one "$workspace/nuttx" "$patch_dir/nuttx-bluetooth-sco.patch"
+fi
