@@ -21,6 +21,7 @@
 
 #include "ny_product.h"
 #include "ny_access.h"
+#include "ny_plugins.h"
 #ifdef CONFIG_NYABULA_CORE_MODELS
 #include "ny_web_models.h"
 #endif
@@ -307,6 +308,12 @@ int ny_product_request(const struct ny_product_caller_s *caller,
 
       *result = ny_product_runtime_status();
       return *result == NULL ? -ENOMEM : 0;
+    }
+
+  ret = ny_plugins_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    {
+      return ret;
     }
 
   ret = ny_product_system(caller, topic, data, result);
