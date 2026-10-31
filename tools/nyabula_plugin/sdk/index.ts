@@ -6,6 +6,7 @@
 
 export interface NyabulaPlugin {
   onStart?: () => void | Promise<void>;
+  onCommand?: (command: string, args: Record<string, unknown>, values: Record<string, unknown>, event: unknown) => void | Promise<void>;
   onEvent?: (event: string) => void | Promise<void>;
   onStop?: () => void | Promise<void>;
 }
@@ -19,3 +20,4 @@ export * as storage from "@nyabula/storage";
 export * as network from "@nyabula/network";
 export * as ui from "@nyabula/ui";
 export * as ai from "@nyabula/ai";
+export * as hardware from "@nyabula/hardware";
