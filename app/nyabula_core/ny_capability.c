@@ -192,6 +192,21 @@ static JSValue ny_capability_core_info(JSContext *context,
                     JS_NewString(context, plugin->version));
   JS_SetPropertyStr(context, result, "apiVersion",
                     JS_NewInt32(context, NY_PLUGIN_API_VERSION));
+  JSValue permissions = JS_NewArray(context);
+  uint64_t mask = atomic_load(&plugin->permissions);
+  uint64_t bit;
+  uint32_t index = 0;
+  for (bit = 1; bit != 0; bit <<= 1)
+    {
+      const char *name = ny_manifest_permission_name(bit);
+      if ((mask & bit) != 0 && name != NULL)
+        {
+          JS_SetPropertyUint32(context, permissions, index++,
+                               JS_NewString(context, name));
+        }
+    }
+
+  JS_SetPropertyStr(context, result, "permissions", permissions);
   return result;
 }
 
