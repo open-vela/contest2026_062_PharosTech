@@ -200,6 +200,11 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     DEPENDS
     ${NYABULA_CORE_DEPENDS})
 
+  if(CONFIG_NYABULA_CORE_PRODUCT)
+    nuttx_add_application(NAME nyabula PRIORITY 100 STACKSIZE 16384
+      SRCS nyabula_main.c DEPENDS apps_nycore)
+  endif()
+
   if(CONFIG_NYABULA_CORE_WEB)
     nuttx_add_application(NAME nyabula_web PRIORITY 100 STACKSIZE 16384
       SRCS ny_web_main.c DEPENDS apps_nycore)
