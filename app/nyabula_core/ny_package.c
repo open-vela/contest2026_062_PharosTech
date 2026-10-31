@@ -808,6 +808,32 @@ int ny_package_rollback(const char *id)
   return ret;
 }
 
+/****************************************************************************
+ * Name: ny_package_deactivate
+ ****************************************************************************/
+
+int ny_package_deactivate(const char *id)
+{
+  if (!ny_package_valid_id(id))
+    return -EINVAL;
+  char root[PATH_MAX], path[PATH_MAX];
+  nxmutex_lock(&g_package_lock);
+  int ret = ny_package_join(root, sizeof(root),
+                            CONFIG_NYABULA_CORE_PACKAGE_STORE, id);
+  if (ret == 0)
+    ret = ny_package_join(path, sizeof(path), root, "current");
+  if (ret == 0)
+    {
+#ifdef CONFIG_NYABULA_CORE_STATE_SQLITE
+      ret = ny_state_delete(path);
+#endif
+      if (ret == 0 && unlink(path) < 0 && errno != ENOENT)
+        ret = -errno;
+    }
+  nxmutex_unlock(&g_package_lock);
+  return ret;
+}
+
 int ny_package_resolve(const char *id, char *path, size_t size)
 {
   char plugin_root[PATH_MAX];
