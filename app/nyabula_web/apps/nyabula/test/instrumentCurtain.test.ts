@@ -1,0 +1,21 @@
+import {afterEach,expect,it} from 'vitest';
+import {createApp,h,nextTick} from 'vue';
+import {createPinia,setActivePinia} from 'pinia';
+import source from '../../../packages/ui/src/skins/instrument/InstrumentCurtain.vue?raw';
+import Curtain from '../../../packages/ui/src/skins/instrument/InstrumentCurtain.vue';
+import {useLoadingStore} from '../../../packages/ui/src/stores/loading';
+let cleanup:()=>void=()=>{};
+afterEach(()=>cleanup());
+const wait=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+it('fades top-down and does not let an interrupted exit clear the new curtain',async()=>{
+ const leave=source.match(/\.leave \.slat \{([\s\S]*?)\}/)![1];
+ expect(leave).toContain('slat-fade');expect(leave).toContain('calc(var(--i) * var(--stagger))');expect(leave).not.toContain('var(--n) - 1');
+ expect(source).toContain('@keyframes slat-fade { from { opacity: 1; } to { opacity: 0; } }');
+ const pinia=createPinia();setActivePinia(pinia);const loading=useLoadingStore();
+ const host=document.createElement('div');document.body.append(host);const app=createApp({render:()=>h(Curtain)});app.use(pinia);app.mount(host);cleanup=()=>{app.unmount();host.remove();};
+ const enter=loading.startRoute();await nextTick();expect(document.querySelector('.ins-curtain.enter')).not.toBeNull();await enter;
+ loading.routeLoading=false;await nextTick();expect(document.querySelector('.ins-curtain.leave')).not.toBeNull();await wait(100);
+ const next=loading.startRoute();await nextTick();await wait(430);
+ expect(loading.routeOverlayVisible).toBe(true);expect(document.querySelector('.ins-curtain.enter')).not.toBeNull();await next;
+ loading.routeLoading=false;await nextTick();await wait(520);expect(loading.routeOverlayVisible).toBe(false);expect(document.querySelector('.ins-curtain')).toBeNull();
+});
