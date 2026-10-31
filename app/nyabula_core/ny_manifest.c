@@ -60,6 +60,22 @@ static const struct ny_permission_name_s g_permission_names[] = {
   { "network.request", NY_PERMISSION_NETWORK_REQUEST },
   { "ui.notify", NY_PERMISSION_UI_NOTIFY },
   { "ai.invoke", NY_PERMISSION_AI_INVOKE },
+  { "ui.page", NY_PERMISSION_UI_PAGE },
+  { "ui.html", NY_PERMISSION_UI_HTML },
+  { "bluetooth.read", NY_PERMISSION_BLUETOOTH_READ },
+  { "bluetooth.connect", NY_PERMISSION_BLUETOOTH_CONNECT },
+  { "bluetooth.call", NY_PERMISSION_BLUETOOTH_CALL },
+  { "audio.read", NY_PERMISSION_AUDIO_READ },
+  { "audio.control", NY_PERMISSION_AUDIO_CONTROL },
+  { "audio.play", NY_PERMISSION_AUDIO_PLAY },
+  { "audio.capture", NY_PERMISSION_AUDIO_CAPTURE },
+  { "usb.access", NY_PERMISSION_USB_ACCESS },
+  { "camera.capture", NY_PERMISSION_CAMERA_CAPTURE },
+  { "weather.read", NY_PERMISSION_WEATHER_READ },
+  { "device.read", NY_PERMISSION_DEVICE_READ },
+  { "nas.read", NY_PERMISSION_NAS_READ },
+  { "nas.write", NY_PERMISSION_NAS_WRITE },
+  { "nas.manage", NY_PERMISSION_NAS_MANAGE },
 };
 
 /****************************************************************************
