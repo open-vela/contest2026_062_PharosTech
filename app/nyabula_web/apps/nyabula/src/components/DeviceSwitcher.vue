@@ -40,7 +40,7 @@ function toConnect() {
     </button>
   </div>
   <div v-else class="switcher" :class="{ compact: props.compact }" @keydown.escape="open = false">
-    <button class="trigger" @click="open = !open">
+    <button class="trigger" :aria-label="`切换设备：${label}`" :aria-expanded="open" @click="open = !open">
       <UiIcon :name="session.transport === 'cloud' ? 'cloud' : 'wifi'" :size="18" />
       <span class="trigger-label">{{ label }}</span>
       <UiIcon name="expand_more" :size="18" />

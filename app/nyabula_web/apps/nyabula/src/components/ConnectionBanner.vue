@@ -43,6 +43,17 @@ const text = computed(() =>
 }
 .banner.preview { background: color-mix(in srgb, var(--md-tertiary) 16%, var(--md-surface-container)); border-bottom-color: color-mix(in srgb, var(--md-tertiary) 40%, transparent); }
 .banner.closed { background: color-mix(in srgb, var(--md-error) 16%, var(--md-surface-container)); }
+/* Nebula floats the notice as a glass strip under the top pills. */
+:root[data-skin='nebula'] .banner {
+  margin: 2px 0 10px;
+  border: 1px solid color-mix(in srgb, var(--md-warning) 35%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--md-warning) 12%, var(--nb-glass));
+  -webkit-backdrop-filter: var(--nb-blur);
+  backdrop-filter: var(--nb-blur);
+}
+:root[data-skin='nebula'] .banner.preview { border-color: var(--nb-line-strong); background: var(--nb-glass); color: var(--md-on-surface-variant); }
+:root[data-skin='nebula'] .banner.closed { border-color: color-mix(in srgb, var(--md-error) 40%, transparent); background: color-mix(in srgb, var(--md-error) 12%, var(--nb-glass)); }
 .spin { animation: spin 1.2s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .retry {
