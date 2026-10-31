@@ -54,7 +54,8 @@ struct nyadsp_s
 {
   struct nyadsp_config_s config;
   int stereo;
-  struct nyadsp_biquad_s input_eq[2][NYADSP_EQ_BANDS];
+  struct nyadsp_biquad_s input_eq[2][NYADSP_INPUT_EQ_BANDS];
+  size_t input_count;
   struct nyadsp_biquad_s crossover[NYADSP_OUTPUTS][2];
   struct nyadsp_biquad_s output_eq[NYADSP_OUTPUTS][NYADSP_EQ_BANDS];
   float *delay[NYADSP_OUTPUTS];
@@ -80,8 +81,12 @@ static void nyadsp_make_crossover(struct nyadsp_biquad_s *filter,
                                   float frequency, int highpass);
 static void nyadsp_make_peak(struct nyadsp_biquad_s *filter,
                              const struct nyadsp_eq_s *eq);
+static void nyadsp_make_eq(struct nyadsp_biquad_s *filter,
+                           const struct nyadsp_eq_s *eq,
+                           enum nyadsp_filter_e kind);
 static float nyadsp_filter(struct nyadsp_biquad_s *filter, float sample);
-static float nyadsp_equalize(struct nyadsp_biquad_s *filters, float sample);
+static float nyadsp_equalize(struct nyadsp_biquad_s *filters, size_t count,
+                             float sample);
 static void nyadsp_clear_filters(struct nyadsp_biquad_s *filters,
                                  size_t count);
 
@@ -219,6 +224,56 @@ static void nyadsp_make_peak(struct nyadsp_biquad_s *filter,
 }
 
 /****************************************************************************
+ * Name: nyadsp_make_eq
+ *
+ * RBJ low/high shelves, parameterized by Q rather than shelf slope S.
+ ****************************************************************************/
+
+static void nyadsp_make_eq(struct nyadsp_biquad_s *filter,
+                           const struct nyadsp_eq_s *eq,
+                           enum nyadsp_filter_e kind)
+{
+  double a;
+  double cosine;
+  double beta;
+  double omega;
+  if (kind == NYADSP_FILTER_OFF || eq->gain_db == 0)
+    {
+      filter->b0 = 1;
+      return;
+    }
+
+  if (kind == NYADSP_FILTER_PEAK)
+    {
+      nyadsp_make_peak(filter, eq);
+      return;
+    }
+
+  omega = 2 * NYADSP_PI * eq->frequency_hz / NYADSP_SAMPLE_RATE;
+  a = pow(10, eq->gain_db / 40);
+  cosine = cos(omega);
+  beta = sqrt(a) * sin(omega) / eq->q;
+  if (kind == NYADSP_FILTER_LOW_SHELF)
+    {
+      nyadsp_coefficients(filter, a * ((a + 1) - (a - 1) * cosine + beta),
+                          2 * a * ((a - 1) - (a + 1) * cosine),
+                          a * ((a + 1) - (a - 1) * cosine - beta),
+                          (a + 1) + (a - 1) * cosine + beta,
+                          -2 * ((a - 1) + (a + 1) * cosine),
+                          (a + 1) + (a - 1) * cosine - beta);
+    }
+  else
+    {
+      nyadsp_coefficients(filter, a * ((a + 1) + (a - 1) * cosine + beta),
+                          -2 * a * ((a - 1) + (a + 1) * cosine),
+                          a * ((a + 1) + (a - 1) * cosine - beta),
+                          (a + 1) - (a - 1) * cosine + beta,
+                          2 * ((a - 1) - (a + 1) * cosine),
+                          (a + 1) - (a - 1) * cosine - beta);
+    }
+}
+
+/****************************************************************************
  * Name: nyadsp_filter
  ****************************************************************************/
 
@@ -248,11 +303,12 @@ static float nyadsp_filter(struct nyadsp_biquad_s *filter, float sample)
  * Name: nyadsp_equalize
  ****************************************************************************/
 
-static float nyadsp_equalize(struct nyadsp_biquad_s *filters, float sample)
+static float nyadsp_equalize(struct nyadsp_biquad_s *filters, size_t count,
+                             float sample)
 {
   size_t band;
 
-  for (band = 0; band < NYADSP_EQ_BANDS; band++)
+  for (band = 0; band < count; band++)
     {
       sample = nyadsp_filter(&filters[band], sample);
     }
@@ -319,11 +375,14 @@ void nyadsp_default_config(struct nyadsp_config_s *config)
 }
 
 /****************************************************************************
- * Name: nyadsp_create
+ * Name: nyadsp_create_input_eq
  ****************************************************************************/
 
-struct nyadsp_s *nyadsp_create(const struct nyadsp_config_s *config,
-                               int *error)
+struct nyadsp_s *nyadsp_create_input_eq(const struct nyadsp_config_s *config,
+                                        const struct nyadsp_eq_s *bands,
+                                        const enum nyadsp_filter_e *kinds,
+                                        size_t count, int fullrange,
+                                        int *error)
 {
   struct nyadsp_s *dsp;
   size_t channel;
@@ -334,9 +393,20 @@ struct nyadsp_s *nyadsp_create(const struct nyadsp_config_s *config,
       *error = NYADSP_EINVAL;
     }
 
-  if (!nyadsp_validate(config))
+  if (!nyadsp_validate(config) || bands == NULL || count == 0 ||
+      count > NYADSP_INPUT_EQ_BANDS || (fullrange != 0 && fullrange != 1))
     {
       return NULL;
+    }
+
+  for (band = 0; band < count; band++)
+    {
+      if (!nyadsp_validate_eq(&bands[band]) ||
+          (kinds != NULL && (kinds[band] < NYADSP_FILTER_OFF ||
+                             kinds[band] > NYADSP_FILTER_HIGH_SHELF)))
+        {
+          return NULL;
+        }
     }
 
   dsp = calloc(1, sizeof(*dsp));
@@ -351,6 +421,8 @@ struct nyadsp_s *nyadsp_create(const struct nyadsp_config_s *config,
     }
 
   dsp->config = *config;
+  dsp->stereo = fullrange;
+  dsp->input_count = count;
   dsp->master_gain = powf(10.0f, config->master_gain_db / 20.0f);
   dsp->limiter_gain = 1.0f;
   dsp->release =
@@ -389,10 +461,13 @@ struct nyadsp_s *nyadsp_create(const struct nyadsp_config_s *config,
         {
           nyadsp_make_peak(&dsp->output_eq[channel][band],
                            &config->output[channel].eq[band]);
-          if (channel < 2)
+        }
+      if (channel < 2)
+        {
+          for (band = 0; band < count; band++)
             {
-              nyadsp_make_peak(&dsp->input_eq[channel][band],
-                               &config->eq[band]);
+              nyadsp_make_eq(&dsp->input_eq[channel][band], &bands[band],
+                             kinds ? kinds[band] : NYADSP_FILTER_PEAK);
             }
         }
     }
@@ -403,6 +478,29 @@ struct nyadsp_s *nyadsp_create(const struct nyadsp_config_s *config,
     }
 
   return dsp;
+}
+
+/****************************************************************************
+ * Name: nyadsp_create_eq
+ ****************************************************************************/
+
+struct nyadsp_s *
+nyadsp_create_eq(const struct nyadsp_config_s *config,
+                 const enum nyadsp_filter_e kinds[NYADSP_EQ_BANDS],
+                 int fullrange, int *error)
+{
+  return nyadsp_create_input_eq(config, config ? config->eq : NULL, kinds,
+                                NYADSP_EQ_BANDS, fullrange, error);
+}
+
+/****************************************************************************
+ * Name: nyadsp_create
+ ****************************************************************************/
+
+struct nyadsp_s *nyadsp_create(const struct nyadsp_config_s *config,
+                               int *error)
+{
+  return nyadsp_create_eq(config, NULL, 0, error);
 }
 
 /****************************************************************************
@@ -442,7 +540,7 @@ void nyadsp_reset(struct nyadsp_s *dsp)
       nyadsp_clear_filters(dsp->output_eq[channel], NYADSP_EQ_BANDS);
       if (channel < 2)
         {
-          nyadsp_clear_filters(dsp->input_eq[channel], NYADSP_EQ_BANDS);
+          nyadsp_clear_filters(dsp->input_eq[channel], dsp->input_count);
         }
 
       if (dsp->delay[channel] != NULL)
@@ -539,8 +637,8 @@ int nyadsp_process(struct nyadsp_s *dsp, const float *input, float *output,
         }
       else
         {
-          left = nyadsp_equalize(dsp->input_eq[0], left);
-          right = nyadsp_equalize(dsp->input_eq[1], right);
+          left = nyadsp_equalize(dsp->input_eq[0], dsp->input_count, left);
+          right = nyadsp_equalize(dsp->input_eq[1], dsp->input_count, right);
           values[0] = left;
           values[1] = right;
           values[2] = dsp->stereo ? 0.0f : 0.5f * (left + right);
@@ -554,7 +652,8 @@ int nyadsp_process(struct nyadsp_s *dsp, const float *input, float *output,
                   sample = nyadsp_filter(&dsp->crossover[channel][0], sample);
                   sample = nyadsp_filter(&dsp->crossover[channel][1], sample);
                 }
-              sample = nyadsp_equalize(dsp->output_eq[channel], sample);
+              sample = nyadsp_equalize(dsp->output_eq[channel],
+                                       NYADSP_EQ_BANDS, sample);
               sample *= dsp->gain[channel];
 
               if (dsp->delay[channel] != NULL)
