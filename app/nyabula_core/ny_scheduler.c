@@ -131,7 +131,8 @@ static int ny_scheduler_wasm_pump(void *opaque, uint64_t deadline_ns);
 static void *ny_scheduler_pthread(void *argument);
 #endif
 static void ny_scheduler_clear_locked(struct ny_scheduler_slot_s *slot);
-static int ny_scheduler_start_config(const struct ny_plugin_config_s *config);
+static int ny_scheduler_start_config(const struct ny_plugin_config_s *config,
+                                     char *error, size_t capacity);
 
 /****************************************************************************
  * Private Functions
@@ -561,7 +562,7 @@ int ny_scheduler_start(const char *id, const char *path)
 
   ny_manifest_default_config(&config, path);
   strlcpy(config.id, id, sizeof(config.id));
-  return ny_scheduler_start_config(&config);
+  return ny_scheduler_start_config(&config, NULL, 0);
 }
 
 int ny_scheduler_start_package(const char *package_path)
@@ -570,11 +571,24 @@ int ny_scheduler_start_package(const char *package_path)
   int ret;
 
   ret = ny_manifest_load(package_path, &config);
-  return ret < 0 ? ret : ny_scheduler_start_config(&config);
+  return ret < 0 ? ret : ny_scheduler_start_config(&config, NULL, 0);
 }
 
 int ny_scheduler_start_installed(const char *package_path,
                                  const char *storage_root)
+{
+  return ny_scheduler_start_installed_report(package_path, storage_root,
+                                             UINT64_MAX, NULL, 0);
+}
+
+/****************************************************************************
+ * Name: ny_scheduler_start_installed_report
+ ****************************************************************************/
+
+int ny_scheduler_start_installed_report(const char *package_path,
+                                        const char *storage_root,
+                                        uint64_t permission_mask, char *error,
+                                        size_t capacity)
 {
   struct ny_plugin_config_s config;
   int ret;
@@ -589,7 +603,8 @@ int ny_scheduler_start_installed(const char *package_path,
   if (ret >= 0)
     {
       strlcpy(config.storage_root, storage_root, sizeof(config.storage_root));
-      ret = ny_scheduler_start_config(&config);
+      config.permissions &= permission_mask;
+      ret = ny_scheduler_start_config(&config, error, capacity);
     }
 
   return ret;
@@ -651,7 +666,8 @@ int ny_scheduler_refresh_permissions(const char *id)
  * Private Functions
  ****************************************************************************/
 
-static int ny_scheduler_start_config(const struct ny_plugin_config_s *config)
+static int ny_scheduler_start_config(const struct ny_plugin_config_s *config,
+                                     char *error, size_t capacity)
 {
   struct ny_scheduler_slot_s *slot;
 #ifdef CONFIG_BUILD_KERNEL
@@ -792,6 +808,8 @@ static int ny_scheduler_start_config(const struct ny_plugin_config_s *config)
 
   nxmutex_lock(&g_scheduler_lock);
   ret = slot->start_result;
+  if (error && capacity)
+    snprintf(error, capacity, "%s", slot->last_error_text);
   sem_post(&slot->start_consumed);
   if (ret < 0)
     {
