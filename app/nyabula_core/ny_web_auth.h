@@ -48,6 +48,10 @@ int ny_web_auth_load(const char *path);
 
 bool ny_web_auth_has_password(void);
 
+/* Changes when a password is replaced, invalidating open panel sessions. */
+
+uint32_t ny_web_auth_generation(void);
+
 /* Check a password.  0 if it matches; -EACCES if it does not; -EAGAIN if
  * attempts are being refused, with *retry_after_ms saying for how long;
  * -ENOENT if no password has been set.  retry_after_ms may be NULL.

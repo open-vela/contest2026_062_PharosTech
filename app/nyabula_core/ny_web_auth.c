@@ -26,11 +26,23 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+static atomic_uint g_auth_generation;
+
+/****************************************************************************
+ * Name: ny_web_auth_generation
+ ****************************************************************************/
+
+uint32_t ny_web_auth_generation(void)
+{
+  return atomic_load(&g_auth_generation);
+}
 
 #ifndef CONFIG_CRYPTO_MBEDTLS
 
@@ -500,6 +512,8 @@ int ny_web_auth_set(const char *password)
       g_auth = previous;
     }
 
+  if (ret == 0)
+    atomic_fetch_add(&g_auth_generation, 1);
   memset(&previous, 0, sizeof(previous));
   nxmutex_unlock(&g_auth_lock);
   return ret;
