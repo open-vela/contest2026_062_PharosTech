@@ -258,9 +258,11 @@ MiniCPM5-1B W4A16 通过 RKLLM 1.3 在 RK3576 NPU 上运行，已完成中文回
 
 ### 在线 MiMo Agent
 
-在线后端为小米 MiMo `mimo-v2.5-pro`，由 openvela 官方 `ai_agent` 发起 HTTPS 请求，工具权限和状态仍在本地。部署 CA 根证书后完成 TLSv1.2 握手；修复 chunked 响应完整后仍等待 keep-alive 连接关闭的问题，单轮样例约九秒，多工具两例分别 **14 s / 27 s succeeded**。
+历史板测在线后端为小米 MiMo `mimo-v2.5-pro`，由 openvela 官方 `ai_agent` 发起 HTTPS 请求，工具权限和状态仍在本地。部署 CA 根证书后完成 TLSv1.2 握手；修复 chunked 响应完整后仍等待 keep-alive 连接关闭的问题，单轮样例约九秒，多工具两例分别 **14 s / 27 s succeeded**。
 
 仍有通用工具表下参数猜测、日期表达与 Markdown 输出等质量问题，因此这里确认的是在线后端与成功工具回合，而非全工具正确率或网络 SLA。在线模型接入与下文独立 Nyabula Cloud 中继是不同能力。
+
+2026-10-20：新配置改用 `mimo-v2.6-flash` / `mimo-v2.6-pro`；上述旧模型耗时保留为历史实测，不视为2.6性能。语音ASR/TTS的官方ID仍为2.5系列，见[配置说明](tools/nyabula_core/cli.md)。
 
 ### 时间与产品一致性
 
