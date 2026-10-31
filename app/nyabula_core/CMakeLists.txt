@@ -83,6 +83,15 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
         list(APPEND NYABULA_CORE_SRCS ny_dsp_player.c)
       endif()
     endif()
+    if(CONFIG_NYABULA_CORE_BT)
+      list(APPEND NYABULA_CORE_SRCS ny_product_bt.c ny_product_bt_audio.c ny_sbc.c)
+      set(NYCORE_BT_INCLUDES
+          ${NUTTX_APPS_DIR}/external/zblue/zblue/port/include
+          ${NUTTX_APPS_DIR}/external/zblue/zblue/port/include/zephyr
+          ${NUTTX_APPS_DIR}/external/libfluoride-sbc/libfluoride-sbc/decoder/include
+          ${NUTTX_APPS_DIR}/external/libfluoride-sbc/libfluoride-sbc/encoder/include)
+      list(APPEND NYABULA_CORE_DEPENDS zblue libfluoride-sbc)
+    endif()
     if(CONFIG_NYABULA_CORE_NETWORK)
       list(APPEND NYABULA_CORE_SRCS ny_product_network.c)
     endif()
@@ -183,6 +192,7 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     ${NYCORE_SQLITE_DIR}
     ${NYCORE_NBOOTCTL_DIR}
     ${NYCORE_NYAMP_DIR}
+    ${NYCORE_BT_INCLUDES}
     ${NYCORE_DSP_DIR}
     ${NUTTX_APPS_DIR}/crypto/libsodium/libsodium/src/libsodium/include
     ${NUTTX_APPS_DIR}/interpreters/wamr/wamr/core/iwasm/include
