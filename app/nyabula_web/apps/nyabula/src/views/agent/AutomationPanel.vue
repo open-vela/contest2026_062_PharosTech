@@ -107,7 +107,7 @@ onBeforeUnmount(() => clearInterval(timer));
 h2 { font: 600 22px var(--font-title); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 form { display: flex; flex-direction: column; gap: 12px; padding: 20px 0; }
-input, select, textarea { display: block; width: 100%; box-sizing: border-box; background: var(--md-surface-container); color: var(--md-on-surface); padding: 12px; border: 1px solid var(--md-outline); border-radius: 8px; font: 15px/1.6 var(--font-body); }
+input, select, textarea { display: block; width: 100%; }
 .rule { border-bottom: 1px solid var(--md-outline-variant); padding: 18px 0; overflow-wrap: anywhere; }
 .rule h3 { margin: 0; }.rule p { margin: 8px 0; }.error { color: var(--md-error); }
 </style>

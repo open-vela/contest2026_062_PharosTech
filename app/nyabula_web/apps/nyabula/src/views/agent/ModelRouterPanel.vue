@@ -142,7 +142,7 @@ watch(() => props.reloadKey, () => void request('get'));
 .backend { padding: 12px 0; border-bottom: 1px solid var(--md-outline-variant); overflow-wrap: anywhere; }
 .router-editor { display: flex; flex-direction: column; gap: 16px; padding-top: 20px; }
 label { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 44px; }
-select, input[type=number] { min-height: 44px; border: 1px solid var(--md-outline); border-radius: 8px; padding: 8px; background: var(--md-surface); color: var(--md-on-surface); }
+
 .profile { margin: 16px 0; }
 .error { color: var(--md-error); }
 </style>

@@ -38,7 +38,7 @@ const sections = [
 const section = computed(() => sections.some(s => s.id === route.query.tab) ? String(route.query.tab) : 'chat');
 function select(id: string): void { void router.replace({ query: { ...route.query, tab: id } }); }
 const stateLabel = computed(() => !page.session.connected ? '设备未连接' : !page.session.isOwner ? '需要主人权限' :
-  !bot.status ? '正在读取 Nyabot 状态' : !bot.status.ready ? '正在启动' :
+  !bot.status ? (bot.error ? 'Nyabot 状态读取失败，请重试或检查设备能力' : '正在读取 Nyabot 状态') : !bot.status.ready ? '正在启动' :
   !bot.status.configured ? '还没有可用模型' : '可对话');
 </script>
 
@@ -62,7 +62,7 @@ const stateLabel = computed(() => !page.session.connected ? '设备未连接' : 
           <p v-if="!bot.conversations.length" class="muted">尚无设备端会话</p>
         </div>
       </aside>
-      <section class="chat-content" :class="{ 'awaiting-approval': bot.currentRuns.some(r => r.steps?.some(s => s.state === 'pending')) }" aria-label="当前会话">
+      <section class="ui-panel chat-content" :class="{ 'awaiting-approval': bot.currentRuns.some(r => r.steps?.some(s => s.state === 'pending')) }" aria-label="当前会话">
         <div class="chat-state"><span>{{ stateLabel }}</span><MdButton v-if="!bot.status?.configured" variant="text" @click="select('config')">模型配置</MdButton>
           <MdButton v-else-if="bot.currentRuns.length" variant="text" :disabled="!page.session.connected || bot.active.some(r => r.conversationId === bot.conversation)" @click="deleteConversation">删除会话</MdButton>
         </div>
@@ -136,8 +136,11 @@ const stateLabel = computed(() => !page.session.connected ? '设备未连接' : 
 .nyabot-workspace { display: flex; flex-direction: column; min-height: 100%; padding: 16px 24px; box-sizing: border-box; gap: 16px; }
 .section-nav { display: flex; gap: 6px; overflow-x: auto; border-bottom: 1px solid var(--md-outline-variant); flex: none; }
 .section-nav button, .conversation { border: 0; background: transparent; color: var(--md-on-surface-variant); font: 500 15px var(--font-body); cursor: pointer; min-height: 44px; padding: 8px 14px; white-space: nowrap; }
-.section-nav .selected { color: var(--md-primary); border-bottom: 2px solid var(--md-primary); }
-.chat-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; flex: 1; min-height: 560px; }
+.section-nav .selected { color: var(--md-primary); box-shadow: inset 0 -2px 0 var(--md-primary); }
+.section-nav button:hover:not(.selected) { color: var(--md-on-surface); }
+/* The chat fills the rest of the viewport: the thread scrolls, the composer
+ * stays at the bottom of the window instead of floating mid-page. */
+.chat-layout { display: grid; grid-template-columns: 232px minmax(0, 1fr); gap: 20px; flex: 1 1 0; min-height: 480px; }
 .conversations { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; border-right: 1px solid var(--md-outline-variant); padding-right: 16px; }
 .new-conversation { flex: none; }
 /* The list scrolls on its own so a long history never stretches the page. */
@@ -166,9 +169,9 @@ const stateLabel = computed(() => !page.session.connected ? '设备未连接' : 
 .delete:hover:not(:disabled) { background: color-mix(in srgb, var(--md-error) 14%, transparent); color: var(--md-error); }
 .delete:disabled { cursor: not-allowed; }
 @media (hover: none) { .delete { opacity: 1; } }
-.chat-content { display: flex; flex-direction: column; gap: 12px; min-width: 0; max-width: 960px; }
+.chat-content { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; padding: 14px 18px 12px; }
 .chat-state, .execution { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; }
-.chat-messages { flex: 1; min-height: 300px; max-height: 60dvh; }
+.chat-messages { flex: 1 1 0; min-height: 220px; }
 .composer-hint { font-size: 12px; margin: 0; }
 .panel { max-width: 960px; width: 100%; margin: 0 auto; line-height: 1.6; }
 .panel h2 { font: 600 22px var(--font-title); }
@@ -188,7 +191,7 @@ const stateLabel = computed(() => !page.session.connected ? '设备未连接' : 
   .conversations > * { flex: none; max-width: 180px; }
   .conversation-list { flex-direction: row; overflow-x: auto; overflow-y: hidden; max-width: none; }
   .conversation-row { flex: none; max-width: 200px; }
-  .chat-content { flex: 1; }
+  .chat-content { flex: 1; padding: 12px; }
   .awaiting-approval .chat-messages { flex: none; min-height: 100px; max-height: 180px; }
   .section-nav button { padding: 8px 10px; }
 }
