@@ -3,6 +3,7 @@
  * permission. Desktop = matrix (rows = permissions, cols = plugins);
  * tablet / phone = per-permission groups expanding to plugin switches.
  * Owner toggles via plugins.setPermission; others see disabled switches. */
+import MembersPanel from './MembersPanel.vue';
 import { computed, inject, ref } from 'vue';
 import { EmptyState, MdSwitch, Skeleton, permissionIcon, permissionZh } from '@nyabula/ui';
 import { usePluginsStore, type PluginInfo } from '../../../stores/plugins';
@@ -51,16 +52,21 @@ function flip(name: string): void {
 
 <template>
   <div class="perms">
+    <MembersPanel />
+    <header class="permissions-heading">
+    <h2>插件能力授权</h2>
     <p class="muted intro">
       按权限查看哪些插件申请并获得了授权。
       <span v-if="!session.isOwner" class="tag warn">仅主人可修改</span>
     </p>
+    <p v-if="plugins.permissionQueueLength" class="queue-status" role="status">正在依次保存 · 剩余 {{ plugins.permissionQueueLength }} 项</p>
+    </header>
 
     <Skeleton v-if="plugins.loading && !plugins.list.length" :lines="5" />
     <EmptyState v-else-if="plugins.error && !plugins.list.length" tone="error" title="插件列表读取失败" :hint="plugins.error" action-text="重试" @action="plugins.refresh()" />
     <EmptyState v-else-if="!rows.length" icon="shield" title="暂无权限申请" hint="已安装的插件都没有声明权限" />
 
-    <div v-else-if="matrix" class="matrix-wrap">
+    <div v-else-if="matrix" class="ui-panel matrix-wrap">
       <table class="matrix">
         <thead>
           <tr>
@@ -83,8 +89,10 @@ function flip(name: string): void {
             <td v-for="p in cols" :key="p.id" class="cell">
               <MdSwitch
                 v-if="cell(r, p)"
+                :aria-label="`${p.name} · ${permissionZh(r.name)}`"
+                :aria-busy="plugins.permissionPending(p.id, r.name)"
                 :model-value="cell(r, p)!.granted"
-                :disabled="!session.isOwner"
+                :disabled="!session.isOwner || !session.connected || plugins.permissionPending(p.id, r.name)"
                 @update:model-value="(v: boolean) => toggle(p.id, r.name, v)"
               />
               <span v-else class="dash">—</span>
@@ -95,7 +103,7 @@ function flip(name: string): void {
     </div>
 
     <div v-else class="stack">
-      <div v-for="r in rows" :key="r.name" class="group" :class="{ open: open[r.name] }">
+      <div v-for="r in rows" :key="r.name" class="ui-panel group" :class="{ open: open[r.name] }">
         <button class="group-head" @click="flip(r.name)">
           <span class="perm-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path :d="permissionIcon(r.name)" fill="currentColor" /></svg></span>
           <span class="perm-text">
@@ -113,7 +121,7 @@ function flip(name: string): void {
               <span class="holder-name">{{ h.plugin.name }}</span>
               <span class="holder-id mono">{{ h.plugin.id }}</span>
             </span>
-            <MdSwitch :model-value="h.granted" :disabled="!session.isOwner" @update:model-value="(v: boolean) => toggle(h.plugin.id, r.name, v)" />
+            <MdSwitch :aria-label="`${h.plugin.name} · ${permissionZh(r.name)}`" :aria-busy="plugins.permissionPending(h.plugin.id, r.name)" :model-value="h.granted" :disabled="!session.isOwner || !session.connected || plugins.permissionPending(h.plugin.id, r.name)" @update:model-value="(v: boolean) => toggle(h.plugin.id, r.name, v)" />
           </div>
         </div>
       </div>
@@ -122,8 +130,13 @@ function flip(name: string): void {
 </template>
 
 <style scoped>
+.permissions-heading { margin: 28px 0 18px; display: flex; flex-direction: column; gap: 8px; }
+.permissions-heading h2 { margin: 0; line-height: 1.35; }
+.permissions-heading .intro { margin: 0; line-height: 1.6; }
+.queue-status { margin: 0; font-size: 13px; color: var(--md-primary); }
+.perms { min-width: 0; }
 .intro { font-size: 13px; margin: 0 0 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.matrix-wrap { overflow-x: auto; border-radius: var(--radius-l); background: var(--md-surface-container); box-shadow: var(--md-elev-1); }
+.matrix-wrap { overflow-x: auto; }
 .matrix { border-collapse: collapse; min-width: 100%; }
 .matrix th, .matrix td { padding: 10px 14px; border-bottom: 1px solid var(--md-outline-variant); text-align: left; }
 .matrix tbody tr:last-child > * { border-bottom: none; }
@@ -148,7 +161,7 @@ function flip(name: string): void {
 .perm-text { display: flex; flex-direction: column; min-width: 0; }
 .perm-zh { font: 600 14px var(--font-body); color: var(--md-on-surface); }
 .perm-id { font-size: 11.5px; color: var(--md-on-surface-variant); }
-.group { background: var(--md-surface-container); border-radius: var(--radius-l); overflow: hidden; }
+.group { overflow: hidden; }
 .group-head {
   width: 100%;
   display: flex;
