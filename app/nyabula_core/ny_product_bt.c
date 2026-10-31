@@ -340,6 +340,9 @@ static void *ny_bt_bringup(void *arg);
 static void ny_bt_devices_load(void);
 static void ny_bt_devices_save(void);
 static void ny_bt_bond_mark(const struct bt_bond_info *info, void *arg);
+#if defined(CONFIG_NYABULA_CORE_BT_AUTOCONNECT) && defined(CONFIG_BT_SETTINGS)
+static void ny_bt_bond_latest(const struct bt_bond_info *info, void *arg);
+#endif
 static int ny_bt_discoverable(bool enable, int seconds);
 static void ny_bt_tick_avrcp(uint32_t work);
 static void ny_bt_tick_volume(void);
@@ -2189,6 +2192,35 @@ static void ny_bt_bond_mark(const struct bt_bond_info *info, void *arg)
   nxmutex_unlock(&g_bt.lock);
 }
 
+#if defined(CONFIG_NYABULA_CORE_BT_AUTOCONNECT) && defined(CONFIG_BT_SETTINGS)
+/****************************************************************************
+ * Name: ny_bt_bond_latest
+ ****************************************************************************/
+
+static void ny_bt_bond_latest(const struct bt_bond_info *info, void *arg)
+{
+  struct ny_bt_device_s *latest = arg;
+  struct ny_bt_device_s *device;
+  char address[BT_ADDR_STR_LEN];
+
+  bt_addr_to_str(&info->addr.a, address, sizeof(address));
+  nxmutex_lock(&g_bt.lock);
+  device = ny_bt_device(address, false);
+  if (latest->address[0] == '\0' ||
+      (device != NULL && device->last_connected > latest->last_connected))
+    {
+      if (device != NULL)
+        {
+          *latest = *device;
+        }
+
+      strlcpy(latest->address, address, sizeof(latest->address));
+    }
+
+  nxmutex_unlock(&g_bt.lock);
+}
+#endif
+
 /****************************************************************************
  * Name: ny_bt_discoverable
  ****************************************************************************/
@@ -3234,11 +3266,14 @@ int ny_product_bt_tick(void)
   if (autoconnect)
     {
 #if defined(CONFIG_NYABULA_CORE_BT_AUTOCONNECT) && defined(CONFIG_BT_SETTINGS)
-      char text[BT_ADDR_STR_LEN];
+      struct ny_bt_device_s latest = { 0 };
       bt_addr_t address;
-      cJSON *empty = cJSON_CreateObject();
 
-      if (empty != NULL && ny_bt_target(empty, false, &address, text) == 0)
+      /* A failed pairing is history, not authority to reconnect on boot. */
+
+      bt_foreach_bond_br(ny_bt_bond_latest, &latest);
+      if (latest.address[0] != '\0' &&
+          bt_addr_from_str(latest.address, &address) == 0)
         {
           struct bt_conn *conn =
               bt_conn_create_br(&address, BT_BR_CONN_PARAM_DEFAULT);
@@ -3258,8 +3293,6 @@ int ny_product_bt_tick(void)
               bt_conn_unref(conn);
             }
         }
-
-      cJSON_Delete(empty);
 #endif
     }
 
