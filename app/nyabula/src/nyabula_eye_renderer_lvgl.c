@@ -45,9 +45,9 @@
 #include "nyabula_eye_internal.h"
 #include "nyabula_eye_mirror.h"
 
-#define W                360
-#define H                360
-#define R                178.0f
+#define W 360
+#define H 360
+#define R 178.0f
 
 /* A version 6 symbol is 41 modules; with the quiet zone that is a little
  * over five pixels a module on this panel, which a phone still reads at
@@ -63,7 +63,7 @@
  * phone up to the device, and the tinted greys are dim on these panels.
  */
 
-#define SCENE_QR_INK         0xffffff
+#define SCENE_QR_INK     0xffffff
 #define CY               180.0f
 #define PI               3.14159265358979323846f
 #define FIBERS           48
@@ -262,8 +262,7 @@ static void text_center_at(struct nyabula_eye_renderer_s *r,
                            const struct eye_s *e, const lv_font_t *font,
                            const char *text, float center_x, float center_y,
                            uint32_t color, float opacity);
-static const lv_font_t *font_for_text(const lv_font_t *font,
-                                      const char *text);
+static const lv_font_t *font_for_text(const lv_font_t *font, const char *text);
 static void labels_flush(struct nyabula_eye_renderer_s *r);
 static float eye_globe_radius(void);
 static void clamp_to_eye_globe(float *x, float *y, float inset);
@@ -788,9 +787,9 @@ static const lv_font_t *font_for_text(const lv_font_t *font, const char *text)
            * the chain and always find something.
            */
 
-          complete = codepoint < 0x20 ||
-                     candidate->get_glyph_dsc(candidate, &descriptor,
-                                              codepoint, 0);
+          complete =
+              codepoint < 0x20 ||
+              candidate->get_glyph_dsc(candidate, &descriptor, codepoint, 0);
         }
 
       if (complete)
@@ -2892,14 +2891,6 @@ static void scene_weather(struct nyabula_eye_renderer_s *r,
   static const char *names[] = {
     "晴朗", "多云", "小雨", "雷雨", "降雪", "有雾"
   };
-  static const int temperatures[] = { 28, 21, 23, 19, 1, 16 };
-  static const char *left_labels[] = { "紫外", "湿度", "湿度",
-                                       "风速", "湿度", "能见" };
-  static const char *left_values[] = { "4", "66%", "78%", "24", "91%", "0.8" };
-  static const char *right_labels[] = { "体感", "体感", "体感",
-                                        "湿度", "体感", "湿度" };
-  static const char *right_values[] = { "29°", "20°", "22°",
-                                        "86%", "-2°", "95%" };
   uint32_t color = scene_color(e);
   enum nyabula_eye_weather_e weather = payload->weather;
   char value[20];
@@ -2908,28 +2899,35 @@ static void scene_weather(struct nyabula_eye_renderer_s *r,
 
   if (e->id == NYABULA_EYE_RIGHT)
     {
-      int temperature = payload->temperature_c == 0.0f
-                            ? temperatures[weather]
-                            : (int)lroundf(payload->temperature_c);
-      const char *left_value_text = left_values[weather];
-      const char *right_value_text = right_values[weather];
+      const char *left_label = "湿度";
+      const char *right_label = "体感";
+      const char *left_value_text = "--";
+      const char *right_value_text = "--";
+      unsigned int fields = payload->weather_fields;
+      if (fields & NYABULA_EYE_WEATHER_FIELD_TEMPERATURE)
+        snprintf(value, sizeof(value), "%d°",
+                 (int)lroundf(payload->temperature_c));
+      else
+        snprintf(value, sizeof(value), "--");
 
-      if (weather == NYABULA_EYE_WEATHER_STORM && payload->wind_kph > 0.0f)
+      if (weather == NYABULA_EYE_WEATHER_STORM &&
+          (fields & NYABULA_EYE_WEATHER_FIELD_WIND))
         {
+          left_label = "风速";
           snprintf(left_value, sizeof(left_value), "%d",
                    (int)lroundf(payload->wind_kph));
           left_value_text = left_value;
         }
       else if (weather == NYABULA_EYE_WEATHER_FOG &&
-               payload->visibility_km > 0.0f)
+               (fields & NYABULA_EYE_WEATHER_FIELD_VISIBILITY))
         {
+          left_label = "能见";
           int tenths = (int)lroundf(payload->visibility_km * 10.0f);
           snprintf(left_value, sizeof(left_value), "%d.%d", tenths / 10,
                    abs(tenths % 10));
           left_value_text = left_value;
         }
-      else if (weather != NYABULA_EYE_WEATHER_SUNNY &&
-               payload->humidity_percent > 0.0f)
+      else if (fields & NYABULA_EYE_WEATHER_FIELD_HUMIDITY)
         {
           snprintf(left_value, sizeof(left_value), "%d%%",
                    (int)lroundf(payload->humidity_percent));
@@ -2937,13 +2935,14 @@ static void scene_weather(struct nyabula_eye_renderer_s *r,
         }
 
       if (weather == NYABULA_EYE_WEATHER_STORM &&
-          payload->humidity_percent > 0.0f)
+          (fields & NYABULA_EYE_WEATHER_FIELD_HUMIDITY))
         {
+          right_label = "湿度";
           snprintf(right_value, sizeof(right_value), "%d%%",
                    (int)lroundf(payload->humidity_percent));
           right_value_text = right_value;
         }
-      else if (payload->feels_like_c != 0.0f)
+      else if (fields & NYABULA_EYE_WEATHER_FIELD_FEELS)
         {
           snprintf(right_value, sizeof(right_value), "%d°",
                    (int)lroundf(payload->feels_like_c));
@@ -2954,20 +2953,23 @@ static void scene_weather(struct nyabula_eye_renderer_s *r,
           color, opacity * 0.16f);
       arc(r, e, 0.0f, 0.0f, R * 0.70f, PI * 0.83f, PI * 0.78f, R * 0.024f,
           color, opacity * 0.76f);
-      snprintf(value, sizeof(value), "%d°", temperature);
+      if (payload->title[0])
+        text_center(r, e, &nyabula_font_body_14, payload->title, -R * 0.47f,
+                    color, opacity * 0.64f);
       text_center(
           r, e,
           scene_font(r, FONT_FAMILY_ENGLISH, 85, &nyabula_font_english_96),
           value, -R * 0.11f, color, opacity * 0.98f);
-      text_center(r, e,
-                  scene_font(r, FONT_FAMILY_TITLE, 20, &nyabula_font_title_20),
-                  names[weather], R * 0.23f, color, opacity * 0.64f);
+      text_center(
+          r, e, scene_font(r, FONT_FAMILY_TITLE, 20, &nyabula_font_title_20),
+          fields ? scene_text(payload->subtitle, names[weather]) : "--",
+          R * 0.23f, color, opacity * 0.64f);
       text_center_at(
           r, e, scene_font(r, FONT_FAMILY_BODY, 14, &nyabula_font_body_14),
-          left_labels[weather], -R * 0.23f, R * 0.39f, color, opacity * 0.40f);
+          left_label, -R * 0.23f, R * 0.39f, color, opacity * 0.40f);
       text_center_at(
           r, e, scene_font(r, FONT_FAMILY_BODY, 14, &nyabula_font_body_14),
-          right_labels[weather], R * 0.23f, R * 0.39f, color, opacity * 0.40f);
+          right_label, R * 0.23f, R * 0.39f, color, opacity * 0.40f);
       text_center_at(
           r, e,
           scene_font(r, FONT_FAMILY_ENGLISH, 18, &nyabula_font_english_18),
@@ -3349,10 +3351,10 @@ static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
 
       if (payload->title[0] != '\0')
         {
-          text_center(r, e,
-                      scene_font(r, FONT_FAMILY_TITLE, 39,
-                                 &nyabula_font_title_42),
-                      payload->title, -R * 0.13f, SCENE_QR_INK, opacity);
+          text_center(
+              r, e,
+              scene_font(r, FONT_FAMILY_TITLE, 39, &nyabula_font_title_42),
+              payload->title, -R * 0.13f, SCENE_QR_INK, opacity);
         }
 
       /* The detail line is for an address, so it is set in the Latin face:
@@ -3362,11 +3364,10 @@ static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
 
       if (payload->detail[0] != '\0')
         {
-          text_center(r, e,
-                      scene_font(r, FONT_FAMILY_ENGLISH, 18,
-                                 &nyabula_font_english_18),
-                      payload->detail, R * 0.16f, SCENE_QR_INK,
-                      opacity * 0.86f);
+          text_center(
+              r, e,
+              scene_font(r, FONT_FAMILY_ENGLISH, 18, &nyabula_font_english_18),
+              payload->detail, R * 0.16f, SCENE_QR_INK, opacity * 0.86f);
         }
 
       return;
@@ -3403,8 +3404,7 @@ static void scene_qr(struct nyabula_eye_renderer_s *r, const struct eye_s *e,
   if (label[0] != '\0')
     {
       text_center(r, e,
-                  scene_font(r, FONT_FAMILY_TITLE, 19,
-                             &nyabula_font_title_20),
+                  scene_font(r, FONT_FAMILY_TITLE, 19, &nyabula_font_title_20),
                   label, shift - plate - R * 0.12f, SCENE_QR_INK, opacity);
     }
 
