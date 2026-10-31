@@ -30,8 +30,12 @@ watch(
     <div v-for="m in messages" :key="m.id" class="msg" :class="[m.role, { unsupported: m.unsupported, error: !!m.error }]">
       <div v-if="m.role === 'agent'" class="avatar"><NyabulaLogo :size="30" /></div>
       <div class="bubble">
+        <details v-if="m.outcome?.length" class="outcome">
+          <summary>设备执行记录</summary>
+          <p v-for="(line, index) in m.outcome" :key="index">{{ line }}</p>
+        </details>
         <!-- A reply is Markdown; what the owner typed is shown as typed. -->
-        <MarkdownText v-if="m.text && m.role === 'agent' && !m.error" :text="m.text" />
+        <MarkdownText v-if="m.text && m.role === 'agent'" :text="m.text" />
         <span v-else-if="m.text">{{ m.text }}</span>
         <span v-if="m.pending" class="pending-label" role="status"> · 等待设备</span>
         <span v-if="m.unsupported" class="contract-only" style="margin-left: 8px">契约预留</span>
@@ -81,6 +85,10 @@ watch(
 }
 .unsupported .bubble { border: 1px dashed var(--md-outline); background: transparent; color: var(--md-on-surface-variant); }
 .error .bubble { background: color-mix(in srgb, var(--md-error) 14%, transparent); color: var(--md-error); }
+.outcome { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--md-outline-variant); color: var(--md-on-surface); font-size: 14px; white-space: normal; }
+.outcome summary { cursor: pointer; font-weight: 600; color: var(--md-on-surface-variant); }
+.outcome summary:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 3px; }
+.outcome p { margin: 4px 0 0; }
 .cursor {
   display: inline-block;
   width: 7px;
