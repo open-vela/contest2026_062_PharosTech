@@ -170,11 +170,10 @@ export function calendarScene(e: CalendarSceneInput): ScenePayload {
 const TASK_STATE: Record<string, string> = {
   running: 'running', queued: 'queued', confirm: 'confirm', done: 'done', failed: 'failed', cancelled: 'failed',
 };
-/** `progress` is 0..100 here and 0..1 on the wire; exactly 0 means "use the
- *  demo value" on the device, hence the floor. */
+/** Progress is 0..100 here and 0..1 on the wire; zero remains real zero. */
 export function taskScene(t: { title: string; progress: number; state: string }): ScenePayload {
   const percent = Math.min(100, Math.max(0, Math.round(t.progress)));
-  return { title: t.title, progress: Math.max(0.001, percent / 100), task_state: TASK_STATE[t.state] ?? 'queued', value: `${percent}%` };
+  return { title: t.title, progress: percent / 100, task_state: TASK_STATE[t.state] ?? 'queued', value: `${percent}%` };
 }
 
 /** A memory is one sentence: spread it over the two big lines, tag below. */
