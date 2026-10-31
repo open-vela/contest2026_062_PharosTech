@@ -755,8 +755,9 @@ static int ny_agent_worker(int argc, char **argv)
                                     ny_agent_tool_execute);
   if (ret == OK)
     ret = tool_guard_init();
-  if (ret == OK)
-    ret = skill_loader_init();
+  /* Core owns the skill index and bodies. Builtin text is read directly
+   * through skill_loader_builtin(), not seeded into a second file store.
+   */
   if (ret == OK)
     context_set_provider(ny_agent_context_provider);
   if (ret == OK)
