@@ -203,6 +203,7 @@ static cJSON *nyabula_eye_wire_payload_json(
   NYABULA_JSON_NUMBER(briefing_index);
   NYABULA_JSON_NUMBER(briefing_count);
   NYABULA_JSON_NUMBER(temperature_c);
+  NYABULA_JSON_NUMBER(weather_fields);
   NYABULA_JSON_NUMBER(feels_like_c);
   NYABULA_JSON_NUMBER(humidity_percent);
   NYABULA_JSON_NUMBER(wind_kph);

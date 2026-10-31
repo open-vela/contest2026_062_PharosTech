@@ -2891,14 +2891,6 @@ static void scene_weather(struct nyabula_eye_renderer_s *r,
   static const char *names[] = {
     "晴朗", "多云", "小雨", "雷雨", "降雪", "有雾"
   };
-  static const int temperatures[] = { 28, 21, 23, 19, 1, 16 };
-  static const char *left_labels[] = { "紫外", "湿度", "湿度",
-                                       "风速", "湿度", "能见" };
-  static const char *left_values[] = { "4", "66%", "78%", "24", "91%", "0.8" };
-  static const char *right_labels[] = { "体感", "体感", "体感",
-                                        "湿度", "体感", "湿度" };
-  static const char *right_values[] = { "29°", "20°", "22°",
-                                        "86%", "-2°", "95%" };
   uint32_t color = scene_color(e);
   enum nyabula_eye_weather_e weather = payload->weather;
   char value[20];
@@ -2907,28 +2899,35 @@ static void scene_weather(struct nyabula_eye_renderer_s *r,
 
   if (e->id == NYABULA_EYE_RIGHT)
     {
-      int temperature = payload->temperature_c == 0.0f
-                            ? temperatures[weather]
-                            : (int)lroundf(payload->temperature_c);
-      const char *left_value_text = left_values[weather];
-      const char *right_value_text = right_values[weather];
+      const char *left_label = "湿度";
+      const char *right_label = "体感";
+      const char *left_value_text = "--";
+      const char *right_value_text = "--";
+      unsigned int fields = payload->weather_fields;
+      if (fields & NYABULA_EYE_WEATHER_FIELD_TEMPERATURE)
+        snprintf(value, sizeof(value), "%d°",
+                 (int)lroundf(payload->temperature_c));
+      else
+        snprintf(value, sizeof(value), "--");
 
-      if (weather == NYABULA_EYE_WEATHER_STORM && payload->wind_kph > 0.0f)
+      if (weather == NYABULA_EYE_WEATHER_STORM &&
+          (fields & NYABULA_EYE_WEATHER_FIELD_WIND))
         {
+          left_label = "风速";
           snprintf(left_value, sizeof(left_value), "%d",
                    (int)lroundf(payload->wind_kph));
           left_value_text = left_value;
         }
       else if (weather == NYABULA_EYE_WEATHER_FOG &&
-               payload->visibility_km > 0.0f)
+               (fields & NYABULA_EYE_WEATHER_FIELD_VISIBILITY))
         {
+          left_label = "能见";
           int tenths = (int)lroundf(payload->visibility_km * 10.0f);
           snprintf(left_value, sizeof(left_value), "%d.%d", tenths / 10,
                    abs(tenths % 10));
           left_value_text = left_value;
         }
-      else if (weather != NYABULA_EYE_WEATHER_SUNNY &&
-               payload->humidity_percent > 0.0f)
+      else if (fields & NYABULA_EYE_WEATHER_FIELD_HUMIDITY)
         {
           snprintf(left_value, sizeof(left_value), "%d%%",
                    (int)lroundf(payload->humidity_percent));
@@ -2936,13 +2935,14 @@ static void scene_weather(struct nyabula_eye_renderer_s *r,
         }
 
       if (weather == NYABULA_EYE_WEATHER_STORM &&
-          payload->humidity_percent > 0.0f)
+          (fields & NYABULA_EYE_WEATHER_FIELD_HUMIDITY))
         {
+          right_label = "湿度";
           snprintf(right_value, sizeof(right_value), "%d%%",
                    (int)lroundf(payload->humidity_percent));
           right_value_text = right_value;
         }
-      else if (payload->feels_like_c != 0.0f)
+      else if (fields & NYABULA_EYE_WEATHER_FIELD_FEELS)
         {
           snprintf(right_value, sizeof(right_value), "%d°",
                    (int)lroundf(payload->feels_like_c));
@@ -2953,20 +2953,23 @@ static void scene_weather(struct nyabula_eye_renderer_s *r,
           color, opacity * 0.16f);
       arc(r, e, 0.0f, 0.0f, R * 0.70f, PI * 0.83f, PI * 0.78f, R * 0.024f,
           color, opacity * 0.76f);
-      snprintf(value, sizeof(value), "%d°", temperature);
+      if (payload->title[0])
+        text_center(r, e, &nyabula_font_body_14, payload->title, -R * 0.47f,
+                    color, opacity * 0.64f);
       text_center(
           r, e,
           scene_font(r, FONT_FAMILY_ENGLISH, 85, &nyabula_font_english_96),
           value, -R * 0.11f, color, opacity * 0.98f);
-      text_center(r, e,
-                  scene_font(r, FONT_FAMILY_TITLE, 20, &nyabula_font_title_20),
-                  names[weather], R * 0.23f, color, opacity * 0.64f);
+      text_center(
+          r, e, scene_font(r, FONT_FAMILY_TITLE, 20, &nyabula_font_title_20),
+          fields ? scene_text(payload->subtitle, names[weather]) : "--",
+          R * 0.23f, color, opacity * 0.64f);
       text_center_at(
           r, e, scene_font(r, FONT_FAMILY_BODY, 14, &nyabula_font_body_14),
-          left_labels[weather], -R * 0.23f, R * 0.39f, color, opacity * 0.40f);
+          left_label, -R * 0.23f, R * 0.39f, color, opacity * 0.40f);
       text_center_at(
           r, e, scene_font(r, FONT_FAMILY_BODY, 14, &nyabula_font_body_14),
-          right_labels[weather], R * 0.23f, R * 0.39f, color, opacity * 0.40f);
+          right_label, R * 0.23f, R * 0.39f, color, opacity * 0.40f);
       text_center_at(
           r, e,
           scene_font(r, FONT_FAMILY_ENGLISH, 18, &nyabula_font_english_18),
