@@ -53,6 +53,7 @@ struct nyadsp_biquad_s
 struct nyadsp_s
 {
   struct nyadsp_config_s config;
+  int stereo;
   struct nyadsp_biquad_s input_eq[2][NYADSP_EQ_BANDS];
   struct nyadsp_biquad_s crossover[NYADSP_OUTPUTS][2];
   struct nyadsp_biquad_s output_eq[NYADSP_OUTPUTS][NYADSP_EQ_BANDS];
@@ -405,6 +406,22 @@ struct nyadsp_s *nyadsp_create(const struct nyadsp_config_s *config,
 }
 
 /****************************************************************************
+ * Name: nyadsp_create_stereo
+ ****************************************************************************/
+
+struct nyadsp_s *nyadsp_create_stereo(const struct nyadsp_config_s *config,
+                                      int *error)
+{
+  struct nyadsp_s *dsp = nyadsp_create(config, error);
+  if (dsp != NULL)
+    {
+      dsp->stereo = 1;
+    }
+
+  return dsp;
+}
+
+/****************************************************************************
  * Name: nyadsp_reset
  ****************************************************************************/
 
@@ -526,14 +543,17 @@ int nyadsp_process(struct nyadsp_s *dsp, const float *input, float *output,
           right = nyadsp_equalize(dsp->input_eq[1], right);
           values[0] = left;
           values[1] = right;
-          values[2] = 0.5f * (left + right);
+          values[2] = dsp->stereo ? 0.0f : 0.5f * (left + right);
 
           for (channel = 0; channel < NYADSP_OUTPUTS; channel++)
             {
               float sample = values[channel];
 
-              sample = nyadsp_filter(&dsp->crossover[channel][0], sample);
-              sample = nyadsp_filter(&dsp->crossover[channel][1], sample);
+              if (!dsp->stereo)
+                {
+                  sample = nyadsp_filter(&dsp->crossover[channel][0], sample);
+                  sample = nyadsp_filter(&dsp->crossover[channel][1], sample);
+                }
               sample = nyadsp_equalize(dsp->output_eq[channel], sample);
               sample *= dsp->gain[channel];
 
