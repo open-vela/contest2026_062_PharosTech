@@ -24,6 +24,7 @@
 #include "llm/llm_proxy.h"
 #include "llm/llm_router.h"
 #include "ny_agent.h"
+#include "ny_mimo.h"
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
@@ -35,6 +36,53 @@ static bool ny_agent_config_ascii(const char *value, size_t maximum);
 static bool ny_agent_config_endpoint(const cJSON *data);
 static int ny_agent_router(const char *topic, const cJSON *data,
                            cJSON **result);
+static int ny_agent_thinking(const char *topic, const cJSON *data,
+                             cJSON **result);
+
+/****************************************************************************
+ * Name: ny_agent_thinking
+ ****************************************************************************/
+
+static int ny_agent_thinking(const char *topic, const cJSON *data,
+                             cJSON **result)
+{
+  static const char *const levels[] = { "none",  "enabled", "minimal",
+                                        "low",   "medium",  "high",
+                                        "xhigh", "max",     "ultra" };
+  char level[16] = "enabled";
+  char host[128] = "";
+  if (!strcmp(topic, "agent.config.thinking.set"))
+    {
+      const char *requested = ny_agent_config_string(data, "level");
+      bool valid = false;
+      for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); i++)
+        valid |= !strcmp(requested, levels[i]);
+      if (!valid || cJSON_GetArraySize(data) != 1)
+        return -EINVAL;
+      if (claw_config_set("mimo_thinking", requested) != OK)
+        return -EIO;
+    }
+  else if (strcmp(topic, "agent.config.thinking.get"))
+    return -ENOSYS;
+
+  claw_config_get("mimo_thinking", level, sizeof(level));
+  claw_config_get(AGENT_CFG_KEY_LLM_HOST, host, sizeof(host));
+  cJSON *root = cJSON_CreateObject();
+  if (!root || !cJSON_AddStringToObject(root, "level", level) ||
+      !cJSON_AddStringToObject(root, "effective",
+                               !strcmp(level, "none") ? "disabled"
+                                                      : "enabled") ||
+      !cJSON_AddBoolToObject(root, "distinctLevels", false) ||
+      !cJSON_AddStringToObject(root, "provider", "mimo") ||
+      !cJSON_AddBoolToObject(root, "primaryEndpoint",
+                             ny_mimo_host_supported(host)))
+    {
+      cJSON_Delete(root);
+      return -ENOMEM;
+    }
+  *result = root;
+  return 0;
+}
 
 /****************************************************************************
  * Name: ny_agent_config_string
@@ -175,6 +223,10 @@ int ny_agent_config(const struct ny_product_caller_s *caller,
 {
   if (caller->role != NY_PRODUCT_OWNER)
     return -EACCES;
+  if (!strncmp(topic, "agent.config.thinking.", 22))
+    return ny_agent_thinking(topic, data, result);
+  if (!strncmp(topic, "agent.config.mimo.", 18))
+    return ny_mimo_config(topic, data, result);
   if (!strncmp(topic, "agent.config.router.", 20))
     return ny_agent_router(topic, data, result);
 #ifdef CONFIG_NYABULA_CORE_COMPUTE
