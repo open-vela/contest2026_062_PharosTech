@@ -34,7 +34,7 @@ static void fill(void){uint8_t p[2]={15,0};assert(ny_pcm_ring_put(&g_bt_audio.me
 int main(void){
  struct ny_bt_audio_worker_s w={0};
  assert(ny_pcm_ring_init(&g_bt_audio.media_ring,4096)==0);
- g_bt_audio.media_rate=44100;g_bt_audio.media_frame_samples=128;
+ g_bt_audio.want_media=true;g_bt_audio.media_rate=44100;g_bt_audio.media_frame_samples=128;
  fill();ny_bt_audio_media_service(&w);assert(opens==1&&resets==1&&w.playing);
  queued=0;ny_bt_audio_media_service(&w);
  assert(g_bt_audio.status.media_underruns==1);
@@ -46,6 +46,10 @@ int main(void){
  g_bt_audio.held=false;fail_open=1;ny_bt_audio_media_service(&w);assert(opens==2&&w.speaker==NULL&&g_bt_audio.device_closed);
  fail_open=0;w.retry_at=0;ny_bt_audio_media_service(&w);assert(opens==3&&resets==3);
  fill();starved=1;ny_bt_audio_media_service(&w);assert(opens==4&&resets==4&&closes==3);assert(g_bt_audio.status.media_recoveries==3);
+ // Same-format source changes still invalidate the old worker generation.
+ uint32_t generation=g_bt_audio.media_generation;
+ ny_bt_audio_media_start();assert(g_bt_audio.media_generation==generation+1);
+ fill();ny_bt_audio_media_service(&w);assert(g_bt_audio.media_buffered_frames==15);
  ny_pcm_ring_free(&g_bt_audio.media_ring);puts("NY_BT_RECOVERY_PASS");return 0;}
 
 ''')
