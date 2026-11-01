@@ -83,6 +83,8 @@
 #define NY_BT_SCHEMA             1
 #define NY_BT_DEVICES_MAX        8
 #define NY_BT_CONNECTIONS_MAX    (CONFIG_BT_MAX_CONN < 2 ? CONFIG_BT_MAX_CONN : 2)
+#define NY_BT_KEY_RELEASE_MS     80
+#define NY_BT_KEY_TIMEOUT_MS     2000
 #define NY_BT_NAME_MAX           64
 #define NY_BT_TEXT_MAX           96
 #define NY_BT_NUMBER_MAX         32
@@ -202,6 +204,13 @@ struct ny_bt_peer_s
   struct bt_a2dp_stream stream;
   struct bt_conn *sco;
   bool connected;
+  bool key_pending;
+  bool key_released;
+  uint8_t key_opid;
+  uint8_t key_tid;
+  uint64_t key_release_at;
+  uint64_t key_deadline;
+  int control_error;
 };
 
 struct ny_bt_s
@@ -876,8 +885,7 @@ static void ny_bt_tick_peer(struct ny_bt_peer_s *peer, uint64_t now)
         bt_avrcp_connect(acl);
       bt_conn_unref(acl);
     }
-  if (work & NY_BT_WORK_AVRCP_ANY)
-    ny_bt_tick_avrcp(peer, work & NY_BT_WORK_AVRCP_ANY);
+  ny_bt_tick_avrcp(peer, work & NY_BT_WORK_AVRCP_ANY);
   ny_bt_tick_volume(peer);
 }
 
@@ -1554,6 +1562,7 @@ static void ny_bt_ct_disconnected(struct bt_avrcp_ct *ct)
     }
 
   peer->work &= ~NY_BT_WORK_AVRCP_ANY;
+  peer->key_pending = false;
   peer->play_status_known = false;
   peer->title[0] = '\0';
   peer->artist[0] = '\0';
@@ -1617,16 +1626,24 @@ ny_bt_ct_passthrough_rsp(struct bt_avrcp_ct *ct, uint8_t tid,
                          bt_avrcp_rsp_t result,
                          const struct bt_avrcp_passthrough_rsp *rsp)
 {
-  (void)tid;
-  if (rsp == NULL || result != BT_AVRCP_RSP_ACCEPTED ||
-      (rsp->opid_state & 0x80) != 0)
-    return;
   nxmutex_lock(&g_bt.lock);
   struct ny_bt_peer_s *peer = ny_bt_peer_ct(ct);
-  if (peer != NULL)
+  if (peer != NULL && peer->key_pending && tid == peer->key_tid &&
+      rsp != NULL && (rsp->opid_state & 0x7f) == peer->key_opid)
     {
-      peer->release_opid = rsp->opid_state & 0x7f;
-      peer->work |= NY_BT_WORK_AVRCP_RELEASE;
+      if (result != BT_AVRCP_RSP_ACCEPTED)
+        {
+          peer->control_error =
+              result == BT_AVRCP_RSP_NOT_IMPLEMENTED ? -ENOTSUP : -EACCES;
+          peer->key_pending = false;
+          peer->work &= ~NY_BT_WORK_AVRCP_RELEASE;
+        }
+      else if ((rsp->opid_state & 0x80) != 0 && peer->key_released)
+        {
+          peer->key_pending = false;
+          peer->control_error = 0;
+          peer->work |= NY_BT_WORK_AVRCP_STATUS | NY_BT_WORK_AVRCP_ATTRS;
+        }
     }
   nxmutex_unlock(&g_bt.lock);
 }
@@ -2020,19 +2037,42 @@ static void ny_bt_tg_volume(struct bt_avrcp_tg *tg, uint8_t tid,
 static int ny_bt_passthrough(struct ny_bt_peer_s *peer, uint8_t opid)
 {
   struct bt_avrcp_ct *ct;
-
-  if (peer == NULL)
-    return -ENOTCONN;
+  uint8_t tid;
   nxmutex_lock(&g_bt.lock);
-  ct = peer->ct;
-  nxmutex_unlock(&g_bt.lock);
-  if (ct == NULL)
+  if (peer == NULL || peer->ct == NULL || !peer->connected)
     {
+      nxmutex_unlock(&g_bt.lock);
       return -ENOTCONN;
     }
-
-  return bt_avrcp_ct_passthrough(ct, ny_bt_tid(peer), opid,
-                                 BT_AVRCP_BUTTON_PRESSED, NULL, 0);
+  if (peer->key_pending)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return -EBUSY;
+    }
+  ct = peer->ct;
+  tid = peer->tid;
+  peer->tid = (peer->tid + 1) & 0x0f;
+  peer->key_tid = tid;
+  peer->key_opid = opid;
+  peer->key_pending = true;
+  peer->key_released = false;
+  peer->key_release_at = ny_product_time_ms(true) + NY_BT_KEY_RELEASE_MS;
+  peer->key_deadline = ny_product_time_ms(true) + NY_BT_KEY_TIMEOUT_MS;
+  peer->control_error = 0;
+  nxmutex_unlock(&g_bt.lock);
+  int ret =
+      bt_avrcp_ct_passthrough(ct, tid, opid, BT_AVRCP_BUTTON_PRESSED, NULL, 0);
+  if (ret < 0)
+    {
+      nxmutex_lock(&g_bt.lock);
+      if (peer->ct == ct && peer->key_tid == tid)
+        {
+          peer->key_pending = false;
+          peer->control_error = ret;
+        }
+      nxmutex_unlock(&g_bt.lock);
+    }
+  return ret;
 }
 
 /****************************************************************************
@@ -2798,7 +2838,15 @@ static void ny_bt_tick_avrcp(struct ny_bt_peer_s *peer, uint32_t work)
 
   nxmutex_lock(&g_bt.lock);
   ct = peer->ct;
-  opid = peer->release_opid;
+  opid = peer->key_opid;
+  if (peer->key_pending && ny_product_time_ms(true) >= peer->key_deadline)
+    {
+      peer->key_pending = false;
+      peer->control_error = -ETIMEDOUT;
+    }
+  if (peer->key_pending && !peer->key_released &&
+      ny_product_time_ms(true) >= peer->key_release_at)
+    work |= NY_BT_WORK_AVRCP_RELEASE;
   nxmutex_unlock(&g_bt.lock);
   if (ct == NULL)
     {
@@ -2811,14 +2859,27 @@ static void ny_bt_tick_avrcp(struct ny_bt_peer_s *peer, uint32_t work)
   if (work & NY_BT_WORK_AVRCP_RELEASE)
     {
       done = NY_BT_WORK_AVRCP_RELEASE;
-      ret = bt_avrcp_ct_passthrough(ct, ny_bt_tid(peer), opid,
-                                    BT_AVRCP_BUTTON_RELEASED, NULL, 0);
+      uint8_t tid = ny_bt_tid(peer);
+      nxmutex_lock(&g_bt.lock);
+      peer->key_tid = tid;
+      peer->key_released = true;
+      nxmutex_unlock(&g_bt.lock);
+      ret = bt_avrcp_ct_passthrough(ct, tid, opid, BT_AVRCP_BUTTON_RELEASED,
+                                    NULL, 0);
+      if (ret < 0)
+        {
+          nxmutex_lock(&g_bt.lock);
+          peer->key_released = false;
+          peer->control_error = ret;
+          nxmutex_unlock(&g_bt.lock);
+        }
     }
   else if (work & NY_BT_WORK_AVRCP_PAUSE)
     {
       done = NY_BT_WORK_AVRCP_PAUSE;
-      ret = bt_avrcp_ct_passthrough(ct, ny_bt_tid(peer), BT_AVRCP_OPID_PAUSE,
-                                    BT_AVRCP_BUTTON_PRESSED, NULL, 0);
+      ret = ny_bt_passthrough(peer, BT_AVRCP_OPID_PAUSE);
+      if (ret == -EBUSY)
+        return;
     }
   else if (work & NY_BT_WORK_AVRCP_CAPS)
     {
@@ -2861,11 +2922,14 @@ static void ny_bt_tick_avrcp(struct ny_bt_peer_s *peer, uint32_t work)
             }
         }
     }
-  else
+  else if (work & NY_BT_WORK_AVRCP_STATUS)
     {
       done = NY_BT_WORK_AVRCP_STATUS;
       ret = bt_avrcp_ct_get_play_status(ct, ny_bt_tid(peer));
     }
+
+  else
+    return;
 
   /* A command that did not go out is not repeated: a phone that lacks it
    * would be asked ten times a second for ever.  The next event asks again.
@@ -3067,6 +3131,9 @@ static cJSON *ny_bt_status(void)
   ok = ok && cJSON_AddNumberToObject(a2dp, "channels", peer->a2dp_channels);
 
   ok = ok && cJSON_AddBoolToObject(avrcp, "connected", peer->ct != NULL);
+  ok = ok && cJSON_AddBoolToObject(avrcp, "pending", peer->key_pending);
+  ok = ok &&
+       cJSON_AddNumberToObject(avrcp, "controlError", peer->control_error);
   ok = ok &&
        cJSON_AddNumberToObject(root, "maxConnections", NY_BT_CONNECTIONS_MAX);
   cJSON *connections = cJSON_AddArrayToObject(root, "connections");
