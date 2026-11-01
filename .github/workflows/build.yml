@@ -100,6 +100,8 @@ jobs:
         run: python3 tools/tests/test_wamr_context_patch.py
       - name: Check AVRCP response dispatch
         run: python3 tools/tests/test_zblue_avrcp_passthrough.py
+      - name: Check Bluetooth source reset
+        run: python3 tools/nyabula_core/tests/bt_recovery_test.py app/nyabula_core
       - name: Check voice output pacing
         run: |
           python3 tools/nyabula_core/tests/voice_keepalive_test.py app/nyabula_core
