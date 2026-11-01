@@ -44,8 +44,9 @@
  *   bt.devices                             bonded and connected devices
  *   bt.forget        {address}
  *   bt.connect       {address?}            default: last connected device
+ *   bt.select        {address}             select media without disconnecting
  *   bt.disconnect    {address?}
- *   bt.media.play | pause | next | prev | stop
+ *   bt.media.play | pause | next | prev | stop  {address?}
  *   bt.call.answer | reject | hangup
  */
 

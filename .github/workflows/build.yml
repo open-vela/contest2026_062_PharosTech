@@ -90,6 +90,8 @@ jobs:
         run: python3 tools/tests/test_zblue_avrcp_passthrough.py
       - name: Check Bluetooth source reset
         run: python3 tools/nyabula_core/tests/bt_recovery_test.py app/nyabula_core
+      - name: Check Bluetooth peer ownership
+        run: python3 tools/nyabula_core/tests/bt_peer_control_test.py app/nyabula_core
       - name: Check voice output pacing
         run: |
           python3 tools/nyabula_core/tests/voice_keepalive_test.py app/nyabula_core
