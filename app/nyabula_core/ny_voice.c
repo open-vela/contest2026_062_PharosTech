@@ -83,6 +83,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <semaphore.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -202,7 +203,7 @@
  * synthesizes the next while this one plays.
  */
 
-/* Cloud TTS decodes and resamples PCM inside the HTTPS callback chain. */
+/* Keep room for PCM conversion and the product output pipeline. */
 
 #define NY_VOICE_PLAY_STACKSIZE  65536
 
@@ -210,6 +211,11 @@
 #define NY_VOICE_OUT_CHUNK       8192U
 #define NY_VOICE_PLAY_RESERVE_MS 16U
 #define NY_VOICE_PLAY_POLL_MS    10
+#define NY_VOICE_MIMO_POLL_MS    1
+
+#define NY_VOICE_MIMO_FRAMES     512U
+#define NY_VOICE_MIMO_DEPTH      4U
+#define NY_VOICE_MIMO_STACKSIZE  65536
 
 #define NY_VOICE_SENTENCE_MAX    400U
 #define NY_VOICE_TEXT_MAX        2048U
@@ -452,6 +458,9 @@ static size_t ny_voice_play_convert(struct ny_voice_resample_s *resample,
                                     const float *samples, size_t count);
 static int ny_voice_play_write(struct ny_voice_audio_s *audio, size_t bytes);
 static int ny_voice_play_keepalive(struct ny_voice_audio_s *audio);
+static int ny_voice_mimo_enqueue(void *context, const int16_t *pcm,
+                                 size_t count);
+static void *ny_voice_mimo_produce(void *context);
 static int ny_voice_mimo_pcm(void *context, const int16_t *pcm, size_t count);
 static int ny_voice_mimo_speech(struct ny_voice_audio_s *audio,
                                 const char *text);
@@ -1741,11 +1750,92 @@ static int ny_voice_play_write(struct ny_voice_audio_s *audio, size_t bytes)
  *
  ****************************************************************************/
 
+struct ny_voice_mimo_chunk_s
+{
+  size_t count;
+  int16_t pcm[NY_VOICE_MIMO_FRAMES];
+};
+
 struct ny_voice_mimo_s
 {
   struct ny_voice_audio_s *audio;
   struct ny_voice_resample_s resample;
+  const char *text; /* Borrowed until the joined producer exits. */
+  sem_t ready;
+  sem_t space;
+  atomic_bool stop;
+  atomic_bool done;
+  atomic_uint queued;
+  unsigned int read_index;  /* Playback thread only. */
+  unsigned int write_index; /* Network thread only. */
+  int error;                /* Published before done. */
+  struct ny_voice_mimo_chunk_s chunks[NY_VOICE_MIMO_DEPTH];
 };
+
+/****************************************************************************
+ * Name: ny_voice_mimo_enqueue
+ ****************************************************************************/
+
+static int ny_voice_mimo_enqueue(void *context, const int16_t *pcm,
+                                 size_t count)
+{
+  struct ny_voice_mimo_s *stream = context;
+  struct ny_voice_mimo_chunk_s *chunk;
+
+  if (atomic_load(&stream->stop) || ny_voice_play_cancelled())
+    return -ECANCELED;
+  if (count == 0)
+    return 0;
+  if (count > NY_VOICE_MIMO_FRAMES)
+    return -E2BIG;
+
+  while (sem_wait(&stream->space) < 0)
+    {
+      if (errno != EINTR)
+        return -errno;
+      if (atomic_load(&stream->stop) || ny_voice_play_cancelled())
+        return -ECANCELED;
+    }
+
+  if (atomic_load(&stream->stop) || ny_voice_play_cancelled())
+    {
+      sem_post(&stream->space);
+      return -ECANCELED;
+    }
+
+  chunk = &stream->chunks[stream->write_index];
+  memcpy(chunk->pcm, pcm, count * sizeof(*pcm));
+  chunk->count = count;
+  stream->write_index = (stream->write_index + 1) % NY_VOICE_MIMO_DEPTH;
+  atomic_fetch_add(&stream->queued, 1);
+  sem_post(&stream->ready);
+  return 0;
+}
+
+/****************************************************************************
+ * Name: ny_voice_mimo_produce
+ ****************************************************************************/
+
+static void *ny_voice_mimo_produce(void *context)
+{
+  struct ny_voice_mimo_s *stream = context;
+  size_t position = 0;
+  char sentence[NY_VOICE_SENTENCE_MAX];
+  int ret = 0;
+
+  while (ret == 0 && ny_voice_sentence_next(stream->text, &position, sentence,
+                                            sizeof(sentence)) != 0)
+    {
+      ret = atomic_load(&stream->stop) || ny_voice_play_cancelled()
+                ? -ECANCELED
+                : ny_mimo_speak(sentence, ny_voice_mimo_enqueue, stream);
+    }
+
+  stream->error = ret;
+  atomic_store(&stream->done, true);
+  sem_post(&stream->ready);
+  return NULL;
+}
 
 /****************************************************************************
  * Name: ny_voice_mimo_pcm
@@ -1754,16 +1844,17 @@ struct ny_voice_mimo_s
 static int ny_voice_mimo_pcm(void *context, const int16_t *pcm, size_t count)
 {
   struct ny_voice_mimo_s *stream = context;
-  float input[512];
-  float output[1024];
+  float input[NY_VOICE_MIMO_FRAMES];
+  float output[NY_VOICE_MIMO_FRAMES * 2];
   if (ny_voice_play_cancelled())
     return -ECANCELED;
   if (!count)
     return 0;
-  if (count > 512)
+  if (count > NY_VOICE_MIMO_FRAMES)
     return -E2BIG;
   ny_voice_s16_to_f32(input, pcm, count);
-  count = ny_voice_resample(&stream->resample, input, count, output, 1024);
+  count = ny_voice_resample(&stream->resample, input, count, output,
+                            NY_VOICE_MIMO_FRAMES * 2);
 #ifdef CONFIG_NYABULA_CORE_VOICE_CODEC_SHARED_16K
   ny_voice_f32_to_s16(g_voice_out, output, count);
 #else
@@ -1781,18 +1872,136 @@ static int ny_voice_mimo_speech(struct ny_voice_audio_s *audio,
                                 const char *text)
 {
   struct ny_voice_mimo_s *stream = calloc(1, sizeof(*stream));
-  if (!stream)
+  pthread_attr_t attr;
+  pthread_t producer;
+  bool feeding = false;
+  int ret;
+
+  if (stream == NULL)
     return -ENOMEM;
+
   stream->audio = audio;
-  int ret = ny_voice_resample_rate_init(&stream->resample, NY_MIMO_AUDIO_RATE,
-                                        NY_VOICE_OUT_RATE);
-  size_t position = 0;
-  char sentence[NY_VOICE_SENTENCE_MAX];
-  while (ret == 0 && ny_voice_sentence_next(text, &position, sentence,
-                                            sizeof(sentence)) != 0)
-    ret = ny_voice_play_cancelled()
-              ? -ECANCELED
-              : ny_mimo_speak(sentence, ny_voice_mimo_pcm, stream);
+  stream->text = text;
+  atomic_init(&stream->stop, false);
+  atomic_init(&stream->done, false);
+  atomic_init(&stream->queued, 0);
+  ret = ny_voice_resample_rate_init(&stream->resample, NY_MIMO_AUDIO_RATE,
+                                    NY_VOICE_OUT_RATE);
+  if (ret < 0)
+    goto out;
+  if (sem_init(&stream->ready, 0, 0) < 0)
+    {
+      ret = -errno;
+      goto out;
+    }
+  if (sem_init(&stream->space, 0, NY_VOICE_MIMO_DEPTH) < 0)
+    {
+      ret = -errno;
+      goto ready_out;
+    }
+
+  ret = pthread_attr_init(&attr);
+  if (ret != 0)
+    {
+      ret = -ret;
+      goto space_out;
+    }
+  ret = pthread_attr_setstacksize(&attr, NY_VOICE_MIMO_STACKSIZE);
+  if (ret == 0)
+    ret = pthread_create(&producer, &attr, ny_voice_mimo_produce, stream);
+  pthread_attr_destroy(&attr);
+  if (ret != 0)
+    {
+      ret = -ret;
+      goto space_out;
+    }
+  pthread_setname_np(producer, "ny_tts_net");
+
+  /* Only this thread touches the output and resampler. Network waits,
+   * including the next sentence's handshake, do not block this owner.
+   * The bounded PCM queue applies backpressure without dropping samples.
+   */
+
+  while (!ny_voice_play_cancelled())
+    {
+      if (sem_trywait(&stream->ready) < 0)
+        {
+          struct timespec until;
+          if (errno == EINTR)
+            continue;
+          if (errno != EAGAIN)
+            {
+              ret = -errno;
+              break;
+            }
+          if (atomic_load(&stream->done) && atomic_load(&stream->queued) == 0)
+            break;
+
+          /* A refill is already paced by the output. Do not sleep again
+           * after it: a tick-rounded wait can consume the entire refill.
+           * When buffered speech can bridge the wait, let arriving PCM
+           * wake us before adding any silence.
+           */
+
+          if (feeding && ny_voice_audio_queued(audio) <
+                             NY_VOICE_OUT_RATE * NY_VOICE_PLAY_RESERVE_MS /
+                                 1000 * NY_VOICE_OUT_CHANNELS *
+                                 sizeof(int16_t))
+            {
+              ret = ny_voice_play_keepalive(audio);
+              if (ret < 0)
+                break;
+              continue;
+            }
+          clock_gettime(CLOCK_REALTIME, &until);
+          until.tv_nsec +=
+              (feeding ? NY_VOICE_MIMO_POLL_MS : NY_VOICE_PLAY_POLL_MS) *
+              1000000L;
+          if (until.tv_nsec >= 1000000000L)
+            {
+              until.tv_sec++;
+              until.tv_nsec -= 1000000000L;
+            }
+          if (sem_timedwait(&stream->ready, &until) < 0)
+            {
+              if (errno == ETIMEDOUT || errno == EINTR)
+                continue;
+              ret = -errno;
+              break;
+            }
+        }
+
+      if (atomic_load(&stream->queued) == 0)
+        {
+          if (atomic_load(&stream->done))
+            break;
+          continue;
+        }
+
+      struct ny_voice_mimo_chunk_s *chunk =
+          &stream->chunks[stream->read_index];
+      ret = ny_voice_mimo_pcm(stream, chunk->pcm, chunk->count);
+      feeding = true;
+      stream->read_index = (stream->read_index + 1) % NY_VOICE_MIMO_DEPTH;
+      atomic_fetch_sub(&stream->queued, 1);
+      sem_post(&stream->space);
+      if (ret < 0)
+        break;
+    }
+
+  if (ret == 0 && ny_voice_play_cancelled())
+    ret = -ECANCELED;
+  atomic_store(&stream->stop, true);
+  sem_post(&stream->space); /* Release a producer blocked by backpressure. */
+  pthread_join(producer, NULL);
+  if (ret == 0)
+    ret = stream->error;
+
+space_out:
+  sem_destroy(&stream->space);
+ready_out:
+  sem_destroy(&stream->ready);
+out:
   free(stream);
   return ret;
 }
