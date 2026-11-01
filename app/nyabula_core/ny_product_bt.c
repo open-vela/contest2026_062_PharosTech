@@ -30,7 +30,7 @@
  *   - Bluetooth host callbacks.  They record what happened under g_bt.lock
  *     and raise a flag; they never wait, touch the store or the codec.
  *   - The product worker, through ny_product_bt_tick(): everything the
- *     callbacks deferred, one AVRCP command per tick at most.
+ *     callbacks deferred, one AVRCP command per peer per tick at most.
  *   - Request threads, through ny_product_bt_request().
  *
  * No host function is called with g_bt.lock held.
@@ -82,6 +82,7 @@
 #define NY_BT_DOMAIN             "bluetooth"
 #define NY_BT_SCHEMA             1
 #define NY_BT_DEVICES_MAX        8
+#define NY_BT_CONNECTIONS_MAX    (CONFIG_BT_MAX_CONN < 2 ? CONFIG_BT_MAX_CONN : 2)
 #define NY_BT_NAME_MAX           64
 #define NY_BT_TEXT_MAX           96
 #define NY_BT_NUMBER_MAX         32
@@ -156,38 +157,13 @@ struct ny_bt_device_s
   bool bonded;             /* Scratch for bt.devices */
 };
 
-struct ny_bt_s
+struct ny_bt_peer_s
 {
-  mutex_t lock;
-  pthread_t thread;
-  bool thread_started;
-  bool stop;
-  enum ny_bt_state_e state;
-  int error;
-  uint32_t work;
-
-  char name[33];
-  char address[BT_ADDR_STR_LEN];
-  bool discoverable;
-  uint64_t discoverable_until;
-
-  /* One pairing at a time waits for the owner. */
-
-  struct bt_conn *pairing;
-  char pairing_address[BT_ADDR_STR_LEN];
-  uint64_t pairing_deadline;
-  bool pairing_passkey_style;
-  unsigned int pairing_passkey;
-  bool pairing_display_only;
-
-  /* The one phone. */
-
   struct bt_conn *acl;
   bool acl_initiated;
   char peer_address[BT_ADDR_STR_LEN];
   uint64_t acl_since;
   uint64_t acl_attempt_until; /* An outgoing call is given up after this */
-  uint64_t autoconnect_at;
 
   struct bt_a2dp *a2dp;
   enum ny_bt_a2dp_e a2dp_state;
@@ -221,6 +197,43 @@ struct ny_bt_s
   int hfp_battery;
   uint32_t call_serial;
 
+  uint32_t work;
+  uint16_t frame_samples;
+  struct bt_a2dp_stream stream;
+  struct bt_conn *sco;
+  bool connected;
+};
+
+struct ny_bt_s
+{
+  mutex_t lock;
+  pthread_t thread;
+  bool thread_started;
+  bool stop;
+  enum ny_bt_state_e state;
+  int error;
+  uint32_t work;
+
+  char name[33];
+  char address[BT_ADDR_STR_LEN];
+  bool discoverable;
+  uint64_t discoverable_until;
+
+  /* One pairing at a time waits for the owner. */
+
+  struct bt_conn *pairing;
+  char pairing_address[BT_ADDR_STR_LEN];
+  uint64_t pairing_deadline;
+  bool pairing_passkey_style;
+  unsigned int pairing_passkey;
+  bool pairing_display_only;
+
+  uint64_t autoconnect_at;
+  struct ny_bt_peer_s peers[NY_BT_CONNECTIONS_MAX];
+  struct ny_bt_peer_s *selected;
+  struct ny_bt_peer_s *call_peer;
+  struct ny_bt_peer_s idle;
+
   struct ny_bt_device_s devices[NY_BT_DEVICES_MAX];
   bool devices_loaded;
   bool devices_dirty;
@@ -231,7 +244,6 @@ struct ny_bt_s
  * Private Function Prototypes
  ****************************************************************************/
 
-static void ny_bt_work(uint32_t work);
 static void ny_bt_address(const struct bt_conn *conn, char *out);
 static struct ny_bt_device_s *ny_bt_device(const char *address, bool create);
 static void ny_bt_text(char *out, size_t capacity, const uint8_t *text,
@@ -253,7 +265,8 @@ static void ny_bt_pairing_failed(struct bt_conn *conn,
 static void ny_bt_remote_name(const bt_addr_t *address, const char *name,
                               uint8_t status);
 
-static int ny_bt_a2dp_parse(const struct bt_a2dp_codec_cfg *config,
+static int ny_bt_a2dp_parse(struct ny_bt_peer_s *peer,
+                            const struct bt_a2dp_codec_cfg *config,
                             uint8_t *error);
 static void ny_bt_a2dp_connected(struct bt_a2dp *a2dp, int err);
 static void ny_bt_a2dp_disconnected(struct bt_a2dp *a2dp);
@@ -273,7 +286,7 @@ static void ny_bt_a2dp_suspended(struct bt_a2dp_stream *stream);
 static void ny_bt_a2dp_recv(struct bt_a2dp_stream *stream, struct net_buf *buf,
                             uint16_t sequence, uint32_t timestamp);
 
-static uint8_t ny_bt_tid(void);
+static uint8_t ny_bt_tid(struct ny_bt_peer_s *peer);
 static void ny_bt_ct_connected(struct bt_conn *conn, struct bt_avrcp_ct *ct);
 static void ny_bt_ct_disconnected(struct bt_avrcp_ct *ct);
 static void ny_bt_ct_get_caps(struct bt_avrcp_ct *ct, uint8_t tid,
@@ -282,7 +295,7 @@ static void
 ny_bt_ct_passthrough_rsp(struct bt_avrcp_ct *ct, uint8_t tid,
                          bt_avrcp_rsp_t result,
                          const struct bt_avrcp_passthrough_rsp *rsp);
-static void ny_bt_ct_event(uint8_t event,
+static void ny_bt_ct_event(struct bt_avrcp_ct *ct, uint8_t event,
                            const struct bt_avrcp_event_data *data);
 static void ny_bt_ct_notification(struct bt_avrcp_ct *ct, uint8_t tid,
                                   uint8_t status, uint8_t event,
@@ -305,9 +318,10 @@ static void ny_bt_tg_passthrough(struct bt_avrcp_tg *tg, uint8_t tid,
                                  struct net_buf *buf);
 static void ny_bt_tg_volume(struct bt_avrcp_tg *tg, uint8_t tid,
                             uint8_t absolute);
-static int ny_bt_passthrough(uint8_t opid);
+static int ny_bt_passthrough(struct ny_bt_peer_s *peer, uint8_t opid);
 
-static void ny_bt_call_set(struct bt_hfp_hf_call *call,
+static void ny_bt_call_set(struct ny_bt_peer_s *peer,
+                           struct bt_hfp_hf_call *call,
                            enum ny_bt_call_e state);
 static void ny_bt_hf_connected(struct bt_conn *conn, struct bt_hfp_hf *hf);
 static void ny_bt_hf_disconnected(struct bt_hfp_hf *hf);
@@ -344,12 +358,27 @@ static void ny_bt_bond_mark(const struct bt_bond_info *info, void *arg);
 static void ny_bt_bond_latest(const struct bt_bond_info *info, void *arg);
 #endif
 static int ny_bt_discoverable(bool enable, int seconds);
-static void ny_bt_tick_avrcp(uint32_t work);
-static void ny_bt_tick_volume(void);
+static void ny_bt_tick_avrcp(struct ny_bt_peer_s *peer, uint32_t work);
+static void ny_bt_tick_volume(struct ny_bt_peer_s *peer);
 static cJSON *ny_bt_status(void);
 static int ny_bt_devices(cJSON **result);
 static int ny_bt_target(const cJSON *data, bool required, bt_addr_t *address,
                         char *text);
+
+static struct ny_bt_peer_s *ny_bt_peer_acl(struct bt_conn *handle);
+static struct ny_bt_peer_s *ny_bt_peer_a2dp(struct bt_a2dp *handle);
+static struct ny_bt_peer_s *ny_bt_peer_ct(struct bt_avrcp_ct *handle);
+static struct ny_bt_peer_s *ny_bt_peer_tg(struct bt_avrcp_tg *handle);
+static struct ny_bt_peer_s *ny_bt_peer_hf(struct bt_hfp_hf *handle);
+static struct ny_bt_peer_s *ny_bt_peer_call(struct bt_hfp_hf_call *handle);
+static struct ny_bt_peer_s *ny_bt_peer_sco(struct bt_conn *handle);
+static struct ny_bt_peer_s *ny_bt_peer_stream(struct bt_a2dp_stream *stream);
+static struct ny_bt_peer_s *ny_bt_peer_address(const char *address);
+static struct ny_bt_peer_s *ny_bt_peer_add(struct bt_conn *conn);
+static struct ny_bt_peer_s *ny_bt_selected(void);
+static void ny_bt_select_media(struct ny_bt_peer_s *peer);
+static int ny_bt_connect(const bt_addr_t *address);
+static void ny_bt_tick_peer(struct ny_bt_peer_s *peer, uint64_t now);
 
 /****************************************************************************
  * Private Data
@@ -359,12 +388,12 @@ static pthread_once_t g_bt_init_once = PTHREAD_ONCE_INIT;
 
 static struct ny_bt_s g_bt = {
   .lock = NXMUTEX_INITIALIZER,
-  .volume_absolute = -1,
-  .volume_pending = -1,
-  .volume_seen = -1,
-  .hfp_service = -1,
-  .hfp_signal = -1,
-  .hfp_battery = -1,
+  .idle = { .volume_absolute = -1,
+            .volume_pending = -1,
+            .volume_seen = -1,
+            .hfp_service = -1,
+            .hfp_signal = -1,
+            .hfp_battery = -1 },
 };
 
 /* The A2DP sink record is the application's to publish; AVRCP and HFP
@@ -424,7 +453,19 @@ BT_A2DP_SBC_SINK_EP(g_bt_sbc_endpoint,
                     A2DP_SBC_ALLOC_MTHD_SNR | A2DP_SBC_ALLOC_MTHD_LOUDNESS, 2U,
                     53U, false);
 
-static struct bt_a2dp_stream g_bt_sbc_stream;
+BT_A2DP_SBC_SINK_EP(g_bt_sbc_endpoint_second,
+                    A2DP_SBC_SAMP_FREQ_44100 | A2DP_SBC_SAMP_FREQ_48000,
+                    A2DP_SBC_CH_MODE_MONO | A2DP_SBC_CH_MODE_DUAL |
+                        A2DP_SBC_CH_MODE_STEREO | A2DP_SBC_CH_MODE_JOINT,
+                    A2DP_SBC_BLK_LEN_4 | A2DP_SBC_BLK_LEN_8 |
+                        A2DP_SBC_BLK_LEN_12 | A2DP_SBC_BLK_LEN_16,
+                    A2DP_SBC_SUBBAND_4 | A2DP_SBC_SUBBAND_8,
+                    A2DP_SBC_ALLOC_MTHD_SNR | A2DP_SBC_ALLOC_MTHD_LOUDNESS, 2U,
+                    53U, false);
+
+static struct bt_a2dp_ep *const g_bt_endpoints[] = {
+  &g_bt_sbc_endpoint, &g_bt_sbc_endpoint_second
+};
 
 static struct bt_a2dp_stream_ops g_bt_stream_ops = {
   .established = ny_bt_a2dp_established,
@@ -529,14 +570,315 @@ static const char *const g_bt_call_names[] = { "idle",    "incoming",
  ****************************************************************************/
 
 /****************************************************************************
- * Name: ny_bt_work
+ * Name: ny_bt_peer_acl
  ****************************************************************************/
 
-static void ny_bt_work(uint32_t work)
+static struct ny_bt_peer_s *ny_bt_peer_acl(struct bt_conn *handle)
 {
+  if (handle == NULL)
+    return NULL;
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    if (g_bt.peers[i].acl != NULL && g_bt.peers[i].acl == handle)
+      return &g_bt.peers[i];
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: ny_bt_peer_a2dp
+ ****************************************************************************/
+
+static struct ny_bt_peer_s *ny_bt_peer_a2dp(struct bt_a2dp *handle)
+{
+  if (handle == NULL)
+    return NULL;
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    if (g_bt.peers[i].acl != NULL && g_bt.peers[i].a2dp == handle)
+      return &g_bt.peers[i];
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: ny_bt_peer_ct
+ ****************************************************************************/
+
+static struct ny_bt_peer_s *ny_bt_peer_ct(struct bt_avrcp_ct *handle)
+{
+  if (handle == NULL)
+    return NULL;
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    if (g_bt.peers[i].acl != NULL && g_bt.peers[i].ct == handle)
+      return &g_bt.peers[i];
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: ny_bt_peer_tg
+ ****************************************************************************/
+
+static struct ny_bt_peer_s *ny_bt_peer_tg(struct bt_avrcp_tg *handle)
+{
+  if (handle == NULL)
+    return NULL;
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    if (g_bt.peers[i].acl != NULL && g_bt.peers[i].tg == handle)
+      return &g_bt.peers[i];
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: ny_bt_peer_hf
+ ****************************************************************************/
+
+static struct ny_bt_peer_s *ny_bt_peer_hf(struct bt_hfp_hf *handle)
+{
+  if (handle == NULL)
+    return NULL;
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    if (g_bt.peers[i].acl != NULL && g_bt.peers[i].hf == handle)
+      return &g_bt.peers[i];
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: ny_bt_peer_call
+ ****************************************************************************/
+
+static struct ny_bt_peer_s *ny_bt_peer_call(struct bt_hfp_hf_call *handle)
+{
+  if (handle == NULL)
+    return NULL;
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    if (g_bt.peers[i].acl != NULL && g_bt.peers[i].call == handle)
+      return &g_bt.peers[i];
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: ny_bt_peer_sco
+ ****************************************************************************/
+
+static struct ny_bt_peer_s *ny_bt_peer_sco(struct bt_conn *handle)
+{
+  if (handle == NULL)
+    return NULL;
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    if (g_bt.peers[i].acl != NULL && g_bt.peers[i].sco == handle)
+      return &g_bt.peers[i];
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: ny_bt_peer_stream
+ ****************************************************************************/
+
+static struct ny_bt_peer_s *ny_bt_peer_stream(struct bt_a2dp_stream *stream)
+{
+  if (stream == NULL)
+    return NULL;
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    if (g_bt.peers[i].acl != NULL && &g_bt.peers[i].stream == stream &&
+        g_bt.peers[i].a2dp == stream->a2dp)
+      return &g_bt.peers[i];
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: ny_bt_peer_address
+ ****************************************************************************/
+
+static struct ny_bt_peer_s *ny_bt_peer_address(const char *address)
+{
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    if (g_bt.peers[i].acl != NULL &&
+        strcasecmp(g_bt.peers[i].peer_address, address) == 0)
+      return &g_bt.peers[i];
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: ny_bt_peer_add
+ ****************************************************************************/
+
+static struct ny_bt_peer_s *ny_bt_peer_add(struct bt_conn *conn)
+{
+  struct ny_bt_peer_s *peer = ny_bt_peer_acl(conn);
+  if (peer != NULL)
+    return peer;
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    if (g_bt.peers[i].acl == NULL)
+      {
+        peer = &g_bt.peers[i];
+        memset(peer, 0, sizeof(*peer));
+        peer->acl = bt_conn_ref(conn);
+        ny_bt_address(conn, peer->peer_address);
+        peer->volume_absolute = peer->volume_pending = peer->volume_seen = -1;
+        peer->hfp_service = peer->hfp_signal = peer->hfp_battery = -1;
+        peer->codec_id = BT_HFP_HF_CODEC_CVSD;
+        if (g_bt.selected == NULL)
+          g_bt.selected = peer;
+        return peer;
+      }
+  return NULL;
+}
+
+/****************************************************************************
+ * Name: ny_bt_selected
+ ****************************************************************************/
+
+static struct ny_bt_peer_s *ny_bt_selected(void)
+{
+  return g_bt.selected != NULL ? g_bt.selected : &g_bt.idle;
+}
+
+/****************************************************************************
+ * Name: ny_bt_select_media
+ ****************************************************************************/
+
+static void ny_bt_select_media(struct ny_bt_peer_s *peer)
+{
+  /* Lock order: session lock, then audio queue lock. These calls only copy
+   * configuration or queue state; the audio worker owns codec operations.
+   */
+  ny_bt_audio_media_stop();
+  g_bt.selected = peer;
+  if (peer != NULL && peer->a2dp_rate != 0)
+    {
+      ny_bt_audio_media_configure(peer->a2dp_rate, peer->a2dp_channels,
+                                  peer->frame_samples);
+      if (peer->a2dp_state == NY_BT_A2DP_STREAMING)
+        {
+          ny_bt_audio_media_start();
+          peer->work |= NY_BT_WORK_QUIET_FLASH;
+        }
+    }
+}
+
+/****************************************************************************
+ * Name: ny_bt_connect
+ ****************************************************************************/
+
+static int ny_bt_connect(const bt_addr_t *address)
+{
+  char text[BT_ADDR_STR_LEN];
+  bt_addr_to_str(address, text, sizeof(text));
   nxmutex_lock(&g_bt.lock);
-  g_bt.work |= work;
+  bool available = false;
+  if (ny_bt_peer_address(text) != NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return 0;
+    }
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    if (g_bt.peers[i].acl == NULL)
+      available = true;
   nxmutex_unlock(&g_bt.lock);
+  if (!available)
+    return -EBUSY;
+  struct bt_conn *conn = bt_conn_create_br(address, BT_BR_CONN_PARAM_DEFAULT);
+  if (conn == NULL)
+    return -EIO;
+  nxmutex_lock(&g_bt.lock);
+  struct ny_bt_peer_s *peer = ny_bt_peer_add(conn);
+  if (peer != NULL)
+    {
+      peer->acl_initiated = true;
+      if (peer->connected)
+        peer->work |= NY_BT_WORK_A2DP_CONNECT;
+      else
+        peer->acl_attempt_until =
+            ny_product_time_ms(true) + NY_BT_PAGE_GIVE_UP_MS;
+    }
+  nxmutex_unlock(&g_bt.lock);
+  if (peer == NULL)
+    bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+  bt_conn_unref(conn);
+  return peer == NULL ? -EBUSY : 0;
+}
+
+/****************************************************************************
+ * Name: ny_bt_tick_peer
+ ****************************************************************************/
+
+static void ny_bt_tick_peer(struct ny_bt_peer_s *peer, uint64_t now)
+{
+  struct bt_conn *acl = NULL;
+  struct bt_conn *stale = NULL;
+  uint32_t work;
+  char address[BT_ADDR_STR_LEN];
+  char number[NY_BT_NUMBER_MAX];
+  uint32_t serial;
+  nxmutex_lock(&g_bt.lock);
+  if (peer->acl == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  work = peer->work;
+  peer->work &= NY_BT_WORK_AVRCP_ANY | NY_BT_WORK_AVRCP_CONNECT;
+  if (peer->acl_attempt_until != 0 && now >= peer->acl_attempt_until)
+    {
+      stale = bt_conn_ref(peer->acl);
+      peer->acl_attempt_until = 0;
+    }
+  if (work & (NY_BT_WORK_A2DP_CONNECT | NY_BT_WORK_NAME_REQUEST))
+    acl = bt_conn_ref(peer->acl);
+  if ((work & NY_BT_WORK_AVRCP_CONNECT) != 0 && peer->ct == NULL &&
+      now >= peer->acl_since + NY_BT_AVRCP_CONNECT_MS)
+    {
+      peer->work &= ~NY_BT_WORK_AVRCP_CONNECT;
+      if (acl == NULL)
+        acl = bt_conn_ref(peer->acl);
+    }
+  else
+    work &= ~NY_BT_WORK_AVRCP_CONNECT;
+  memcpy(address, peer->peer_address, sizeof(address));
+  memcpy(number, peer->number, sizeof(number));
+  serial = peer->call_serial;
+  nxmutex_unlock(&g_bt.lock);
+  if (stale != NULL)
+    {
+      /* Paging can expire without a host callback. Retire our slot now;
+       * a later callback is ignored by connection identity.
+       */
+      ny_bt_disconnected(stale, BT_HCI_ERR_CONN_TIMEOUT);
+      bt_conn_disconnect(stale, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+      bt_conn_unref(stale);
+      if (acl != NULL)
+        bt_conn_unref(acl);
+      return;
+    }
+  if (work & NY_BT_WORK_QUIET_FLASH)
+    ny_product_media_sleep();
+  if (work & NY_BT_WORK_RING)
+    ny_product_media_alert(NY_PRODUCT_MEDIA_ALERT_ONCE);
+  if (work & NY_BT_WORK_NOTIFY_CALL)
+    {
+      char id[64];
+      char title[96];
+      snprintf(id, sizeof(id), "bt-call-%s-%u-%d", address, (unsigned)serial,
+               number[0] != '\0');
+      snprintf(title, sizeof(title), "Incoming call%s%s",
+               number[0] != '\0' ? ": " : "", number);
+      ny_product_notification_post(id, "bluetooth", title,
+                                   ny_product_time_ms(false) + 60000);
+    }
+  if (acl != NULL)
+    {
+      if (work & NY_BT_WORK_NAME_REQUEST)
+        {
+          const bt_addr_t *remote = bt_conn_get_dst_br(acl);
+          if (remote != NULL)
+            bt_br_remote_name_request(remote, ny_bt_remote_name);
+        }
+      if (work & NY_BT_WORK_A2DP_CONNECT)
+        bt_a2dp_connect(acl);
+      if (work & NY_BT_WORK_AVRCP_CONNECT)
+        bt_avrcp_connect(acl);
+      bt_conn_unref(acl);
+    }
+  if (work & NY_BT_WORK_AVRCP_ANY)
+    ny_bt_tick_avrcp(peer, work & NY_BT_WORK_AVRCP_ANY);
+  ny_bt_tick_volume(peer);
 }
 
 /****************************************************************************
@@ -653,53 +995,39 @@ static int ny_bt_absolute_to_volume(int absolute)
 static void ny_bt_connected(struct bt_conn *conn, uint8_t err)
 {
   struct bt_conn_info info;
+  struct ny_bt_peer_s *peer;
+  struct bt_conn *drop = NULL;
   char address[BT_ADDR_STR_LEN];
-
   if (bt_conn_get_info(conn, &info) < 0 || info.type != BT_CONN_TYPE_BR)
-    {
-      return;
-    }
-
+    return;
   ny_bt_address(conn, address);
   nxmutex_lock(&g_bt.lock);
-  if (err != 0)
+  peer = err == 0 ? ny_bt_peer_add(conn) : ny_bt_peer_acl(conn);
+  if (peer != NULL && err != 0)
     {
-      if (g_bt.acl == conn)
-        {
-          bt_conn_unref(g_bt.acl);
-          g_bt.acl = NULL;
-          g_bt.acl_initiated = false;
-        }
-
-      nxmutex_unlock(&g_bt.lock);
-      syslog(LOG_INFO, "nybt: connect to %s failed: 0x%02x\n", address, err);
-      return;
+      drop = peer->acl;
+      if (g_bt.selected == peer)
+        ny_bt_select_media(NULL);
+      memset(peer, 0, sizeof(*peer));
     }
-
-  if (g_bt.acl == NULL)
+  else if (peer != NULL)
     {
-      g_bt.acl = bt_conn_ref(conn);
-    }
-
-  if (g_bt.acl == conn)
-    {
-      struct ny_bt_device_s *device;
-
-      snprintf(g_bt.peer_address, sizeof(g_bt.peer_address), "%s", address);
-      g_bt.acl_since = ny_product_time_ms(true);
-      g_bt.acl_attempt_until = 0;
-      device = ny_bt_device(address, true);
+      struct ny_bt_device_s *device = ny_bt_device(address, true);
+      peer->connected = true;
+      peer->acl_since = ny_product_time_ms(true);
+      peer->acl_attempt_until = 0;
       device->last_connected = ny_product_time_ms(false);
       g_bt.devices_dirty = true;
-      g_bt.work |= NY_BT_WORK_NAME_REQUEST;
-      if (g_bt.acl_initiated)
-        {
-          g_bt.work |= NY_BT_WORK_A2DP_CONNECT;
-        }
+      peer->work |= NY_BT_WORK_NAME_REQUEST;
+      if (peer->acl_initiated)
+        peer->work |= NY_BT_WORK_A2DP_CONNECT;
     }
-
   nxmutex_unlock(&g_bt.lock);
-  syslog(LOG_INFO, "nybt: connected %s\n", address);
+  if (drop != NULL)
+    bt_conn_unref(drop);
+  if (peer == NULL && err == 0)
+    bt_conn_disconnect(conn, BT_HCI_ERR_CONN_LIMIT_EXCEEDED);
+  syslog(LOG_INFO, "nybt: connection %s result 0x%02x\n", address, err);
 }
 
 /****************************************************************************
@@ -708,38 +1036,40 @@ static void ny_bt_connected(struct bt_conn *conn, uint8_t err)
 
 static void ny_bt_disconnected(struct bt_conn *conn, uint8_t reason)
 {
-  struct bt_conn *acl = NULL;
+  struct bt_conn *drop = NULL;
   struct bt_conn *pairing = NULL;
-
   nxmutex_lock(&g_bt.lock);
+  struct ny_bt_peer_s *peer = ny_bt_peer_acl(conn);
   if (g_bt.pairing == conn)
     {
       pairing = g_bt.pairing;
       g_bt.pairing = NULL;
     }
-
-  if (g_bt.acl == conn)
+  if (peer != NULL)
     {
-      acl = g_bt.acl;
-      g_bt.acl = NULL;
-      g_bt.acl_initiated = false;
-      g_bt.acl_attempt_until = 0;
-      g_bt.peer_address[0] = '\0';
-      g_bt.work &= ~(NY_BT_WORK_AVRCP_CONNECT | NY_BT_WORK_A2DP_CONNECT |
-                     NY_BT_WORK_NAME_REQUEST);
+      drop = peer->acl;
+      if (g_bt.call_peer == peer)
+        {
+          ny_bt_audio_call_stop();
+          g_bt.call_peer = NULL;
+        }
+      if (g_bt.selected == peer)
+        ny_bt_select_media(NULL);
+      memset(peer, 0, sizeof(*peer));
+      if (g_bt.selected == NULL)
+        for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+          if (g_bt.peers[i].connected)
+            {
+              ny_bt_select_media(&g_bt.peers[i]);
+              break;
+            }
     }
-
   nxmutex_unlock(&g_bt.lock);
-  if (acl != NULL)
-    {
-      syslog(LOG_INFO, "nybt: disconnected, reason 0x%02x\n", reason);
-      bt_conn_unref(acl);
-    }
-
-  if (pairing != NULL)
-    {
-      bt_conn_unref(pairing);
-    }
+  if (drop)
+    bt_conn_unref(drop);
+  if (pairing)
+    bt_conn_unref(pairing);
+  syslog(LOG_INFO, "nybt: disconnected, reason 0x%02x\n", reason);
 }
 
 /****************************************************************************
@@ -887,7 +1217,8 @@ static void ny_bt_remote_name(const bt_addr_t *address, const char *name,
  *
  ****************************************************************************/
 
-static int ny_bt_a2dp_parse(const struct bt_a2dp_codec_cfg *config,
+static int ny_bt_a2dp_parse(struct ny_bt_peer_s *peer,
+                            const struct bt_a2dp_codec_cfg *config,
                             uint8_t *error)
 {
   const uint8_t *ie;
@@ -979,11 +1310,11 @@ static int ny_bt_a2dp_parse(const struct bt_a2dp_codec_cfg *config,
         return -EINVAL;
     }
 
-  ny_bt_audio_media_configure(rate, channels, blocks * subbands);
-  nxmutex_lock(&g_bt.lock);
-  g_bt.a2dp_rate = rate;
-  g_bt.a2dp_channels = channels;
-  nxmutex_unlock(&g_bt.lock);
+  peer->a2dp_rate = rate;
+  peer->a2dp_channels = channels;
+  peer->frame_samples = blocks * subbands;
+  if (g_bt.selected == peer)
+    ny_bt_audio_media_configure(rate, channels, peer->frame_samples);
   *error = 0;
   return 0;
 }
@@ -994,6 +1325,7 @@ static int ny_bt_a2dp_parse(const struct bt_a2dp_codec_cfg *config,
 
 static void ny_bt_a2dp_connected(struct bt_a2dp *a2dp, int err)
 {
+  struct ny_bt_peer_s *peer;
   if (err != 0)
     {
       syslog(LOG_INFO, "nybt: a2dp connect failed: %d\n", err);
@@ -1001,15 +1333,21 @@ static void ny_bt_a2dp_connected(struct bt_a2dp *a2dp, int err)
     }
 
   nxmutex_lock(&g_bt.lock);
-  g_bt.a2dp = a2dp;
-  g_bt.a2dp_state = NY_BT_A2DP_CONNECTED;
-  if (g_bt.ct == NULL)
+  peer = ny_bt_peer_acl(bt_a2dp_get_conn(a2dp));
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->a2dp = a2dp;
+  peer->a2dp_state = NY_BT_A2DP_CONNECTED;
+  if (peer->ct == NULL)
     {
       /* Most phones bring AVRCP up themselves right after; ask only when
        * that has not happened a little later.
        */
 
-      g_bt.work |= NY_BT_WORK_AVRCP_CONNECT;
+      peer->work |= NY_BT_WORK_AVRCP_CONNECT;
     }
 
   nxmutex_unlock(&g_bt.lock);
@@ -1018,18 +1356,18 @@ static void ny_bt_a2dp_connected(struct bt_a2dp *a2dp, int err)
 
 static void ny_bt_a2dp_disconnected(struct bt_a2dp *a2dp)
 {
-  ny_bt_audio_media_stop();
   nxmutex_lock(&g_bt.lock);
-  if (g_bt.a2dp == a2dp)
+  struct ny_bt_peer_s *peer = ny_bt_peer_a2dp(a2dp);
+  if (peer != NULL)
     {
-      g_bt.a2dp = NULL;
+      if (g_bt.selected == peer)
+        ny_bt_audio_media_stop();
+      peer->a2dp = NULL;
+      peer->a2dp_state = NY_BT_A2DP_DISCONNECTED;
+      peer->a2dp_rate = 0;
+      peer->a2dp_channels = 0;
     }
-
-  g_bt.a2dp_state = NY_BT_A2DP_DISCONNECTED;
-  g_bt.a2dp_rate = 0;
-  g_bt.a2dp_channels = 0;
   nxmutex_unlock(&g_bt.lock);
-  syslog(LOG_INFO, "nybt: a2dp disconnected\n");
 }
 
 /****************************************************************************
@@ -1041,27 +1379,38 @@ static int ny_bt_a2dp_config_req(struct bt_a2dp *a2dp, struct bt_a2dp_ep *ep,
                                  struct bt_a2dp_stream **stream,
                                  uint8_t *error)
 {
-  int ret;
-
-  (void)a2dp;
   (void)ep;
-  ret = ny_bt_a2dp_parse(config, error);
-  if (ret < 0)
+  nxmutex_lock(&g_bt.lock);
+  struct ny_bt_peer_s *peer = ny_bt_peer_a2dp(a2dp);
+  int ret = -ENOTCONN;
+  if (peer != NULL)
     {
-      return ret;
+      ret = ny_bt_a2dp_parse(peer, config, error);
+      if (ret == 0)
+        {
+          peer->stream.ops = &g_bt_stream_ops;
+          *stream = &peer->stream;
+        }
     }
-
-  bt_a2dp_stream_cb_register(&g_bt_sbc_stream, &g_bt_stream_ops);
-  *stream = &g_bt_sbc_stream;
-  return 0;
+  else
+    *error = BT_A2DP_INVALID_CODEC_PARAMETER;
+  nxmutex_unlock(&g_bt.lock);
+  return ret;
 }
 
 static int ny_bt_a2dp_reconfig_req(struct bt_a2dp_stream *stream,
                                    struct bt_a2dp_codec_cfg *config,
                                    uint8_t *error)
 {
-  (void)stream;
-  return ny_bt_a2dp_parse(config, error);
+  nxmutex_lock(&g_bt.lock);
+  struct ny_bt_peer_s *peer = ny_bt_peer_stream(stream);
+  int ret = -ENOTCONN;
+  if (peer != NULL)
+    ret = ny_bt_a2dp_parse(peer, config, error);
+  else
+    *error = BT_A2DP_INVALID_CODEC_PARAMETER;
+  nxmutex_unlock(&g_bt.lock);
+  return ret;
 }
 
 /****************************************************************************
@@ -1085,71 +1434,81 @@ static int ny_bt_a2dp_accept_req(struct bt_a2dp_stream *stream, uint8_t *error)
 
 static void ny_bt_a2dp_established(struct bt_a2dp_stream *stream)
 {
-  (void)stream;
   nxmutex_lock(&g_bt.lock);
-  g_bt.a2dp_state = NY_BT_A2DP_OPEN;
+  struct ny_bt_peer_s *peer = ny_bt_peer_stream(stream);
+  if (peer != NULL)
+    {
+      peer->a2dp_state = NY_BT_A2DP_OPEN;
+    }
   nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_a2dp_released(struct bt_a2dp_stream *stream)
 {
-  (void)stream;
-  ny_bt_audio_media_stop();
   nxmutex_lock(&g_bt.lock);
-  if (g_bt.a2dp_state != NY_BT_A2DP_DISCONNECTED)
+  struct ny_bt_peer_s *peer = ny_bt_peer_stream(stream);
+  if (peer != NULL)
     {
-      g_bt.a2dp_state = NY_BT_A2DP_CONNECTED;
+      peer->a2dp_state = NY_BT_A2DP_CONNECTED;
+      if (g_bt.selected == peer)
+        ny_bt_audio_media_stop();
     }
-
   nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_a2dp_started(struct bt_a2dp_stream *stream)
 {
-  (void)stream;
-  ny_bt_audio_media_start();
   nxmutex_lock(&g_bt.lock);
-  g_bt.a2dp_state = NY_BT_A2DP_STREAMING;
-
-  /* The newest source wins the speaker: music from flash stops.  The alert
-   * chime is not music and is left alone.
-   */
-
-  g_bt.work |= NY_BT_WORK_QUIET_FLASH;
+  struct ny_bt_peer_s *peer = ny_bt_peer_stream(stream);
+  if (peer != NULL)
+    {
+      peer->a2dp_state = NY_BT_A2DP_STREAMING;
+      if (g_bt.selected == peer)
+        {
+          ny_bt_audio_media_start();
+          peer->work |= NY_BT_WORK_QUIET_FLASH;
+        }
+    }
   nxmutex_unlock(&g_bt.lock);
-  syslog(LOG_INFO, "nybt: a2dp streaming\n");
 }
 
 static void ny_bt_a2dp_suspended(struct bt_a2dp_stream *stream)
 {
-  (void)stream;
-  ny_bt_audio_media_stop();
   nxmutex_lock(&g_bt.lock);
-  g_bt.a2dp_state = NY_BT_A2DP_OPEN;
+  struct ny_bt_peer_s *peer = ny_bt_peer_stream(stream);
+  if (peer != NULL)
+    {
+      peer->a2dp_state = NY_BT_A2DP_OPEN;
+      if (g_bt.selected == peer)
+        ny_bt_audio_media_stop();
+    }
   nxmutex_unlock(&g_bt.lock);
-  syslog(LOG_INFO, "nybt: a2dp suspended\n");
 }
 
 static void ny_bt_a2dp_recv(struct bt_a2dp_stream *stream, struct net_buf *buf,
                             uint16_t sequence, uint32_t timestamp)
 {
-  (void)stream;
   (void)sequence;
   (void)timestamp;
-  ny_bt_audio_media_packet(buf->data, buf->len);
+  nxmutex_lock(&g_bt.lock);
+  struct ny_bt_peer_s *peer = ny_bt_peer_stream(stream);
+  if (peer != NULL && peer == g_bt.selected &&
+      peer->a2dp_state == NY_BT_A2DP_STREAMING)
+    ny_bt_audio_media_packet(buf->data, buf->len);
+  nxmutex_unlock(&g_bt.lock);
 }
 
 /****************************************************************************
  * Name: ny_bt_tid
  ****************************************************************************/
 
-static uint8_t ny_bt_tid(void)
+static uint8_t ny_bt_tid(struct ny_bt_peer_s *peer)
 {
   uint8_t tid;
 
   nxmutex_lock(&g_bt.lock);
-  tid = g_bt.tid;
-  g_bt.tid = (g_bt.tid + 1) & 0x0f;
+  tid = peer->tid;
+  peer->tid = (peer->tid + 1) & 0x0f;
   nxmutex_unlock(&g_bt.lock);
   return tid;
 }
@@ -1160,42 +1519,55 @@ static uint8_t ny_bt_tid(void)
 
 static void ny_bt_ct_connected(struct bt_conn *conn, struct bt_avrcp_ct *ct)
 {
-  (void)conn;
+  struct ny_bt_peer_s *peer;
   nxmutex_lock(&g_bt.lock);
-  g_bt.ct = ct;
-  g_bt.avrcp_events = 0;
-  g_bt.play_status_known = false;
-  g_bt.title[0] = '\0';
-  g_bt.artist[0] = '\0';
-  g_bt.work &= ~(NY_BT_WORK_AVRCP_ANY | NY_BT_WORK_AVRCP_CONNECT);
-  g_bt.work |= NY_BT_WORK_AVRCP_CAPS;
+  peer = ny_bt_peer_acl(conn);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->ct = ct;
+  peer->avrcp_events = 0;
+  peer->play_status_known = false;
+  peer->title[0] = '\0';
+  peer->artist[0] = '\0';
+  peer->work &= ~(NY_BT_WORK_AVRCP_ANY | NY_BT_WORK_AVRCP_CONNECT);
+  peer->work |= NY_BT_WORK_AVRCP_CAPS;
   nxmutex_unlock(&g_bt.lock);
   syslog(LOG_INFO, "nybt: avrcp controller connected\n");
 }
 
 static void ny_bt_ct_disconnected(struct bt_avrcp_ct *ct)
 {
+  struct ny_bt_peer_s *peer;
   nxmutex_lock(&g_bt.lock);
-  if (g_bt.ct == ct)
+  peer = ny_bt_peer_ct(ct);
+  if (peer == NULL)
     {
-      g_bt.ct = NULL;
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  if (peer->ct == ct)
+    {
+      peer->ct = NULL;
     }
 
-  g_bt.work &= ~NY_BT_WORK_AVRCP_ANY;
-  g_bt.play_status_known = false;
-  g_bt.title[0] = '\0';
-  g_bt.artist[0] = '\0';
+  peer->work &= ~NY_BT_WORK_AVRCP_ANY;
+  peer->play_status_known = false;
+  peer->title[0] = '\0';
+  peer->artist[0] = '\0';
   nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_ct_get_caps(struct bt_avrcp_ct *ct, uint8_t tid,
                               uint8_t status, struct net_buf *buf)
 {
+  struct ny_bt_peer_s *peer;
   const struct bt_avrcp_get_caps_rsp *rsp;
   uint16_t events = 0;
   uint8_t index;
 
-  (void)ct;
   (void)tid;
   if (status != BT_AVRCP_STATUS_SUCCESS || buf == NULL ||
       buf->len < sizeof(*rsp))
@@ -1219,18 +1591,24 @@ static void ny_bt_ct_get_caps(struct bt_avrcp_ct *ct, uint8_t tid,
     }
 
   nxmutex_lock(&g_bt.lock);
-  g_bt.avrcp_events = events;
+  peer = ny_bt_peer_ct(ct);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->avrcp_events = events;
   if (events & (1u << BT_AVRCP_EVT_PLAYBACK_STATUS_CHANGED))
     {
-      g_bt.work |= NY_BT_WORK_AVRCP_PLAYBACK;
+      peer->work |= NY_BT_WORK_AVRCP_PLAYBACK;
     }
 
   if (events & (1u << BT_AVRCP_EVT_TRACK_CHANGED))
     {
-      g_bt.work |= NY_BT_WORK_AVRCP_TRACK;
+      peer->work |= NY_BT_WORK_AVRCP_TRACK;
     }
 
-  g_bt.work |= NY_BT_WORK_AVRCP_ATTRS | NY_BT_WORK_AVRCP_STATUS;
+  peer->work |= NY_BT_WORK_AVRCP_ATTRS | NY_BT_WORK_AVRCP_STATUS;
   nxmutex_unlock(&g_bt.lock);
 }
 
@@ -1239,19 +1617,17 @@ ny_bt_ct_passthrough_rsp(struct bt_avrcp_ct *ct, uint8_t tid,
                          bt_avrcp_rsp_t result,
                          const struct bt_avrcp_passthrough_rsp *rsp)
 {
-  (void)ct;
   (void)tid;
   if (rsp == NULL || result != BT_AVRCP_RSP_ACCEPTED ||
       (rsp->opid_state & 0x80) != 0)
-    {
-      return;
-    }
-
-  /* A key that went down has to come up again. */
-
+    return;
   nxmutex_lock(&g_bt.lock);
-  g_bt.release_opid = rsp->opid_state & 0x7f;
-  g_bt.work |= NY_BT_WORK_AVRCP_RELEASE;
+  struct ny_bt_peer_s *peer = ny_bt_peer_ct(ct);
+  if (peer != NULL)
+    {
+      peer->release_opid = rsp->opid_state & 0x7f;
+      peer->work |= NY_BT_WORK_AVRCP_RELEASE;
+    }
   nxmutex_unlock(&g_bt.lock);
 }
 
@@ -1264,23 +1640,30 @@ ny_bt_ct_passthrough_rsp(struct bt_avrcp_ct *ct, uint8_t tid,
  *
  ****************************************************************************/
 
-static void ny_bt_ct_event(uint8_t event,
+static void ny_bt_ct_event(struct bt_avrcp_ct *ct, uint8_t event,
                            const struct bt_avrcp_event_data *data)
 {
+  struct ny_bt_peer_s *peer;
   if (data == NULL)
     {
       return;
     }
 
   nxmutex_lock(&g_bt.lock);
+  peer = ny_bt_peer_ct(ct);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
   if (event == BT_AVRCP_EVT_PLAYBACK_STATUS_CHANGED)
     {
-      g_bt.play_status = data->play_status;
-      g_bt.play_status_known = true;
+      peer->play_status = data->play_status;
+      peer->play_status_known = true;
     }
   else if (event == BT_AVRCP_EVT_TRACK_CHANGED)
     {
-      g_bt.work |= NY_BT_WORK_AVRCP_ATTRS;
+      peer->work |= NY_BT_WORK_AVRCP_ATTRS;
     }
 
   nxmutex_unlock(&g_bt.lock);
@@ -1294,35 +1677,36 @@ static void ny_bt_ct_notification(struct bt_avrcp_ct *ct, uint8_t tid,
   (void)tid;
   if (status == BT_AVRCP_STATUS_SUCCESS)
     {
-      ny_bt_ct_event(event, data);
+      ny_bt_ct_event(ct, event, data);
     }
 }
 
 static void ny_bt_ct_changed(struct bt_avrcp_ct *ct, uint8_t event,
                              struct bt_avrcp_event_data *data)
 {
-  (void)ct;
-  ny_bt_ct_event(event, data);
-  if (event == BT_AVRCP_EVT_PLAYBACK_STATUS_CHANGED)
+  ny_bt_ct_event(ct, event, data);
+  nxmutex_lock(&g_bt.lock);
+  struct ny_bt_peer_s *peer = ny_bt_peer_ct(ct);
+  if (peer != NULL)
     {
-      ny_bt_work(NY_BT_WORK_AVRCP_PLAYBACK);
+      if (event == BT_AVRCP_EVT_PLAYBACK_STATUS_CHANGED)
+        peer->work |= NY_BT_WORK_AVRCP_PLAYBACK;
+      else if (event == BT_AVRCP_EVT_TRACK_CHANGED)
+        peer->work |= NY_BT_WORK_AVRCP_TRACK;
     }
-  else if (event == BT_AVRCP_EVT_TRACK_CHANGED)
-    {
-      ny_bt_work(NY_BT_WORK_AVRCP_TRACK);
-    }
+  nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_ct_element_attrs(struct bt_avrcp_ct *ct, uint8_t tid,
                                    uint8_t status, struct net_buf *buf)
 {
+  struct ny_bt_peer_s *peer;
   char title[NY_BT_TEXT_MAX] = "";
   char artist[NY_BT_TEXT_MAX] = "";
   const uint8_t *cursor;
   size_t left;
   uint8_t count;
 
-  (void)ct;
   (void)tid;
   if (status != BT_AVRCP_STATUS_SUCCESS || buf == NULL || buf->len < 1)
     {
@@ -1369,15 +1753,21 @@ static void ny_bt_ct_element_attrs(struct bt_avrcp_ct *ct, uint8_t tid,
     }
 
   nxmutex_lock(&g_bt.lock);
-  memcpy(g_bt.title, title, sizeof(g_bt.title));
-  memcpy(g_bt.artist, artist, sizeof(g_bt.artist));
+  peer = ny_bt_peer_ct(ct);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  memcpy(peer->title, title, sizeof(peer->title));
+  memcpy(peer->artist, artist, sizeof(peer->artist));
   nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_ct_play_status(struct bt_avrcp_ct *ct, uint8_t tid,
                                  uint8_t status, struct net_buf *buf)
 {
-  (void)ct;
+  struct ny_bt_peer_s *peer;
   (void)tid;
   if (status != BT_AVRCP_STATUS_SUCCESS || buf == NULL ||
       buf->len < sizeof(struct bt_avrcp_get_play_status_rsp))
@@ -1386,9 +1776,15 @@ static void ny_bt_ct_play_status(struct bt_avrcp_ct *ct, uint8_t tid,
     }
 
   nxmutex_lock(&g_bt.lock);
-  g_bt.play_status =
+  peer = ny_bt_peer_ct(ct);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->play_status =
       ((const struct bt_avrcp_get_play_status_rsp *)buf->data)->play_status;
-  g_bt.play_status_known = true;
+  peer->play_status_known = true;
   nxmutex_unlock(&g_bt.lock);
 }
 
@@ -1398,23 +1794,36 @@ static void ny_bt_ct_play_status(struct bt_avrcp_ct *ct, uint8_t tid,
 
 static void ny_bt_tg_connected(struct bt_conn *conn, struct bt_avrcp_tg *tg)
 {
-  (void)conn;
+  struct ny_bt_peer_s *peer;
   nxmutex_lock(&g_bt.lock);
-  g_bt.tg = tg;
-  g_bt.volume_registered = false;
+  peer = ny_bt_peer_acl(conn);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->tg = tg;
+  peer->volume_registered = false;
   nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_tg_disconnected(struct bt_avrcp_tg *tg)
 {
+  struct ny_bt_peer_s *peer;
   nxmutex_lock(&g_bt.lock);
-  if (g_bt.tg == tg)
+  peer = ny_bt_peer_tg(tg);
+  if (peer == NULL)
     {
-      g_bt.tg = NULL;
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  if (peer->tg == tg)
+    {
+      peer->tg = NULL;
     }
 
-  g_bt.volume_registered = false;
-  g_bt.volume_absolute = -1;
+  peer->volume_registered = false;
+  peer->volume_absolute = -1;
   nxmutex_unlock(&g_bt.lock);
 }
 
@@ -1477,6 +1886,7 @@ static void ny_bt_tg_get_caps(struct bt_avrcp_tg *tg, uint8_t tid,
 static void ny_bt_tg_register(struct bt_avrcp_tg *tg, uint8_t tid,
                               uint8_t event, uint32_t interval)
 {
+  struct ny_bt_peer_s *peer;
   struct bt_avrcp_event_data data;
 #ifdef CONFIG_NYABULA_CORE_AUDIO
   struct ny_product_audio_levels_s levels;
@@ -1508,9 +1918,15 @@ static void ny_bt_tg_register(struct bt_avrcp_tg *tg, uint8_t tid,
                                &data) == 0)
     {
       nxmutex_lock(&g_bt.lock);
-      g_bt.volume_registered = true;
-      g_bt.volume_tid = tid;
-      g_bt.volume_absolute = absolute;
+      peer = ny_bt_peer_tg(tg);
+      if (peer == NULL)
+        {
+          nxmutex_unlock(&g_bt.lock);
+          return;
+        }
+      peer->volume_registered = true;
+      peer->volume_tid = tid;
+      peer->volume_absolute = absolute;
       nxmutex_unlock(&g_bt.lock);
     }
 }
@@ -1518,6 +1934,7 @@ static void ny_bt_tg_register(struct bt_avrcp_tg *tg, uint8_t tid,
 static void ny_bt_tg_passthrough(struct bt_avrcp_tg *tg, uint8_t tid,
                                  struct net_buf *buf)
 {
+  struct ny_bt_peer_s *peer;
   bt_avrcp_rsp_t result = BT_AVRCP_RSP_NOT_IMPLEMENTED;
   struct net_buf *rsp;
   uint8_t opid_state = 0;
@@ -1536,17 +1953,23 @@ static void ny_bt_tg_passthrough(struct bt_avrcp_tg *tg, uint8_t tid,
           if ((opid_state & 0x80) == 0)
             {
               nxmutex_lock(&g_bt.lock);
-              if (g_bt.volume_seen >= 0)
+              peer = ny_bt_peer_tg(tg);
+              if (peer == NULL)
                 {
-                  int volume = g_bt.volume_pending >= 0 ? g_bt.volume_pending
-                                                        : g_bt.volume_seen;
+                  nxmutex_unlock(&g_bt.lock);
+                  return;
+                }
+              if (g_bt.selected == peer && peer->volume_seen >= 0)
+                {
+                  int volume = peer->volume_pending >= 0 ? peer->volume_pending
+                                                         : peer->volume_seen;
 
                   volume += opid == BT_AVRCP_OPID_VOLUME_UP
                                 ? NY_BT_VOLUME_STEP
                                 : -NY_BT_VOLUME_STEP;
-                  g_bt.volume_pending = volume < 0     ? 0
-                                        : volume > 100 ? 100
-                                                       : volume;
+                  peer->volume_pending = volume < 0     ? 0
+                                         : volume > 100 ? 100
+                                                        : volume;
                 }
 
               nxmutex_unlock(&g_bt.lock);
@@ -1571,13 +1994,21 @@ static void ny_bt_tg_passthrough(struct bt_avrcp_tg *tg, uint8_t tid,
 static void ny_bt_tg_volume(struct bt_avrcp_tg *tg, uint8_t tid,
                             uint8_t absolute)
 {
+  struct ny_bt_peer_s *peer;
   absolute &= BT_AVRCP_MAX_ABSOLUTE_VOLUME;
 
   /* Answer now; the codec is written by the tick. */
 
   nxmutex_lock(&g_bt.lock);
-  g_bt.volume_absolute = absolute;
-  g_bt.volume_pending = ny_bt_absolute_to_volume(absolute);
+  peer = ny_bt_peer_tg(tg);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->volume_absolute = absolute;
+  if (g_bt.selected == peer)
+    peer->volume_pending = ny_bt_absolute_to_volume(absolute);
   nxmutex_unlock(&g_bt.lock);
   bt_avrcp_tg_absolute_volume(tg, tid, BT_AVRCP_STATUS_SUCCESS, absolute);
 }
@@ -1586,19 +2017,21 @@ static void ny_bt_tg_volume(struct bt_avrcp_tg *tg, uint8_t tid,
  * Name: ny_bt_passthrough
  ****************************************************************************/
 
-static int ny_bt_passthrough(uint8_t opid)
+static int ny_bt_passthrough(struct ny_bt_peer_s *peer, uint8_t opid)
 {
   struct bt_avrcp_ct *ct;
 
+  if (peer == NULL)
+    return -ENOTCONN;
   nxmutex_lock(&g_bt.lock);
-  ct = g_bt.ct;
+  ct = peer->ct;
   nxmutex_unlock(&g_bt.lock);
   if (ct == NULL)
     {
       return -ENOTCONN;
     }
 
-  return bt_avrcp_ct_passthrough(ct, ny_bt_tid(), opid,
+  return bt_avrcp_ct_passthrough(ct, ny_bt_tid(peer), opid,
                                  BT_AVRCP_BUTTON_PRESSED, NULL, 0);
 }
 
@@ -1606,35 +2039,40 @@ static int ny_bt_passthrough(uint8_t opid)
  * Name: ny_bt_call_set
  ****************************************************************************/
 
-static void ny_bt_call_set(struct bt_hfp_hf_call *call,
+static void ny_bt_call_set(struct ny_bt_peer_s *peer,
+                           struct bt_hfp_hf_call *call,
                            enum ny_bt_call_e state)
 {
-  nxmutex_lock(&g_bt.lock);
+  if (peer == NULL)
+    return;
   if (state == NY_BT_CALL_IDLE)
     {
-      if (g_bt.call == call || call == NULL)
+      if (peer->call == call || call == NULL)
         {
-          g_bt.call = NULL;
-          g_bt.call_state = NY_BT_CALL_IDLE;
-          g_bt.number[0] = '\0';
+          peer->call = NULL;
+          peer->call_state = NY_BT_CALL_IDLE;
+          peer->number[0] = '\0';
+          if (g_bt.call_peer == peer && !peer->sco_up)
+            g_bt.call_peer = NULL;
         }
     }
   else
     {
-      if (g_bt.call_state == NY_BT_CALL_IDLE)
+      if (peer->call_state == NY_BT_CALL_IDLE)
         {
-          g_bt.call_serial++;
+          peer->call_serial++;
         }
 
-      g_bt.call = call;
-      g_bt.call_state = state;
+      if (g_bt.call_peer == NULL)
+        g_bt.call_peer = peer;
+      peer->call = call;
+      peer->call_state = state;
       if (state == NY_BT_CALL_INCOMING)
         {
-          g_bt.work |= NY_BT_WORK_NOTIFY_CALL;
+          peer->work |= NY_BT_WORK_NOTIFY_CALL;
         }
     }
 
-  nxmutex_unlock(&g_bt.lock);
   syslog(LOG_INFO, "nybt: call %s\n", g_bt_call_names[state]);
 }
 
@@ -1644,40 +2082,47 @@ static void ny_bt_call_set(struct bt_hfp_hf_call *call,
 
 static void ny_bt_hf_connected(struct bt_conn *conn, struct bt_hfp_hf *hf)
 {
-  (void)conn;
+  struct ny_bt_peer_s *peer;
   nxmutex_lock(&g_bt.lock);
-  g_bt.hf = hf;
-  g_bt.codec_id = BT_HFP_HF_CODEC_CVSD;
+  peer = ny_bt_peer_acl(conn);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->hf = hf;
+  peer->codec_id = BT_HFP_HF_CODEC_CVSD;
   nxmutex_unlock(&g_bt.lock);
   syslog(LOG_INFO, "nybt: hfp service level connection up\n");
 }
 
 static void ny_bt_hf_disconnected(struct bt_hfp_hf *hf)
 {
-  ny_bt_audio_call_stop();
   nxmutex_lock(&g_bt.lock);
-  if (g_bt.hf == hf)
+  struct ny_bt_peer_s *peer = ny_bt_peer_hf(hf);
+  if (peer != NULL)
     {
-      g_bt.hf = NULL;
+      if (g_bt.call_peer == peer)
+        {
+          ny_bt_audio_call_stop();
+          g_bt.call_peer = NULL;
+        }
+      peer->hf = NULL;
+      peer->call = NULL;
+      peer->call_state = NY_BT_CALL_IDLE;
+      peer->number[0] = '\0';
+      peer->sco_up = false;
+      peer->sco = NULL;
+      peer->hfp_service = peer->hfp_signal = peer->hfp_battery = -1;
     }
-
-  g_bt.call = NULL;
-  g_bt.call_state = NY_BT_CALL_IDLE;
-  g_bt.number[0] = '\0';
-  g_bt.sco_up = false;
-  g_bt.hfp_service = -1;
-  g_bt.hfp_signal = -1;
-  g_bt.hfp_battery = -1;
   nxmutex_unlock(&g_bt.lock);
-  syslog(LOG_INFO, "nybt: hfp disconnected\n");
 }
 
 static int ny_bt_sco_send(const uint8_t *data, size_t size)
 {
-  struct bt_hfp_hf *hf;
-
   nxmutex_lock(&g_bt.lock);
-  hf = g_bt.sco_up ? g_bt.hf : NULL;
+  struct ny_bt_peer_s *peer = g_bt.call_peer;
+  struct bt_hfp_hf *hf = peer != NULL && peer->sco_up ? peer->hf : NULL;
   nxmutex_unlock(&g_bt.lock);
   return hf == NULL ? -ENOTCONN : Z_API(bt_hfp_hf_sco_send)(hf, data, size);
 }
@@ -1687,9 +2132,15 @@ static void ny_bt_hf_sco_connected(struct bt_hfp_hf *hf, struct bt_conn *sco)
   struct bt_conn_info info;
   bool msbc;
 
-  (void)hf;
+  struct ny_bt_peer_s *peer;
   nxmutex_lock(&g_bt.lock);
-  msbc = g_bt.codec_id == BT_HFP_HF_CODEC_MSBC;
+  peer = ny_bt_peer_hf(hf);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  msbc = peer->codec_id == BT_HFP_HF_CODEC_MSBC;
   nxmutex_unlock(&g_bt.lock);
 
   /* The link itself knows better than the negotiation that preceded it. */
@@ -1708,101 +2159,161 @@ static void ny_bt_hf_sco_connected(struct bt_hfp_hf *hf, struct bt_conn *sco)
     }
 
   nxmutex_lock(&g_bt.lock);
-  g_bt.sco_up = true;
-  g_bt.codec_id = msbc ? BT_HFP_HF_CODEC_MSBC : BT_HFP_HF_CODEC_CVSD;
-  g_bt.work |= NY_BT_WORK_QUIET_FLASH;
-  nxmutex_unlock(&g_bt.lock);
+  peer = ny_bt_peer_hf(hf);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  if (g_bt.call_peer != NULL && g_bt.call_peer != peer &&
+      g_bt.call_peer->sco_up)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  g_bt.call_peer = peer;
+  peer->sco = sco;
+  peer->sco_up = true;
+  peer->codec_id = msbc ? BT_HFP_HF_CODEC_MSBC : BT_HFP_HF_CODEC_CVSD;
+  peer->work |= NY_BT_WORK_QUIET_FLASH;
   ny_bt_audio_call_start(msbc, ny_bt_sco_send);
+  nxmutex_unlock(&g_bt.lock);
   syslog(LOG_INFO, "nybt: call audio up, %s\n", msbc ? "mSBC" : "CVSD");
 }
 
 static void ny_bt_hf_sco_recv(struct bt_hfp_hf *hf, const uint8_t *data,
                               size_t size, uint8_t packet_status)
 {
-  (void)hf;
-  ny_bt_audio_call_packet(data, size, packet_status);
+  nxmutex_lock(&g_bt.lock);
+  struct ny_bt_peer_s *peer = ny_bt_peer_hf(hf);
+  if (peer != NULL && g_bt.call_peer == peer && peer->sco_up)
+    ny_bt_audio_call_packet(data, size, packet_status);
+  nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_sco_disconnected(struct bt_conn *sco, uint8_t reason)
 {
-  (void)sco;
-  ny_bt_audio_call_stop();
+  (void)reason;
   nxmutex_lock(&g_bt.lock);
-  g_bt.sco_up = false;
+  struct ny_bt_peer_s *peer = ny_bt_peer_sco(sco);
+  if (peer != NULL)
+    {
+      peer->sco_up = false;
+      peer->sco = NULL;
+      if (g_bt.call_peer == peer)
+        {
+          ny_bt_audio_call_stop();
+          if (peer->call_state == NY_BT_CALL_IDLE)
+            g_bt.call_peer = NULL;
+        }
+    }
   nxmutex_unlock(&g_bt.lock);
-  syslog(LOG_INFO, "nybt: call audio down, reason 0x%02x\n", reason);
 }
 
 static void ny_bt_hf_service(struct bt_hfp_hf *hf, uint32_t value)
 {
-  (void)hf;
+  struct ny_bt_peer_s *peer;
   nxmutex_lock(&g_bt.lock);
-  g_bt.hfp_service = (int)value;
+  peer = ny_bt_peer_hf(hf);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->hfp_service = (int)value;
   nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_outgoing(struct bt_hfp_hf *hf,
                               struct bt_hfp_hf_call *call)
 {
-  (void)hf;
-  ny_bt_call_set(call, NY_BT_CALL_DIALING);
+  nxmutex_lock(&g_bt.lock);
+  ny_bt_call_set(ny_bt_peer_hf(hf), call, NY_BT_CALL_DIALING);
+  nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_remote_ringing(struct bt_hfp_hf_call *call)
 {
-  ny_bt_call_set(call, NY_BT_CALL_ALERTING);
+  nxmutex_lock(&g_bt.lock);
+  ny_bt_call_set(ny_bt_peer_call(call), call, NY_BT_CALL_ALERTING);
+  nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_incoming(struct bt_hfp_hf *hf,
                               struct bt_hfp_hf_call *call)
 {
-  (void)hf;
-  ny_bt_call_set(call, NY_BT_CALL_INCOMING);
+  nxmutex_lock(&g_bt.lock);
+  ny_bt_call_set(ny_bt_peer_hf(hf), call, NY_BT_CALL_INCOMING);
+  nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_accept(struct bt_hfp_hf_call *call)
 {
-  ny_bt_call_set(call, NY_BT_CALL_ACTIVE);
+  nxmutex_lock(&g_bt.lock);
+  ny_bt_call_set(ny_bt_peer_call(call), call, NY_BT_CALL_ACTIVE);
+  nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_ended(struct bt_hfp_hf_call *call)
 {
-  ny_bt_call_set(call, NY_BT_CALL_IDLE);
+  nxmutex_lock(&g_bt.lock);
+  ny_bt_call_set(ny_bt_peer_call(call), call, NY_BT_CALL_IDLE);
+  nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_held(struct bt_hfp_hf_call *call)
 {
-  ny_bt_call_set(call, NY_BT_CALL_HELD);
+  nxmutex_lock(&g_bt.lock);
+  ny_bt_call_set(ny_bt_peer_call(call), call, NY_BT_CALL_HELD);
+  nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_signal(struct bt_hfp_hf *hf, uint32_t value)
 {
-  (void)hf;
+  struct ny_bt_peer_s *peer;
   nxmutex_lock(&g_bt.lock);
-  g_bt.hfp_signal = (int)value;
+  peer = ny_bt_peer_hf(hf);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->hfp_signal = (int)value;
   nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_battery(struct bt_hfp_hf *hf, uint32_t value)
 {
-  (void)hf;
+  struct ny_bt_peer_s *peer;
   nxmutex_lock(&g_bt.lock);
-  g_bt.hfp_battery = (int)value;
+  peer = ny_bt_peer_hf(hf);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->hfp_battery = (int)value;
   nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_ring(struct bt_hfp_hf_call *call)
 {
-  (void)call;
+  struct ny_bt_peer_s *peer;
 
   /* A phone that does not send its ring tone down the audio link leaves
    * the ringing to us.
    */
 
   nxmutex_lock(&g_bt.lock);
-  if (!g_bt.inband_ring && !g_bt.sco_up)
+  peer = ny_bt_peer_call(call);
+  if (peer == NULL)
     {
-      g_bt.work |= NY_BT_WORK_RING;
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  if (!peer->inband_ring && !peer->sco_up)
+    {
+      peer->work |= NY_BT_WORK_RING;
     }
 
   nxmutex_unlock(&g_bt.lock);
@@ -1811,7 +2322,7 @@ static void ny_bt_hf_ring(struct bt_hfp_hf_call *call)
 static void ny_bt_hf_clip(struct bt_hfp_hf_call *call, char *number,
                           uint8_t type)
 {
-  (void)call;
+  struct ny_bt_peer_s *peer;
   (void)type;
   if (number == NULL)
     {
@@ -1819,13 +2330,19 @@ static void ny_bt_hf_clip(struct bt_hfp_hf_call *call, char *number,
     }
 
   nxmutex_lock(&g_bt.lock);
-  if (g_bt.number[0] == '\0')
+  peer = ny_bt_peer_call(call);
+  if (peer == NULL)
     {
-      ny_bt_text(g_bt.number, sizeof(g_bt.number), (const uint8_t *)number,
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  if (peer->number[0] == '\0')
+    {
+      ny_bt_text(peer->number, sizeof(peer->number), (const uint8_t *)number,
                  strlen(number));
-      if (g_bt.call_state == NY_BT_CALL_INCOMING)
+      if (peer->call_state == NY_BT_CALL_INCOMING)
         {
-          g_bt.work |= NY_BT_WORK_NOTIFY_CALL;
+          peer->work |= NY_BT_WORK_NOTIFY_CALL;
         }
     }
 
@@ -1834,31 +2351,51 @@ static void ny_bt_hf_clip(struct bt_hfp_hf_call *call, char *number,
 
 static void ny_bt_hf_vgs(struct bt_hfp_hf *hf, uint8_t gain)
 {
-  (void)hf;
+  struct ny_bt_peer_s *peer;
   if (gain > NY_BT_HFP_GAIN_MAX)
     {
       gain = NY_BT_HFP_GAIN_MAX;
     }
 
   nxmutex_lock(&g_bt.lock);
-  g_bt.volume_pending = gain * 100 / NY_BT_HFP_GAIN_MAX;
+  peer = ny_bt_peer_hf(hf);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  if (g_bt.call_peer == peer || g_bt.selected == peer)
+    peer->volume_pending = gain * 100 / NY_BT_HFP_GAIN_MAX;
   nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_inband(struct bt_hfp_hf *hf, bool inband)
 {
-  (void)hf;
+  struct ny_bt_peer_s *peer;
   nxmutex_lock(&g_bt.lock);
-  g_bt.inband_ring = inband;
+  peer = ny_bt_peer_hf(hf);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->inband_ring = inband;
   nxmutex_unlock(&g_bt.lock);
 }
 
 static void ny_bt_hf_codec(struct bt_hfp_hf *hf, uint8_t id)
 {
+  struct ny_bt_peer_s *peer;
   /* mSBC when the phone offers it, CVSD otherwise; both are handled. */
 
   nxmutex_lock(&g_bt.lock);
-  g_bt.codec_id = id;
+  peer = ny_bt_peer_hf(hf);
+  if (peer == NULL)
+    {
+      nxmutex_unlock(&g_bt.lock);
+      return;
+    }
+  peer->codec_id = id;
   nxmutex_unlock(&g_bt.lock);
   Z_API(bt_hfp_hf_select_codec)(hf, id);
 }
@@ -2001,8 +2538,9 @@ static void *ny_bt_bringup(void *arg)
 
   if (ret == 0)
     {
-      ret = bt_a2dp_register_ep(&g_bt_sbc_endpoint, BT_AVDTP_AUDIO,
-                                BT_AVDTP_SINK);
+      for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX && ret == 0; i++)
+        ret = bt_a2dp_register_ep(g_bt_endpoints[i], BT_AVDTP_AUDIO,
+                                  BT_AVDTP_SINK);
     }
 
   if (ret == 0)
@@ -2251,7 +2789,7 @@ static int ny_bt_discoverable(bool enable, int seconds)
  *
  ****************************************************************************/
 
-static void ny_bt_tick_avrcp(uint32_t work)
+static void ny_bt_tick_avrcp(struct ny_bt_peer_s *peer, uint32_t work)
 {
   struct bt_avrcp_ct *ct;
   uint8_t opid;
@@ -2259,13 +2797,13 @@ static void ny_bt_tick_avrcp(uint32_t work)
   int ret = 0;
 
   nxmutex_lock(&g_bt.lock);
-  ct = g_bt.ct;
-  opid = g_bt.release_opid;
+  ct = peer->ct;
+  opid = peer->release_opid;
   nxmutex_unlock(&g_bt.lock);
   if (ct == NULL)
     {
       nxmutex_lock(&g_bt.lock);
-      g_bt.work &= ~NY_BT_WORK_AVRCP_ANY;
+      peer->work &= ~NY_BT_WORK_AVRCP_ANY;
       nxmutex_unlock(&g_bt.lock);
       return;
     }
@@ -2273,33 +2811,34 @@ static void ny_bt_tick_avrcp(uint32_t work)
   if (work & NY_BT_WORK_AVRCP_RELEASE)
     {
       done = NY_BT_WORK_AVRCP_RELEASE;
-      ret = bt_avrcp_ct_passthrough(ct, ny_bt_tid(), opid,
+      ret = bt_avrcp_ct_passthrough(ct, ny_bt_tid(peer), opid,
                                     BT_AVRCP_BUTTON_RELEASED, NULL, 0);
     }
   else if (work & NY_BT_WORK_AVRCP_PAUSE)
     {
       done = NY_BT_WORK_AVRCP_PAUSE;
-      ret = bt_avrcp_ct_passthrough(ct, ny_bt_tid(), BT_AVRCP_OPID_PAUSE,
+      ret = bt_avrcp_ct_passthrough(ct, ny_bt_tid(peer), BT_AVRCP_OPID_PAUSE,
                                     BT_AVRCP_BUTTON_PRESSED, NULL, 0);
     }
   else if (work & NY_BT_WORK_AVRCP_CAPS)
     {
       done = NY_BT_WORK_AVRCP_CAPS;
-      ret =
-          bt_avrcp_ct_get_caps(ct, ny_bt_tid(), BT_AVRCP_CAP_EVENTS_SUPPORTED);
+      ret = bt_avrcp_ct_get_caps(ct, ny_bt_tid(peer),
+                                 BT_AVRCP_CAP_EVENTS_SUPPORTED);
     }
   else if (work & NY_BT_WORK_AVRCP_PLAYBACK)
     {
       done = NY_BT_WORK_AVRCP_PLAYBACK;
       ret = bt_avrcp_ct_register_notification(
-          ct, ny_bt_tid(), BT_AVRCP_EVT_PLAYBACK_STATUS_CHANGED, 0,
+          ct, ny_bt_tid(peer), BT_AVRCP_EVT_PLAYBACK_STATUS_CHANGED, 0,
           ny_bt_ct_changed);
     }
   else if (work & NY_BT_WORK_AVRCP_TRACK)
     {
       done = NY_BT_WORK_AVRCP_TRACK;
-      ret = bt_avrcp_ct_register_notification(
-          ct, ny_bt_tid(), BT_AVRCP_EVT_TRACK_CHANGED, 0, ny_bt_ct_changed);
+      ret = bt_avrcp_ct_register_notification(ct, ny_bt_tid(peer),
+                                              BT_AVRCP_EVT_TRACK_CHANGED, 0,
+                                              ny_bt_ct_changed);
     }
   else if (work & NY_BT_WORK_AVRCP_ATTRS)
     {
@@ -2315,7 +2854,7 @@ static void ny_bt_tick_avrcp(uint32_t work)
           net_buf_add_u8(buf, 2);
           net_buf_add_be32(buf, BT_AVRCP_MEDIA_ATTR_TITLE);
           net_buf_add_be32(buf, BT_AVRCP_MEDIA_ATTR_ARTIST);
-          ret = bt_avrcp_ct_get_element_attrs(ct, ny_bt_tid(), buf);
+          ret = bt_avrcp_ct_get_element_attrs(ct, ny_bt_tid(peer), buf);
           if (ret < 0)
             {
               net_buf_unref(buf);
@@ -2325,7 +2864,7 @@ static void ny_bt_tick_avrcp(uint32_t work)
   else
     {
       done = NY_BT_WORK_AVRCP_STATUS;
-      ret = bt_avrcp_ct_get_play_status(ct, ny_bt_tid());
+      ret = bt_avrcp_ct_get_play_status(ct, ny_bt_tid(peer));
     }
 
   /* A command that did not go out is not repeated: a phone that lacks it
@@ -2338,7 +2877,7 @@ static void ny_bt_tick_avrcp(uint32_t work)
     }
 
   nxmutex_lock(&g_bt.lock);
-  g_bt.work &= ~done;
+  peer->work &= ~done;
   nxmutex_unlock(&g_bt.lock);
 }
 
@@ -2351,7 +2890,7 @@ static void ny_bt_tick_avrcp(uint32_t work)
  *
  ****************************************************************************/
 
-static void ny_bt_tick_volume(void)
+static void ny_bt_tick_volume(struct ny_bt_peer_s *peer)
 {
 #ifdef CONFIG_NYABULA_CORE_AUDIO
   struct ny_product_audio_levels_s levels;
@@ -2363,8 +2902,10 @@ static void ny_bt_tick_volume(void)
   int absolute;
 
   nxmutex_lock(&g_bt.lock);
-  pending = g_bt.volume_pending;
-  g_bt.volume_pending = -1;
+  pending = g_bt.selected == peer || g_bt.call_peer == peer
+                ? peer->volume_pending
+                : -1;
+  peer->volume_pending = -1;
   nxmutex_unlock(&g_bt.lock);
   if (pending >= 0 && ny_product_audio_set_levels(
                           pending, pending > 0 ? 0 : NY_PRODUCT_AUDIO_KEEP,
@@ -2373,7 +2914,7 @@ static void ny_bt_tick_volume(void)
       /* What came from the phone is not news to the phone. */
 
       nxmutex_lock(&g_bt.lock);
-      g_bt.volume_seen = pending;
+      peer->volume_seen = pending;
       nxmutex_unlock(&g_bt.lock);
       return;
     }
@@ -2386,31 +2927,31 @@ static void ny_bt_tick_volume(void)
   volume = levels.muted ? 0 : levels.volume;
   absolute = ny_bt_volume_to_absolute(volume);
   nxmutex_lock(&g_bt.lock);
-  if (volume != g_bt.volume_seen)
+  if (volume != peer->volume_seen)
     {
-      bool first = g_bt.volume_seen < 0;
+      bool first = peer->volume_seen < 0;
 
-      g_bt.volume_seen = volume;
+      peer->volume_seen = volume;
       if (!first)
         {
           /* Compare on the phone's scale, and against what the phone's
            * last value maps back to: rounding alone is not a change.
            */
 
-          if (g_bt.volume_registered && g_bt.tg != NULL &&
-              absolute != g_bt.volume_absolute &&
-              (g_bt.volume_absolute < 0 ||
-               ny_bt_absolute_to_volume(g_bt.volume_absolute) != volume))
+          if (peer->volume_registered && peer->tg != NULL &&
+              absolute != peer->volume_absolute &&
+              (peer->volume_absolute < 0 ||
+               ny_bt_absolute_to_volume(peer->volume_absolute) != volume))
             {
-              tg = g_bt.tg;
-              tid = g_bt.volume_tid;
-              g_bt.volume_registered = false;
-              g_bt.volume_absolute = absolute;
+              tg = peer->tg;
+              tid = peer->volume_tid;
+              peer->volume_registered = false;
+              peer->volume_absolute = absolute;
             }
 
-          if (g_bt.sco_up)
+          if (peer->sco_up)
             {
-              hf = g_bt.hf;
+              hf = peer->hf;
             }
         }
     }
@@ -2460,6 +3001,9 @@ static cJSON *ny_bt_status(void)
   sound = cJSON_AddObjectToObject(root, "audio");
   ok = a2dp != NULL && avrcp != NULL && hfp != NULL && sound != NULL;
   nxmutex_lock(&g_bt.lock);
+  struct ny_bt_peer_s *peer = ny_bt_selected();
+  struct ny_bt_peer_s *call_peer =
+      g_bt.call_peer != NULL ? g_bt.call_peer : peer;
   ok = ok &&
        cJSON_AddStringToObject(root, "state", g_bt_state_names[g_bt.state]);
   ok = ok && cJSON_AddNumberToObject(root, "error", g_bt.error);
@@ -2503,74 +3047,108 @@ static cJSON *ny_bt_status(void)
         }
     }
 
-  if (g_bt.acl != NULL)
+  if (peer->connected)
     {
-      cJSON *peer = cJSON_AddObjectToObject(root, "connected");
-      struct ny_bt_device_s *device = ny_bt_device(g_bt.peer_address, false);
+      cJSON *connection = cJSON_AddObjectToObject(root, "connected");
+      struct ny_bt_device_s *device = ny_bt_device(peer->peer_address, false);
 
-      ok = ok && peer != NULL &&
-           cJSON_AddStringToObject(peer, "address", g_bt.peer_address) &&
-           cJSON_AddStringToObject(peer, "name",
-                                   device != NULL ? device->name : "");
+      ok =
+          ok && connection != NULL &&
+          cJSON_AddStringToObject(connection, "address", peer->peer_address) &&
+          cJSON_AddStringToObject(connection, "name",
+                                  device != NULL ? device->name : "");
     }
 
   ok = ok && cJSON_AddStringToObject(a2dp, "state",
-                                     g_bt_a2dp_names[g_bt.a2dp_state]);
+                                     g_bt_a2dp_names[peer->a2dp_state]);
   ok = ok && cJSON_AddStringToObject(a2dp, "codec",
-                                     g_bt.a2dp_rate != 0 ? "SBC" : "none");
-  ok = ok && cJSON_AddNumberToObject(a2dp, "sampleRate", g_bt.a2dp_rate);
-  ok = ok && cJSON_AddNumberToObject(a2dp, "channels", g_bt.a2dp_channels);
+                                     peer->a2dp_rate != 0 ? "SBC" : "none");
+  ok = ok && cJSON_AddNumberToObject(a2dp, "sampleRate", peer->a2dp_rate);
+  ok = ok && cJSON_AddNumberToObject(a2dp, "channels", peer->a2dp_channels);
 
-  ok = ok && cJSON_AddBoolToObject(avrcp, "connected", g_bt.ct != NULL);
+  ok = ok && cJSON_AddBoolToObject(avrcp, "connected", peer->ct != NULL);
+  ok = ok &&
+       cJSON_AddNumberToObject(root, "maxConnections", NY_BT_CONNECTIONS_MAX);
+  cJSON *connections = cJSON_AddArrayToObject(root, "connections");
+  ok = ok && connections != NULL;
+  for (unsigned int i = 0; ok && i < NY_BT_CONNECTIONS_MAX; i++)
+    {
+      struct ny_bt_peer_s *item = &g_bt.peers[i];
+      if (item->acl == NULL)
+        continue;
+      struct ny_bt_device_s *device = ny_bt_device(item->peer_address, false);
+      cJSON *row = cJSON_CreateObject();
+      ok = row != NULL &&
+           cJSON_AddStringToObject(row, "address", item->peer_address) &&
+           cJSON_AddStringToObject(row, "name",
+                                   device != NULL ? device->name : "") &&
+           cJSON_AddBoolToObject(row, "connected", item->connected) &&
+           cJSON_AddBoolToObject(row, "selected", g_bt.selected == item) &&
+           cJSON_AddStringToObject(row, "a2dpState",
+                                   g_bt_a2dp_names[item->a2dp_state]) &&
+           cJSON_AddBoolToObject(row, "avrcpConnected", item->ct != NULL) &&
+           cJSON_AddStringToObject(row, "call",
+                                   g_bt_call_names[item->call_state]);
+      if (row != NULL && !cJSON_AddItemToArray(connections, row))
+        {
+          cJSON_Delete(row);
+          ok = false;
+        }
+    }
+
   ok = ok && cJSON_AddBoolToObject(
                  avrcp, "playing",
-                 g_bt.play_status_known
-                     ? g_bt.play_status == BT_AVRCP_PLAYBACK_STATUS_PLAYING
-                     : g_bt.a2dp_state == NY_BT_A2DP_STREAMING);
-  if (g_bt.title[0] != '\0')
+                 peer->play_status_known
+                     ? peer->play_status == BT_AVRCP_PLAYBACK_STATUS_PLAYING
+                     : peer->a2dp_state == NY_BT_A2DP_STREAMING);
+  if (peer->title[0] != '\0')
     {
-      ok = ok && cJSON_AddStringToObject(avrcp, "title", g_bt.title);
+      ok = ok && cJSON_AddStringToObject(avrcp, "title", peer->title);
     }
 
-  if (g_bt.artist[0] != '\0')
+  if (peer->artist[0] != '\0')
     {
-      ok = ok && cJSON_AddStringToObject(avrcp, "artist", g_bt.artist);
+      ok = ok && cJSON_AddStringToObject(avrcp, "artist", peer->artist);
     }
 
-  ok = ok && cJSON_AddNumberToObject(
-                 avrcp, "volume", g_bt.volume_seen < 0 ? 0 : g_bt.volume_seen);
-  ok = ok && cJSON_AddBoolToObject(avrcp, "absoluteVolume",
-                                   g_bt.volume_absolute >= 0);
-
-  ok = ok && cJSON_AddStringToObject(
-                 hfp, "state", g_bt.hf != NULL ? "connected" : "disconnected");
   ok = ok &&
-       cJSON_AddStringToObject(hfp, "call", g_bt_call_names[g_bt.call_state]);
-  if (g_bt.number[0] != '\0')
+       cJSON_AddNumberToObject(avrcp, "volume",
+                               peer->volume_seen < 0 ? 0 : peer->volume_seen);
+  ok = ok && cJSON_AddBoolToObject(avrcp, "absoluteVolume",
+                                   peer->volume_absolute >= 0);
+
+  ok = ok && cJSON_AddStringToObject(hfp, "state",
+                                     call_peer->hf != NULL ? "connected"
+                                                           : "disconnected");
+  ok = ok && cJSON_AddStringToObject(hfp, "call",
+                                     g_bt_call_names[call_peer->call_state]);
+  if (call_peer->number[0] != '\0')
     {
-      ok = ok && cJSON_AddStringToObject(hfp, "number", g_bt.number);
+      ok = ok && cJSON_AddStringToObject(hfp, "number", call_peer->number);
     }
 
-  ok = ok && cJSON_AddBoolToObject(hfp, "inbandRing", g_bt.inband_ring);
-  ok = ok && cJSON_AddBoolToObject(hfp, "audio", g_bt.sco_up);
-  ok = ok && cJSON_AddStringToObject(hfp, "codec",
-                                     !g_bt.sco_up ? "none"
-                                     : g_bt.codec_id == BT_HFP_HF_CODEC_MSBC
-                                         ? "mSBC"
-                                         : "CVSD");
-  if (g_bt.hfp_service >= 0)
+  ok = ok && cJSON_AddBoolToObject(hfp, "inbandRing", call_peer->inband_ring);
+  ok = ok && cJSON_AddBoolToObject(hfp, "audio", call_peer->sco_up);
+  ok = ok && cJSON_AddStringToObject(
+                 hfp, "codec",
+                 !call_peer->sco_up                            ? "none"
+                 : call_peer->codec_id == BT_HFP_HF_CODEC_MSBC ? "mSBC"
+                                                               : "CVSD");
+  if (call_peer->hfp_service >= 0)
     {
-      ok = ok && cJSON_AddBoolToObject(hfp, "service", g_bt.hfp_service > 0);
+      ok = ok &&
+           cJSON_AddBoolToObject(hfp, "service", call_peer->hfp_service > 0);
     }
 
-  if (g_bt.hfp_signal >= 0)
+  if (call_peer->hfp_signal >= 0)
     {
-      ok = ok && cJSON_AddNumberToObject(hfp, "signal", g_bt.hfp_signal);
+      ok = ok && cJSON_AddNumberToObject(hfp, "signal", call_peer->hfp_signal);
     }
 
-  if (g_bt.hfp_battery >= 0)
+  if (call_peer->hfp_battery >= 0)
     {
-      ok = ok && cJSON_AddNumberToObject(hfp, "battery", g_bt.hfp_battery);
+      ok = ok &&
+           cJSON_AddNumberToObject(hfp, "battery", call_peer->hfp_battery);
     }
 
   nxmutex_unlock(&g_bt.lock);
@@ -2669,15 +3247,18 @@ static int ny_bt_devices(cJSON **result)
           continue;
         }
 
+      struct ny_bt_peer_s *peer = ny_bt_peer_address(device->address);
       row = cJSON_CreateObject();
       ok = row != NULL &&
            cJSON_AddStringToObject(row, "address", device->address) &&
            cJSON_AddStringToObject(row, "name", device->name) &&
            cJSON_AddBoolToObject(row, "bonded", device->bonded) &&
-           cJSON_AddBoolToObject(
-               row, "connected",
-               g_bt.acl != NULL &&
-                   strcasecmp(device->address, g_bt.peer_address) == 0) &&
+           cJSON_AddBoolToObject(row, "connected",
+                                 peer != NULL && peer->connected) &&
+           cJSON_AddBoolToObject(row, "connecting",
+                                 peer != NULL && !peer->connected) &&
+           cJSON_AddBoolToObject(row, "selected",
+                                 peer != NULL && peer == g_bt.selected) &&
            cJSON_AddNumberToObject(row, "lastConnected",
                                    (double)device->last_connected);
       if (row != NULL && !cJSON_AddItemToArray(rows, row))
@@ -2734,9 +3315,10 @@ static int ny_bt_target(const cJSON *data, bool required, bt_addr_t *address,
     }
 
   nxmutex_lock(&g_bt.lock);
-  if (g_bt.peer_address[0] != '\0')
+  struct ny_bt_peer_s *peer = ny_bt_selected();
+  if (peer->peer_address[0] != '\0')
     {
-      snprintf(text, BT_ADDR_STR_LEN, "%s", g_bt.peer_address);
+      snprintf(text, BT_ADDR_STR_LEN, "%s", peer->peer_address);
     }
   else
     {
@@ -2810,6 +3392,7 @@ int ny_product_bt_request(const struct ny_product_caller_s *caller,
   return -ENODEV;
 #else
   bool status = strcmp(topic, "bt.status") == 0;
+  struct ny_bt_peer_s *peer;
   struct bt_hfp_hf_call *call;
   enum ny_bt_call_e call_state;
   enum ny_bt_state_e state;
@@ -2825,8 +3408,10 @@ int ny_product_bt_request(const struct ny_product_caller_s *caller,
 
   nxmutex_lock(&g_bt.lock);
   state = g_bt.state;
-  call = g_bt.call;
-  call_state = g_bt.call_state;
+  peer = g_bt.call_peer != NULL ? g_bt.call_peer : ny_bt_selected();
+  call = peer->call;
+  call_state = peer->call_state;
+  peer = ny_bt_selected();
   nxmutex_unlock(&g_bt.lock);
   if (status)
     {
@@ -2842,6 +3427,19 @@ int ny_product_bt_request(const struct ny_product_caller_s *caller,
   if (state != NY_BT_READY)
     {
       return state == NY_BT_FAILED ? -ENODEV : -EAGAIN;
+    }
+
+  if (strncmp(topic, "bt.media.", 9) == 0 &&
+      cJSON_GetObjectItemCaseSensitive(data, "address") != NULL)
+    {
+      ret = ny_bt_target(data, true, &address, text);
+      if (ret < 0)
+        return ret;
+      nxmutex_lock(&g_bt.lock);
+      peer = ny_bt_peer_address(text);
+      nxmutex_unlock(&g_bt.lock);
+      if (peer == NULL)
+        return -ENOTCONN;
     }
 
   if (strcmp(topic, "bt.discoverable") == 0)
@@ -2939,50 +3537,31 @@ int ny_product_bt_request(const struct ny_product_caller_s *caller,
     }
   else if (strcmp(topic, "bt.connect") == 0)
     {
-      struct bt_conn *conn;
-
       ret = ny_bt_target(data, false, &address, text);
+      if (ret == 0)
+        ret = ny_bt_connect(&address);
+    }
+  else if (strcmp(topic, "bt.select") == 0)
+    {
+      ret = ny_bt_target(data, true, &address, text);
       if (ret < 0)
-        {
-          return ret;
-        }
-
+        return ret;
       nxmutex_lock(&g_bt.lock);
-      ret =
-          g_bt.acl != NULL
-              ? (strcasecmp(text, g_bt.peer_address) == 0 ? -EALREADY : -EBUSY)
-              : 0;
+      peer = ny_bt_peer_address(text);
+      if (peer == NULL || !peer->connected)
+        ret = -ENOTCONN;
+      else if (peer->a2dp == NULL)
+        ret = -EAGAIN;
+      else if (g_bt.call_peer != NULL)
+        ret = -EBUSY;
+      else if (peer != g_bt.selected)
+        {
+          struct ny_bt_peer_s *old = g_bt.selected;
+          if (old != NULL && old->a2dp_state == NY_BT_A2DP_STREAMING)
+            old->work |= NY_BT_WORK_AVRCP_PAUSE;
+          ny_bt_select_media(peer);
+        }
       nxmutex_unlock(&g_bt.lock);
-      if (ret < 0)
-        {
-          return ret == -EALREADY ? 0 : ret;
-        }
-
-      conn = bt_conn_create_br(&address, BT_BR_CONN_PARAM_DEFAULT);
-      if (conn == NULL)
-        {
-          return -EIO;
-        }
-
-      /* The reference from the create call becomes the one g_bt.acl
-       * holds; the connected callback then finds it in place.
-       */
-
-      nxmutex_lock(&g_bt.lock);
-      if (g_bt.acl == NULL)
-        {
-          g_bt.acl = conn;
-          g_bt.acl_initiated = true;
-          g_bt.acl_attempt_until =
-              ny_product_time_ms(true) + NY_BT_PAGE_GIVE_UP_MS;
-          conn = NULL;
-        }
-
-      nxmutex_unlock(&g_bt.lock);
-      if (conn != NULL)
-        {
-          bt_conn_unref(conn);
-        }
     }
   else if (strcmp(topic, "bt.disconnect") == 0)
     {
@@ -3005,23 +3584,23 @@ int ny_product_bt_request(const struct ny_product_caller_s *caller,
     }
   else if (strcmp(topic, "bt.media.play") == 0)
     {
-      ret = ny_bt_passthrough(BT_AVRCP_OPID_PLAY);
+      ret = ny_bt_passthrough(peer, BT_AVRCP_OPID_PLAY);
     }
   else if (strcmp(topic, "bt.media.pause") == 0)
     {
-      ret = ny_bt_passthrough(BT_AVRCP_OPID_PAUSE);
+      ret = ny_bt_passthrough(peer, BT_AVRCP_OPID_PAUSE);
     }
   else if (strcmp(topic, "bt.media.stop") == 0)
     {
-      ret = ny_bt_passthrough(BT_AVRCP_OPID_STOP);
+      ret = ny_bt_passthrough(peer, BT_AVRCP_OPID_STOP);
     }
   else if (strcmp(topic, "bt.media.next") == 0)
     {
-      ret = ny_bt_passthrough(BT_AVRCP_OPID_FORWARD);
+      ret = ny_bt_passthrough(peer, BT_AVRCP_OPID_FORWARD);
     }
   else if (strcmp(topic, "bt.media.prev") == 0)
     {
-      ret = ny_bt_passthrough(BT_AVRCP_OPID_BACKWARD);
+      ret = ny_bt_passthrough(peer, BT_AVRCP_OPID_BACKWARD);
     }
   else if (strcmp(topic, "bt.call.answer") == 0)
     {
@@ -3067,17 +3646,13 @@ int ny_product_bt_tick(void)
 {
   uint64_t now = ny_product_time_ms(true);
   struct bt_conn *pairing = NULL;
-  struct bt_conn *stale = NULL;
-  struct bt_conn *acl = NULL;
   char pairing_address[BT_ADDR_STR_LEN];
-  char number[NY_BT_NUMBER_MAX];
   enum ny_bt_state_e state;
   bool start = false;
   bool close_window = false;
   bool autoconnect = false;
   bool load;
   bool save;
-  uint32_t call_serial;
   uint32_t work;
 
   nxmutex_lock(&g_bt.lock);
@@ -3130,7 +3705,7 @@ int ny_product_bt_tick(void)
 
   nxmutex_lock(&g_bt.lock);
   work = g_bt.work;
-  g_bt.work &= NY_BT_WORK_AVRCP_ANY | NY_BT_WORK_AVRCP_CONNECT;
+  g_bt.work = 0;
   if (g_bt.discoverable && now >= g_bt.discoverable_until)
     {
       close_window = true;
@@ -3142,47 +3717,13 @@ int ny_product_bt_tick(void)
       g_bt.pairing = NULL;
     }
 
-  if (g_bt.acl != NULL && g_bt.acl_attempt_until != 0 &&
-      now >= g_bt.acl_attempt_until)
-    {
-      /* The phone never answered and the host never said so: without this
-       * the slot would stay taken and every later bt.connect be refused.
-       */
-
-      stale = g_bt.acl;
-      g_bt.acl = NULL;
-      g_bt.acl_initiated = false;
-      g_bt.acl_attempt_until = 0;
-    }
-
-  if (work & (NY_BT_WORK_A2DP_CONNECT | NY_BT_WORK_NAME_REQUEST))
-    {
-      acl = g_bt.acl != NULL ? bt_conn_ref(g_bt.acl) : NULL;
-    }
-
-  if ((work & NY_BT_WORK_AVRCP_CONNECT) != 0 && g_bt.acl != NULL &&
-      g_bt.ct == NULL && now >= g_bt.acl_since + NY_BT_AVRCP_CONNECT_MS)
-    {
-      g_bt.work &= ~NY_BT_WORK_AVRCP_CONNECT;
-      if (acl == NULL)
-        {
-          acl = bt_conn_ref(g_bt.acl);
-        }
-    }
-  else
-    {
-      work &= ~NY_BT_WORK_AVRCP_CONNECT;
-    }
-
   if (g_bt.autoconnect_at != 0 && now >= g_bt.autoconnect_at)
     {
       g_bt.autoconnect_at = 0;
-      autoconnect = g_bt.acl == NULL && g_bt.devices_loaded;
+      autoconnect = g_bt.selected == NULL && g_bt.devices_loaded;
     }
 
   memcpy(pairing_address, g_bt.pairing_address, sizeof(pairing_address));
-  memcpy(number, g_bt.number, sizeof(number));
-  call_serial = g_bt.call_serial;
   save =
       g_bt.devices_dirty && g_bt.devices_loaded && now >= g_bt.devices_retry;
   nxmutex_unlock(&g_bt.lock);
@@ -3192,28 +3733,12 @@ int ny_product_bt_tick(void)
       ny_bt_discoverable(false, 0);
     }
 
-  if (stale != NULL)
-    {
-      bt_conn_disconnect(stale, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-      bt_conn_unref(stale);
-    }
-
   if (pairing != NULL)
     {
       /* Nobody answered on the panel: that is a no. */
 
       bt_conn_auth_cancel(pairing);
       bt_conn_unref(pairing);
-    }
-
-  if (work & NY_BT_WORK_QUIET_FLASH)
-    {
-      ny_product_media_sleep();
-    }
-
-  if (work & NY_BT_WORK_RING)
-    {
-      ny_product_media_alert(NY_PRODUCT_MEDIA_ALERT_ONCE);
     }
 
   if (work & NY_BT_WORK_NOTIFY_PAIRING)
@@ -3230,55 +3755,6 @@ int ny_product_bt_tick(void)
                                        NY_BT_PAIRING_MS);
     }
 
-  if (work & NY_BT_WORK_NOTIFY_CALL)
-    {
-      char id[48];
-      char title[96];
-
-      /* One notice per call: the id is the same when the number arrives
-       * after the first ring, and the second post is then ignored.
-       */
-
-      snprintf(id, sizeof(id), "bt-call-%u-%d", (unsigned)call_serial,
-               number[0] != '\0');
-      snprintf(title, sizeof(title), "Incoming call%s%s",
-               number[0] != '\0' ? ": " : "", number);
-      ny_product_notification_post(id, "bluetooth", title,
-                                   ny_product_time_ms(false) + 60000);
-    }
-
-  if (acl != NULL)
-    {
-      if (work & NY_BT_WORK_NAME_REQUEST)
-        {
-          const bt_addr_t *peer = bt_conn_get_dst_br(acl);
-
-          if (peer != NULL)
-            {
-              bt_br_remote_name_request(peer, ny_bt_remote_name);
-            }
-        }
-
-      if (work & NY_BT_WORK_A2DP_CONNECT)
-        {
-          /* We called the phone, so the first profile is ours to open; the
-           * phone follows with the rest, hands-free included.
-           */
-
-          if (bt_a2dp_connect(acl) == NULL)
-            {
-              syslog(LOG_INFO, "nybt: a2dp connect not started\n");
-            }
-        }
-
-      if (work & NY_BT_WORK_AVRCP_CONNECT)
-        {
-          bt_avrcp_connect(acl);
-        }
-
-      bt_conn_unref(acl);
-    }
-
   if (autoconnect)
     {
 #if defined(CONFIG_NYABULA_CORE_BT_AUTOCONNECT) && defined(CONFIG_BT_SETTINGS)
@@ -3291,33 +3767,13 @@ int ny_product_bt_tick(void)
       if (latest.address[0] != '\0' &&
           bt_addr_from_str(latest.address, &address) == 0)
         {
-          struct bt_conn *conn =
-              bt_conn_create_br(&address, BT_BR_CONN_PARAM_DEFAULT);
-
-          nxmutex_lock(&g_bt.lock);
-          if (conn != NULL && g_bt.acl == NULL)
-            {
-              g_bt.acl = conn;
-              g_bt.acl_initiated = true;
-              g_bt.acl_attempt_until = now + NY_BT_PAGE_GIVE_UP_MS;
-              conn = NULL;
-            }
-
-          nxmutex_unlock(&g_bt.lock);
-          if (conn != NULL)
-            {
-              bt_conn_unref(conn);
-            }
+          ny_bt_connect(&address);
         }
 #endif
     }
 
-  if (work & NY_BT_WORK_AVRCP_ANY)
-    {
-      ny_bt_tick_avrcp(work);
-    }
-
-  ny_bt_tick_volume();
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    ny_bt_tick_peer(&g_bt.peers[i], now);
   ny_bt_apply_name();
   if (save)
     {
@@ -3368,9 +3824,10 @@ int ny_product_bt_speaker_claim(bool alert)
        */
 
       nxmutex_lock(&g_bt.lock);
-      if (g_bt.a2dp_state == NY_BT_A2DP_STREAMING)
+      struct ny_bt_peer_s *peer = ny_bt_selected();
+      if (peer->a2dp_state == NY_BT_A2DP_STREAMING)
         {
-          g_bt.work |= NY_BT_WORK_AVRCP_PAUSE;
+          peer->work |= NY_BT_WORK_AVRCP_PAUSE;
         }
 
       nxmutex_unlock(&g_bt.lock);
@@ -3391,11 +3848,15 @@ void ny_product_bt_speaker_release(void) { ny_bt_audio_release(); }
 
 bool ny_product_bt_call_active(void)
 {
-  bool active;
-
+  bool active = false;
   nxmutex_lock(&g_bt.lock);
-  active = g_bt.sco_up || (g_bt.call_state != NY_BT_CALL_IDLE &&
-                           g_bt.call_state != NY_BT_CALL_INCOMING);
+  for (unsigned int i = 0; i < NY_BT_CONNECTIONS_MAX; i++)
+    {
+      struct ny_bt_peer_s *peer = &g_bt.peers[i];
+      if (peer->sco_up || (peer->call_state != NY_BT_CALL_IDLE &&
+                           peer->call_state != NY_BT_CALL_INCOMING))
+        active = true;
+    }
   nxmutex_unlock(&g_bt.lock);
   return active;
 }
