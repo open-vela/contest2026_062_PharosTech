@@ -93,6 +93,7 @@ struct ny_bt_audio_s
   uint8_t media_channels;
   uint16_t media_frame_samples;
   ny_bt_audio_sco_send_t send;
+  uint32_t media_generation;
   uint32_t call_generation; /* Bumped per call so a new one is never missed */
 
   /* Queues filled in stack context. */
@@ -125,6 +126,7 @@ struct ny_bt_audio_worker_s
   uint64_t retry_at;
   uint64_t last_rx;
   uint64_t last_credit;
+  uint32_t media_generation;
   uint32_t call_generation;
   uint32_t rate;
   uint8_t channels;
@@ -375,6 +377,12 @@ static void ny_bt_audio_media_service(struct ny_bt_audio_worker_s *worker)
       int size;
 
       nxmutex_lock(&g_bt_audio.lock);
+      if (worker->media_generation != g_bt_audio.media_generation ||
+          !g_bt_audio.want_media)
+        {
+          nxmutex_unlock(&g_bt_audio.lock);
+          return;
+        }
       size = ny_pcm_ring_get(&g_bt_audio.media_ring, packet, sizeof(packet));
       if (size > 0)
         {
@@ -417,6 +425,12 @@ static void ny_bt_audio_media_service(struct ny_bt_audio_worker_s *worker)
 
           offset += used;
           nxmutex_lock(&g_bt_audio.lock);
+          if (worker->media_generation != g_bt_audio.media_generation ||
+              !g_bt_audio.want_media)
+            {
+              nxmutex_unlock(&g_bt_audio.lock);
+              return;
+            }
           if (samples < 0)
             {
               g_bt_audio.status.media_bad++;
@@ -852,6 +866,7 @@ static void *ny_bt_audio_thread(void *arg)
     {
       struct timespec until;
       uint32_t generation;
+      uint32_t media_generation;
       bool want_media;
       bool want_call;
       bool msbc;
@@ -879,6 +894,7 @@ static void *ny_bt_audio_thread(void *arg)
       want_media = g_bt_audio.want_media && !g_bt_audio.held;
       msbc = g_bt_audio.call_msbc;
       generation = g_bt_audio.call_generation;
+      media_generation = g_bt_audio.media_generation;
       nxmutex_unlock(&g_bt_audio.lock);
       if (stop)
         {
@@ -888,8 +904,11 @@ static void *ny_bt_audio_thread(void *arg)
       desired = want_call    ? NY_BT_AUDIO_OWNER_CALL
                 : want_media ? NY_BT_AUDIO_OWNER_MEDIA
                              : NY_BT_AUDIO_OWNER_NONE;
-      if (desired != worker.mode || (desired == NY_BT_AUDIO_OWNER_CALL &&
-                                     generation != worker.call_generation))
+      if (desired != worker.mode ||
+          (desired == NY_BT_AUDIO_OWNER_CALL &&
+           generation != worker.call_generation) ||
+          (desired == NY_BT_AUDIO_OWNER_MEDIA &&
+           media_generation != worker.media_generation))
         {
           ny_bt_audio_leave(&worker);
 #ifdef CONFIG_NYABULA_CORE_VOICE
@@ -907,6 +926,7 @@ static void *ny_bt_audio_thread(void *arg)
             }
 #endif
           worker.mode = desired;
+          worker.media_generation = media_generation;
           worker.retry_at = 0;
           if (desired == NY_BT_AUDIO_OWNER_CALL)
             {
@@ -1063,6 +1083,7 @@ void ny_bt_audio_media_start(void)
   nxmutex_lock(&g_bt_audio.lock);
   ny_pcm_ring_clear(&g_bt_audio.media_ring);
   g_bt_audio.media_buffered_frames = 0;
+  g_bt_audio.media_generation++;
   g_bt_audio.want_media = true;
   g_bt_audio.status.streaming = true;
   nxmutex_unlock(&g_bt_audio.lock);
