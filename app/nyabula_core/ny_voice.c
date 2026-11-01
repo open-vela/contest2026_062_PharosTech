@@ -208,8 +208,8 @@
 
 #define NY_VOICE_TTS_WINDOW      22050U
 #define NY_VOICE_OUT_CHUNK       8192U
-#define NY_VOICE_PLAY_RESERVE_MS 100U
-#define NY_VOICE_PLAY_POLL_MS    50
+#define NY_VOICE_PLAY_RESERVE_MS 16U
+#define NY_VOICE_PLAY_POLL_MS    10
 
 #define NY_VOICE_SENTENCE_MAX    400U
 #define NY_VOICE_TEXT_MAX        2048U
@@ -451,6 +451,7 @@ static void ny_voice_play_release(void);
 static size_t ny_voice_play_convert(struct ny_voice_resample_s *resample,
                                     const float *samples, size_t count);
 static int ny_voice_play_write(struct ny_voice_audio_s *audio, size_t bytes);
+static int ny_voice_play_keepalive(struct ny_voice_audio_s *audio);
 static int ny_voice_mimo_pcm(void *context, const int16_t *pcm, size_t count);
 static int ny_voice_mimo_speech(struct ny_voice_audio_s *audio,
                                 const char *text);
@@ -649,12 +650,45 @@ static int ny_voice_io_send(void *arg, const uint8_t *wire, size_t size)
                             : ny_compute_port_send(port->port, wire, size);
 }
 
+/****************************************************************************
+ * Name: ny_voice_play_keepalive
+ ****************************************************************************/
+
+static int ny_voice_play_keepalive(struct ny_voice_audio_s *audio)
+{
+#ifdef CONFIG_NYABULA_CORE_DSP
+  static const int16_t silence[NY_VOICE_OUT_RATE / 1000 *
+                               NY_VOICE_PLAY_RESERVE_MS *
+                               NY_VOICE_OUT_CHANNELS];
+#else
+  static const uint8_t silence[NY_VOICE_OUT_CHUNK];
+#endif
+  ssize_t written;
+
+  if (ny_voice_audio_queued(audio) >=
+      NY_VOICE_OUT_RATE * NY_VOICE_PLAY_RESERVE_MS / 1000 *
+          NY_VOICE_OUT_CHANNELS * sizeof(int16_t))
+    {
+      return 0;
+    }
+
+  /* Refill only near depletion, not on every temporary network gap. DSP
+   * consumes small blocks, so a short refill is sufficient; the direct
+   * codec path still needs a complete application block to submit it.
+   */
+
+  written = ny_voice_audio_write(audio, silence, sizeof(silence),
+                                 NY_VOICE_PLAY_POLL_MS);
+  return written < 0                           ? (int)written
+         : written != (ssize_t)sizeof(silence) ? -EIO
+                                               : 0;
+}
+
 static ssize_t ny_voice_io_recv(void *arg, uint8_t *wire, size_t capacity,
                                 int timeout_ms)
 {
   struct ny_voice_port_s *port = arg;
 
-  static const uint8_t silence[NY_VOICE_OUT_CHUNK];
   ssize_t received;
 
   if (port->port == NULL)
@@ -675,22 +709,10 @@ static ssize_t ny_voice_io_recv(void *arg, uint8_t *wire, size_t capacity,
           return received;
         }
 
-      while (ny_voice_audio_queued(port->playback) <
-             NY_VOICE_OUT_RATE * NY_VOICE_PLAY_RESERVE_MS / 1000 *
-                 NY_VOICE_OUT_CHANNELS * sizeof(int16_t))
+      int ret = ny_voice_play_keepalive(port->playback);
+      if (ret < 0)
         {
-          ssize_t written;
-
-          /* Submit whole blocks: a partial software block does not feed
-           * DMA.  Keep more than one poll interval ahead of the device.
-           */
-
-          written = ny_voice_audio_write(port->playback, silence,
-                                         sizeof(silence), 0);
-          if (written != (ssize_t)sizeof(silence))
-            {
-              return written < 0 ? written : -EIO;
-            }
+          return ret;
         }
 
       if (timeout_ms > NY_VOICE_PLAY_POLL_MS)
