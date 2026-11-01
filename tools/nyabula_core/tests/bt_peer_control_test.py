@@ -156,14 +156,22 @@ int main(void){
  ny_bt_a2dp_recv(&pa->stream,&packet,0,0);assert(packets==1);
  ny_bt_a2dp_recv(&pb->stream,&packet,0,0);assert(packets==2);
  assert(ny_bt_passthrough(pa,BT_AVRCP_OPID_PAUSE)==0);
+ assert(ny_bt_passthrough(pa,BT_AVRCP_OPID_PLAY)==-EBUSY);
  assert(ny_bt_passthrough(pb,BT_AVRCP_OPID_PLAY)==0);
  assert(sent_count==2 && sent[0].ct==&ac && sent[1].ct==&bc);
- struct bt_avrcp_passthrough_rsp rsp={BT_AVRCP_OPID_PAUSE,0};
- ny_bt_ct_passthrough_rsp(&ac,sent[0].tid,BT_AVRCP_RSP_ACCEPTED,&rsp);
- assert(pa->work & NY_BT_WORK_AVRCP_RELEASE);
- assert(!(pb->work & NY_BT_WORK_AVRCP_RELEASE));
- ny_bt_tick_avrcp(pa,pa->work);
+ now_ms=NY_BT_KEY_RELEASE_MS;ny_bt_tick_avrcp(pa,0);
  assert(sent_count==3 && sent[2].ct==&ac && sent[2].state==BT_AVRCP_BUTTON_RELEASED);
+ struct bt_avrcp_passthrough_rsp rsp={BT_AVRCP_OPID_PAUSE|0x80,0};
+ ny_bt_ct_passthrough_rsp(&bc,sent[2].tid,BT_AVRCP_RSP_ACCEPTED,&rsp);assert(pa->key_pending);
+ ny_bt_ct_passthrough_rsp(&ac,sent[2].tid+1,BT_AVRCP_RSP_ACCEPTED,&rsp);assert(pa->key_pending);
+ ny_bt_ct_passthrough_rsp(&ac,sent[2].tid,BT_AVRCP_RSP_ACCEPTED,&rsp);assert(!pa->key_pending && pb->key_pending);
+ assert(ny_bt_passthrough(pa,BT_AVRCP_OPID_PLAY)==0);
+ rsp.opid_state=BT_AVRCP_OPID_PLAY;
+ ny_bt_ct_passthrough_rsp(&ac,pa->key_tid,BT_AVRCP_RSP_NOT_IMPLEMENTED,&rsp);
+ assert(!pa->key_pending && pa->control_error==-ENOTSUP);
+ send_error=-ENOMEM;assert(ny_bt_passthrough(pa,BT_AVRCP_OPID_PLAY)==-ENOMEM);assert(!pa->key_pending);send_error=0;
+ now_ms=NY_BT_KEY_TIMEOUT_MS+1;ny_bt_tick_avrcp(pb,0);
+ assert(!pb->key_pending && pb->control_error==-ETIMEDOUT);
  before=stops;ny_bt_ct_disconnected(&ac);ny_bt_a2dp_disconnected(&ad);
  assert(stops==before && pb->ct==&bc && !strcmp(pb->title,"Phone title"));
  ny_bt_disconnected(&a,0);assert(g_bt.selected==pb && a.refs==1);
@@ -187,7 +195,7 @@ int main(void){
  ny_bt_hf_ended(&cbcall);ny_bt_hf_disconnected(&bh);assert(g_bt.call_peer==pa && call_stops==0);
  ny_bt_hf_ended(&ca);assert(g_bt.call_peer==NULL);
  ny_bt_disconnected(&a,0);ny_bt_disconnected(&b,0);
- puts("BT_PEER_CONTROL_PASS independent_profiles selected_packets targeted_keys ack_release stale_callbacks");
+ puts("BT_PEER_CONTROL_PASS independent_profiles selected_packets targeted_keys fallback_release stale_callbacks");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='ny-bt-peers-') as directory:
