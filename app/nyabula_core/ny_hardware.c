@@ -76,6 +76,7 @@ static const struct ny_hardware_route_s g_hardware_routes[] = {
   { "bt.discoverable", NY_PERMISSION_BLUETOOTH_CONNECT },
   { "bt.pair.confirm", NY_PERMISSION_BLUETOOTH_CONNECT },
   { "bt.connect", NY_PERMISSION_BLUETOOTH_CONNECT },
+  { "bt.select", NY_PERMISSION_BLUETOOTH_CONNECT },
   { "bt.disconnect", NY_PERMISSION_BLUETOOTH_CONNECT },
   { "bt.forget", NY_PERMISSION_BLUETOOTH_CONNECT },
   { "bt.media.play",
