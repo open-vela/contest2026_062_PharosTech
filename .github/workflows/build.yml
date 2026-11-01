@@ -86,6 +86,11 @@ jobs:
         run: python3 tools/tests/test_libwebsockets_make.py
       - name: Check WAMR dependency context fallback
         run: python3 tools/tests/test_wamr_context_patch.py
+      - name: Check voice output pacing
+        run: |
+          python3 tools/nyabula_core/tests/voice_keepalive_test.py app/nyabula_core
+          python3 tools/nyabula_core/tests/voice_cloud_output_test.py app/nyabula_core --tick
+          python3 tools/nyabula_core/tests/voice_cloud_output_test.py app/nyabula_core --dual --tick
       - name: Preserve WAMR-owned context configuration
         run: |
           for context in 0 1; do
