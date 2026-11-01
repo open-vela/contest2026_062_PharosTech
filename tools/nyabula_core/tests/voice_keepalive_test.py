@@ -11,13 +11,19 @@ parser = argparse.ArgumentParser()
 parser.add_argument('core', type=Path)
 args = parser.parse_args()
 source = (args.core / 'ny_voice.c').read_text()
-match = re.search(r'static ssize_t ny_voice_io_recv\([^;]+?\n\{', source)
-assert match
-end, depth = match.end(), 1
-while depth:
-    depth += (source[end] == '{') - (source[end] == '}')
-    end += 1
-body = source[match.start():end]
+def function(name, required=True):
+    match = re.search(r'static (?:ssize_t|int) ' + name + r'\([^;]+?\n\{', source)
+    if match is None and not required:
+        return ''
+    assert match, name
+    end, depth = match.end(), 1
+    while depth:
+        depth += (source[end] == '{') - (source[end] == '}')
+        end += 1
+    return source[match.start():end]
+
+body = function('ny_voice_play_keepalive', False) + function('ny_voice_io_recv')
+
 defines = '\n'.join(re.findall(
     r'^#define NY_VOICE_(?:OUT_CHUNK|PLAY_RESERVE_MS|PLAY_POLL_MS)\s+\S+',
     source, re.M))
@@ -35,6 +41,8 @@ struct ny_voice_port_s {
   struct ny_voice_audio_s *playback;
 };
 static struct ny_voice_audio_s sink;
+static size_t queue_limit;
+static int writes_at_call;
 static int ready, failure, short_write, last_timeout, writes, starved;
 static ssize_t ny_compute_port_recv(struct ny_compute_port_s *port,
                                     uint8_t *wire, size_t cap, int timeout)
@@ -69,7 +77,9 @@ static ssize_t ny_voice_audio_write(struct ny_voice_audio_s *audio,
       audio->queued += NY_VOICE_OUT_CHUNK;
       audio->partial -= NY_VOICE_OUT_CHUNK;
     }
+  if (queue_limit && audio->queued > queue_limit) audio->queued = queue_limit;
   writes++;
+  assert(!queue_limit || writes - writes_at_call < 4);
   return bytes;
 }
 '''
@@ -104,6 +114,16 @@ int main(void)
   assert(last_timeout == 200 && writes == previous);
   port.port = NULL;
   assert(ny_voice_io_recv(&port, wire, sizeof(wire), 200) == -ENOTCONN);
+  port.port = &compute; port.playback = &sink;
+  sink.queued = sink.partial = 0;
+  queue_limit = NY_VOICE_OUT_RATE * NY_VOICE_OUT_CHANNELS * 2 * 40 / 1000;
+  starved = 0;
+  for (int i = 0; i < 240; i++) {
+    writes_at_call = writes;
+    assert(ny_voice_io_recv(&port, wire, sizeof(wire), 200) == 0);
+    assert(writes - writes_at_call <= 1);
+  }
+  assert(starved == 0);
   puts("VOICE_KEEPALIVE_PASS");
   return 0;
 }
