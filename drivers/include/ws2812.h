@@ -1,5 +1,5 @@
 /****************************************************************************
- * boards/rk3576/drivers/include/ws2812.h
+ * drivers/include/ws2812.h
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -31,11 +31,9 @@
  *   - every write() carries a complete frame and is transmitted
  *     immediately, in write() order, with nothing carried over between
  *     calls;
- *   - the SPI bus is locked only for the duration of one frame, so several
- *     strips can share one SPI controller and take turns on it;
- *   - an optional select callback is invoked around each frame so the
- *     caller can switch an external multiplexer (or do any other work) while
- *     the strip is guaranteed to own the bus.
+ *   - the SPI bus is locked only for the duration of one frame;
+ *   - a transfer callback is invoked around each frame so the board can
+ *     put the data pin on the SPI function and take it back afterwards.
  ****************************************************************************/
 
 #ifndef __BOARDS_RK3576_DRIVERS_INCLUDE_WS2812_H
@@ -61,10 +59,11 @@
  * NuttX WS2812 driver uses, so application code can be shared between the
  * two.
  *
- * A write() must carry a whole number of pixels.  It is one complete frame:
- * pixel 0 drives the first LED of the chain, pixel 1 the second, and so on.
- * Writing a single pixel therefore only programs the first LED, which is
- * the protocol's behavior, not a driver limitation.
+ * A write() must carry a whole number of pixels.  It is one frame of a
+ * daisy chain: pixel 0 drives the first LED, pixel 1 the second, and so on
+ * down the wire.  A short write therefore updates only the head of the
+ * chain; the LEDs behind it receive no bits and keep the colors they
+ * latched last time.  That is the protocol, not a driver limitation.
  */
 
 #define WS2812_PIXEL_SIZE 4
@@ -73,25 +72,29 @@
  * Public Types
  ****************************************************************************/
 
-/* Select notification callback.
+/* Transfer notification callback.
  *
- * The driver invokes this callback every time it acquires ownership of the
- * SPI bus (the "selected" state), so the caller can perform custom work --
- * for example drive the select lines of an external multiplexer that routes
- * the shared SPI data line to this strip -- while the strip is guaranteed
- * to be the active device.  It is called with select == true right after
- * the bus is locked, before any byte of the frame is transmitted, and with
- * select == false right before the bus is unlocked.
+ * The driver invokes this callback around every frame, with the SPI bus
+ * locked, so the board can get the data line ready before the first bit
+ * leaves and settle it after the last one.  It is called with xfer == true
+ * right after the bus is locked, before any byte of the frame is
+ * transmitted, and with xfer == false right before the bus is unlocked.
  *
- * The callback runs with the SPI bus lock held, so no other WS2812 device
- * on the same bus can interleave a frame between the select change and the
- * transfer.  It must not call back into the driver or block for long.
+ * On this SoC the callback is what keeps the line low between frames: the
+ * SPI controller releases MOSI when a transfer ends, so the pad is switched
+ * to the SPI function for the transfer and back to a GPIO output driving 0
+ * afterwards.  A strip sees a data line left high as a never-ending run of
+ * 1 bits and latches white at the next reset.
  *
- * It may be NULL to disable the notification (for example while the
- * multiplexer hardware is not fitted yet).
+ * The callback runs with the SPI bus lock held and must not call back into
+ * the driver or block for long.
+ *
+ * It may be NULL, but a board that parks its data line from this hook --
+ * this one does -- then leaves the pin on the SPI function between frames
+ * and depends on the pad pull to keep the line from floating high.
  */
 
-typedef void (*ws2812_select_cb_t)(bool select);
+typedef void (*ws2812_xfer_cb_t)(bool xfer);
 
 /****************************************************************************
  * Public Function Prototypes
@@ -121,12 +124,11 @@ typedef void (*ws2812_select_cb_t)(bool select);
  * Input Parameters:
  *   path      - Device node path, e.g. "/dev/ws2812".
  *   spi       - SPI lower-half obtained by board code, e.g. from
- *               rk3576_spi_initialize(3).  The bus must be dedicated to
- *               WS2812 traffic (or multiplexed externally and arbitrated by
- *               the select callback): the driver changes its mode, word
- *               size and frequency around every frame.
- *   select_cb - Optional select notification callback (see
- *               ws2812_select_cb_t).  It is invoked with true after the bus
+ *               rk3576_spi_initialize(3).  The bus must carry WS2812
+ *               traffic only: the driver reprograms its mode, word size and
+ *               frequency before every frame.
+ *   xfer_cb   - Optional transfer notification callback (see
+ *               ws2812_xfer_cb_t).  It is invoked with true after the bus
  *               is locked and before the frame is transmitted, and with
  *               false before the bus is released.  May be NULL.
  *
@@ -136,7 +138,7 @@ typedef void (*ws2812_select_cb_t)(bool select);
  ****************************************************************************/
 
 int ws2812_register(FAR const char *path, FAR struct spi_dev_s *spi,
-                    ws2812_select_cb_t select_cb);
+                    ws2812_xfer_cb_t xfer_cb);
 
 #endif /* CONFIG_WS2812_CHARDEV */
 

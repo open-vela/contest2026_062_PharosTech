@@ -1,5 +1,5 @@
 ############################################################################
-# boards/rk3576/drivers/drivers/ws2812/Make.defs
+# drivers/drivers/ws2812/Make.defs
 #
 # SPDX-License-Identifier: Apache-2.0
 #

@@ -1,5 +1,5 @@
 /****************************************************************************
- * boards/rk3576/drivers/drivers/ws2812/ws2812.c
+ * drivers/drivers/ws2812/ws2812.c
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -24,20 +24,25 @@
  * WS2812 addressable LED character driver -- SPI backend.
  *
  * One WS2812 bit is encoded as one SPI byte, so the SPI clock must run at
- * eight times the strip's bit rate.  A frame is bracketed by two runs of
- * zero bytes that hold the data line low for the reset/latch time: the
- * leading run separates the frame from whatever the line did before it,
- * the trailing run latches the frame before write() returns even if the
- * data line does not stay low afterwards.
+ * eight times the strip's bit rate.  The strip is a single daisy chain: the
+ * bytes go out on one wire, and each LED takes the first 24 bits that reach
+ * it, re-times them, and passes the rest down the chain.  One frame is
+ * therefore the whole chain, first LED to last, and has to be written out
+ * in one piece.
+ *
+ * The bit encoding is derived at run time from the clock the controller
+ * really produces, not from the rate the SPI lower-half reports (see
+ * ws2812_measure_clock() and ws2812_bit_code()).
  *
  * Unlike the in-tree NuttX driver this one never keeps a shadow buffer and
  * never holds the SPI bus between writes:
  *
- *   write()  pack the caller's pixels, lock the bus, notify the select
- *            callback, transmit, unselect, unlock.
+ *   write()  pack the caller's pixels, lock the bus, notify the transfer
+ *            callback, transmit, un-notify, unlock.
  *
- * Consequently every write() is a complete frame and the bus can be shared
- * by several strips, each with its own select callback, that take turns.
+ * Every write() is a self-contained frame: nothing is carried over between
+ * calls and the device has no f_pos-addressed partial update, which is why
+ * lseek() is rejected.
  ****************************************************************************/
 
 /****************************************************************************
@@ -115,9 +120,14 @@
 #define WS2812_BYTES_PER_LED (8 * 3)
 
 /* Frame layout: leading reset run, up to MAX_PIXELS LEDs, trailing reset
- * run.  The leading run re-synchronizes the strip's bit decoder; the
- * trailing run guarantees the frame is latched before write() returns,
- * independently of how the data line behaves once the transfer is over.
+ * run.  The trailing run is the load-bearing one: it latches the frame
+ * before write() returns, independently of how the data line behaves once
+ * the transfer is over.
+ *
+ * The leading run is belt and braces.  The board parks the data line low
+ * between frames, so the strip should already be in reset when a frame
+ * starts; the run stays because 300 us is cheap next to being wrong about
+ * that, and it costs the same whether the line needed it or not.
  */
 
 #define WS2812_TXBUFSIZE \
@@ -142,14 +152,14 @@
 
 struct ws2812_dev_s
 {
-  FAR struct spi_dev_s *spi;    /* SPI lower-half owned by the board   */
-  ws2812_select_cb_t select_cb; /* Optional select notification        */
-  FAR uint8_t *txbuf;           /* Transmit scratch (not a cache)      */
-  mutex_t lock;                 /* Serializes write() on this device   */
-  uint32_t freq;                /* Measured SCLK, 0 until calibrated   */
-  uint8_t zero;                 /* High-run bit count of the last '0'  */
-  uint8_t one;                  /* High-run bit count of the last '1'  */
-  uint16_t rst;                 /* Reset bytes of the last frame       */
+  FAR struct spi_dev_s *spi; /* SPI lower-half owned by the board */
+  ws2812_xfer_cb_t xfer_cb;  /* Optional transfer notification */
+  FAR uint8_t *txbuf;        /* Transmit scratch (not a cache) */
+  mutex_t lock;              /* Serializes write() on this device */
+  uint32_t freq;             /* Measured SCLK, 0 until calibrated */
+  uint8_t zero;              /* High-run bit count of the last '0' */
+  uint8_t one;               /* High-run bit count of the last '1' */
+  uint16_t rst;              /* Reset bytes of the last frame */
 };
 
 /****************************************************************************
@@ -177,41 +187,40 @@ static const struct file_operations g_ws2812_fops = {
  ****************************************************************************/
 
 /****************************************************************************
- * Name: ws2812_lock
+ * Name: ws2812_bus_acquire
  *
  * Description:
- *   Acquire the SPI bus and notify the select callback (if any) that this
- *   strip is now the active device.  This is the single place where the
- *   driver couples to the bus mutex, so every frame is preceded by the
- *   callback while the bus is guaranteed to stay with this device.
+ *   Take the SPI bus and let the board prepare the data line for a frame.
+ *   This is the single place where the driver couples to the bus mutex, so
+ *   the callback always runs with the bus guaranteed to stay with this
+ *   device until ws2812_bus_release().
  *
  ****************************************************************************/
 
-static void ws2812_lock(FAR struct ws2812_dev_s *priv)
+static void ws2812_bus_acquire(FAR struct ws2812_dev_s *priv)
 {
   SPI_LOCK(priv->spi, true);
 
-  if (priv->select_cb != NULL)
+  if (priv->xfer_cb != NULL)
     {
-      priv->select_cb(true);
+      priv->xfer_cb(true);
     }
 }
 
 /****************************************************************************
- * Name: ws2812_unlock
+ * Name: ws2812_bus_release
  *
  * Description:
- *   Notify the select callback (if any) that this strip is about to be
- *   deselected, then release the SPI bus.  This is the counterpart of
- *   ws2812_lock().
+ *   Let the board settle the data line, then give the SPI bus back.  This
+ *   is the counterpart of ws2812_bus_acquire().
  *
  ****************************************************************************/
 
-static void ws2812_unlock(FAR struct ws2812_dev_s *priv)
+static void ws2812_bus_release(FAR struct ws2812_dev_s *priv)
 {
-  if (priv->select_cb != NULL)
+  if (priv->xfer_cb != NULL)
     {
-      priv->select_cb(false);
+      priv->xfer_cb(false);
     }
 
   SPI_LOCK(priv->spi, false);
@@ -223,8 +232,8 @@ static void ws2812_unlock(FAR struct ws2812_dev_s *priv)
  * Description:
  *   Measure the SCLK the controller really produces, by timing a burst of
  *   zero bytes against the system tick while the bus is locked and the
- *   strip is selected.  The caller must have programmed the mode, word
- *   size and requested clock already.
+ *   data line is on the SPI function.  The caller must have programmed the
+ *   mode, word size and requested clock already.
  *
  *   The result is only as precise as the tick (about one percent over the
  *   90 ms window), which is more than enough to pick the bit codes: the
@@ -419,7 +428,10 @@ static ssize_t ws2812_read(FAR struct file *filep, FAR char *buffer,
  * Description:
  *   Pack the supplied pixels into one frame and transmit it before
  *   returning.  Nothing is retained for a later call: the frame always
- *   starts at LED 0, and each write() carries the whole chain.
+ *   starts at LED 0.  A buffer shorter than the chain updates only its
+ *   head -- the LEDs behind it receive no bits and keep the colors they
+ *   latched last time -- so a caller that wants the whole strip to change
+ *   supplies the whole chain.
  *
  *   The buffer is an array of 32-bit pixels, 0x00RRGGBB in host byte
  *   ordering, and its length must be a non-zero multiple of
@@ -459,12 +471,13 @@ static ssize_t ws2812_write(FAR struct file *filep, FAR const char *buffer,
 
   nxmutex_lock(&priv->lock);
 
-  ws2812_lock(priv);
+  ws2812_bus_acquire(priv);
 
-  /* The bus may have been used by another strip since the last frame (or by
-   * a non-WS2812 device on the same controller), so program our own mode,
-   * word size and clock every time.  Use the clock the controller reports
-   * back, not the requested one: the encoding below depends on it.
+  /* Program mode, word size and clock before every frame: the SPI
+   * lower-half makes no promise that any of them survive between
+   * transactions.  Keep this per frame -- rk3576_spi_setfrequency() has to
+   * drop SSIENR around the divider write to be obeyed at all, and this
+   * call is the only thing that exercises that path.
    */
 
   SPI_SETMODE(priv->spi, SPIDEV_MODE3);
@@ -495,7 +508,7 @@ static ssize_t ws2812_write(FAR struct file *filep, FAR const char *buffer,
     {
       lederr("ERROR: SPI clock %lu Hz outside the 3.6-9 MHz WS2812 range\n",
              (unsigned long)freq);
-      ws2812_unlock(priv);
+      ws2812_bus_release(priv);
       nxmutex_unlock(&priv->lock);
       return -EIO;
     }
@@ -526,7 +539,7 @@ static ssize_t ws2812_write(FAR struct file *filep, FAR const char *buffer,
 
   SPI_SNDBLOCK(priv->spi, priv->txbuf, frame_len);
 
-  ws2812_unlock(priv);
+  ws2812_bus_release(priv);
 
   nxmutex_unlock(&priv->lock);
 
@@ -562,7 +575,7 @@ static off_t ws2812_seek(FAR struct file *filep, off_t offset, int whence)
  ****************************************************************************/
 
 int ws2812_register(FAR const char *path, FAR struct spi_dev_s *spi,
-                    ws2812_select_cb_t select_cb)
+                    ws2812_xfer_cb_t xfer_cb)
 {
   FAR struct ws2812_dev_s *priv;
   int ret;
@@ -586,7 +599,7 @@ int ws2812_register(FAR const char *path, FAR struct spi_dev_s *spi,
     }
 
   priv->spi = spi;
-  priv->select_cb = select_cb;
+  priv->xfer_cb = xfer_cb;
   nxmutex_init(&priv->lock);
 
   /* Measure the clock once, while nothing else is using the bus.  The
@@ -595,14 +608,14 @@ int ws2812_register(FAR const char *path, FAR struct spi_dev_s *spi,
    */
 
   nxmutex_lock(&priv->lock);
-  ws2812_lock(priv);
+  ws2812_bus_acquire(priv);
 
   SPI_SETMODE(priv->spi, SPIDEV_MODE3);
   SPI_SETBITS(priv->spi, 8);
   SPI_SETFREQUENCY(priv->spi, CONFIG_WS2812_CHARDEV_FREQUENCY);
   priv->freq = ws2812_measure_clock(priv);
 
-  ws2812_unlock(priv);
+  ws2812_bus_release(priv);
   nxmutex_unlock(&priv->lock);
 
   if (priv->freq == 0)
