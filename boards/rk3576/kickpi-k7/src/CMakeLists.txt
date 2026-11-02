@@ -57,6 +57,14 @@ if(CONFIG_KICKPI_K7_REGULATOR)
   list(APPEND SRCS kickpi_k7_regulator.c)
 endif()
 
+if(CONFIG_KICKPI_K7_WS2812)
+  list(APPEND SRCS kickpi_k7_ws2812.c)
+endif()
+
+if(CONFIG_KICKPI_K7_ETHERNET)
+  list(APPEND SRCS kickpi_k7_ethernet.c)
+endif()
+
 target_sources(board PRIVATE ${SRCS})
 
 if(CONFIG_ETC_ROMFS)

@@ -91,6 +91,14 @@ ifeq ($(CONFIG_KICKPI_K7_REGULATOR),y)
 CSRCS += kickpi_k7_regulator.c
 endif
 
+ifeq ($(CONFIG_KICKPI_K7_WS2812),y)
+CSRCS += kickpi_k7_ws2812.c
+endif
+
+ifeq ($(CONFIG_KICKPI_K7_ETHERNET),y)
+CSRCS += kickpi_k7_ethernet.c
+endif
+
 ifeq ($(CONFIG_ETC_ROMFS),y)
   RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS
 endif

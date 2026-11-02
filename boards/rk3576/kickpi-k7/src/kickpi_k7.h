@@ -112,6 +112,28 @@ int kickpi_k7_lcd_initialize(void);
 int kickpi_k7_usbhost_initialize(void);
 #endif
 
+#ifdef CONFIG_KICKPI_K7_WS2812
+/****************************************************************************
+ * Name: kickpi_k7_ws2812_initialize
+ *
+ * Description:
+ *   Register the board's WS2812 strip as /dev/ws2812.  The data line is
+ *   GPIO3_A1, parked between frames as a GPIO output driving 0 and muxed
+ *   to SPI3 MOSI (M0, alternate function 10) only while a frame is
+ *   transmitted; the other SPI3 pins are left in their default
+ *   multiplexing.  SPI3 itself is brought up by the chip driver.
+ *
+ *   Caller must have brought up the RK3576 clock tree
+ *   (rk3576_clk_tree_initialize() in board_late_initialize()).
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int kickpi_k7_ws2812_initialize(void);
+#endif
+
 #ifdef CONFIG_KICKPI_K7_MIPI_DSI
 /****************************************************************************
  * Name: kickpi_k7_mipi_dsi_initialize
@@ -216,6 +238,33 @@ int kickpi_k7_camera_set_mode(unsigned int index);
 
 #ifdef CONFIG_KICKPI_K7_REGULATOR
 int kickpi_k7_regulator_initialize(void);
+#endif
+
+#ifdef CONFIG_KICKPI_K7_ETHERNET
+/****************************************************************************
+ * Name: kickpi_k7_ethernet_initialize
+ *
+ * Description:
+ *   Register the two on-board wired Ethernet ports, each behind its own
+ *   Maxio MAE0621A PHY: mux the RGMII pad group, hold the PHY in reset and
+ *   release it, and hand the port to rk3576_gmac_initialize(), which does the
+ *   platform bring-up, verifies the controller answers and probes the PHY.
+ *
+ *   The receive and transmit rings, and the PHY's autonegotiation, come up
+ *   later, on `ifup eth0` / `ifup eth1` -- those may sleep and want a user
+ *   thread.  Until then the ports are registered but down.
+ *
+ *   Requires the clock tree (rk3576_clk_tree_initialize()) to have run,
+ *   which board_late_initialize() does first.
+ *
+ * Returned Value:
+ *   Zero (OK) if every enabled port was registered; a negated errno otherwise.
+ *   A port that fails only logs, so that one bad port does not cost the
+ *   other one or the rest of the board.
+ *
+ ****************************************************************************/
+
+int kickpi_k7_ethernet_initialize(void);
 #endif
 
 #endif /* __ASSEMBLY__ */

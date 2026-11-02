@@ -1,0 +1,11 @@
+############################################################################
+# app/ws2812_test/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# WS2812 LED strip smoke test, built as the "ws2812_test" NSH built-in.
+############################################################################
+
+ifneq ($(CONFIG_EXAMPLES_WS2812_TEST),)
+CONFIGURED_APPS += $(APPDIR)/examples/ws2812_test
+endif

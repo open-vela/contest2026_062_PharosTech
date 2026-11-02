@@ -26,6 +26,18 @@ env:
   OPENVELA_DIR: openvela
 
 jobs:
+  audio_dsp:
+    name: Offline audio DSP
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build portable DSP and run regression tests
+        run: |
+          cmake -S app/nyabula_dsp -B out/audio-dsp \
+            -DCMAKE_BUILD_TYPE=Debug -DNYADSP_SANITIZE_TEST=ON
+          cmake --build out/audio-dsp -j2
+          ctest --test-dir out/audio-dsp --output-on-failure
+
   release_tools:
     name: Release tooling
     runs-on: ubuntu-latest

@@ -25,6 +25,7 @@
     <linkfile src="app/nyampctl" dest="apps/examples/nyampctl"/>
     <linkfile src="app/audioctl" dest="apps/system/audioctl"/>
     <linkfile src="app/camenc" dest="apps/examples/camenc"/>
+    <linkfile src="app/ws2812_test" dest="apps/examples/ws2812_test"/>
     <linkfile src="app/nyabula_display" dest="apps/graphics/nyabula_display"/>
     <linkfile src="app/nyabula_core" dest="packages/demos/contest2026_062_nyabula_core"/>
     <linkfile src="app/nyabula" dest="apps/graphics/nyabula_eye"/>
