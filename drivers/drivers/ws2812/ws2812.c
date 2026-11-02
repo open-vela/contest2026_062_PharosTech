@@ -30,9 +30,13 @@
  * therefore the whole chain, first LED to last, and has to be written out
  * in one piece.
  *
- * The bit encoding is derived at run time from the clock the controller
- * really produces, not from the rate the SPI lower-half reports (see
- * ws2812_measure_clock() and ws2812_bit_code()).
+ * The bit encoding is derived at run time from the rate the SPI lower-half
+ * reports for the transfer, not from the rate the board asked for (see
+ * ws2812_bit_code()).  That report comes from the clock tree and the
+ * divider the lower-half programmed, so it is the rate the strip sees, and
+ * it is the only clock this driver has: if it disagrees with the wire, the
+ * clock tree or the SPI driver is wrong, and a second guess here would only
+ * move the error into the waveform.
  *
  * Unlike the in-tree NuttX driver this one never keeps a shadow buffer and
  * never holds the SPI bus between writes:
@@ -58,9 +62,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
-#include <nuttx/clock.h>
 #include <nuttx/fs/fs.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/mutex.h>
@@ -91,9 +93,10 @@
  *
  * The strip decides a bit from that high time alone; the remaining SPI
  * bits of the byte are the low time.  The run lengths are derived at run
- * time from the clock the controller actually produces, not from the
- * requested one: the SPI lower-half can only pick an even divider on a
- * fixed set of sources and may land well below the request.
+ * time from the rate the SPI lower-half reports for the transfer, not from
+ * the requested one: the lower-half can only pick an even divider on a
+ * fixed set of sources and may land below the request, and it reports what
+ * it reached.
  */
 
 #define WS2812_T0H_TARGET_NS 250
@@ -110,7 +113,7 @@
 
 /* Reset run for the fastest clock the driver accepts (9 MHz), in bytes.
  * The transmit buffer is sized for it; the run actually used is computed
- * from the achieved clock.
+ * from the reported clock.
  */
 
 #define WS2812_RST_MAX ((9ull * 1000000ull * WS2812_RESET_US) / 8000000ull)
@@ -134,18 +137,6 @@
   (2 * WS2812_RST_MAX +  \
    CONFIG_WS2812_CHARDEV_MAX_PIXELS * WS2812_BYTES_PER_LED)
 
-/* Clock calibration.  The SPI lower-half reports the rate its own model
- * derives, and that model and the controller do not always agree: on this
- * SoC the TRM's SPI source mux table and the vendor clock tree differ, so
- * the reported figure can be off by the ratio of the two sources.  Time a
- * burst of zero bytes against the system tick instead and derive the byte
- * rate the strip will actually see.  Zero bytes hold the data line low,
- * which is the idle state a WS2812 strip expects, so the burst is inert.
- */
-
-#define WS2812_CAL_BYTES 2048 /* bytes per calibration burst      */
-#define WS2812_CAL_MS    90   /* wall time to measure over, in ms */
-
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -156,7 +147,7 @@ struct ws2812_dev_s
   ws2812_xfer_cb_t xfer_cb;  /* Optional transfer notification */
   FAR uint8_t *txbuf;        /* Transmit scratch (not a cache) */
   mutex_t lock;              /* Serializes write() on this device */
-  uint32_t freq;             /* Measured SCLK, 0 until calibrated */
+  uint32_t freq;             /* SCLK the last frame was built from */
   uint8_t zero;              /* High-run bit count of the last '0' */
   uint8_t one;               /* High-run bit count of the last '1' */
   uint16_t rst;              /* Reset bytes of the last frame */
@@ -224,54 +215,6 @@ static void ws2812_bus_release(FAR struct ws2812_dev_s *priv)
     }
 
   SPI_LOCK(priv->spi, false);
-}
-
-/****************************************************************************
- * Name: ws2812_measure_clock
- *
- * Description:
- *   Measure the SCLK the controller really produces, by timing a burst of
- *   zero bytes against the system tick while the bus is locked and the
- *   data line is on the SPI function.  The caller must have programmed the
- *   mode, word size and requested clock already.
- *
- *   The result is only as precise as the tick (about one percent over the
- *   90 ms window), which is more than enough to pick the bit codes: the
- *   datasheet windows they must land in are tens of percent wide.
- *
- * Returned Value:
- *   Measured SCLK in Hz, or 0 if the measurement is unusable.
- *
- ****************************************************************************/
-
-static uint32_t ws2812_measure_clock(FAR struct ws2812_dev_s *priv)
-{
-  clock_t start;
-  clock_t elapsed;
-  uint64_t bytes = 0;
-  uint32_t freq;
-
-  memset(priv->txbuf, 0, WS2812_CAL_BYTES);
-
-  start = clock_systime_ticks();
-
-  do
-    {
-      SPI_SNDBLOCK(priv->spi, priv->txbuf, WS2812_CAL_BYTES);
-      bytes += WS2812_CAL_BYTES;
-      elapsed = clock_systime_ticks() - start;
-    }
-  while (elapsed < MSEC2TICK(WS2812_CAL_MS));
-
-  if (elapsed <= 0)
-    {
-      return 0;
-    }
-
-  /* One SPI byte is eight SCLK periods, and a tick is 1/CLK_TCK seconds. */
-
-  freq = (uint32_t)((bytes * 8 * CLK_TCK) / (uint64_t)elapsed);
-  return freq;
 }
 
 /****************************************************************************
@@ -378,8 +321,10 @@ static void ws2812_pack(FAR uint8_t *buf, uint32_t rgb, uint8_t zero,
  * Description:
  *   Report the clock and the bit codes the last frame was built from, as
  *   text, so the timing can be checked on the board without a debugger.
- *   There is no pixel state to read back: this is all the device has to
- *   say.
+ *   The clock is the rate the SPI lower-half reported for that frame.  All
+ *   four fields read 0 until the first write(), since nothing has been
+ *   built yet.  There is no pixel state to read back: this is all the
+ *   device has to say.
  *
  ****************************************************************************/
 
@@ -486,20 +431,26 @@ static ssize_t ws2812_write(FAR struct file *filep, FAR const char *buffer,
   freq = SPI_SETFREQUENCY(priv->spi, CONFIG_WS2812_CHARDEV_FREQUENCY);
   if (freq == 0)
     {
-      freq = CONFIG_WS2812_CHARDEV_FREQUENCY;
+      /* Not even the rate is known, so neither the bit codes nor the reset
+       * run can be built.  This is a lower-half fault, and guessing the
+       * request in its place would hide it behind a wrong waveform.
+       */
+
+      lederr("ERROR: SPI clock for %d Hz is unknown\n",
+             CONFIG_WS2812_CHARDEV_FREQUENCY);
+      ws2812_bus_release(priv);
+      nxmutex_unlock(&priv->lock);
+      return -EIO;
     }
 
-  /* The figure SPI_SETFREQUENCY() returns is the SPI lower-half's own
-   * model; prefer the rate measured at registration, which is what the
-   * strip actually sees.
-   */
-
-  if (priv->freq != 0)
-    {
-      freq = priv->freq;
-    }
-
-  /* One SPI byte per WS2812 bit only gives usable high times in this range:
+  /* That figure is the rate the controller produces: the lower-half derives
+   * it from its clock tree and the divider it programmed, so the bit codes
+   * and the reset run are built from it and nothing else.  There is
+   * deliberately no second opinion here, because a wrong report is an SPI
+   * or clock-tree bug, and compensating for it in this driver would only
+   * move the error into the waveform.
+   *
+   * One SPI byte per WS2812 bit only gives usable high times in this range:
    * below it the high pulses are too long to be codes, above it they are
    * too short to be seen.
    */
@@ -517,6 +468,7 @@ static ssize_t ws2812_write(FAR struct file *filep, FAR const char *buffer,
   one = ws2812_bit_code(freq, WS2812_T1H_TARGET_NS);
   rst = ws2812_reset_bytes(freq);
 
+  priv->freq = freq;
   priv->zero = zero;
   priv->one = one;
   priv->rst = (uint16_t)rst;
@@ -602,27 +554,12 @@ int ws2812_register(FAR const char *path, FAR struct spi_dev_s *spi,
   priv->xfer_cb = xfer_cb;
   nxmutex_init(&priv->lock);
 
-  /* Measure the clock once, while nothing else is using the bus.  The
-   * burst is zero bytes, so the strip sees a long low, which is exactly a
-   * reset; no LED state can be disturbed.
+  /* Nothing is programmed here and the bus is not touched: write() sets the
+   * mode, the word size and the clock before every frame, because the
+   * lower-half promises none of them survive between transactions.  The
+   * frame buffer is sized for the largest frame write() accepts, so no
+   * separate scratch is needed.
    */
-
-  nxmutex_lock(&priv->lock);
-  ws2812_bus_acquire(priv);
-
-  SPI_SETMODE(priv->spi, SPIDEV_MODE3);
-  SPI_SETBITS(priv->spi, 8);
-  SPI_SETFREQUENCY(priv->spi, CONFIG_WS2812_CHARDEV_FREQUENCY);
-  priv->freq = ws2812_measure_clock(priv);
-
-  ws2812_bus_release(priv);
-  nxmutex_unlock(&priv->lock);
-
-  if (priv->freq == 0)
-    {
-      lederr("ERROR: could not measure the SPI clock; "
-             "falling back to the reported rate\n");
-    }
 
   ret = register_driver(path, &g_ws2812_fops, 0666, priv);
   if (ret < 0)

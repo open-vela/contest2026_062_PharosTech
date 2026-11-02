@@ -108,8 +108,8 @@ static int ws2812_test_write_solid(int fd, uint32_t color)
  *
  * Description:
  *   Print the clock and the bit codes the driver used for the last frame.
- *   The driver measures its own SCLK, so this is the figure to compare with
- *   a logic analyzer's reading.
+ *   The clock is the rate the SPI lower-half reported, so this is the
+ *   figure to compare with a logic analyzer's reading.
  *
  ****************************************************************************/
 
