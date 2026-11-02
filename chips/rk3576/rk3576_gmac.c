@@ -72,6 +72,7 @@
 #include <nuttx/clock.h>
 #include <nuttx/irq.h>
 #include <nuttx/kmalloc.h>
+#include <nuttx/mutex.h>
 #include <nuttx/net/mii.h>
 #include <nuttx/net/netdev_lowerhalf.h>
 #include <nuttx/spinlock.h>
@@ -2332,6 +2333,30 @@ static void gm_link_work(FAR void *arg)
       goto rearm;
     }
 
+  /* Serialize the state update and the carrier notification with ifdown.
+   *
+   * gm_ifdown() runs with the per-device network lock held and clears
+   * `started` there, so this pass either finishes before the teardown starts,
+   * or waits for it and then sees started == false and does nothing.  A plain
+   * work_cancel() in gm_ifdown() is not enough on its own: it only drops a
+   * queued callback and never waits for one already running, and such a
+   * callback could still reprogram the MAC or raise a carrier-on after the
+   * rings were freed.  work_cancel_sync() would wait, but from inside the
+   * lock the ifdown path already holds, while the callback needs the same
+   * lock for the carrier notification -- a deadlock.
+   *
+   * The lock is the recursive rmutex, so the carrier helpers below can take
+   * it again.
+   */
+
+  netdev_lock(&priv->dev.netdev);
+
+  if (!priv->started)
+    {
+      netdev_unlock(&priv->dev.netdev);
+      goto rearm;
+    }
+
   flags = spin_lock_irqsave(&priv->lock);
 
   if (up)
@@ -2383,6 +2408,8 @@ static void gm_link_work(FAR void *arg)
           netdev_lower_carrier_off(&priv->dev);
         }
     }
+
+  netdev_unlock(&priv->dev.netdev);
 
 rearm:
   if (priv->started)
@@ -2607,6 +2634,15 @@ static int gm_ifup(FAR struct netdev_lowerhalf_s *dev)
 /****************************************************************************
  * Name: gm_ifdown
  *
+ * Description:
+ *   Take the port down.  The whole teardown runs under the per-device network
+ *   lock, which is what serializes it against gm_link_work(): see the note
+ *   there.  netdev_ifdown() already holds that lock when it reaches here
+ *   through SIOCSIFFLAGS, and the recursive rmutex lets this function take it
+ *   again for the callers that do not -- so a link worker that is in the
+ *   middle of its PHY poll either finishes before the lock is taken, or runs
+ *   after it and finds started == false.
+ *
  ****************************************************************************/
 
 static int gm_ifdown(FAR struct netdev_lowerhalf_s *dev)
@@ -2619,6 +2655,8 @@ static int gm_ifdown(FAR struct netdev_lowerhalf_s *dev)
     {
       return OK;
     }
+
+  netdev_lock(&priv->dev.netdev);
 
   priv->started = false;
 
@@ -2652,6 +2690,7 @@ static int gm_ifdown(FAR struct netdev_lowerhalf_s *dev)
                  "gmac%d: reset failed too (%d); the rings and their buffers "
                  "are kept, and this port needs a reboot\n",
                  priv->intf, ret);
+          netdev_unlock(&priv->dev.netdev);
           return ret;
         }
     }
@@ -2666,6 +2705,7 @@ static int gm_ifdown(FAR struct netdev_lowerhalf_s *dev)
       netdev_lower_carrier_off(dev);
     }
 
+  netdev_unlock(&priv->dev.netdev);
   return OK;
 }
 
