@@ -450,11 +450,24 @@ static inline void gm_desc_inval(FAR struct rk3576_gmac_desc_s *desc)
  * Description:
  *   Data-path cache maintenance.
  *
- *   The MAC does not snoop, so the contract is explicit maintenance on every
- *   buffer in both directions.  The buffers live in the shared IOB pool and
- *   are not cache-line aligned, which is fine: the arch's range helpers
- *   clean-and-invalidate a partial first or last line rather than
- *   invalidating it, so the iob header sharing that line survives.
+ *   The GMAC is I/O-coherent on this part -- TRM Part 1, CCI-500: "IO
+ *   coherency with PCIe/GMAC/SATA/USB" -- and the vendor DTB marks both GMAC
+ *   nodes dma-coherent.  The driver does not rest on that: the maintenance is
+ *   done unconditionally, because it is cheap next to a frame and a missed
+ *   one is silent corruption if the property is ever wrong or the port is
+ *   ever wired differently.
+ *
+ *   The buffers live in the shared IOB pool and are not cache-line aligned:
+ *   for most of them the IOB header shares the first line with the start of
+ *   the frame.  An invalidate cannot simply drop that line, because the
+ *   header has to survive, so the arch's range helpers clean-and-invalidate
+ *   the partial first and last lines.  That is also why the line has to be
+ *   clean *before* the DMA writes into it: a stale dirty copy would be
+ *   written back over the frame by that post-receive invalidate, and could
+ *   also be evicted over it by unrelated cache traffic while the DMA owns the
+ *   buffer.  gm_rx_arm_one() cleans the buffer before it publishes the
+ *   descriptor for exactly that reason, and transmit cleans after filling the
+ *   packet.
  *
  ****************************************************************************/
 
@@ -1389,6 +1402,22 @@ static int gm_rx_arm_one(FAR struct rk3576_gmac_s *priv, uint32_t index)
 
   priv->rxpkt[index] = pkt;
 
+  /* Hand the buffer over clean.
+   *
+   * The pool recycles IOBs, and the allocator that just gave this one back
+   * wrote the 16-byte IOB header -- which, for most buffers, sits in the
+   * very cache line the frame will start in.  A buffer last used by the
+   * transmit side, or by the stack, can also carry dirty payload lines.
+   * Those cannot be left in the cache across the DMA write: the receive
+   * path's invalidate clean-and-invalidates the unaligned first line (it has
+   * to, or it would throw the IOB header away), so a dirty copy there is
+   * written back over the frame the MAC has just delivered, and an ordinary
+   * eviction while the DMA owns the buffer does the same.  Cleaning before
+   * the descriptor is published makes every later invalidate safe.
+   */
+
+  gm_buf_clean(netpkt_getdata(&priv->dev, pkt), GM_BUFSIZE);
+
   desc->des0 = (uint32_t)up_addrenv_va_to_pa(netpkt_getdata(&priv->dev, pkt));
   desc->des1 = 0;
   desc->des2 = 0;
@@ -1728,8 +1757,13 @@ static int gm_transmit(FAR struct netdev_lowerhalf_s *dev, FAR netpkt_t *pkt)
       return -EINVAL;
     }
 
-  if (!IFF_IS_RUNNING(dev->netdev.d_flags))
+  if (!IFF_IS_RUNNING(dev->netdev.d_flags) || !priv->started)
     {
+      /* IFF_RUNNING is cleared only after ifdown has returned, so `started`
+       * is the earlier of the two signals: a queued transmit poll can still
+       * run while the rings are being torn down.
+       */
+
       return -ENETDOWN;
     }
 
@@ -1809,6 +1843,18 @@ static FAR netpkt_t *gm_receive(FAR struct netdev_lowerhalf_s *dev)
   uint32_t status;
   uint32_t len;
   irqstate_t flags;
+
+  /* The upper half cancels its receive work in ifdown, but an interrupt that
+   * arrives between that cancel and the driver's own IRQ disable can queue it
+   * once more.  Once ifdown has started the ring is on its way out, so say
+   * "nothing to receive" rather than walking memory that is about to be
+   * freed.
+   */
+
+  if (!priv->started)
+    {
+      return NULL;
+    }
 
   flags = spin_lock_irqsave(&priv->lock);
 
@@ -1924,6 +1970,11 @@ static void gm_reclaim(FAR struct netdev_lowerhalf_s *dev)
 {
   FAR struct rk3576_gmac_s *priv = (FAR struct rk3576_gmac_s *)dev;
   irqstate_t flags;
+
+  if (!priv->started)
+    {
+      return;
+    }
 
   flags = spin_lock_irqsave(&priv->lock);
   gm_tx_reap(priv);
@@ -2116,17 +2167,40 @@ static void gm_mac_start(FAR struct rk3576_gmac_s *priv)
  * Name: gm_mac_stop
  *
  * Description:
- *   Stop the DMA first, then the MAC, then wait for the receiver to leave the
- *   running state so that no descriptor is still being written when the
- *   buffers are freed.
+ *   Stop the DMA first, then the MAC, and wait for both directions to leave
+ *   the running state so that no descriptor and no buffer is still being
+ *   touched when the rings are freed.
+ *
+ *   Both bits matter.  Clearing TX_CONTROL.ST and RX_CONTROL.SR is a request;
+ *   the channel reports the transition in CH0_STATUS with TPS (bit 1) and
+ *   RPS (bit 8), and until both are set the engine may still be reading a
+ *   transmit descriptor or writing a receive buffer.  A timeout returns an
+ *   error and the caller keeps the memory: freeing a ring the DMA might still
+ *   read is a use-after-free that no register can undo.
+ *
+ *   The stale status bits are cleared before the request.  They are
+ *   write-1-to-clear, and a TPS left over from an earlier stop would
+ *   otherwise satisfy the wait immediately.  Note that the clear mask is not
+ *   GM_IRQ_STATUS: that one deliberately tracks the transfer and error bits,
+ *   and TPS is neither.
  *
  ****************************************************************************/
 
-static void gm_mac_stop(FAR struct rk3576_gmac_s *priv)
+static int gm_mac_stop(FAR struct rk3576_gmac_s *priv)
 {
+  uint32_t status;
   uint32_t timeout;
 
   gm_putreg(priv, RK3576_GMAC_DMA_CH0_INTERRUPT_ENABLE, 0);
+
+  /* Drop a leftover "stopped" from an earlier session before asking for a new
+   * transition, or the poll below can pass on history rather than on this
+   * stop.
+   */
+
+  gm_putreg(priv, RK3576_GMAC_DMA_CH0_STATUS,
+            RK3576_GMAC_CH0STS_RPS | RK3576_GMAC_CH0STS_TPS);
+
   gm_putreg(priv, RK3576_GMAC_DMA_CH0_TX_CONTROL,
             gm_getreg(priv, RK3576_GMAC_DMA_CH0_TX_CONTROL) &
                 ~RK3576_GMAC_CH0TX_ST);
@@ -2138,12 +2212,14 @@ static void gm_mac_stop(FAR struct rk3576_gmac_s *priv)
             gm_getreg(priv, RK3576_GMAC_MAC_CONFIGURATION) &
                 ~(RK3576_GMAC_CONFIG_RE | RK3576_GMAC_CONFIG_TE));
 
-  /* The RX process stopped bit says the DMA has let go of the ring. */
+  /* Both processes stopped says the DMA has let go of the rings. */
 
   for (timeout = GM_RESET_TIMEOUT; timeout > 0; timeout--)
     {
-      if ((gm_getreg(priv, RK3576_GMAC_DMA_CH0_STATUS) &
-           RK3576_GMAC_CH0STS_RPS) != 0)
+      status = gm_getreg(priv, RK3576_GMAC_DMA_CH0_STATUS);
+
+      if ((status & (RK3576_GMAC_CH0STS_RPS | RK3576_GMAC_CH0STS_TPS)) ==
+          (RK3576_GMAC_CH0STS_RPS | RK3576_GMAC_CH0STS_TPS))
         {
           break;
         }
@@ -2151,7 +2227,20 @@ static void gm_mac_stop(FAR struct rk3576_gmac_s *priv)
       up_udelay(1);
     }
 
-  gm_putreg(priv, RK3576_GMAC_DMA_CH0_STATUS, GM_IRQ_STATUS);
+  if (timeout == 0)
+    {
+      syslog(LOG_ERR,
+             "gmac%d: DMA did not stop: status 0x%08" PRIx32
+             " (RX stopped %d, TX stopped %d)\n",
+             priv->intf, gm_getreg(priv, RK3576_GMAC_DMA_CH0_STATUS),
+             (status & RK3576_GMAC_CH0STS_RPS) != 0,
+             (status & RK3576_GMAC_CH0STS_TPS) != 0);
+      return -ETIMEDOUT;
+    }
+
+  gm_putreg(priv, RK3576_GMAC_DMA_CH0_STATUS,
+            GM_IRQ_STATUS | RK3576_GMAC_CH0STS_TPS);
+  return OK;
 }
 
 /****************************************************************************
@@ -2222,12 +2311,20 @@ static void gm_link_work(FAR void *arg)
           priv->trace_valid = true;
         }
 
-      /* -EAGAIN: still negotiating, or a link with nothing in common. */
+      /* -EAGAIN: still negotiating, or a link with nothing in common.  The
+       * carrier has not settled either way, so leave its state alone and come
+       * back in a second.  A confirmed link down (OK, !up) must fall through
+       * to the state update below instead: it is a real carrier transition,
+       * and skipping it would leave the interface RUNNING for the stack with
+       * the cable out, and make the next plug-in report nothing because
+       * priv->carrier would still be true.
+       */
 
-      goto rearm;
+      if (ret == -EAGAIN)
+        {
+          goto rearm;
+        }
     }
-
-  priv->trace_valid = false;
 
   if (ret < 0)
     {
@@ -2239,6 +2336,13 @@ static void gm_link_work(FAR void *arg)
 
   if (up)
     {
+      /* The link is back: the next time it goes down, print a fresh trace.
+       * Clearing this on the down path instead would make a board with no
+       * cable print a trace snapshot every second.
+       */
+
+      priv->trace_valid = false;
+
       if (speed != priv->hw_speed || full_duplex != priv->hw_duplex)
         {
           /* A rate or duplex change needs the MAC reprogrammed, which the
@@ -2509,6 +2613,7 @@ static int gm_ifdown(FAR struct netdev_lowerhalf_s *dev)
 {
   FAR struct rk3576_gmac_s *priv = (FAR struct rk3576_gmac_s *)dev;
   bool carrier;
+  int ret;
 
   if (!priv->started)
     {
@@ -2523,7 +2628,34 @@ static int gm_ifdown(FAR struct netdev_lowerhalf_s *dev)
   up_disable_irq(priv->irq);
   irq_detach(priv->irq);
 
-  gm_mac_stop(priv);
+  /* The rings are released only once both DMA directions have been proven
+   * stopped: while the engine can still read a descriptor or a buffer, that
+   * memory has to stay.  A stop that timed out is retried through a port
+   * reset, which takes the engine down even when its own stop never
+   * completed; only if that also fails are the rings kept -- a leak that a
+   * reboot clears, against a DMA that would otherwise keep writing into
+   * buffers the stack has already reused.
+   */
+
+  ret = gm_mac_stop(priv);
+  if (ret < 0)
+    {
+      syslog(LOG_ERR,
+             "gmac%d: DMA did not stop (%d); resetting the port before "
+             "releasing the rings\n",
+             priv->intf, ret);
+
+      ret = gm_reset(priv);
+      if (ret < 0)
+        {
+          syslog(LOG_ERR,
+                 "gmac%d: reset failed too (%d); the rings and their buffers "
+                 "are kept, and this port needs a reboot\n",
+                 priv->intf, ret);
+          return ret;
+        }
+    }
+
   gm_rings_free(priv);
 
   carrier = priv->carrier;
