@@ -282,6 +282,7 @@
 /* DMA_CH0_STATUS, 0x1160.  Write 1 to clear. */
 
 #define RK3576_GMAC_CH0STS_TI           (1u << 0) /* Transmit complete    */
+#define RK3576_GMAC_CH0STS_TPS          (1u << 1) /* Tx process stopped   */
 #define RK3576_GMAC_CH0STS_TBU          (1u << 2)
 #define RK3576_GMAC_CH0STS_RI           (1u << 6) /* Receive complete     */
 #define RK3576_GMAC_CH0STS_RBU          (1u << 7) /* Rx buffer unavailable */
