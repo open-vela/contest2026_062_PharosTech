@@ -179,11 +179,10 @@ config KICKPI_K7_WS2812
 		their default GPIO multiplexing; a WS2812 strip needs none of
 		them, and nothing is transmitted on the clock pin.
 
-		The driver's select callback performs that pin parking.  When
-		the external multiplexer that lets several strips share this
-		data line is fitted, its control belongs in the same callback,
-		and each strip's device node is registered against the same SPI
-		handle.
+		The driver's transfer callback performs that pin parking.
+		SPI3 has no other user in this configuration: the strip is one
+		daisy chain on this one wire, every LED is fed by the same
+		frame, and nothing needs to arbitrate the line.
 
 config KICKPI_K7_WDT
 	bool "On-chip Watchdog Timer (WDT_NS)"

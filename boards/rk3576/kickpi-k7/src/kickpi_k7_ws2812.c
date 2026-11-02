@@ -57,6 +57,10 @@
  * driven low once a transfer is over (the pin is released and only the pad
  * pull would hold a level), so leaving the pin on the SPI function between
  * frames is not an option.
+ *
+ * SPI3 has no other user in this configuration, and the strip is one daisy
+ * chain on this one wire: every LED is fed by the same frame, so nothing
+ * arbitrates the line.
  */
 
 #define KICKPI_K7_WS2812_DEVPATH  "/dev/ws2812"
@@ -80,22 +84,22 @@ static FAR struct gpio_dev_s *g_ws2812_mosi;
  ****************************************************************************/
 
 /****************************************************************************
- * Name: kickpi_k7_ws2812_select
+ * Name: kickpi_k7_ws2812_xfer
  *
  * Description:
- *   Select/deselect notification from the character driver.  Select ==
- *   true hands the pad to the SPI function; false hands it back to GPIO,
- *   which was programmed at init to output 0, so the data line stays low
- *   until the next frame.
+ *   Transfer notification from the character driver.  xfer == true hands
+ *   the pad to the SPI function; false hands it back to GPIO, which was
+ *   programmed at init to output 0, so the data line stays low until the
+ *   next frame.
  *
  *   The callback runs with the SPI bus lock held, so the pad cannot change
- *   state in the middle of another strip's frame.
+ *   state in the middle of the transfer.
  *
  ****************************************************************************/
 
-static void kickpi_k7_ws2812_select(bool select)
+static void kickpi_k7_ws2812_xfer(bool xfer)
 {
-  rk3576_gpio_set_af(g_ws2812_mosi, select ? KICKPI_K7_WS2812_MOSI_AF : 0);
+  rk3576_gpio_set_af(g_ws2812_mosi, xfer ? KICKPI_K7_WS2812_MOSI_AF : 0);
 }
 
 /****************************************************************************
@@ -108,10 +112,10 @@ static void kickpi_k7_ws2812_select(bool select)
  * Description:
  *   Register the board's WS2812 strip as /dev/ws2812.  The data line is
  *   SPI3 MOSI in its M0 multiplexing (GPIO3_A1); the SPI3 controller is
- *   brought up by the chip driver and shared through the character
- *   driver's per-frame bus lock.
+ *   brought up by the chip driver and reprogrammed by the character driver
+ *   for every frame.
  *
- *   The select callback owns the pin multiplexing for the data line: the
+ *   The transfer callback owns the pin multiplexing for the data line: the
  *   pin idles as a GPIO output driving 0 and is only muxed to SPI3 while a
  *   frame is being transmitted.
  *
@@ -152,8 +156,7 @@ int kickpi_k7_ws2812_initialize(void)
       return -ENODEV;
     }
 
-  ret =
-      ws2812_register(KICKPI_K7_WS2812_DEVPATH, spi, kickpi_k7_ws2812_select);
+  ret = ws2812_register(KICKPI_K7_WS2812_DEVPATH, spi, kickpi_k7_ws2812_xfer);
   if (ret < 0)
     {
       syslog(LOG_ERR, "ERROR: ws2812: register %s failed: %d\n",

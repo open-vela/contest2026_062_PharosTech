@@ -1,5 +1,5 @@
 # ##############################################################################
-# boards/rk3576/drivers/drivers/ws2812/CMakeLists.txt
+# drivers/drivers/ws2812/CMakeLists.txt
 #
 # SPDX-License-Identifier: Apache-2.0
 #

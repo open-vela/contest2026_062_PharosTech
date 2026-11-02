@@ -16,10 +16,9 @@ config WS2812_CHARDEV
         shadow buffer and holds no permanent claim on the SPI bus.  Each
         write() carries a complete frame and is transmitted immediately;
         nothing is carried over between calls and lseek() is rejected.
-        The bus is locked only for the duration of one frame, and an
-        optional select callback runs around each frame, so several strips
-        can share one SPI controller through an external multiplexer and
-        take turns on it.
+        The bus is locked only for the duration of one frame, and a
+        transfer callback runs around each frame so the board can put the
+        data pin on the SPI function and take it back afterwards.
 
         Do not enable CONFIG_WS2812 (the in-tree driver) for the same SPI
         bus: it locks the bus permanently at registration time.
@@ -49,5 +48,9 @@ config WS2812_CHARDEV_MAX_PIXELS
         Largest frame the driver accepts in one write(); the transmit
         scratch buffer is sized from it.  A write carrying more pixels
         fails with -EFBIG.
+
+        Set this to the length of the chain.  The whole chain takes part
+        in every frame, so a larger value only costs RAM: the default
+        sizes the buffer for a 1024-LED strip.
 
 endif # WS2812_CHARDEV
