@@ -114,12 +114,15 @@ typedef void (*ws2812_xfer_cb_t)(bool xfer);
  *   it out before returning.  There is no buffering: the frame is not
  *   retained, and lseek() is not supported (-ESPIPE).
  *
- *   The SCLK the controller really produces is measured once, at
- *   registration, and the bit codes are derived from that measurement
- *   rather than from the rate the SPI lower-half reports.  read() returns
- *   one text line with that measurement and the codes the last frame used
- *   ("freq=<Hz> zero=<bits> one=<bits> rst=<bytes>"), which is how the
- *   timing can be checked on a board with no debugger.
+ *   The bit codes and the reset run are derived from the rate the SPI
+ *   lower-half reports for the transfer, which it computes from its clock
+ *   tree and the divider it programmed.  The driver does not measure the
+ *   clock itself: a report that disagrees with the wire is an SPI or
+ *   clock-tree bug to fix there, not something a second estimate here
+ *   could correct.  read() returns one text line with that rate and the
+ *   codes the last frame used ("freq=<Hz> zero=<bits> one=<bits>
+ *   rst=<bytes>"), which is how the timing can be checked on a board with
+ *   no debugger.
  *
  * Input Parameters:
  *   path      - Device node path, e.g. "/dev/ws2812".

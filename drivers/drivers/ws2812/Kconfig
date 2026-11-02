@@ -33,12 +33,12 @@ config WS2812_CHARDEV_FREQUENCY
         one SPI byte, so the clock is eight times the bit rate).  6.4 MHz
         targets the common 800 kHz parts at 1.25 us per bit.
 
-        The SPI lower-half may not be able to hit the request exactly, and
-        the rate it reports back can disagree with the SCLK the controller
-        actually generates.  The driver therefore measures the real byte
-        rate at registration (about 90 ms of idle low) and derives the 0/1
-        high times from that measurement.  Any measured clock in 3.6-9.0
-        MHz is accepted; outside that range write() fails with -EIO.
+        The SPI lower-half may not be able to hit the request exactly: it
+        can only pick an even divider on a fixed set of sources.  The
+        driver derives the 0/1 high times and the reset run from the rate
+        the lower-half reports for the transfer, not from this value.  A
+        reported rate in 3.6-9.0 MHz is accepted; outside that range
+        write() fails with -EIO.
 
 config WS2812_CHARDEV_MAX_PIXELS
     int "Maximum pixels per write"
