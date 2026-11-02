@@ -111,12 +111,22 @@
 
 #define WS2812_RESET_US 300
 
-/* Reset run for the fastest clock the driver accepts (9 MHz), in bytes.
- * The transmit buffer is sized for it; the run actually used is computed
- * from the reported clock.
+/* The SCLK range in which one byte per bit still encodes usable WS2812
+ * high times: below it the high pulses are too long to be codes, above it
+ * they are too short to be seen.  write() rejects anything outside it.
  */
 
-#define WS2812_RST_MAX ((9ull * 1000000ull * WS2812_RESET_US) / 8000000ull)
+#define WS2812_FREQ_MIN 3600000
+#define WS2812_FREQ_MAX 9000000
+
+/* Reset run for the fastest clock the driver accepts, in bytes.  This cap
+ * and the range check in write() share WS2812_FREQ_MAX: reset_bytes()
+ * clamps to the cap, so a frame can never outgrow WS2812_TXBUFSIZE.  Change
+ * them together.
+ */
+
+#define WS2812_RST_MAX \
+  (((uint64_t)WS2812_FREQ_MAX * WS2812_RESET_US) / 8000000ull)
 
 /* One LED is 24 WS2812 bits, one SPI byte per bit. */
 
@@ -450,15 +460,15 @@ static ssize_t ws2812_write(FAR struct file *filep, FAR const char *buffer,
    * or clock-tree bug, and compensating for it in this driver would only
    * move the error into the waveform.
    *
-   * One SPI byte per WS2812 bit only gives usable high times in this range:
-   * below it the high pulses are too long to be codes, above it they are
-   * too short to be seen.
+   * One SPI byte per WS2812 bit only gives usable high times in the range
+   * WS2812_FREQ_MIN..WS2812_FREQ_MAX.
    */
 
-  if (freq < 3600000 || freq > 9000000)
+  if (freq < WS2812_FREQ_MIN || freq > WS2812_FREQ_MAX)
     {
-      lederr("ERROR: SPI clock %lu Hz outside the 3.6-9 MHz WS2812 range\n",
-             (unsigned long)freq);
+      lederr("ERROR: SPI clock %lu Hz outside the %lu-%lu Hz WS2812 range\n",
+             (unsigned long)freq, (unsigned long)WS2812_FREQ_MIN,
+             (unsigned long)WS2812_FREQ_MAX);
       ws2812_bus_release(priv);
       nxmutex_unlock(&priv->lock);
       return -EIO;
