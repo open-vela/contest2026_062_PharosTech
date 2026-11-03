@@ -10899,7 +10899,599 @@
         "captured_at": "2026-09-20T09:04:12.071408+00:00"
       },
       "data_source": "session-store.db"
+    },
+    {
+      "session_id": "5dbc0fcc-fdd5-47cd-aec5-b174bdeff06f",
+      "tool": "copilot",
+      "started_at": "2026-09-24T16:25:11.755000+00:00",
+      "last_event_at": "2026-09-24T16:35:47.876000+00:00",
+      "event_count": 14,
+      "file_path": "logs/yunline/2026-09-24/copilot__5dbc0fcc-fdd5-47cd-aec5-b174bdeff06f.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "81dcb3bd-7768-4e68-a7c9-f85a6a26a0d2",
+      "tool": "copilot",
+      "started_at": "2026-09-24T16:46:53.999000+00:00",
+      "last_event_at": "2026-09-24T16:46:53.999000+00:00",
+      "event_count": 4,
+      "file_path": "logs/yunline/2026-09-24/copilot__81dcb3bd-7768-4e68-a7c9-f85a6a26a0d2.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "3f82632c-f2d0-46d1-a1d2-7c6356646fdf",
+      "tool": "copilot",
+      "started_at": "2026-09-24T17:03:09.212000+00:00",
+      "last_event_at": "2026-09-24T17:06:54.246000+00:00",
+      "event_count": 8,
+      "file_path": "logs/yunline/2026-09-24/copilot__3f82632c-f2d0-46d1-a1d2-7c6356646fdf.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "fe316dd5-940b-425b-b794-ea7fbbde48ad",
+      "tool": "copilot",
+      "started_at": "2026-09-24T17:19:33.375000+00:00",
+      "last_event_at": "2026-09-24T18:27:37.521000+00:00",
+      "event_count": 37,
+      "file_path": "logs/yunline/2026-09-24/copilot__fe316dd5-940b-425b-b794-ea7fbbde48ad.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "1e84178e-d263-44d4-804e-dcd0936dc6c5",
+      "tool": "copilot",
+      "started_at": "2026-09-25T05:55:46.784000+00:00",
+      "last_event_at": "2026-09-25T06:48:11.433000+00:00",
+      "event_count": 32,
+      "file_path": "logs/yunline/2026-09-25/copilot__1e84178e-d263-44d4-804e-dcd0936dc6c5.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "66bfb785-5de7-4a38-a3d6-b351137104fe",
+      "tool": "copilot",
+      "started_at": "2026-09-25T06:54:59.504000+00:00",
+      "last_event_at": "2026-09-25T08:58:40.406000+00:00",
+      "event_count": 47,
+      "file_path": "logs/yunline/2026-09-25/copilot__66bfb785-5de7-4a38-a3d6-b351137104fe.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "371f0751-a37e-46d3-8828-580b614ac075",
+      "tool": "copilot",
+      "started_at": "2026-09-25T09:11:58.579000+00:00",
+      "last_event_at": "2026-09-25T21:28:07.443000+00:00",
+      "event_count": 274,
+      "file_path": "logs/yunline/2026-09-25/copilot__371f0751-a37e-46d3-8828-580b614ac075.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "8d69cff6-d6f5-440e-bdd1-69d8d77a6d8f",
+      "tool": "copilot",
+      "started_at": "2026-09-25T21:38:49.691000+00:00",
+      "last_event_at": "2026-09-25T21:50:44.007000+00:00",
+      "event_count": 27,
+      "file_path": "logs/yunline/2026-09-25/copilot__8d69cff6-d6f5-440e-bdd1-69d8d77a6d8f.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "22c7a98f-ec0d-40f9-b0f4-f44a2c1359bb",
+      "tool": "copilot",
+      "started_at": "2026-09-26T06:15:03.389000+00:00",
+      "last_event_at": "2026-09-26T16:43:16.458000+00:00",
+      "event_count": 227,
+      "file_path": "logs/yunline/2026-09-26/copilot__22c7a98f-ec0d-40f9-b0f4-f44a2c1359bb.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "c015bd81-6237-4934-b6d4-03e36119ec7e",
+      "tool": "copilot",
+      "started_at": "2026-09-26T06:49:27.923000+00:00",
+      "last_event_at": "2026-09-26T07:01:04.071000+00:00",
+      "event_count": 11,
+      "file_path": "logs/yunline/2026-09-26/copilot__c015bd81-6237-4934-b6d4-03e36119ec7e.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "45bf68ec-65ef-4892-9929-9eb9f5f96252",
+      "tool": "copilot",
+      "started_at": "2026-09-26T17:47:12.447000+00:00",
+      "last_event_at": "2026-09-26T18:10:30.761000+00:00",
+      "event_count": 19,
+      "file_path": "logs/yunline/2026-09-26/copilot__45bf68ec-65ef-4892-9929-9eb9f5f96252.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "03f44107-1970-4a43-9a74-a86757516f86",
+      "tool": "copilot",
+      "started_at": "2026-09-26T18:20:54.869000+00:00",
+      "last_event_at": "2026-09-26T18:41:01.128000+00:00",
+      "event_count": 25,
+      "file_path": "logs/yunline/2026-09-26/copilot__03f44107-1970-4a43-9a74-a86757516f86.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "3146cccd-e1f9-4f4a-9993-6ac0e063a0e4",
+      "tool": "copilot",
+      "started_at": "2026-09-27T06:46:31.722000+00:00",
+      "last_event_at": "2026-09-27T09:27:21.003000+00:00",
+      "event_count": 80,
+      "file_path": "logs/yunline/2026-09-27/copilot__3146cccd-e1f9-4f4a-9993-6ac0e063a0e4.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "13b5e0c5-49f3-4355-beb9-a456ff014a9d",
+      "tool": "copilot",
+      "started_at": "2026-09-27T09:42:12.198000+00:00",
+      "last_event_at": "2026-09-27T10:39:10.781000+00:00",
+      "event_count": 35,
+      "file_path": "logs/yunline/2026-09-27/copilot__13b5e0c5-49f3-4355-beb9-a456ff014a9d.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "5548b739-1fc5-42eb-8def-16a19b2cdfa0",
+      "tool": "copilot",
+      "started_at": "2026-09-30T05:40:59.653000+00:00",
+      "last_event_at": "2026-09-30T07:51:16.497000+00:00",
+      "event_count": 61,
+      "file_path": "logs/yunline/2026-09-30/copilot__5548b739-1fc5-42eb-8def-16a19b2cdfa0.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "b6c885fa-3ddb-415e-b340-cb406b53882e",
+      "tool": "copilot",
+      "started_at": "2026-09-30T16:49:08.635000+00:00",
+      "last_event_at": "2026-09-30T16:49:08.635000+00:00",
+      "event_count": 7,
+      "file_path": "logs/yunline/2026-09-30/copilot__b6c885fa-3ddb-415e-b340-cb406b53882e.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "3c901aff-825f-46ab-86c7-f951ffb61472",
+      "tool": "copilot",
+      "started_at": "2026-09-30T17:03:20.796000+00:00",
+      "last_event_at": "2026-09-30T17:03:47.799000+00:00",
+      "event_count": 5,
+      "file_path": "logs/yunline/2026-09-30/copilot__3c901aff-825f-46ab-86c7-f951ffb61472.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "41050faa-e3ee-4426-9099-04ea38c34ef9",
+      "tool": "copilot",
+      "started_at": "2026-09-30T17:07:53.831000+00:00",
+      "last_event_at": "2026-09-30T17:09:32.857000+00:00",
+      "event_count": 6,
+      "file_path": "logs/yunline/2026-09-30/copilot__41050faa-e3ee-4426-9099-04ea38c34ef9.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "2c1c8888-1aac-4c7f-8d27-0a5fa1fbd8da",
+      "tool": "copilot",
+      "started_at": "2026-10-01T06:23:52.500000+00:00",
+      "last_event_at": "2026-10-01T11:36:28.340000+00:00",
+      "event_count": 193,
+      "file_path": "logs/yunline/2026-10-01/copilot__2c1c8888-1aac-4c7f-8d27-0a5fa1fbd8da.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "00de638c-f238-444b-b69a-f3de6fece838",
+      "tool": "copilot",
+      "started_at": "2026-10-01T10:38:35.599000+00:00",
+      "last_event_at": "2026-10-01T11:29:40.256000+00:00",
+      "event_count": 27,
+      "file_path": "logs/yunline/2026-10-01/copilot__00de638c-f238-444b-b69a-f3de6fece838.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "03f4a91c-72ad-4a56-914c-34f6e0a41901",
+      "tool": "copilot",
+      "started_at": "2026-10-01T12:45:08.307000+00:00",
+      "last_event_at": "2026-10-02T19:19:32.540000+00:00",
+      "event_count": 418,
+      "file_path": "logs/yunline/2026-10-01/copilot__03f4a91c-72ad-4a56-914c-34f6e0a41901.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "6e972dcf-5b32-47f8-96dd-68c028518a00",
+      "tool": "copilot",
+      "started_at": "2026-10-03T05:42:32.071000+00:00",
+      "last_event_at": "2026-10-03T06:00:35.318000+00:00",
+      "event_count": 29,
+      "file_path": "logs/yunline/2026-10-03/copilot__6e972dcf-5b32-47f8-96dd-68c028518a00.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "fe7f90b2-729e-4226-96e0-a109ff47b549",
+      "tool": "copilot",
+      "started_at": "2026-10-03T06:13:59.477000+00:00",
+      "last_event_at": "2026-10-03T06:18:05.530000+00:00",
+      "event_count": 7,
+      "file_path": "logs/yunline/2026-10-03/copilot__fe7f90b2-729e-4226-96e0-a109ff47b549.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "0ca53ba1-78d9-45c9-a126-a77859aa0475",
+      "tool": "copilot",
+      "started_at": "2026-10-03T06:35:17.766000+00:00",
+      "last_event_at": "2026-10-03T18:39:19.650000+00:00",
+      "event_count": 351,
+      "file_path": "logs/yunline/2026-10-03/copilot__0ca53ba1-78d9-45c9-a126-a77859aa0475.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "37d46676-c04e-4683-9457-d44d1e93e711",
+      "tool": "copilot",
+      "started_at": "2026-10-04T05:16:44.339000+00:00",
+      "last_event_at": "2026-10-04T05:43:02.651000+00:00",
+      "event_count": 12,
+      "file_path": "logs/yunline/2026-10-04/copilot__37d46676-c04e-4683-9457-d44d1e93e711.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "0940d21e-7cc6-42d8-931d-7af45b4313e1",
+      "tool": "copilot",
+      "started_at": "2026-10-04T05:53:17.787000+00:00",
+      "last_event_at": "2026-10-04T09:29:37.102000+00:00",
+      "event_count": 93,
+      "file_path": "logs/yunline/2026-10-04/copilot__0940d21e-7cc6-42d8-931d-7af45b4313e1.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "1721bc93-bd6d-477c-a18e-e01c3158eae1",
+      "tool": "copilot",
+      "started_at": "2026-10-04T10:25:55.982000+00:00",
+      "last_event_at": "2026-10-04T10:57:14.353000+00:00",
+      "event_count": 17,
+      "file_path": "logs/yunline/2026-10-04/copilot__1721bc93-bd6d-477c-a18e-e01c3158eae1.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "c4b31cd0-100d-4303-afcc-8723c56ee873",
+      "tool": "copilot",
+      "started_at": "2026-10-04T11:57:02.813000+00:00",
+      "last_event_at": "2026-10-04T13:56:07.664000+00:00",
+      "event_count": 69,
+      "file_path": "logs/yunline/2026-10-04/copilot__c4b31cd0-100d-4303-afcc-8723c56ee873.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "3f5d1a4b-8163-49a0-93a2-8ac328b8d532",
+      "tool": "copilot",
+      "started_at": "2026-10-04T14:30:29.146000+00:00",
+      "last_event_at": "2026-10-04T15:01:23.642000+00:00",
+      "event_count": 28,
+      "file_path": "logs/yunline/2026-10-04/copilot__3f5d1a4b-8163-49a0-93a2-8ac328b8d532.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "8dc72338-43cf-4d13-bebe-ab83a0cff991",
+      "tool": "copilot",
+      "started_at": "2026-10-04T16:03:15.370000+00:00",
+      "last_event_at": "2026-10-04T16:03:15.370000+00:00",
+      "event_count": 4,
+      "file_path": "logs/yunline/2026-10-04/copilot__8dc72338-43cf-4d13-bebe-ab83a0cff991.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "65313977-06ef-4346-9408-16f528b7b582",
+      "tool": "copilot",
+      "started_at": "2026-10-04T16:12:03.474000+00:00",
+      "last_event_at": "2026-10-04T17:19:30.161000+00:00",
+      "event_count": 42,
+      "file_path": "logs/yunline/2026-10-04/copilot__65313977-06ef-4346-9408-16f528b7b582.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "623ad16f-6a37-4f6c-93ae-3559730f24b4",
+      "tool": "copilot",
+      "started_at": "2026-10-04T17:32:27.326000+00:00",
+      "last_event_at": "2026-10-05T05:26:35.364000+00:00",
+      "event_count": 41,
+      "file_path": "logs/yunline/2026-10-04/copilot__623ad16f-6a37-4f6c-93ae-3559730f24b4.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "be9fec98-b5c3-4b9e-b9c3-a1af0c8db6a1",
+      "tool": "copilot",
+      "started_at": "2026-10-05T08:17:40.786000+00:00",
+      "last_event_at": "2026-10-05T09:14:31.151000+00:00",
+      "event_count": 30,
+      "file_path": "logs/yunline/2026-10-05/copilot__be9fec98-b5c3-4b9e-b9c3-a1af0c8db6a1.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "6d738f5b-9df4-42ef-bc62-3d6ad409f500",
+      "tool": "copilot",
+      "started_at": "2026-10-05T09:20:49.240000+00:00",
+      "last_event_at": "2026-10-05T09:25:07.294000+00:00",
+      "event_count": 9,
+      "file_path": "logs/yunline/2026-10-05/copilot__6d738f5b-9df4-42ef-bc62-3d6ad409f500.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "5e69b7dd-58b5-45c3-aed1-595574119df8",
+      "tool": "copilot",
+      "started_at": "2026-10-05T09:29:58.353000+00:00",
+      "last_event_at": "2026-10-05T12:36:20.781000+00:00",
+      "event_count": 83,
+      "file_path": "logs/yunline/2026-10-05/copilot__5e69b7dd-58b5-45c3-aed1-595574119df8.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "09af4fc6-9d79-4bb7-a250-00e09823b20d",
+      "tool": "copilot",
+      "started_at": "2026-10-05T11:50:43.865000+00:00",
+      "last_event_at": "2026-10-05T12:29:44.639000+00:00",
+      "event_count": 18,
+      "file_path": "logs/yunline/2026-10-05/copilot__09af4fc6-9d79-4bb7-a250-00e09823b20d.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
+    },
+    {
+      "session_id": "950dbb68-e591-44cd-ba6a-bba56bb526c2",
+      "tool": "copilot",
+      "started_at": "2026-10-05T12:42:32.852000+00:00",
+      "last_event_at": "2026-10-05T12:42:32.852000+00:00",
+      "event_count": 3,
+      "file_path": "logs/yunline/2026-10-05/copilot__950dbb68-e591-44cd-ba6a-bba56bb526c2.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "ok",
+      "source_integrity": {
+        "main_sha256": "1ebaa7305c6df4aea3c5b4470ff6a3c77727e9cf8a11d76ab77eb34005cd77a8",
+        "main_size": 43614208,
+        "captured_at": "2026-11-03T06:13:27.316347+00:00"
+      },
+      "data_source": "session-store.db"
     }
   ],
-  "updated_at": "2026-09-20T09:04:16.470467+00:00"
+  "updated_at": "2026-11-03T06:22:34.419362+00:00"
 }
