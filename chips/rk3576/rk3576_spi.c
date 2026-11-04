@@ -74,17 +74,6 @@
 #define RK3576_SPI_POLL_LIMIT 1000000 /* busy-wait iterations */
 #define RK3576_SPI_NUM_CLKSRC 4       /* clock source mux parent count */
 
-/* The SCLK this controller produces is half of what the TRM formula
- * (Fsclk = Fspi_clk / BAUDR) predicts: with clk_spi3 = 100 MHz and
- * BAUDR = 16 a logic analyzer measures 3.125 MHz, not 6.25 MHz, and the
- * same factor shows up at BAUDR = 198 (505 kHz predicted, 253 kHz
- * measured).  clk_spi3 itself is not in doubt -- CPLL, which feeds it,
- * also clocks the GMAC at 1000M -- so the divider is modelled as
- * 2 * BAUDR for both the divider search and the achieved-rate report.
- */
-
-#define RK3576_SPI_SCLK_DIV 2u
-
 /* Consecutive inert (no-progress) outer iterations before a transfer is
  * declared timed out.  See rk3576_spi_exchange() for the rationale.
  */
@@ -326,7 +315,7 @@ static void rk3576_spi_setbaudr(struct rk3576_spi_priv_s *priv, uint32_t freq)
 
   for (i = 0; i < nsr; i++)
     {
-      sr = rates[i] / RK3576_SPI_SCLK_DIV;
+      sr = rates[i];
 
       k = (sr + freq - 1) / freq; /* ceil(sr/freq) */
       if (k < 2)
@@ -695,7 +684,7 @@ static uint32_t rk3576_spi_getbaudr(struct rk3576_spi_priv_s *priv)
       return 0; /* nothing sane to report */
     }
 
-  return (sr / RK3576_SPI_SCLK_DIV) / baudr;
+  return sr / baudr;
 }
 
 /****************************************************************************
