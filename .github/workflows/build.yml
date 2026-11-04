@@ -92,6 +92,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check platform Kconfig and driver registration
         run: python3 tools/tests/test_platform_cmake.py
+      - name: Check SPI clock divider model
+        run: python3 tools/tests/test_spi_clock.py chips/rk3576/rk3576_spi.c
       - name: Check USB interrupt serialization
         run: python3 tools/tests/test_usb_irq_serialization.py
       - name: Check libwebsockets Make header exports
