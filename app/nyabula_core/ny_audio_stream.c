@@ -30,7 +30,8 @@
 #include "ny_dsp_output.h"
 #endif
 
-#if defined(CONFIG_NYABULA_CORE_BT) || defined(CONFIG_NYABULA_CORE_DSP)
+#if defined(CONFIG_NYABULA_CORE_BT) || defined(CONFIG_NYABULA_CORE_DSP) || \
+    defined(CONFIG_NYABULA_CORE_INTERCOM)
 
 #include <errno.h>
 #include <fcntl.h>
@@ -877,8 +878,6 @@ void ny_audio_stream_close(struct ny_audio_stream_s *stream)
   free(stream);
 }
 
-#endif /* CONFIG_NYABULA_CORE_BT || CONFIG_NYABULA_CORE_DSP */
-
 /****************************************************************************
  * Name: ny_audio_stream_drain
  ****************************************************************************/
@@ -986,3 +985,6 @@ int ny_audio_stream_pause(struct ny_audio_stream_s *stream, bool paused)
   return -ENOTSUP;
 #endif
 }
+
+#endif /* CONFIG_NYABULA_CORE_BT || CONFIG_NYABULA_CORE_DSP || \
+        * CONFIG_NYABULA_CORE_INTERCOM */
