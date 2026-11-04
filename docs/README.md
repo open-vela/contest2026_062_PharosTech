@@ -8,6 +8,7 @@
 | AI智能硬件创新产品 | [Nyabula能力与设计](product/README.md) |
 | 组件如何协作 | [系统架构与数据流](product/ARCHITECTURE.md) |
 | 创建工具、安装插件、接入MCP | [扩展指南](product/EXTENSIONS.md) |
+| 三主题实机逐页界面 | [实机界面图集](SCREENSHOTS.md) |
 | 完整功能逐项查阅 | [能力清单](CAPABILITIES.md) |
 | 实际构建和运行 | [获取与运行](GETTING_STARTED.md) |
 | 查看证据与版本差异 | [验证记录](validation/README.md)、[原始记录索引](validation/EVIDENCE.md) |

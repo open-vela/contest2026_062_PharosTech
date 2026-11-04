@@ -11,7 +11,7 @@
 | **新硬件适配** | 从 ARM64 启动到原生无线、存储、音频、显示、摄像头编码、以太网和电源管理 | [平台适配详解](docs/platform/README.md) |
 | **AI 智能硬件创新产品** | 双眼与语音、设备工具、Agent 自主创建插件、实时 DSP、双设备蓝牙、Skill / MCP / Cloud | [Nyabula 产品详解](docs/product/README.md) |
 
-团队主线已合入产品整合及日志更新；本页同时介绍 **2026-11-04 本轮候选**，相关代码已提交至[#110](https://github.com/open-vela/contest2026_062_PharosTech/pull/110)，尚未合入。最新实机为 AMP **B109 / generation 460**，保留 A21 恢复槽；候选与主线的区别和验证范围见[版本与验证](docs/validation/README.md)。
+团队主线已合入产品整合、日志及本轮代码 [#110](https://github.com/open-vela/contest2026_062_PharosTech/pull/110)，本文档基线为 `1cd51ba9`。最新实机为 AMP **B109 / generation 460**，保留 A21 恢复槽；各项验证范围见[版本与验证](docs/validation/README.md)。
 
 ## 第一部分 新硬件适配
 
@@ -41,6 +41,10 @@
 
 双圆屏让设备状态可见，语音和浏览器让用户能直接操作。Nyabula 不只回答问题：它可以执行计时、音量和记忆等设备动作，也能让在线 Agent 在设备上生成、签名安装并迭代新的小工具。
 
+![Nyabula 星云主题实机主页](docs/assets/screenshots/20261104/nebula/home.png)
+
+*B109 设备与本轮更新面板；更多主题和页面见[实机界面图集](docs/SCREENSHOTS.md)。*
+
 ### 现在可以做什么
 
 | 用户任务 | 产品能力与结果 |
@@ -54,6 +58,10 @@
 | 调整桌面音响 | TTS / 蓝牙 / 文件共用 16 段 EQ、实时预览与预设；板载扬声器 + USB 低音双输出、分频和热切换 |
 | 从浏览器或其他 Agent 管理设备 | 本地面板、成员权限、双向 MCP、原生 Cloud 中继、二维码登录恢复 |
 | 安装新功能而不重刷系统 | 签名 JS/Wasm 插件、NyaUI 组件/HTML 页面、私有数据、硬件能力授权、版本升级与恢复 |
+
+![Nyabula 灯光控制实机页面](docs/assets/screenshots/20261104/nebula/feature-lighting.png)
+
+*四区灯光控制，B109 实机面板。*
 
 ### 产品控制在 openvela 模型计算按职责分工
 
@@ -90,6 +98,6 @@ Pharos Tech：**陈尚宏**负责队长、硬件适配与架构设计；**池泓
 
 ### 当前边界与来源
 
-主线已有蓝牙音乐、实时 DSP、真机 Cloud 和运行时 Skill 实例；本轮候选增加灯光、相机、隐私、身份与耳机路由等能力。声纹模型已就绪，真人登记和匹配尚未验收；物品学习追踪B109更新面板已隐藏入口，代码候选默认关闭API和Agent入口，等待修复。真实远程画面与对讲、USB 延迟 offline、远场唤醒和原生 NPU 板测等仍待解决，按[能力清单](docs/CAPABILITIES.md)逐项标明。
+主线已有蓝牙音乐、实时 DSP、真机 Cloud 和运行时 Skill 实例；本轮代码增加灯光、相机、隐私、身份与耳机路由等能力。声纹模型已就绪，真人登记和匹配尚未验收；物品学习追踪B109更新面板已隐藏入口，合入的代码默认关闭API和Agent入口，等待修复。真实远程画面与对讲、USB 延迟 offline、远场唤醒和原生 NPU 板测等仍待解决，按[能力清单](docs/CAPABILITIES.md)逐项标明。
 
 N-Boot 是 U-Boot 下游；RKNN/RKLLM、无线固件、模型、字体和其他依赖遵循各自来源与许可。团队自有代码按文件中的 Apache-2.0 标记提供。源码、外部资源和镜像的交付范围见[版本与验证](docs/validation/README.md#源码与外部资源)。

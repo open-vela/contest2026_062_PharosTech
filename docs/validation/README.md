@@ -4,7 +4,7 @@
 
 ## 当前交付位置
 
-截至 2026 年 11 月 4 日，团队仓主线已合入产品整合及日志 PR #109（落点 `2187545a`）。本轮产品代码已提交至[#110](https://github.com/open-vela/contest2026_062_PharosTech/pull/110)，尚未合入主线。
+截至 2026 年 11 月 5 日，本次文档基线为团队主线 `1cd51ba9`；产品代码 [#110](https://github.com/open-vela/contest2026_062_PharosTech/pull/110)、文字说明 #111 和日志 #109 已合入。
 
 | 内容 | 当前状态 |
 |---|---|
@@ -14,7 +14,7 @@
 | 构建 | 最后一批15套配置CMake/Make及其他CI全通过；[运行记录](https://github.com/open-vela/contest2026_062_PharosTech/actions/runs/41451851914) |
 | N-Boot | #9/#10/#11仍OPEN，最新AMP启动维护需配套版本 |
 | AI日志 | #96/#98及后续日志 #109 已合入 |
-| 最新设备 | AMP B109 / generation 460；A21恢复槽保留。本地候选不等同主线 |
+| 最新设备 | AMP B109 / generation 460；A21恢复槽保留。实机版本与主线代码须分别核对 |
 
 四批分别98、83、91、91个提交，共363。提交数量表示历史组织方式，不换算独立功能数量或原创代码占比。本次合入的CI没有重新进行所有历史板测。
 
@@ -64,9 +64,9 @@
 
 云语音的源码、反例与重跑方法见[专门记录](../voice-stream-validation-20261101.md)。ASR固定四秒参考录音1.469秒为PC在线请求样例，不能当作真人麦克风准确率或整回合时延。
 
-## 最新本地候选
+## 近期实机与软件证据
 
-以下为代码PR [#110](https://github.com/open-vela/contest2026_062_PharosTech/pull/110)及更早本地候选的阶段证据，不等同已合入主线。
+以下记录各阶段实机与软件验证；[#110](https://github.com/open-vela/contest2026_062_PharosTech/pull/110) 已合入，合入不等于各场景均完成板测。
 
 | 候选 | 新能力与证据 | 当前范围 |
 |---|---|---|
@@ -77,7 +77,7 @@
 
 天气金州区记录来自Open-Meteo模式估计，非板上温度计。电量、健康/rPPG与家居本轮隐藏。
 
-### 11月4日新增候选
+### 11月4日新增能力
 
 | 项目 | 实际证据与边界 |
 |---|---|
@@ -86,7 +86,7 @@
 | 本地视觉 | B106用户确认真人检测框位置及移动；B108身份模型实际帧正常，用户登记一条人脸。五点校准后实体猫眼跟随待验 |
 | 声纹 | 模型ready，身份页接入登记/测试/删除/仅回应主人；用户跳过真人登记和匹配，麦克风说话电平不涨尚未查 |
 | 耳机 | B108 headphones及auto实际耳机时停用2.1，speaker/both恢复；保存EQ和分频值不变 |
-| 物品学习追踪 | RKNN加载返回-5、零帧；B109更新面板已隐藏入口，代码候选默认关闭API和Agent入口，代码保留待完成 |
+| 物品学习追踪 | RKNN加载返回-5、零帧；B109更新面板已隐藏入口，合入的代码默认关闭API和Agent入口，代码保留待完成 |
 | Cloud媒体与Agent看图 | 中继定向测试通过，使用临时数据库；真实远程画面、双向对讲和MiMo看图未验收 |
 
 USB曾通过B24专项测试，但近期仍出现延迟ADB offline，原因未定；不能将历史结果作为长期稳定证据。
@@ -100,7 +100,7 @@ B88发生过一次突发重启：新启动已确认，但旧轮panic/复位证�
 ## 源码与外部资源
 
 - 本仓包含芯片/板级、设备驱动、产品、面板、SDK、Skill和历史AI日志；NuttX等通用依赖按manifest与补丁取得。
-- 本轮代码候选纳入Go Cloud、Go NyaLink和协议文档，分别位于 `tools/nyabula_cloud/`、`tools/nyalink-go/`、`docs/protocol/`；README更新依赖代码PR [#110](https://github.com/open-vela/contest2026_062_PharosTech/pull/110)。Windows工作台、Flutter与机械/品牌等资产另计。
+- 本轮代码已纳入Go Cloud、Go NyaLink和协议文档，分别位于 `tools/nyabula_cloud/`、`tools/nyalink-go/`、`docs/protocol/`，随 [#110](https://github.com/open-vela/contest2026_062_PharosTech/pull/110) 合入。Windows工作台、Flutter与机械/品牌等资产另计。
 - SeekWave固件、Rockchip引导件/runtime、模型权重与字体分别保留来源和分发条件。CI零占位固件不是可联网镜像。
 - N-Boot保留U-Boot来源与许可；团队自有代码依各文件Apache-2.0标记。fork合入不等于公共上游接收。
 - 最终镜像应同时给出manifest、补丁、配置、启动器、模型/runtime与产物身份，不能从“CI全绿”推定外部输入已齐备。
