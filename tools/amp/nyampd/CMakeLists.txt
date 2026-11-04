@@ -16,6 +16,7 @@ set(NYAMP_RKLLM_ROOT "" CACHE PATH "Directory containing external rkllm.h and li
 
 add_subdirectory(../protocol protocol)
 add_subdirectory(../models models)
+add_subdirectory(../vision vision)
 # Chat front end (template, tokenizer, output parser).  It stays buildable on
 # its own; pulled in as a subdirectory it contributes only its library.
 add_subdirectory(../chat chat)
@@ -32,12 +33,12 @@ add_library(nyampd_core STATIC nyampd_core.cpp nyampd_llm.cpp nyampd_frame.cpp
                                nyampd_sha256.cpp nyampd_blob.cpp
                                nyampd_provision.cpp nyampd_chat.cpp
                                nyampd_audio.cpp nyampd_loader.cpp
-                               nyampd_asr.cpp nyampd_tts.cpp nyampd_kws.cpp)
+                               nyampd_asr.cpp nyampd_tts.cpp nyampd_kws.cpp nyampd_vision.cpp nyampd_speaker.cpp)
 target_include_directories(
   nyampd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../models
                      ${CMAKE_CURRENT_SOURCE_DIR}/../linux)
 target_link_libraries(nyampd_core PUBLIC nyamp_protocol nyamp_models
-                                         nyamp_chat nyamp_g2p)
+                                         nyamp_chat nyamp_g2p nyamp_vision)
 target_compile_options(nyampd_core PRIVATE -Wall -Wextra -Werror)
 
 add_executable(nyampd nyampd_main.cpp)
@@ -68,7 +69,10 @@ if(TARGET nyamp_sherpa)
   add_library(nyampd_kws_sherpa STATIC nyampd_kws_sherpa.cpp)
   target_link_libraries(nyampd_kws_sherpa PUBLIC nyampd_core nyamp_voice)
   target_compile_options(nyampd_kws_sherpa PRIVATE -Wall -Wextra -Werror)
-  target_link_libraries(nyampd PRIVATE nyamp_sherpa nyampd_kws_sherpa)
+  add_library(nyampd_speaker_sherpa STATIC nyampd_speaker_sherpa.cpp)
+  target_link_libraries(nyampd_speaker_sherpa PUBLIC nyampd_core nyamp_voice)
+  target_compile_options(nyampd_speaker_sherpa PRIVATE -Wall -Wextra -Werror)
+  target_link_libraries(nyampd PRIVATE nyamp_sherpa nyampd_kws_sherpa nyampd_speaker_sherpa)
   target_compile_definitions(nyampd PRIVATE NYAMP_WITH_SHERPA=1)
 endif()
 
@@ -133,3 +137,18 @@ add_executable(nyamp_shmem_test nyamp_shmem_test.cpp)
 target_include_directories(nyamp_shmem_test PRIVATE
                            ${CMAKE_CURRENT_SOURCE_DIR}/../linux)
 target_compile_options(nyamp_shmem_test PRIVATE -Wall -Wextra -Werror)
+
+if(TARGET nyamp_vision_rknn)
+  target_link_libraries(nyampd PRIVATE nyamp_vision_rknn)
+  target_compile_definitions(nyampd PRIVATE NYAMP_WITH_VISION=1)
+endif()
+
+add_executable(nyampd_vision_test nyampd_vision_test.cpp)
+target_link_libraries(nyampd_vision_test PRIVATE nyampd_core)
+target_compile_options(nyampd_vision_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME nyampd_vision_test COMMAND nyampd_vision_test)
+
+add_executable(nyampd_speaker_test nyampd_speaker_test.cpp)
+target_link_libraries(nyampd_speaker_test PRIVATE nyampd_core)
+target_compile_options(nyampd_speaker_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME nyampd_speaker_test COMMAND nyampd_speaker_test)

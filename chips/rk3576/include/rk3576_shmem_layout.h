@@ -127,6 +127,10 @@ struct nyamp_arena_s
  * utterance length independent of the slot size.
  */
 
+/* Camera frames have a disjoint grant; no voice/blob offset changes. */
+#define NYAMP_SLOT_VISION      0x00160000U
+#define NYAMP_SLOT_VISION_SIZE 0x00100000U
+
 #define NYAMP_WINDOW_SAMPLES 16000U
 #define NYAMP_WINDOW_BYTES   (NYAMP_WINDOW_SAMPLES * 4U) /* 64 KiB */
 

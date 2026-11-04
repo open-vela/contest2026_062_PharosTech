@@ -46,6 +46,10 @@
  * Private Function Prototypes
  ****************************************************************************/
 
+static int ny_voice_wire_load_request(struct ny_voice_wire_s *wire,
+                                      uint16_t service, const char *directory,
+                                      const struct ny_voice_wire_kws_s *kws,
+                                      uint16_t opcode, int timeout_ms);
 static uint64_t ny_voice_wire_now_ms(void);
 static uint32_t ny_voice_wire_generation(const struct ny_voice_wire_s *wire);
 static void ny_voice_wire_keep(struct ny_voice_wire_s *wire,
@@ -415,9 +419,10 @@ int ny_voice_wire_errno(int32_t status)
     }
 }
 
-int ny_voice_wire_load(struct ny_voice_wire_s *wire, uint16_t service,
-                       const char *directory,
-                       const struct ny_voice_wire_kws_s *kws, int timeout_ms)
+static int ny_voice_wire_load_request(struct ny_voice_wire_s *wire,
+                                      uint16_t service, const char *directory,
+                                      const struct ny_voice_wire_kws_s *kws,
+                                      uint16_t opcode, int timeout_ms)
 {
   uint8_t body[NYAMP_INLINE_MAX];
   size_t size = strlen(directory);
@@ -442,7 +447,10 @@ int ny_voice_wire_load(struct ny_voice_wire_s *wire, uint16_t service,
 
       load.directory = directory;
       load.directory_length = (uint16_t)size;
-      load.keywords = "";
+      load.keywords = kws != NULL && kws->phrase != NULL ? kws->phrase : "";
+      if (strlen(load.keywords) > NYAMP_KWS_TEXT_MAX)
+        return -EINVAL;
+      load.keywords_length = (uint16_t)strlen(load.keywords);
       if (nyamp_kws_load_encode(body, sizeof(body), &size, &load) != NYAMP_OK)
         {
           return -EINVAL;
@@ -453,11 +461,31 @@ int ny_voice_wire_load(struct ny_voice_wire_s *wire, uint16_t service,
       memcpy(body, directory, size);
     }
 
-  /* All three services use opcode 1 for LOAD. */
-
-  return ny_voice_wire_call(wire, service, NYAMP_ASR_LOAD,
+  return ny_voice_wire_call(wire, service, opcode,
                             wire->io.request_id(wire->io.arg), body, size,
                             timeout_ms, true, NULL, NULL);
+}
+
+int ny_voice_wire_load(struct ny_voice_wire_s *wire, uint16_t service,
+                       const char *directory,
+                       const struct ny_voice_wire_kws_s *kws, int timeout_ms)
+{
+  uint16_t opcode = service == NYAMP_SERVICE_KWS && kws != NULL &&
+                            kws->phrase != NULL && kws->phrase[0] != '\0'
+                        ? NYAMP_KWS_LOAD_TEXT
+                        : NYAMP_ASR_LOAD;
+  return ny_voice_wire_load_request(wire, service, directory, kws, opcode,
+                                    timeout_ms);
+}
+
+int ny_voice_wire_kws_prepare(struct ny_voice_wire_s *wire,
+                              const char *directory, const char *phrase,
+                              int timeout_ms)
+{
+  struct ny_voice_wire_kws_s kws = { 0 };
+  kws.phrase = phrase;
+  return ny_voice_wire_load_request(wire, NYAMP_SERVICE_KWS, directory, &kws,
+                                    NYAMP_KWS_PREPARE_TEXT, timeout_ms);
 }
 
 int ny_voice_wire_unload(struct ny_voice_wire_s *wire, uint16_t service)
@@ -978,4 +1006,24 @@ void ny_voice_wire_transcript(char *transcript, size_t size,
 
   memcpy(transcript + used, event->text, take);
   transcript[used + take] = '\0';
+}
+
+/****************************************************************************
+ * Name: ny_voice_wire_request
+ ****************************************************************************/
+int ny_voice_wire_request(struct ny_voice_wire_s *wire, uint16_t service,
+                           uint16_t opcode, const uint8_t *body, size_t size,
+                           int timeout_ms, uint8_t *reply, size_t *reply_size)
+{
+  if (!wire || !wire->io.request_id || !wire->io.send || !wire->io.recv ||
+      timeout_ms <= 0)
+    return -EINVAL;
+  wire->request_id = wire->io.request_id(wire->io.arg);
+  wire->generation = ny_voice_wire_generation(wire);
+  int ret = ny_voice_wire_call(wire, service, opcode, wire->request_id,
+                                body, size, timeout_ms, true, reply, reply_size);
+  if (ret == -ECANCELED || ret == -ETIMEDOUT)
+    ny_voice_wire_cancel(wire, service);
+  wire->request_id = 0;
+  return ret;
 }

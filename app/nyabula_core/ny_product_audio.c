@@ -176,6 +176,7 @@ static int ny_audio_levels_apply(int volume, int muted, int gain);
 static int ny_audio_output_apply(const cJSON *data, bool channel);
 static int ny_audio_input_apply(const cJSON *data, bool route);
 static cJSON *ny_audio_status(void);
+static void ny_audio_refresh_route(int fd);
 
 /****************************************************************************
  * Private Data
@@ -203,6 +204,7 @@ static const char *const g_audio_input_names[] = {
 
 static mutex_t g_audio_lock = NXMUTEX_INITIALIZER;
 static atomic_uint g_audio_output_level;
+static atomic_bool g_audio_headphones_only;
 
 static struct ny_audio_state_s g_audio =
 {
@@ -404,6 +406,22 @@ static int ny_audio_push_volume(int fd, const struct ny_audio_prefs_s *prefs,
 }
 
 /****************************************************************************
+ * Name: ny_audio_refresh_route
+ ****************************************************************************/
+
+static void ny_audio_refresh_route(int fd)
+{
+  struct es8388_control_s control;
+  memset(&control, 0, sizeof(control));
+  if (ioctl(fd, ES8388IOC_GET_CONTROL,
+            (unsigned long)(uintptr_t)&control) >= 0)
+    {
+      atomic_store(&g_audio_headphones_only,
+                   control.active_route == ES8388_OUTPUT_ROUTE_LINE1);
+    }
+}
+
+/****************************************************************************
  * Name: ny_audio_push_output
  *
  * Description:
@@ -428,10 +446,14 @@ static int ny_audio_push_output(int fd, const struct ny_audio_prefs_s *prefs)
   control.swap = prefs->swap;
   control.invert_left = prefs->invert_left;
   control.invert_right = prefs->invert_right;
-  return ioctl(fd, ES8388IOC_SET_CONTROL, (unsigned long)(uintptr_t)&control) <
-                 0
-             ? -errno
-             : 0;
+  if (ioctl(fd, ES8388IOC_SET_CONTROL,
+            (unsigned long)(uintptr_t)&control) < 0)
+    {
+      return -errno;
+    }
+
+  ny_audio_refresh_route(fd);
+  return 0;
 }
 
 /****************************************************************************
@@ -1047,6 +1069,12 @@ static cJSON *ny_audio_status(void)
       close(fd);
     }
 
+  if (out_live)
+    {
+      atomic_store(&g_audio_headphones_only,
+                   out.active_route == ES8388_OUTPUT_ROUTE_LINE1);
+    }
+
   if (!out_live)
     {
       out.route = prefs->route;
@@ -1269,7 +1297,22 @@ int ny_product_audio_tick(void)
     }
 
   ny_audio_ensure();
+  int fd = ny_audio_open(NY_PRODUCT_AUDIO_OUTPUT);
+  if (fd >= 0)
+    {
+      ny_audio_refresh_route(fd);
+      close(fd);
+    }
   ny_audio_save();
   nxmutex_unlock(&g_audio_lock);
   return 0;
+}
+
+/****************************************************************************
+ * Name: ny_product_audio_headphones_only
+ ****************************************************************************/
+
+bool ny_product_audio_headphones_only(void)
+{
+  return atomic_load(&g_audio_headphones_only);
 }

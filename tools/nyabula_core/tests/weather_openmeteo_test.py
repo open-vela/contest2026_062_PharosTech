@@ -20,6 +20,7 @@ code = r'''
 #include "ny_weather_openmeteo.c"
 static char *geo, *forecast;
 static int mode;
+static bool use_id;
 int ny_product_json_check(const char *text, size_t size)
 {
   return text && size && size < 24576 ? 0 : -EINVAL;
@@ -33,7 +34,7 @@ int vela_https_get_once(const char *host, const char *port, const char *path,
     assert(!strcmp(h->name, "Accept") || !strcmp(h->name, "Accept-Encoding"));
   bool location = !strcmp(host, "geocoding-api.open-meteo.com");
   assert(location || !strcmp(host, "api.open-meteo.com"));
-  if (location) assert(strstr(path, "%E9%A6%99%E6%B8%AF"));
+  if (location) assert(strstr(path, use_id ? "/v1/get?id=1805298" : "%E9%A6%99%E6%B8%AF"));
   else assert(strstr(path, "timeformat=unixtime") && strstr(path, "forecast_hours=24"));
   cJSON *data = cJSON_Parse(location ? geo : forecast);
   assert(data);
@@ -49,6 +50,11 @@ int vela_https_get_once(const char *host, const char *port, const char *path,
   if (!location && mode == 4)
     cJSON_DeleteItemFromArray(cJSON_GetObjectItem(cJSON_GetObjectItem(data,
                                 "hourly"), "temperature_2m"), 23);
+  if (location && use_id) {
+    cJSON *selected = cJSON_Duplicate(cJSON_GetArrayItem(cJSON_GetObjectItem(data, "results"), 0), true);
+    cJSON_Delete(data); data = selected;
+    cJSON_AddNumberToObject(data, "id", 1805298);
+  }
   assert(cJSON_PrintPreallocated(data, body, capacity, false));
   response->body_length = strlen(body);
   cJSON_Delete(data);
@@ -77,6 +83,14 @@ int main(int argc, char **argv)
   assert(cJSON_GetArraySize(cJSON_GetObjectItem(cJSON_GetArrayItem(sections, 2), "hours")) == 24);
   assert(cJSON_IsFalse(cJSON_GetObjectItem(cJSON_GetArrayItem(sections, 3), "supported")));
   cJSON_Delete(location); cJSON_Delete(sections);
+  use_id = true;
+  cJSON_AddNumberToObject(config, "locationId", 1805298);
+  assert(ny_weather_openmeteo(config, &location, &sections) == 0);
+  cJSON_Delete(location); cJSON_Delete(sections);
+  cJSON_ReplaceItemInObject(config, "locationId", cJSON_CreateNumber(1.5));
+  assert(ny_weather_openmeteo(config, &location, &sections) == -EINVAL);
+  cJSON_DeleteItemFromObject(config, "locationId");
+  use_id = false;
   for (mode = 1; mode <= 5; mode++) {
     int ret = ny_weather_openmeteo(config, &location, &sections);
     assert(ret == (mode == 3 ? -ENOENT : mode == 5 ? -503 : -EBADMSG));

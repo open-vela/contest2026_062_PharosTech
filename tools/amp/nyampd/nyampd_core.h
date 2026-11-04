@@ -19,6 +19,8 @@ class BlobService;
 class AsrService;
 class TtsService;
 class KwsService;
+class VisionService;
+class SpeakerService;
 
 /* The speech services.  Any of them may be null; its opcodes then answer
  * unsupported, exactly as a null `llm` does.
@@ -29,6 +31,7 @@ struct SpeechServices
   AsrService *asr = nullptr;
   TtsService *tts = nullptr;
   KwsService *kws = nullptr;
+  SpeakerService *speaker = nullptr;
 };
 
 constexpr std::uint16_t kHealthQuery = 1;
@@ -76,7 +79,8 @@ int Dispatch(const std::uint8_t *request, std::size_t request_size,
              std::uint8_t *response, std::size_t response_capacity,
              std::size_t *response_size, std::string_view diagnostics = {},
              LlmService *llm = nullptr, BlobService *blob = nullptr,
-             const SpeechServices *speech = nullptr);
+             const SpeechServices *speech = nullptr,
+             VisionService *vision = nullptr);
 
 } // namespace nyamp
 

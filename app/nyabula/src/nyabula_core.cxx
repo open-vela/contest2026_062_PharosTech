@@ -562,7 +562,8 @@ static int nyabula_core_process(struct nyabula_core_s *core,
 }
 
 extern "C" struct nyabula_core_s *
-nyabula_core_create(struct nyabula_eye_engine_s *eye_engine)
+nyabula_core_create_with_iris(struct nyabula_eye_engine_s *eye_engine,
+                              const uint32_t iris_rgb[NYABULA_EYE_COUNT])
 {
   struct nyabula_core_s *core;
 
@@ -591,8 +592,10 @@ nyabula_core_create(struct nyabula_eye_engine_s *eye_engine)
   core->snapshot.blink_eyes = NYABULA_EYE_MASK_BOTH;
   core->snapshot.auto_blink = true;
   core->snapshot.ambient_light = 1.0f;
-  core->snapshot.iris_rgb[NYABULA_EYE_LEFT] = 0x56ffb2;
-  core->snapshot.iris_rgb[NYABULA_EYE_RIGHT] = 0x56ffb2;
+  core->snapshot.iris_rgb[NYABULA_EYE_LEFT] =
+      iris_rgb != nullptr ? iris_rgb[NYABULA_EYE_LEFT] & 0xffffff : 0x56ffb2;
+  core->snapshot.iris_rgb[NYABULA_EYE_RIGHT] =
+      iris_rgb != nullptr ? iris_rgb[NYABULA_EYE_RIGHT] & 0xffffff : 0x56ffb2;
 
   /* The snapshot is what every client is told the eyes look like, so make
    * it true.  The engine has defaults of its own -- a dimmer light and a
@@ -603,9 +606,18 @@ nyabula_core_create(struct nyabula_eye_engine_s *eye_engine)
 
   nyabula_eye_engine_set_ambient_light(eye_engine,
                                        core->snapshot.ambient_light);
-  nyabula_eye_engine_set_iris_color(eye_engine, NYABULA_EYE_MASK_BOTH,
+  nyabula_eye_engine_set_iris_color(eye_engine, NYABULA_EYE_MASK_LEFT,
                                     core->snapshot.iris_rgb[NYABULA_EYE_LEFT]);
+  nyabula_eye_engine_set_iris_color(
+      eye_engine, NYABULA_EYE_MASK_RIGHT,
+      core->snapshot.iris_rgb[NYABULA_EYE_RIGHT]);
   return core;
+}
+
+extern "C" struct nyabula_core_s *
+nyabula_core_create(struct nyabula_eye_engine_s *eye_engine)
+{
+  return nyabula_core_create_with_iris(eye_engine, nullptr);
 }
 
 extern "C" void nyabula_core_destroy(struct nyabula_core_s *core)

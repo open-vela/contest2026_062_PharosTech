@@ -3,15 +3,18 @@ import { createApp, h } from 'vue';
 import { createPinia } from 'pinia';
 import NebulaBoot from '../../../packages/ui/src/skins/nebula/NebulaBoot.vue';
 import { useLoadingStore } from '../../../packages/ui/src/stores/loading';
-const calls = vi.hoisted(() => ({ mode: vi.fn(), bare: vi.fn(), asleep: vi.fn(), copy: vi.fn() }));
+const calls = vi.hoisted(() => ({ mode: vi.fn(), bare: vi.fn(), asleep: vi.fn(), copy: vi.fn(), iris: vi.fn(), hold: vi.fn(), liveHold: vi.fn(), liveLeft: '#30ffa6', liveRight: '#30ffa6' }));
 vi.mock('@nyabula/eye-engine', () => ({ EyeEngine: class {
- static forCanvas() { return { irisHexL: '#30ffa6', irisHexR: '#30ffa6', lightCur: .8, copyPresentationFrame: calls.copy }; }
- start() {} stop() {} destroy() {} setZzzEnabled() {} setIris() {} setLight() {}
- capturePresentation() { return { params: {}, irisLeft: '#30ffa6', irisRight: '#30ffa6' }; }
+ static forCanvas() { return { irisHexL: calls.liveLeft, irisHexR: calls.liveRight, lightCur: .8, holdPresentationBlink: calls.liveHold, copyPresentationFrame: calls.copy }; }
+ irisHexL='#30ffa6'; irisHexR='#30ffa6';
+ start() {} stop() {} destroy() {} setZzzEnabled() {} setLight() {}
+ setIris(left:string,right:string) { this.irisHexL=left;this.irisHexR=right;calls.iris(left,right); }
+ capturePresentation() { return { params: {}, irisLeft: this.irisHexL, irisRight: this.irisHexR }; }
+ holdPresentationBlink = calls.hold;
  setMode = calls.mode; setBare = calls.bare; startAsleep = calls.asleep;
 } }));
 let cleanup = () => {};
-afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.clearAllMocks(); calls.liveLeft=calls.liveRight='#30ffa6'; });
 function mount(pending = false) {
  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
  vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => setTimeout(() => fn(performance.now()), 16));
@@ -28,7 +31,7 @@ function mount(pending = false) {
   source.getBoundingClientRect = () => ({left:120,top:240,width:760,height:420}) as DOMRect;
   a.append(source);shell.append(a);
  }
- return { host, destination };
+ return { host, destination, loading: useLoadingStore(pinia) };
 }
 it('does not fade out while the initial device route is still pending', async () => {
  const t = mount(true); await vi.advanceTimersByTimeAsync(5000);
@@ -72,4 +75,32 @@ it('uses exactly the same opening state transitions and timing on home and other
  expect(home).toEqual(other);
  expect(home.map(e => e.mode)).toEqual(['sleepy', 'idle']);
  expect(home[1].time - home[0].time).toBe(900);
+});
+
+it('starts both eyes in cached colours before the first opening frame', async () => {
+ const t=mount();t.loading.bootIris={left:'#6fd3ff',right:'#ff80aa'};t.destination();
+ await vi.advanceTimersByTimeAsync(100);
+ expect(calls.iris).toHaveBeenCalledOnce();expect(calls.iris).toHaveBeenCalledWith('#6fd3ff','#ff80aa');
+ expect(calls.iris.mock.invocationCallOrder[0]).toBeLessThan(calls.asleep.mock.invocationCallOrder[0]);
+ await vi.advanceTimersByTimeAsync(1700);
+ expect(calls.copy).not.toHaveBeenCalled();
+});
+it('keeps green without cache until after the greeting, then blends into live colour', async () => {
+ const t=mount();calls.liveLeft=calls.liveRight='#6fd3ff';t.destination();
+ await vi.advanceTimersByTimeAsync(1700);
+ expect(calls.iris).not.toHaveBeenCalled();expect(calls.copy).not.toHaveBeenCalled();
+ expect(t.host.textContent).toContain('你好呀');
+ await vi.advanceTimersByTimeAsync(1000);
+ expect(calls.copy.mock.calls.at(-1)?.[3].irisLeft).toBe('#30ffa6');
+ expect(calls.copy.mock.calls.at(-1)?.[4]).toBeGreaterThan(0);
+ expect(calls.copy.mock.calls.at(-1)?.[4]).toBeLessThan(1);
+});
+
+it('holds both renderers through landing, then restores normal blink behaviour',async()=>{
+ const t=mount();t.destination();await vi.advanceTimersByTimeAsync(100);
+ expect(calls.hold).toHaveBeenCalledWith(true);expect(calls.liveHold).toHaveBeenCalledWith(true);
+ await vi.advanceTimersByTimeAsync(2800);
+ expect(calls.liveHold.mock.calls.some(([held])=>held===false)).toBe(false);
+ await vi.advanceTimersByTimeAsync(1200);
+ expect(calls.liveHold).toHaveBeenCalledWith(false);
 });

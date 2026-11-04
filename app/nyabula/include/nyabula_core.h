@@ -176,6 +176,9 @@ struct nyabula_core_s;
 
 struct nyabula_core_s *
 nyabula_core_create(struct nyabula_eye_engine_s *eye_engine);
+struct nyabula_core_s *
+nyabula_core_create_with_iris(struct nyabula_eye_engine_s *eye_engine,
+                              const uint32_t iris_rgb[NYABULA_EYE_COUNT]);
 
 void nyabula_core_destroy(struct nyabula_core_s *core);
 

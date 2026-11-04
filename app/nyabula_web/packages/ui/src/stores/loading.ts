@@ -6,6 +6,8 @@ import { defineStore } from 'pinia';
 
 export const useLoadingStore = defineStore('nyabula-loading', {
   state: () => ({
+    /** Snapshot of browser cache before live state arrives; never changed mid-intro. */
+    bootIris: null as { left: string; right: string } | null,
     bootProgress: 0,
     bootDone: false,
     /** Overlay still on screen (including its exit animation). */

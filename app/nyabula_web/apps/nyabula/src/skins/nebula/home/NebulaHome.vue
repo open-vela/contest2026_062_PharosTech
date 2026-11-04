@@ -214,8 +214,13 @@ function send(t = ask.value) {
 .eyes { position: relative; width: min(760px, 100%); height: 100%; }
 .eyes.live { cursor: pointer; }
 .eyes :deep(.nb-eye-canvas) { position: absolute; inset: 0; }
-.halo { position: absolute; inset: 12% 18%; border-radius: 50%; background: radial-gradient(closest-side, rgba(var(--nb-acc-rgb), 0.16), transparent); filter: blur(30px); animation: nb-breathe 6s ease-in-out infinite; pointer-events: none; }
+.halo { position: absolute; inset: 12% 18%; border-radius: 50%; background: radial-gradient(closest-side, rgba(var(--nb-acc-rgb), 0.16), transparent); filter: blur(30px); animation: nb-halo-arrive 1s var(--nb-ease) both, nb-breathe 6s ease-in-out 1s infinite; pointer-events: none; }
+/* Start the entrance when the real eyes are revealed, not while hidden. */
+:global(html.nb-eyes-handoff .nb-home .halo) { opacity: 0; transform: scale(.82); animation: none; }
+@keyframes nb-halo-arrive { from { opacity: 0; transform: scale(.82); } to { opacity: 1; transform: scale(1); } }
 @keyframes nb-breathe { 50% { transform: scale(1.08); opacity: 0.7; } }
+@media (prefers-reduced-motion: reduce) { .halo { animation: none; transform: none; } }
+
 .pair { z-index: 3; }
 .moods { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 4px; }
 .mood {

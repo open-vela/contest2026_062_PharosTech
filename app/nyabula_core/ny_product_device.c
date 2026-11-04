@@ -25,6 +25,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <malloc.h>
+#include <math.h>
+#ifdef CONFIG_SENSORS
+#include <nuttx/sensors/sensor.h>
+#endif
 #include <net/if.h>
 #include <nuttx/clock.h>
 #include <nuttx/config.h>
@@ -44,8 +48,10 @@
 
 static cJSON *ny_product_device_cpu(void);
 static cJSON *ny_product_device_storage(void);
+static cJSON *ny_product_device_temperatures(void);
 static cJSON *ny_product_device_network(void);
 static cJSON *ny_product_device_audio(void);
+static cJSON *ny_product_device_peripherals(void);
 
 /****************************************************************************
  * Name: ny_product_device_cpu
@@ -56,16 +62,34 @@ static cJSON *ny_product_device_cpu(void)
   cJSON *cpu = cJSON_CreateObject();
   if (cpu == NULL)
     return NULL;
-#if !defined(CONFIG_SCHED_CPULOAD_NONE) && !defined(CONFIG_SMP) && \
-    !defined(CONFIG_SCHED_TICKLESS)
+#if !defined(CONFIG_SCHED_CPULOAD_NONE) && !defined(CONFIG_SCHED_TICKLESS)
   struct cpuload_s load;
-  if (clock_cpuload(0, &load) == 0 && load.total > 0 &&
-      load.active <= load.total)
+  double idle = 0;
+  double total = 0;
+  int count = 1;
+  bool valid = true;
+#ifdef CONFIG_SMP
+  count = CONFIG_SMP_NCPUS;
+#endif
+  for (int i = 0; i < count; i++)
     {
+      if (clock_cpuload(i, &load) < 0 || load.total <= 0)
+        {
+          valid = false;
+          break;
+        }
+      if (i == 0)
+        total = load.total;
+      idle += load.active;
+    }
+  if (valid && total > 0)
+    {
+      /* Match procfs: all idle tasks share the scheduler's total count. */
       cJSON_AddBoolToObject(cpu, "available", true);
       cJSON_AddNumberToObject(cpu, "percent",
-                              100.0 * (load.total - load.active) / load.total);
-      cJSON_AddNumberToObject(cpu, "samples", load.total);
+                              100.0 * (1.0 - fmin(idle, total) / total));
+      cJSON_AddNumberToObject(cpu, "samples", total);
+      cJSON_AddNumberToObject(cpu, "cores", count);
       cJSON_AddStringToObject(cpu, "source", "scheduler_sampling");
       return cpu;
     }
@@ -73,6 +97,44 @@ static cJSON *ny_product_device_cpu(void)
   cJSON_AddBoolToObject(cpu, "available", false);
   cJSON_AddStringToObject(cpu, "reason", "sampler_unavailable");
   return cpu;
+}
+
+/****************************************************************************
+ * Name: ny_product_device_temperatures
+ ****************************************************************************/
+
+static cJSON *ny_product_device_temperatures(void)
+{
+  cJSON *items = cJSON_CreateArray();
+#ifdef CONFIG_SENSORS
+  static const char *const zones[] = { "center", "bigcore", "litcore",
+                                       "gpu",    "npu",     "ddr" };
+  if (items == NULL)
+    return NULL;
+  for (size_t i = 0; i < sizeof(zones) / sizeof(zones[0]); i++)
+    {
+      char path[64];
+      struct sensor_temp sample;
+      snprintf(path, sizeof(path), "/dev/uorb/sensor_temp_soc_%s", zones[i]);
+      int fd = open(path, O_RDONLY | O_NONBLOCK);
+      if (fd < 0)
+        continue;
+      ssize_t n = read(fd, &sample, sizeof(sample));
+      close(fd);
+      if (n != sizeof(sample) || !isfinite(sample.temperature))
+        continue;
+      cJSON *item = cJSON_CreateObject();
+      if (item == NULL)
+        {
+          cJSON_Delete(items);
+          return NULL;
+        }
+      cJSON_AddStringToObject(item, "zone", zones[i]);
+      cJSON_AddNumberToObject(item, "celsius", sample.temperature);
+      cJSON_AddItemToArray(items, item);
+    }
+#endif
+  return items;
 }
 
 /****************************************************************************
@@ -259,6 +321,41 @@ static cJSON *ny_product_device_audio(void)
 }
 
 /****************************************************************************
+ * Name: ny_product_device_peripherals
+ ****************************************************************************/
+
+static cJSON *ny_product_device_peripherals(void)
+{
+  static const struct
+  {
+    const char *kind;
+    const char *name;
+    const char *path;
+  } nodes[] = {
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+    {"camera", "CSI camera", "/dev/video0"},
+#endif
+#ifdef CONFIG_NYABULA_CORE_LIGHTING
+    {"lighting", "WS2812 lighting", "/dev/ws2812"},
+#endif
+    {NULL,NULL,NULL}
+  };
+  cJSON *items=cJSON_CreateArray();
+  if(!items)return NULL;
+  for(size_t i=0;nodes[i].path;i++)
+    {
+      cJSON *item=cJSON_CreateObject();
+      if(!item||!cJSON_AddStringToObject(item,"kind",nodes[i].kind)||
+         !cJSON_AddStringToObject(item,"name",nodes[i].name)||
+         !cJSON_AddStringToObject(item,"path",nodes[i].path)||
+         !cJSON_AddBoolToObject(item,"available",access(nodes[i].path,F_OK)==0)||
+         !cJSON_AddItemToArray(items,item))
+        {cJSON_Delete(item);cJSON_Delete(items);return NULL;}
+    }
+  return items;
+}
+
+/****************************************************************************
  * Name: ny_product_device_request
  ****************************************************************************/
 
@@ -294,23 +391,34 @@ int ny_product_device_request(const struct ny_product_caller_s *caller,
   cJSON_AddNumberToObject(heap, "totalBytes", memory.arena);
   cJSON_AddNumberToObject(heap, "usedBytes", memory.uordblks);
   cJSON_AddNumberToObject(heap, "freeBytes", memory.fordblks);
+#ifdef CONFIG_ARCH_CHIP_RK3576
+  cJSON_AddStringToObject(root, "boardModel", "KICKPI-K7 (RK3576)");
+#elif defined(CONFIG_ARCH_SIM)
+  cJSON_AddStringToObject(root, "boardModel", "NuttX SIM");
+#endif
+  cJSON *temperatures = ny_product_device_temperatures();
   cJSON *cpu = ny_product_device_cpu();
   cJSON *storage = ny_product_device_storage();
   cJSON *network = ny_product_device_network();
   cJSON *audio = ny_product_device_audio();
-  if (!cpu || !storage || !network || !audio)
+  cJSON *peripherals = ny_product_device_peripherals();
+  if (!cpu || !storage || !network || !audio || !temperatures || !peripherals)
     {
       cJSON_Delete(root);
       cJSON_Delete(cpu);
+      cJSON_Delete(temperatures);
       cJSON_Delete(storage);
       cJSON_Delete(network);
       cJSON_Delete(audio);
+      cJSON_Delete(peripherals);
       return -ENOMEM;
     }
   cJSON_AddItemToObject(root, "cpu", cpu);
+  cJSON_AddItemToObject(root, "temperatures", temperatures);
   cJSON_AddItemToObject(root, "storage", storage);
   cJSON_AddItemToObject(root, "network", network);
   cJSON_AddItemToObject(root, "audioDevices", audio);
+  cJSON_AddItemToObject(root, "peripherals", peripherals);
   *result = root;
   return 0;
 }

@@ -39,6 +39,7 @@
 #include <unistd.h>
 
 #include "ny_voice_audio.h"
+#include "ny_product_privacy.h"
 #ifdef CONFIG_NYABULA_CORE_DSP
 #include "ny_audio_stream.h"
 #endif
@@ -344,6 +345,8 @@ int ny_voice_audio_open(struct ny_voice_audio_s **result,
     }
 
   *result = NULL;
+  if (config->capture && !ny_product_privacy_mic_allowed())
+    return -EACCES;
   audio = calloc(1, sizeof(*audio));
   if (audio == NULL)
     {
@@ -481,6 +484,9 @@ ssize_t ny_voice_audio_read(struct ny_voice_audio_s *audio, void *pcm,
       return -EINVAL;
     }
 
+  if (!ny_product_privacy_mic_allowed())
+    return -EACCES;
+
   while (done < bytes)
     {
       struct ap_buffer_s *apb;
@@ -526,6 +532,11 @@ ssize_t ny_voice_audio_read(struct ny_voice_audio_s *audio, void *pcm,
         }
     }
 
+  if (!ny_product_privacy_mic_allowed())
+    {
+      memset(pcm, 0, done);
+      return -EACCES;
+    }
   return (ssize_t)done;
 }
 

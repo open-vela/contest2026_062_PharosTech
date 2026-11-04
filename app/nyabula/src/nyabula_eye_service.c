@@ -21,6 +21,7 @@
 
 #include "../include/nyabula_eye_service.h"
 #include <errno.h>
+#include <nuttx/compiler.h>
 #include <nuttx/config.h>
 #include <nuttx/mutex.h>
 #include <pthread.h>
@@ -114,8 +115,20 @@ static int nyabula_eye_service_enqueue(struct nyabula_core_command_s *command,
   return ret;
 }
 
+/****************************************************************************
+ * Name: nyabula_eye_service_boot_colors
+ ****************************************************************************/
+
+int weak_function
+nyabula_eye_service_boot_colors(uint32_t iris_rgb[NYABULA_EYE_COUNT])
+{
+  (void)iris_rgb;
+  return -ENOSYS;
+}
+
 int nyabula_eye_service_attach(lv_obj_t *left, lv_obj_t *right)
 {
+  uint32_t iris_rgb[NYABULA_EYE_COUNT];
   int ret;
   if (left == NULL || right == NULL || left == right)
     {
@@ -134,14 +147,23 @@ int nyabula_eye_service_attach(lv_obj_t *left, lv_obj_t *right)
       return -EBUSY;
     }
 
-  g_eye_engine = nyabula_eye_engine_create_dual(left, right);
+  ret = nyabula_eye_service_boot_colors(iris_rgb);
+  if (ret < 0 && ret != -ENOSYS)
+    {
+      nxmutex_unlock(&g_eye_lock);
+      return ret;
+    }
+
+  g_eye_engine = nyabula_eye_engine_create_dual_with_iris(
+      left, right, ret == 0 ? iris_rgb : NULL);
   if (g_eye_engine == NULL)
     {
       nxmutex_unlock(&g_eye_lock);
       return -ENOMEM;
     }
 
-  g_eye_control = nyabula_core_create(g_eye_engine);
+  g_eye_control =
+      nyabula_core_create_with_iris(g_eye_engine, ret == 0 ? iris_rgb : NULL);
   if (g_eye_control == NULL)
     {
       nyabula_eye_engine_destroy(g_eye_engine);

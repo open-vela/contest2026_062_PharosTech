@@ -52,4 +52,6 @@ void ny_product_dsp_progress(size_t frames, float peak, double ppm,
 void ny_product_dsp_release(int error);
 void ny_product_dsp_shutdown(void);
 int ny_product_dsp_tick(void);
+/* Fresh output meter, without JSON allocation or player ownership changes. */
+bool ny_product_dsp_meter(float *peak, char *source, size_t size);
 #endif

@@ -22,6 +22,7 @@
  */
 
 #include "nyamp_kws.h"
+#include "nyamp_kws_phrase.h"
 #include "nyampd_kws.h"
 
 namespace nyamp
@@ -32,6 +33,16 @@ namespace
 class SherpaKwsBackend final : public KwsBackend
 {
 public:
+  models::Status Prepare(KwsModel *model) override
+  {
+    std::string error;
+    return CompileWakePhrase(model->g2p_directory,
+                             model->directory + "/tokens.txt", model->phrase,
+                             &model->extra_keywords, &error)
+               ? models::Status::kOk
+               : models::Status::kInvalid;
+  }
+
   models::Status Load(const KwsModel &model) override
   {
     /* A zero keeps the default, which is the operating point the host
@@ -40,6 +51,7 @@ public:
     voice::KwsConfig config;
     config.model_directory = model.directory;
     config.keywords_file = model.keywords_file;
+    config.extra_keywords = model.extra_keywords;
     if (model.threshold > 0.0f)
       {
         config.keywords_threshold = model.threshold;

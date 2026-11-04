@@ -98,7 +98,12 @@ test('groups: expected files first, extras after, readiness from required files'
   assert.deepEqual(asr.rows.map((r) => [r.name, r.state]), [['encoder.onnx', 'present'], ['decoder.onnx', 'present'], ['joiner.onnx', 'partial'], ['tokens.txt', 'missing'], ['zzz.bin', 'present']]);
   assert.deepEqual([asr.ready, asr.missingRequired, asr.bytes], [false, 2, 31]);
   assert.equal(asr.rows[4].spec, null);
-  assert.equal(groups.find((g) => g.spec.kind === 'face').ready, true);
+  assert.equal(groups.find((g) => g.spec.kind === 'face').ready, false);
+  const runtime = parseModelsList({items:[
+    {path:'face/detector/yunet.rknn',kind:'face',bytes:10,partial:false},
+    {path:'face/recognizer/sface.rknn',kind:'face',bytes:20,partial:false},
+  ]});
+  assert.equal(groupModels(runtime).find(g=>g.spec.kind==='face').ready,true);
   assert.equal(groups.find((g) => g.spec.kind === 'llm').rows.every((r) => r.state === 'missing'), true);
   assert.equal(groupModels(null).length, 6);
 });

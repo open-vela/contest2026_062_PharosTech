@@ -39,36 +39,57 @@ function reload(): void { window.location.reload(); }
 
 <template>
   <Transition name="fade">
-    <div v-if="stale" class="banner" role="status">
+    <div v-if="stale" class="panel-update" role="status">
       <UiIcon name="sync" :size="18" />
-      <span>设备上的面板已更新，这个页面还是旧版本。刷新后才能看到新的界面和修复。</span>
-      <button class="retry" type="button" @click="reload">刷新</button>
+      <span>面板已更新，刷新即可使用新版。</span>
+      <button class="panel-update__reload" type="button" @click="reload">刷新</button>
     </div>
   </Transition>
 </template>
 
 <style scoped>
-.banner {
+.panel-update {
   display: flex;
+  flex: none;
   align-items: center;
-  gap: 10px;
-  padding: 8px 16px;
-  font-size: 13px;
-  background: color-mix(in srgb, var(--md-primary) 18%, var(--md-surface-container));
+  gap: 12px;
+  margin: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--radius-m, 12px);
+  font: 400 14px/1.5 var(--font-body);
+  background: var(--md-surface-container-high);
   color: var(--md-on-surface);
 }
-.banner span { flex: 1; min-width: 0; }
-.retry {
+.panel-update > :first-child { flex: none; color: var(--md-primary); }
+.panel-update span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.panel-update__reload {
   flex: none;
   border: 0;
-  border-radius: 999px;
-  padding: 6px 14px;
-  min-height: 32px;
-  font: 600 13px var(--font-body);
+  border-radius: var(--radius-s, 8px);
+  padding: 8px 16px;
+  min-height: 44px;
+  font: 600 14px var(--font-body);
   cursor: pointer;
   background: var(--md-primary);
   color: var(--md-on-primary);
 }
+.panel-update__reload:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 3px; }
+:global([data-skin='nebula'] .panel-update) {
+  background: var(--nb-glass-strong);
+  border-color: var(--nb-line-strong);
+  border-radius: 18px;
+  backdrop-filter: var(--nb-blur);
+  box-shadow: inset 0 1px 0 var(--nb-hi);
+}
+:global([data-skin='instrument'] .panel-update) { border-radius: 2px; border-left: 3px solid var(--md-primary); }
+:global([data-skin='instrument'] .panel-update__reload) { border-radius: 2px; }
+@media (max-width: 480px) {
+  .panel-update { margin: 6px 10px; padding: 8px 10px; gap: 8px; }
+}
 .fade-enter-active, .fade-leave-active { transition: opacity var(--dur-fast); }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .fade-enter-active, .fade-leave-active { transition: none; }
+}
 </style>

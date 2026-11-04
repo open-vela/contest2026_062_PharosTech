@@ -2368,6 +2368,18 @@ MeloFrontend::Process(const std::string &utf8_text,
   return result;
 }
 
+std::string MeloFrontend::SymbolName(std::int64_t id) const
+{
+  for (const auto &entry : impl_->tokens)
+    {
+      if (entry.second == id)
+        {
+          return entry.first;
+        }
+    }
+  return {};
+}
+
 const MeloFrontend::LoadStats &MeloFrontend::load_stats() const
 {
   return impl_->stats;

@@ -22,7 +22,7 @@ const tagOf = (c: Card): string => TAG_LABEL[c.tag ?? 'daily'] ?? c.tag ?? '日�
 const text = computed(() => card.value?.text ?? (core.available.value ? '还没有记忆' : '未连接支持记忆的 Core'));
 const tag = computed(() => (card.value ? tagOf(card.value) : ''));
 
-const scene = useEyeScene(props.type, () => (card.value ? memoryScene({ text: card.value.text, tag: tagOf(card.value) }) : null), { hideWhenEmpty: true });
+const scene = useEyeScene(props.type, () => (card.value ? memoryScene({ text: card.value.text, tag: tagOf(card.value) }) : null), { hideWhenEmpty: true, recordId: () => card.value?.id });
 
 function recall(): void {
   if (!cards.value.length) return;

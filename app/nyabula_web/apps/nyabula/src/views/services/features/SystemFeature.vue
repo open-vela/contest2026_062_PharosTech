@@ -29,7 +29,7 @@ const subtitle = computed(() => (info.value ? `Core ${version.value} · 已运�
 
 const kv = computed(() => [
   { key: '设备名称', value: info.value?.device?.name ?? session.device?.name ?? '—' },
-  { key: '设备 ID', value: info.value?.device?.id ?? '—', mono: true },
+  { key: '开发板型号', value: device.snapshot?.boardModel ?? '—' },
   { key: 'Core 版本', value: version.value, mono: true },
   { key: '运行时长', value: fmtUptime(info.value?.uptime) },
   { key: '已用内存', value: formatDeviceBytes(device.snapshot?.memory.usedBytes) },
@@ -61,7 +61,8 @@ const hide = () => scene.hide();
           <div class="g"><NkGauge v-if="cpu !== null" :value="cpu" label="CPU 采样" :size="ff === 'phone' ? 130 : 150" :warn-at="70" :error-at="90" /><span v-else>CPU 采样未提供</span></div>
           <div class="g"><NkGauge v-if="memory !== null" :value="memory" label="内存" :size="ff === 'phone' ? 130 : 150" :warn-at="75" :error-at="90" /><span v-else>内存数据未提供</span></div>
         </div>
-        <p class="muted small">CPU 为调度采样估算；内存来自设备分配器，不再使用演示数值。</p>
+        <p class="muted small">openvela {{ device.snapshot?.cpu.cores ? `${device.snapshot.cpu.cores} 核` : '' }} · 内存为系统堆用量</p>
+        <div v-if="device.snapshot?.temperatures?.length" class="temperatures"><div v-for="sensor in device.snapshot.temperatures" :key="sensor.zone"><span>{{ ({center:'芯片',bigcore:'A72',litcore:'A53',gpu:'GPU',npu:'NPU',ddr:'DDR'} as Record<string,string>)[sensor.zone] ?? sensor.zone }}</span><strong>{{ sensor.celsius.toFixed(0) }}<small> °C</small></strong></div></div>
         <MdButton variant="text" :disabled="!device.available || device.busy" @click="device.refresh()">刷新设备诊断</MdButton>
         <NkActionBar primary-text="显示到眼睛" primary-icon="visibility" secondary-text="隐藏" secondary-icon="close" :disabled="!scene.canShow.value" @primary="push" @secondary="hide" />
       </section>
@@ -86,7 +87,7 @@ const hide = () => scene.hide();
 
 <style scoped>
 .feature { display: flex; flex-direction: column; gap: 16px; }
-.grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+.grid { align-items: start; display: grid; grid-template-columns: 1fr; gap: 16px; }
 .feature.desktop .grid { grid-template-columns: 1fr 1fr; }
 .card {
   display: flex; flex-direction: column; gap: 16px;
@@ -94,5 +95,9 @@ const hide = () => scene.hide();
 }
 .gauges { display: flex; justify-content: space-around; gap: 12px; }
 .g { display: flex; justify-content: center; }
+.temperatures { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+.temperatures>div { display:grid; gap:8px; padding:14px; border-radius:14px; background:var(--md-surface-container-high); }
+.temperatures span,.temperatures small { color:var(--md-on-surface-variant); font-size:13px; }
+.temperatures strong { font-size:24px; font-variant-numeric:tabular-nums; }
 .small { font-size: 12px; margin: 0; text-align: center; }
 </style>

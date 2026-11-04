@@ -20,7 +20,7 @@
 #include <string.h>
 
 #define COUNT(list) (sizeof(list) / sizeof((list)[0]))
-#define KINDS       ((int)NY_AGENT_LOCAL_TASK + 1)
+#define KINDS       ((int)NY_AGENT_LOCAL_TRACK_STOP + 1)
 
 #define CHECK(condition, ...)                 \
   do                                          \
@@ -108,6 +108,16 @@ struct kind_case_s
 };
 
 static const struct kind_case_s g_kind_cases[] = {
+  { "打开左耳灯", NY_AGENT_LOCAL_LIGHTING, true },
+  { "把右耳灯变成蓝色", NY_AGENT_LOCAL_LIGHTING, true },
+  { "关闭全部灯", NY_AGENT_LOCAL_LIGHTING, true },
+  { "把底座灯亮度调到百分之二十", NY_AGENT_LOCAL_LIGHTING, true },
+  { "让耳朵跟随瞳色", NY_AGENT_LOCAL_LIGHTING, true },
+  { "把胸口灯设为状态灯", NY_AGENT_LOCAL_LIGHTING, true },
+  { "把左耳灯亮一点", NY_AGENT_LOCAL_LIGHTING, true },
+  { "不要开灯", NY_AGENT_LOCAL_CHAT, false },
+  { "灯光为什么会闪", NY_AGENT_LOCAL_CHAT, false },
+
   /* Time and date */
 
   { "现在几点了", NY_AGENT_LOCAL_TIME, true },
@@ -1492,7 +1502,7 @@ static void test_names(void)
     "timer.list", "alarm.list", "task.list",   "expression",   "timer",
     "alarm",      "volume.set", "volume.up",   "volume.down",  "mute",
     "unmute",     "music.play", "music.pause", "music.resume", "music.stop",
-    "remember",   "task"
+    "remember",   "task",       "lighting", "track.learn", "track.stop"
   };
   CHECK(COUNT(names) == (size_t)KINDS, "name table size");
   for (int kind = 0; kind < KINDS; kind++)
@@ -2838,6 +2848,70 @@ static void fuzz(unsigned long iterations, uint64_t seed)
          g_failures);
 }
 
+static void test_lighting(void)
+{
+  struct ny_agent_local_intent_s intent;
+  const char *tool = NULL;
+  detect("把右耳灯变成蓝色", &intent);
+  cJSON *call = call_of(&intent, &g_context, &tool);
+  CHECK(call && !strcmp(tool, "nyabula_lighting"), "lighting tool");
+  const cJSON *args = cJSON_GetObjectItemCaseSensitive(call, "arguments");
+  CHECK(!strcmp(text_of(args, "group"), "right_ear"), "right ear target");
+  CHECK(!strcmp(text_of(args, "color"), "#0000ff"), "blue color");
+  cJSON_Delete(call);
+  detect("把底座灯亮度调到百分之二十", &intent);
+  call = call_of(&intent, &g_context, &tool);
+  args = cJSON_GetObjectItemCaseSensitive(call, "arguments");
+  CHECK(number_of(args, "brightness") == 20, "lighting brightness");
+  cJSON_Delete(call);
+  detect("把左耳朵灯变成蓝色", &intent);
+  call = call_of(&intent, &g_context, &tool);
+  args = cJSON_GetObjectItemCaseSensitive(call, "arguments");
+  CHECK(!strcmp(text_of(args, "group"), "left_ear"),
+        "specific ear is not both ears");
+  cJSON_Delete(call);
+  detect("把底座灯亮度调到百分之百", &intent);
+  call = call_of(&intent, &g_context, &tool);
+  args = cJSON_GetObjectItemCaseSensitive(call, "arguments");
+  CHECK(number_of(args, "brightness") == 100, "full lighting range");
+  cJSON_Delete(call);
+  detect("让耳朵跟随瞳色", &intent);
+  call = call_of(&intent, &g_context, &tool);
+  args = cJSON_GetObjectItemCaseSensitive(call, "arguments");
+  CHECK(!strcmp(text_of(args, "colorMode"), "iris"), "iris sync");
+  cJSON_Delete(call);
+  detect("把左耳灯亮一点", &intent);
+  call = call_of(&intent, &g_context, &tool);
+  args = cJSON_GetObjectItemCaseSensitive(call, "arguments");
+  CHECK(number_of(args, "brightnessDelta") == 5, "lighting delta");
+  cJSON_Delete(call);
+  detect("开启灯光极光模式", &intent);
+  call = call_of(&intent, &g_context, &tool);
+  args = cJSON_GetObjectItemCaseSensitive(call, "arguments");
+  CHECK(!strcmp(text_of(call, "topic"), "lighting.preset") &&
+            !strcmp(text_of(args, "name"), "aurora"),
+        "aurora preset");
+  cJSON_Delete(call);
+}
+
+static void test_tracking(void)
+{
+  const char *learn[]={"学习一下","请学习一下。","学习这个物品","跟踪这个物品"};
+  const char *stop[]={"停止物品追踪","停止跟踪","不要跟踪了"};
+  struct ny_agent_local_intent_s intent;
+  for(unsigned int i=0;i<COUNT(learn);i++)
+    {
+      detect(learn[i],&intent);CHECK(intent.kind==NY_AGENT_LOCAL_TRACK_LEARN&&intent.complete,"learn intent");
+      const char *tool=NULL;cJSON *call=call_of(&intent,&g_context,&tool);
+      CHECK(call&&!strcmp(tool,"nyabula_tracking")&&!strcmp(text_of(call,"topic"),"vision.learn"),"tracking call");
+      cJSON_Delete(call);
+    }
+  for(unsigned int i=0;i<COUNT(stop);i++)
+    {detect(stop[i],&intent);CHECK(intent.kind==NY_AGENT_LOCAL_TRACK_STOP,"stop intent");}
+  detect("学习一下数学",&intent);CHECK(intent.kind==NY_AGENT_LOCAL_CHAT,"unrelated learning is not tracking");
+  detect("不要学习一下",&intent);CHECK(intent.kind==NY_AGENT_LOCAL_CHAT,"negated learning is not tracking");
+}
+
 /****************************************************************************
  * Name: main
  ****************************************************************************/
@@ -2850,6 +2924,8 @@ int main(int argc, char **argv)
            argc >= 4 ? strtoull(argv[3], NULL, 10) : 1);
       return g_failures ? 1 : 0;
     }
+  test_lighting();
+  test_tracking();
   test_names();
   test_kinds();
   test_timers();

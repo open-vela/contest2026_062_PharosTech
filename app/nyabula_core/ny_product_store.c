@@ -86,8 +86,11 @@ static int ny_product_store_key(const char *domain, char *key, size_t capacity)
                                          "wifi",
                                          "bluetooth",
                                          "voice",
+                                         "speaker",
                                          "light",
-                                         "eyes" };
+                                         "lighting",
+                                         "eyes",
+                                         "camera-gaze" };
 
   if (domain == NULL)
     {

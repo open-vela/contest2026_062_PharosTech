@@ -115,10 +115,15 @@ test('briefing / companion / devices', () => {
     audioDevices: [{ available: true }, { available: false }], storage: [{ available: true }],
     network: { interfaces: [{ up: true, loopback: true }, { up: true }, { up: false }] },
   };
-  assert.deepEqual(hardwareCounts(snapshot), { audio: 1, storage: 1, network: 1, total: 3 });
+  assert.deepEqual(hardwareCounts(snapshot), { audio: 1, storage: 1, network: 1, camera: 0, lighting: 0, total: 3 });
   assert.deepEqual(devicesScene(snapshot), { device_count: 3, title: '3', subtitle: '个硬件在线', detail: '音频 1 · 存储 1 · 网络 1' });
   // 0 would show the device's demo "2": the count always travels as the title too.
   assert.equal(devicesScene(null).title, '0');
+  const connected = { ...snapshot, peripherals: [{kind:'camera',available:true},{kind:'lighting',available:true}] };
+  assert.equal(hardwareCounts(connected).total,5);
+  assert.equal(devicesScene(connected).device_count,5);
+  assert.match(devicesScene(connected).detail,/摄影 1 · 灯光 1/);
+
 });
 
 test('music / audio / network / system / caption / weather', () => {
@@ -156,10 +161,10 @@ test('music / audio / network / system / caption / weather', () => {
 
 test('feature registry: stages', () => {
   const planned = FEATURES.filter((f) => f.stage === 'planned').map((f) => f.type).sort();
-  assert.deepEqual(planned, ['battery', 'health', 'home', 'identity', 'presence', 'privacy']);
+  assert.deepEqual(planned, []);
   assert.ok(FEATURES.every((f) => f.stage === 'ready' || f.stage === 'planned'));
   assert.ok(FEATURES.filter((f) => f.stage === 'planned').every((f) => f.needs));
   // Hardware services need not claim a graphical scene.
   const notScenes = FEATURES.filter((f) => f.stage === 'ready' && coreSceneName(f.type) === null).map((f) => f.type).sort();
-  assert.deepEqual(notScenes, ['bluetooth', 'nas', 'pairing', 'sleep']);
+  assert.deepEqual(notScenes, ['bluetooth', 'camera', 'lighting', 'nas', 'pairing', 'sleep', 'wake']);
 });

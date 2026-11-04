@@ -25,6 +25,9 @@
 #include "nyampd_llm.h"
 #include "nyampd_provision.h"
 #include "nyampd_tts.h"
+#include "nyampd_vision.h"
+#include "nyampd_speaker.h"
+#include "nyamp_vision_wire.h"
 
 #include <cstring>
 #include <string>
@@ -587,6 +590,8 @@ int DispatchKws(const nyamp_header_s &request, KwsService *kws,
   switch (request.opcode)
     {
       case NYAMP_KWS_LOAD:
+      case NYAMP_KWS_LOAD_TEXT:
+      case NYAMP_KWS_PREPARE_TEXT:
         {
           nyamp_kws_load_s load{};
           bool deferred = false;
@@ -598,7 +603,9 @@ int DispatchKws(const nyamp_header_s &request, KwsService *kws,
               break;
             }
 
-          status = ModelStatus(kws->BeginLoad(load, request, &deferred));
+          status = ModelStatus(request.opcode == NYAMP_KWS_PREPARE_TEXT
+                                   ? kws->PrepareText(load, request, &deferred)
+                                   : kws->BeginLoad(load, request, &deferred, request.opcode == NYAMP_KWS_LOAD_TEXT));
           if (deferred)
             {
               *response_size = 0;
@@ -703,20 +710,23 @@ int Dispatch(const std::uint8_t *request_wire, std::size_t request_size,
              std::uint8_t *response, std::size_t response_capacity,
              std::size_t *response_size, std::string_view diagnostics,
              LlmService *llm, BlobService *blob,
-             const SpeechServices *speech)
+             const SpeechServices *speech, VisionService *vision)
 {
   nyamp_header_s request;
   int result = NYAMP_OK;
   AsrService *asr = speech != nullptr ? speech->asr : nullptr;
   TtsService *tts = speech != nullptr ? speech->tts : nullptr;
   KwsService *kws = speech != nullptr ? speech->kws : nullptr;
+  SpeakerService *speaker = speech != nullptr ? speech->speaker : nullptr;
   const std::uint32_t capabilities =
       kCapabilityHealth | (llm != nullptr ? kCapabilityLlm : 0U) |
       (blob != nullptr ? kCapabilityBlob : 0U) |
       (llm != nullptr && llm->ChatSupported() ? kCapabilityChat : 0U) |
       (asr != nullptr && asr->Supported() ? kCapabilityAsr : 0U) |
       (tts != nullptr && tts->Supported() ? kCapabilityTts : 0U) |
-      (kws != nullptr && kws->Supported() ? kCapabilityKws : 0U);
+      (kws != nullptr && kws->Supported() ? kCapabilityKws : 0U) |
+      (vision != nullptr && vision->Supported() ? (1U << 7) : 0U) |
+      (speaker != nullptr && speaker->Supported() ? (1U << 8) : 0U);
 
   if (request_wire == nullptr || response == nullptr ||
       response_size == nullptr)
@@ -780,6 +790,14 @@ int Dispatch(const std::uint8_t *request_wire, std::size_t request_size,
       return NYAMP_OK;
     }
 
+  if (kind == NYAMP_FLAG_CANCEL && request.service == NYAMP_SERVICE_SPEAKER)
+    {
+      if (speaker && request.payload_size == 0 && request_size == NYAMP_WIRE_HEADER_SIZE &&
+          request.generation == generation) speaker->Cancel(request.request_id);
+      *response_size = 0;
+      return NYAMP_OK;
+    }
+
   if (request_size != NYAMP_WIRE_HEADER_SIZE + request.payload_size ||
       request.flags != NYAMP_FLAG_REQUEST)
     {
@@ -835,6 +853,72 @@ int Dispatch(const std::uint8_t *request_wire, std::size_t request_size,
       return DispatchKws(request, kws, generation,
                          request_wire + NYAMP_WIRE_HEADER_SIZE, response,
                          response_capacity, response_size);
+    }
+
+  if (request.service == NYAMP_SERVICE_SPEAKER)
+    {
+      std::uint8_t body[NYAMP_INLINE_MAX-4]; std::size_t size=0; bool deferred=false;
+      std::int32_t status=speaker ? speaker->Handle(request,request_wire+NYAMP_WIRE_HEADER_SIZE,
+                                                    body,&size,&deferred) : NYAMP_MODEL_UNSUPPORTED;
+      if(deferred){*response_size=0;return NYAMP_OK;}
+      return EncodeResponse(request,status,generation,capabilities,body,size,response,response_capacity,response_size);
+    }
+
+  if (request.service == NYAMP_SERVICE_VISION)
+    {
+      std::int32_t status = NYAMP_MODEL_UNSUPPORTED;
+      std::uint8_t body[NYAMP_BUFFER_SIZE];
+      std::size_t size = 0;
+      const std::uint8_t *payload = request_wire + NYAMP_WIRE_HEADER_SIZE;
+      if (vision != nullptr)
+        {
+          switch (request.opcode)
+            {
+              case NYAMP_VISION_LOAD:
+              case NYAMP_VISION_IDENTITY_LOAD:
+              case NYAMP_VISION_TRACK_LOAD:
+                if (request.payload_size == 0 ||
+                    std::memchr(payload, 0, request.payload_size) != nullptr)
+                  status = NYAMP_MODEL_INVALID;
+                else
+                  {
+                    bool deferred = false;
+                    const std::string name(reinterpret_cast<const char *>(payload),request.payload_size);
+                    status = ModelStatus(request.opcode == NYAMP_VISION_LOAD
+                        ? vision->Load(name,request,&deferred)
+                        : request.opcode == NYAMP_VISION_TRACK_LOAD
+                          ? vision->LoadTracker(name,request,&deferred)
+                          : vision->LoadIdentity(name,request,&deferred));
+                    if (deferred) { *response_size = 0; return NYAMP_OK; }
+                  }
+                break;
+              case NYAMP_VISION_BEGIN:
+                if (request.payload_size != 0) status = NYAMP_MODEL_INVALID;
+                else
+                  {
+                    nyamp_buffer_s grant{};
+                    status = vision->Begin(&grant);
+                    if (status == 0 && nyamp_buffer_encode(body, sizeof(body), &size, &grant) != NYAMP_OK)
+                      status = NYAMP_MODEL_BACKEND_ERROR;
+                  }
+                break;
+              case NYAMP_VISION_FRAME:
+              case NYAMP_VISION_EMBED:
+              case NYAMP_VISION_TRACK_INIT:
+              case NYAMP_VISION_TRACK_FRAME:
+                status = vision->Analyze(payload, request.payload_size, request);
+                if (status == 0) { *response_size = 0; return NYAMP_OK; }
+                break;
+              case NYAMP_VISION_END:
+                status = request.payload_size ? NYAMP_MODEL_INVALID : vision->End();
+                break;
+              case NYAMP_VISION_UNLOAD:
+                status = request.payload_size ? NYAMP_MODEL_INVALID : vision->Unload();
+                break;
+            }
+        }
+      return EncodeResponse(request, status, generation, capabilities,
+                             body, size, response, response_capacity, response_size);
     }
 
   if (request.service == NYAMP_SERVICE_HEALTH &&

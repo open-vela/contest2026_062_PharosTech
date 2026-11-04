@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <math.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -114,20 +115,33 @@ static int ny_openmeteo_location(const cJSON *config, cJSON **result)
   const char *province = ny_openmeteo_string(config, "province");
   if (!city[0] || strlen(city) > 96 || strlen(province) > 96)
     return -EINVAL;
-  size_t used = snprintf(path, sizeof(path),
-                         "/v1/search?count=1&language=zh&format=json&name=");
-  const char *parts[] = { city, province };
-  for (size_t i = 0; i < 2; i++)
+  const cJSON *id = cJSON_GetObjectItemCaseSensitive(config, "locationId");
+  bool selected = id != NULL && !cJSON_IsNull(id);
+  if (selected && (!cJSON_IsNumber(id) || !isfinite(id->valuedouble) ||
+                   id->valuedouble < 1 || id->valuedouble > UINT32_MAX ||
+                   floor(id->valuedouble) != id->valuedouble))
+    return -EINVAL;
+  if (selected)
+    snprintf(path, sizeof(path), "/v1/get?id=%.0f", id->valuedouble);
+  else
     {
-      if (i && !province[0])
-        break;
-      if (i)
-        used += snprintf(path + used, sizeof(path) - used, "%%2C");
-      for (const unsigned char *p = (const unsigned char *)parts[i]; *p; p++)
+      size_t used =
+          snprintf(path, sizeof(path),
+                   "/v1/search?count=1&language=zh&format=json&name=");
+      const char *parts[] = { city, province };
+      for (size_t i = 0; i < 2; i++)
         {
-          if (used + 4 >= sizeof(path))
-            return -E2BIG;
-          used += snprintf(path + used, sizeof(path) - used, "%%%02X", *p);
+          if (i && !province[0])
+            break;
+          if (i)
+            used += snprintf(path + used, sizeof(path) - used, "%%2C");
+          for (const unsigned char *p = (const unsigned char *)parts[i]; *p;
+               p++)
+            {
+              if (used + 4 >= sizeof(path))
+                return -E2BIG;
+              used += snprintf(path + used, sizeof(path) - used, "%%%02X", *p);
+            }
         }
     }
   cJSON *response = NULL;
@@ -135,13 +149,17 @@ static int ny_openmeteo_location(const cJSON *config, cJSON **result)
                              &response);
   if (ret < 0)
     return ret;
-  const cJSON *place = cJSON_GetArrayItem(
-      cJSON_GetObjectItemCaseSensitive(response, "results"), 0);
+  const cJSON *place =
+      selected ? response
+               : cJSON_GetArrayItem(
+                     cJSON_GetObjectItemCaseSensitive(response, "results"), 0);
   double latitude = ny_openmeteo_number(place, "latitude", -1);
   double longitude = ny_openmeteo_number(place, "longitude", -1);
   if (!cJSON_IsObject(place))
     ret = -ENOENT;
-  else if (!isfinite(latitude) || latitude < -90 || latitude > 90 ||
+  else if ((selected &&
+            ny_openmeteo_number(place, "id", -1) != id->valuedouble) ||
+           !isfinite(latitude) || latitude < -90 || latitude > 90 ||
            !isfinite(longitude) || longitude < -180 || longitude > 180 ||
            !ny_openmeteo_string(place, "name")[0])
     ret = -EBADMSG;
@@ -162,7 +180,9 @@ static int ny_openmeteo_location(const cJSON *config, cJSON **result)
           cJSON_AddStringToObject(*result, "country",
                                   ny_openmeteo_string(place, "country")) &&
           cJSON_AddStringToObject(*result, "adm1",
-                                  ny_openmeteo_string(place, "admin1"));
+                                  ny_openmeteo_string(place, "admin1")) &&
+          cJSON_AddStringToObject(*result, "adm2",
+                                  ny_openmeteo_string(place, "admin2"));
       ret = valid ? 0 : -ENOMEM;
     }
   cJSON_Delete(response);

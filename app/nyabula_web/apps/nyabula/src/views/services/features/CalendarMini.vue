@@ -24,7 +24,7 @@ const next = computed<CalRecord | null>(() => core.items.value.filter((e) => e.s
 const line = computed(() => !core.available.value ? '未连接支持日历的 Core'
   : next.value ? `${next.value.title} · ${calendarCountdown(next.value.start_at)}` : '暂无即将到来的日程');
 
-const scene = useEyeScene(props.type, () => (next.value ? calendarScene({ title: next.value.title, startAt: next.value.start_at }) : null), { hideWhenEmpty: true });
+const scene = useEyeScene(props.type, () => (next.value ? calendarScene({ title: next.value.title, startAt: next.value.start_at }) : null), { hideWhenEmpty: true, recordId: () => next.value?.id });
 </script>
 
 <template>

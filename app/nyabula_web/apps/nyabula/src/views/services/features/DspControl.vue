@@ -7,7 +7,7 @@ import CrossoverControls from './CrossoverControls.vue';
 import { LEGACY_BANDS, LISTENING_PRESETS, expandLegacyBands, presetMasterDb, eqPreset, eqResponse, eqPeak, validBands, type EqBand } from '../../../lib/dspEqualizer';
 const props=defineProps<{mode:'eq'|'subwoofer'}>();
 interface Config { eqEnabled:boolean;masterDb:number;crossoverHz:number;satelliteHighpassHz?:number;bassLowpassHz?:number;bassEnabled:boolean;bypass:boolean;eqDb:number[];eqBands:EqBand[];eqBands16?:EqBand[];outputGainDb:number[];delayMs:number[];invert:boolean[] }
-interface Status { settingsSaved?:boolean;config:Config;running:boolean;stopping:boolean;source?:string;track:string;sampleRate:number;processedFrames:number;outputPeak:number;usbClockPpm:number;usbUnderruns:number;lastError:number;bassPresent:boolean;satelliteDevice:string;bassDevice:string;simulated?:boolean }
+interface Status { bassSuppressed?:boolean;bassEffective?:boolean; settingsSaved?:boolean;config:Config;running:boolean;stopping:boolean;source?:string;track:string;sampleRate:number;processedFrames:number;outputPeak:number;usbClockPpm:number;usbUnderruns:number;lastError:number;bassPresent:boolean;satelliteDevice:string;bassDevice:string;simulated?:boolean }
 type CustomPreset={name:string;config:Pick<Config,'eqBands16'|'masterDb'|'eqEnabled'>};
 const customPresets=ref<CustomPreset[]>([]),presetName=ref(''),selectedPreset=ref('');
 const nameValid=computed(()=>!!presetName.value.trim()&&new TextEncoder().encode(presetName.value.trim()).length<=48&&!/[\x00-\x1f\x7f]/.test(presetName.value));
@@ -21,7 +21,8 @@ const colors=Array.from({length:16},(_,i)=>`hsl(${35+i*20} 62% 68%)`);
 const presetBands=Object.fromEntries(LISTENING_PRESETS.map(p=>[p.id,eqPreset(p.id)]));
 const ticks=[20,50,100,200,500,1000,2000,5000,10000,20000];
 const types=[{value:'peak',label:'钟形 · Peak'},{value:'lowShelf',label:'低架 · Low shelf'},{value:'highShelf',label:'高架 · High shelf'}];
-const canEdit=computed(()=>session.canControl&&session.connected&&!!draft.value&&!busy.value);
+const bassSuppressed=computed(()=>status.value?.bassSuppressed===true);
+const canEdit=computed(()=>(props.mode!=='subwoofer'||!bassSuppressed.value)&&session.canControl&&session.connected&&!!draft.value&&!busy.value);
 const valid=computed(()=>!!draft.value&&validBands(draft.value.eqBands)&&Number.isFinite(draft.value.masterDb)&&draft.value.masterDb>=-30&&draft.value.masterDb<=0);
 const band=computed(()=>draft.value?.eqBands[active.value]);
 const boost=computed(()=>valid.value&&draft.value!.eqEnabled?eqPeak(draft.value!.eqBands):0);
@@ -87,7 +88,7 @@ useVisiblePoll(()=>void refresh(),2000);
     <p v-if="status?.simulated" class="service-note">模拟器仅预览设置，没有真实音频输出。</p>
     <template v-if="draft && status">
       <section class="ui-panel control-card">
-        <div class="section-head"><div><span class="eyebrow">{{mode==='eq'?'PARAMETRIC EQ':'OUTPUT CALIBRATION'}}</span><h3>{{mode==='eq'?'16 段，细调你的声音':'低音炮与声道校准'}}</h3><p>{{mode==='eq'?'蓝牙音乐、语音播报、文件播放共用；通话保持独立。':'未连接低音炮时保持关闭，左右声道继续输出全频。'}}</p></div><span class="mode-tag">{{draft.bassEnabled?'2.1 分频':'全频立体声'}}</span></div>
+        <div class="section-head"><div><span class="eyebrow">{{mode==='eq'?'PARAMETRIC EQ':'OUTPUT CALIBRATION'}}</span><h3>{{mode==='eq'?'16 段，细调你的声音':'低音炮与声道校准'}}</h3><p>{{mode==='eq'?'蓝牙音乐、语音播报、文件播放共用；通话保持独立。':'未连接低音炮时保持关闭，左右声道继续输出全频。'}}</p></div><span class="mode-tag">{{bassSuppressed?'耳机全频':draft.bassEnabled?'2.1 分频':'全频立体声'}}</span></div>
         <template v-if="mode==='eq'">
           <div class="listening-presets"><button v-for="p in LISTENING_PRESETS" :key="p.id" :disabled="!canEdit||liveBusy" :class="{chosen:presetSelected(p.id)&&!dirty}" @click="listenPreset(p.id)"><svg viewBox="0 0 80 40" aria-hidden="true"><path :d="`${presetThumbnail(p.id)} L80,40 L0,40Z`"/></svg><strong>{{p.name}}</strong><small>{{p.detail}}</small></button></div>
           <p class="hint">预设包含主增益补偿，点击即应用。手动调节后，满意再保存。</p>
@@ -119,7 +120,8 @@ useVisiblePoll(()=>void refresh(),2000);
 
         </template>
         <template v-else>
-          <div class="setting"><div><strong>启用 USB 低音炮</strong><p>{{status.bassPresent?'检测到 USB 音频节点；请确认已连接低音炮和功放。':'未检测到 USB 音频节点。'}}播放中也可切换。</p></div><MdSwitch v-model="draft.bassEnabled" aria-label="启用 USB 低音炮" :disabled="!canEdit||liveBusy||(!draft.bassEnabled&&!status.bassPresent)" @update:model-value="toggleBass"/></div>
+          <p v-if="bassSuppressed" class="service-note" role="status">当前仅耳机输出，2.1 低音炮与分频已停用。切回扬声器或同时输出后恢复原设置。</p>
+          <div class="setting"><div><strong>启用 USB 低音炮</strong><p>{{status.bassPresent?'检测到 USB 音频节点；请确认已连接低音炮和功放。':'未检测到 USB 音频节点。'}}<template v-if="!bassSuppressed">播放中也可切换。</template></p></div><MdSwitch :model-value="draft.bassEnabled&&!bassSuppressed" aria-label="启用 USB 低音炮" :disabled="!canEdit||liveBusy||(!draft.bassEnabled&&!status.bassPresent)" @update:model-value="draft.bassEnabled=$event;toggleBass()"/></div>
           <CrossoverControls v-if="independentCrossover" :satellite-highpass-hz="draft.satelliteHighpassHz??draft.crossoverHz" :bass-lowpass-hz="draft.bassLowpassHz??draft.crossoverHz" :disabled="!canEdit||!draft.bassEnabled" @update:satellite-highpass-hz="draft.satelliteHighpassHz=$event;dirty=true" @update:bass-lowpass-hz="draft.bassLowpassHz=$event;dirty=true"/>
           <label v-else class="range-setting"><span>分频点 · Linkwitz–Riley 24 dB/oct</span><output>{{draft.crossoverHz}} Hz</output><input v-model.number="draft.crossoverHz" type="range" min="40" max="300" step="5" :disabled="!canEdit||!draft.bassEnabled" @input="dirty=true"/></label>
           <div class="output-grid"><section v-for="(channel,i) in channels" :key="channel"><h4>{{channel}}</h4><label>增益 (dB)<input v-model.number="draft.outputGainDb[i]" type="number" min="-24" max="6" step="0.5" :disabled="!canEdit" @input="dirty=true"/></label><label>延迟 (ms)<input v-model.number="draft.delayMs[i]" type="number" min="0" max="100" step="0.1" :disabled="!canEdit" @input="dirty=true"/></label><MdSwitch :model-value="!!draft.invert[i]" label="反相" :disabled="!canEdit" @update:model-value="draft.invert[i]=$event;dirty=true"/></section></div>
@@ -132,7 +134,7 @@ useVisiblePoll(()=>void refresh(),2000);
       <section class="ui-panel control-card playback">
         <div class="section-head"><div><span class="eyebrow">COMMON AUDIO ENGINE</span><h3>{{status.running?sourceLabel:'等待音频输入'}}</h3></div><span class="mode-tag" :class="{ok:status.running}">{{status.stopping?'正在停止':status.running?'48 kHz · 处理中':'48 kHz · 就绪'}}</span></div>
         <p v-if="status.lastError" role="alert" class="service-error">{{status.lastError===-4?'普通播放已让给电话通话':`播放错误 ${status.lastError}：请检查音频设备、文件格式或设备占用。`}}</p>
-        <dl class="telemetry"><div><dt>处理帧</dt><dd>{{status.processedFrames.toLocaleString()}}</dd></div><div><dt>输出峰值</dt><dd>{{status.outputPeak>0?(20*Math.log10(status.outputPeak)).toFixed(1):'−∞'}} <small>dBFS</small></dd></div><template v-if="draft.bassEnabled"><div><dt>USB 队列校正</dt><dd>{{status.usbClockPpm.toFixed(0)}} <small>ppm</small></dd></div><div><dt>USB 欠载</dt><dd>{{status.usbUnderruns}}</dd></div></template></dl>
+        <dl class="telemetry"><div><dt>处理帧</dt><dd>{{status.processedFrames.toLocaleString()}}</dd></div><div><dt>输出峰值</dt><dd>{{status.outputPeak>0?(20*Math.log10(status.outputPeak)).toFixed(1):'−∞'}} <small>dBFS</small></dd></div><template v-if="draft.bassEnabled&&!bassSuppressed"><div><dt>USB 队列校正</dt><dd>{{status.usbClockPpm.toFixed(0)}} <small>ppm</small></dd></div><div><dt>USB 欠载</dt><dd>{{status.usbUnderruns}}</dd></div></template></dl>
         <details class="test-player"><summary>测试文件播放</summary><div class="play-row"><select v-model="track" aria-label="DSP 播放文件" :disabled="busy||status.running"><option value="" disabled>选择 48 kHz 立体声 WAV</option><option v-for="name in tracks" :key="name">{{name}}</option></select><MdButton variant="text" @click="library">刷新曲库</MdButton></div><p class="hint">普通音乐直接在音乐页播放，蓝牙与语音也会自动通过 DSP。这里仅用于测试标准 48 kHz 双声道 WAV。</p><div class="buttons"><MdButton v-if="status.running&&status.source==='test'" :disabled="busy" @click="action('dsp.stop')">停止测试</MdButton><MdButton v-else :disabled="status.running||!track||busy||dirty||!session.canControl||!!status.simulated" @click="action('dsp.play',{track})">播放测试文件</MdButton></div></details>
       </section>
     </template>

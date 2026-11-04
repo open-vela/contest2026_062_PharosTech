@@ -19,8 +19,8 @@
  *
  ****************************************************************************/
 
-#include "mimo_options.c"
 #include "ny_mimo.c"
+#include "mimo_options.c"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +32,7 @@ static const char *thinking_level = "none";
 static int scenario;
 static int received;
 static bool cancel;
+static bool inline_image;
 
 int claw_config_get(const char *key, char *value, size_t size)
 {
@@ -110,6 +111,10 @@ int vela_https_request_once(const char *server, const char *port,
       cJSON *message =
           cJSON_GetArrayItem(cJSON_GetObjectItem(request, "messages"), 0);
       assert(cJSON_GetArraySize(cJSON_GetObjectItem(message, "content")) == 2);
+      cJSON *image = cJSON_GetArrayItem(cJSON_GetObjectItem(message, "content"), 1);
+      const char *url = ny_mimo_string(cJSON_GetObjectItem(image, "image_url"), "url");
+      assert(!strcmp(url, inline_image ? "data:image/png;base64,iVBORw0KGgo="
+                                       : "https://example.com/cat.jpg"));
       snprintf(response, capacity,
                "{\"choices\":[{\"message\":{\"content\":\"A cat\"}}]}");
       cJSON_Delete(request);
@@ -222,6 +227,16 @@ int main(void)
           "{\"url\":\"https://example.com/cat.jpg\",\"prompt\":\"Describe\"}",
           output, sizeof(output)) == 0);
   assert(!strcmp(output, "A cat"));
+  const uint8_t png[] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+  inline_image = true;
+  assert(ny_mimo_vision_png(png, sizeof(png), "Describe", output, sizeof(output)) == 0);
+  assert(!strcmp(output, "A cat"));
+  assert(ny_mimo_vision_png(png, sizeof(png), "Describe", output, 3) == -E2BIG);
+  assert(ny_mimo_vision_png(png, 262145, "Describe", output, sizeof(output)) == -EINVAL);
+  assert(ny_mimo_vision_png(png, sizeof(png), "", output, sizeof(output)) == -EINVAL);
+  assert(ny_mimo_vision_png((const uint8_t *)"not-a-png", 9, "Describe", output, sizeof(output)) == -EINVAL);
+  inline_image = false;
+  assert(ny_mimo_vision_tool("{\"url\":\"data:image/png;base64,iVBORw0KGgo=\",\"prompt\":\"Describe\"}", output, sizeof(output)) == -EINVAL);
   assert(ny_mimo_vision_tool(
              "{\"url\":\"file:///secret\",\"prompt\":\"Describe\"}", output,
              sizeof(output)) == -EINVAL);

@@ -124,6 +124,8 @@ struct ny_voice_wire_kws_s
   float score;
   uint16_t max_active_paths;
   uint16_t num_trailing_blanks;
+  const char
+      *phrase; /* Optional extra UTF-8 wake phrase; NULL keeps defaults. */
 };
 
 /* One decoded event.  `text` points into the frame handed to
@@ -177,6 +179,10 @@ void ny_voice_wire_init(struct ny_voice_wire_s *wire,
 /* A nyamp_model_status_e as the negated errno this module returns. */
 
 int ny_voice_wire_errno(int32_t status);
+/* One finite voice-family RPC. No stream or event ownership survives it. */
+int ny_voice_wire_request(struct ny_voice_wire_s *wire, uint16_t service,
+                           uint16_t opcode, const uint8_t *body, size_t size,
+                           int timeout_ms, uint8_t *reply, size_t *reply_size);
 
 /****************************************************************************
  * Name: ny_voice_wire_load / ny_voice_wire_unload
@@ -198,6 +204,9 @@ int ny_voice_wire_errno(int32_t status);
 int ny_voice_wire_load(struct ny_voice_wire_s *wire, uint16_t service,
                        const char *directory,
                        const struct ny_voice_wire_kws_s *kws, int timeout_ms);
+int ny_voice_wire_kws_prepare(struct ny_voice_wire_s *wire,
+                              const char *directory, const char *phrase,
+                              int timeout_ms);
 int ny_voice_wire_unload(struct ny_voice_wire_s *wire, uint16_t service);
 
 /* KWS: the always-on stream.  `samples` are 16 kHz mono; they cross the

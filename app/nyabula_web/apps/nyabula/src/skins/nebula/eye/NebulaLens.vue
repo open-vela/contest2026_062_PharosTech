@@ -4,7 +4,7 @@
  * throttled look events), toy mode toggle for controllers, placeholder,
  * pairing overlay. */
 import EyeMirrorCard from '../../../views/eye/EyeMirrorCard.vue';
-import { ref, watch } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { EyeCanvas, PairOverlay, UiIcon } from '@nyabula/ui';
 import type { EyeEngine } from '@nyabula/eye-engine';
 import { useEyeStore } from '../../../stores/eye';
@@ -27,8 +27,12 @@ watch(
 );
 function toggleToy() {
   toyMode.value = !toyMode.value;
-  if (!toyMode.value) emit('look', { release: true });
+
 }
+watch(toyMode, active => { if (!active) emit('look', { release:true }); });
+function onKey(event: KeyboardEvent) { if (event.key === 'Escape') toyMode.value=false; }
+onMounted(()=>window.addEventListener('keydown',onKey));
+onBeforeUnmount(()=>{window.removeEventListener('keydown',onKey);if(toyMode.value)emit('look',{release:true});});
 </script>
 
 <template>
@@ -41,6 +45,7 @@ function toggleToy() {
         :eye-state="eye.lastState"
         :clock-offset-ms="eye.nativeCore ? 0 : session.clockOffsetMs()"
         :toy-mode="toyMode && session.canControl"
+        toy-scope="viewport"
         @ready="emit('ready', $event)"
         @look="emit('look', $event)"
       />
@@ -52,32 +57,15 @@ function toggleToy() {
       <button v-if="ready && !eye.nativeQr" class="toy" :class="{ on: toyMode }" :aria-pressed="toyMode" :disabled="!session.canControl" @click="toggleToy">
         <UiIcon name="pets" :size="15" /> 逗猫棒 {{ toyMode ? '开' : '关' }}
       </button>
-      <div v-if="ready && !eye.nativeQr" class="hint">{{ toyMode ? '移动光标 / 手指拖动，让猫追着看' : '拖动画面 = 注视点' }}</div>
+      <div v-if="ready && !eye.nativeQr" class="hint">{{ toyMode ? '全屏移动光标 / 触控拖动 · Esc 退出' : '拖动画面 = 注视点' }}</div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .nb-lens { position: relative; width: 100%; height: 100%; min-height: 220px; }
-.ring {
-  position: absolute;
-  inset: -2px;
-  border-radius: 48px;
-  background: conic-gradient(from 0deg, rgba(var(--nb-acc-rgb), 0.5), rgba(var(--nb-violet-rgb), 0.5), rgba(255, 143, 177, 0.4), rgba(var(--nb-acc-rgb), 0.5));
-  filter: blur(18px);
-  opacity: 0.55;
-  animation: nb-rot 12s linear infinite;
-}
-@keyframes nb-rot { to { transform: rotate(360deg); } }
-.inner {
-  position: absolute;
-  inset: 0;
-  border-radius: 46px;
-  overflow: hidden;
-  background: #000;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.9), 0 40px 80px -30px rgba(0, 0, 0, 0.7);
-}
+.ring { position:absolute; inset:16% 20%; border-radius:50%; background:radial-gradient(closest-side,rgba(var(--nb-acc-rgb),.14),transparent); filter:blur(26px); pointer-events:none; }
+.inner { position:absolute; inset:0; overflow:hidden; background:transparent; }
 .inner :deep(.eye-canvas) { width: 100%; height: 100%; border-radius: 0; }
 .placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; color: rgba(220, 226, 255, 0.6); font-size: 13.5px; letter-spacing: 0.06em; }
 .placeholder p { margin: 0; }

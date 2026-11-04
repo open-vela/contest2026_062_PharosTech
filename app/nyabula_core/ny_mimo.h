@@ -41,4 +41,10 @@ int ny_mimo_transcribe(const int16_t *pcm, size_t samples, unsigned int rate,
 int ny_mimo_speak(const char *text, ny_mimo_pcm_t callback, void *context);
 int ny_mimo_vision_tool(const char *input, char *output, size_t capacity);
 
+/* The caller obtains consent before passing a private camera image. No
+ * image bytes are placed in tool history or persisted by this function.
+ */
+int ny_mimo_vision_png(const uint8_t *png, size_t length, const char *prompt,
+                        char *output, size_t capacity);
+
 #endif

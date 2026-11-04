@@ -41,6 +41,7 @@
 #include <nuttx/mutex.h>
 
 #include "ny_audio_stream.h"
+#include "ny_product_privacy.h"
 #include "ny_pcm.h"
 #include "ny_sbc.h"
 
@@ -511,7 +512,8 @@ static int ny_bt_audio_call_open(struct ny_bt_audio_worker_s *worker)
       config.capture = true;
       config.wav = false;
       config.buffers = NY_BT_CALL_MIC_BUFFERS;
-      ret = ny_audio_stream_open(&worker->microphone, &config);
+      ret = ny_product_privacy_mic_allowed()
+                ? ny_audio_stream_open(&worker->microphone, &config) : 0;
       if (ret == 0)
         {
           worker->rate = rate;
@@ -573,10 +575,30 @@ static void ny_bt_audio_call_capture(struct ny_bt_audio_worker_s *worker)
   static int16_t block[2 * 320];
   size_t limit = (size_t)worker->rate * 2 * NY_BT_CALL_MIC_MAX_MS / 1000;
 
-  if (worker->microphone == NULL)
+  if (!ny_product_privacy_mic_allowed())
     {
+      ny_audio_stream_close(worker->microphone);
+      worker->microphone = NULL;
+      ny_pcm_ring_clear(&worker->mic_ring);
+      ny_pcm_ring_clear(&worker->tx_ring);
       return;
     }
+  if (worker->microphone == NULL && worker->speaker != NULL)
+    {
+      struct ny_audio_stream_config_s config = {
+        .path = CONFIG_NYABULA_CORE_BT_INPUT_DEVICE,
+        .capture = true,
+        .rate = worker->rate,
+        .channels = worker->channels,
+        .chunk = (size_t)worker->rate * worker->channels * 2 *
+                 NY_BT_CALL_CHUNK_MS / 1000,
+        .buffers = NY_BT_CALL_MIC_BUFFERS,
+      };
+      if (ny_audio_stream_open(&worker->microphone, &config) < 0)
+        return;
+    }
+  if (worker->microphone == NULL)
+    return;
 
   for (;;)
     {
@@ -618,6 +640,11 @@ static void ny_bt_audio_call_capture(struct ny_bt_audio_worker_s *worker)
 static void ny_bt_audio_call_transmit(struct ny_bt_audio_worker_s *worker,
                                       ny_bt_audio_sco_send_t send)
 {
+  if (!ny_product_privacy_mic_allowed())
+    {
+      ny_pcm_ring_clear(&worker->mic_ring);
+      ny_pcm_ring_clear(&worker->tx_ring);
+    }
   if (worker->tx_credit > NY_BT_CALL_CREDIT_MAX * worker->tx_packet)
     {
       worker->tx_credit = NY_BT_CALL_CREDIT_MAX * worker->tx_packet;

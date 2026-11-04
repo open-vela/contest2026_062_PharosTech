@@ -70,6 +70,7 @@
 
 #include <malloc.h>
 #include <nuttx/mm/iob.h>
+#include <nuttx/mutex.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -90,6 +91,7 @@
 #include <sys/videoio.h>
 
 #include "camenc_3a.h"
+#include "camenc_capture.h"
 #include "camenc_stream.h"
 #include "camenc_ws.h"
 
@@ -420,6 +422,7 @@ struct camenc_buf_s
 struct camenc_sink_s
 {
   FILE *file;
+  const struct camenc_capture_s *capture;
   FAR struct camenc_ws_s *ws;
   uint64_t bytes;
   uint32_t segments;
@@ -428,6 +431,11 @@ struct camenc_sink_s
 /****************************************************************************
  * Private Data
  ****************************************************************************/
+
+static mutex_t g_camenc_lock = NXMUTEX_INITIALIZER;
+static int camenc_run(int argc, FAR char *argv[],
+                      const struct camenc_capture_s *capture);
+static void camenc_reset(void);
 
 static struct camenc_buf_s g_cam[CAMENC_BUFFERS];
 static struct camenc_buf_s g_out[CAMENC_BUFFERS];
@@ -1523,6 +1531,15 @@ static int camenc_emit(void *arg, enum camenc_seg_e seg, const uint8_t *data,
       camenc_stage_account(CAMENC_STAGE_CLIENTS, mark);
     }
 
+  if (sink->capture != NULL && sink->capture->emit != NULL)
+    {
+      int ret = sink->capture->emit(sink->capture->arg, seg, data, len, key);
+      if (ret < 0)
+        {
+          return ret;
+        }
+    }
+
   sink->bytes += len;
   sink->segments++;
 
@@ -1748,7 +1765,12 @@ static bool camenc_wait(int camfd, int encfd, bool inflight)
  * Public Functions
  ****************************************************************************/
 
-int main(int argc, FAR char *argv[])
+/****************************************************************************
+ * Name: camenc_run
+ ****************************************************************************/
+
+static int camenc_run(int argc, FAR char *argv[],
+                      const struct camenc_capture_s *capture)
 {
   FAR const char *camdev = CAMENC_CAM_DEVPATH;
   FAR const char *encdev = CAMENC_ENC_DEVPATH;
@@ -1797,6 +1819,7 @@ int main(int argc, FAR char *argv[])
   int opt;
   int ret;
   int i;
+  int frame_index = 0;
   int encoded = 0;
   int dropped = 0;
   uint64_t t0;
@@ -1847,7 +1870,17 @@ int main(int argc, FAR char *argv[])
 
   bool board_told = false;
 
-  while ((opt = getopt(argc, argv, "d:e:o:n:m:q:x:g:p:G:A:t:")) != -1)
+  if (capture != NULL)
+    {
+      mode = capture->mode;
+      frames = capture->frames;
+      qp = capture->qp;
+      gop = capture->gop;
+      outfile = capture->file;
+    }
+
+  while (capture == NULL &&
+         (opt = getopt(argc, argv, "d:e:o:n:m:q:x:g:p:G:A:t:")) != -1)
     {
       switch (opt)
         {
@@ -1901,13 +1934,13 @@ int main(int argc, FAR char *argv[])
               {
                 printf("camenc: brightness must be 1..255, not %" PRIu32 "\n",
                        target);
-                return EXIT_FAILURE;
+                return -EINVAL;
               }
             break;
 
           default:
             camenc_usage();
-            return EXIT_FAILURE;
+            return -EINVAL;
         }
     }
 
@@ -1925,7 +1958,7 @@ int main(int argc, FAR char *argv[])
              " is not one of the %u this program offers\n",
              mode, (unsigned int)CAMENC_NUM_MODES);
       camenc_usage();
-      return EXIT_FAILURE;
+      return -EINVAL;
     }
 
   width = cur->width;
@@ -1954,22 +1987,23 @@ int main(int argc, FAR char *argv[])
   if (frames <= 0 || (width & 15u) != 0)
     {
       camenc_usage();
-      return EXIT_FAILURE;
+      return -EINVAL;
     }
 
   if (qp < 0 || qp > 51)
     {
       printf("camenc: quantiser must be 0..51, not %d\n", qp);
-      return EXIT_FAILURE;
+      return -EINVAL;
     }
 
   if (gop < 1 || gop > 1000)
     {
       printf("camenc: group length must be 1..1000, not %d\n", gop);
-      return EXIT_FAILURE;
+      return -EINVAL;
     }
 
   memset(&sink, 0, sizeof(sink));
+  sink.capture = capture;
 
   /* ---------------------------------------------------------------- */
   /* The server, and the file                                          */
@@ -2011,7 +2045,7 @@ int main(int argc, FAR char *argv[])
       if (ret < 0)
         {
           printf("camenc: cannot serve on port %d: %d\n", port, ret);
-          return EXIT_FAILURE;
+          return ret;
         }
 
       serving = true;
@@ -2074,7 +2108,7 @@ stream_start:
    * for the opposite reason: the timestamps restart with the stream, so the
    * first span is the time since its own first frame. */
 
-  last_report = i;
+  last_report = frame_index;
   reported_at = 0;
   encoded = 0;
   dropped = 0;
@@ -2808,7 +2842,7 @@ stream_start:
   uint32_t camidx = 0;   /* the camera buffer that frame came from          */
   uint64_t pts = 0;      /* when that frame arrived                         */
 
-  for (; i < frames;)
+  for (; frame_index < frames;)
     {
       struct v4l2_buffer cbuf;
       struct v4l2_buffer obuf;
@@ -2836,6 +2870,13 @@ stream_start:
        * A request for the mode already in force is not a change and does not
        * interrupt anything; the menu sends one whenever it is redrawn.
        */
+
+      if (!inflight && capture != NULL && capture->stop != NULL &&
+          capture->stop(capture->arg))
+        {
+          ret = 0;
+          break;
+        }
 
       if (!inflight && g_ui.mode_pending)
         {
@@ -2885,7 +2926,7 @@ stream_start:
                                "encoder input");
           if (ret == 0)
             {
-              if (obuf.index != (uint32_t)(i % (int)nbuf_out))
+              if (obuf.index != (uint32_t)(frame_index % (int)nbuf_out))
                 {
                   /* Said once, then counted onto the report line -- see
                    * g_enc_out_of_order.
@@ -2895,7 +2936,7 @@ stream_start:
                     {
                       printf("camenc: encoder returned input buffer %" PRIu32
                              " where %d was queued\n",
-                             obuf.index, i % (int)nbuf_out);
+                             obuf.index, frame_index % (int)nbuf_out);
                     }
 
                   g_enc_out_of_order++;
@@ -2994,7 +3035,7 @@ stream_start:
                                         key);
               if (ret < 0)
                 {
-                  printf("camenc: muxing frame %d failed: %d\n", i, ret);
+                  printf("camenc: muxing frame %d failed: %d\n", frame_index, ret);
                   break;
                 }
 
@@ -3130,6 +3171,16 @@ stream_start:
 
           pts = now - media_t0;
 
+          if (capture != NULL && capture->frame != NULL)
+            {
+              ret = capture->frame(capture->arg, g_cam[camidx].start,
+                                   src_size, width, height, cam_stride);
+              if (ret < 0)
+                {
+                  break;
+                }
+            }
+
           /* The encoder's input buffer for this frame, taken round-robin. With
            * as many as the camera has, the one just freed is the one used
            * next, so a frame is never copied over one still being encoded.
@@ -3143,7 +3194,7 @@ stream_start:
 
           if (!g_zerocopy)
             {
-              out = &g_out[i % (int)nbuf_out];
+              out = &g_out[frame_index % (int)nbuf_out];
 
               mark = camenc_now_us();
 
@@ -3165,13 +3216,13 @@ stream_start:
           if (g_zerocopy)
             {
               ret = camenc_queue_import(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT,
-                                        g_cam[camidx].start, i % (int)nbuf_out,
+                                        g_cam[camidx].start, frame_index % (int)nbuf_out,
                                         "encoder input");
             }
           else
             {
               ret =
-                  camenc_queue(encfd, out, "encoder input", i % (int)nbuf_out);
+                  camenc_queue(encfd, out, "encoder input", frame_index % (int)nbuf_out);
             }
 
           if (ret < 0)
@@ -3328,7 +3379,7 @@ stream_start:
 
           if (serving)
             {
-              camenc_status_publish(&g_ws, &threea_state, (uint32_t)i, mode);
+              camenc_status_publish(&g_ws, &threea_state, (uint32_t)frame_index, mode);
             }
 
           camenc_stage_account(CAMENC_STAGE_STATUS, mark);
@@ -3343,18 +3394,18 @@ stream_start:
        * fast, and a line every few seconds says that just as well.
        */
 
-      if (i - last_report >= CAMENC_REPORT_FRAMES)
+      if (frame_index - last_report >= CAMENC_REPORT_FRAMES)
         {
           uint64_t span = pts - reported_at;
-          uint32_t window = (uint32_t)(i - last_report);
+          uint32_t window = (uint32_t)(frame_index - last_report);
           uint64_t total = 0;
           int s;
 
           printf("frame %6d: %6" PRIu32 " bytes, %5.1f fps, %" PRIu64
                  " bytes out, %" PRIu32 " out of order\n",
-                 i, ebuf.bytesused,
+                 frame_index, ebuf.bytesused,
                  span != 0
-                     ? 1000000.0 * (double)(i - last_report) / (double)span
+                     ? 1000000.0 * (double)(frame_index - last_report) / (double)span
                      : 0.0,
                  sink.bytes, g_enc_out_of_order);
 
@@ -3521,7 +3572,7 @@ stream_start:
                    mi.uordblks);
           }
 
-          last_report = i;
+          last_report = frame_index;
           reported_at = pts;
           win_idr = 0;
           win_p = 0;
@@ -3538,7 +3589,7 @@ stream_start:
        * loop now, when it has.
        */
 
-      i++;
+      frame_index++;
     }
 
   /* A change of mode ends this stream rather than the run.
@@ -3786,5 +3837,62 @@ errout:
       sink.file = NULL;
     }
 
+  return ret < 0 ? ret : 0;
+}
+
+/****************************************************************************
+ * Name: camenc_reset
+ ****************************************************************************/
+
+static void camenc_reset(void)
+{
+  memset(&g_ui, 0, sizeof(g_ui));
+  memset(&g_ws, 0, sizeof(g_ws));
+  g_ws.listen_fd = -1;
+  for (unsigned int i = 0; i < CAMENC_WS_MAX_CLIENTS; i++)
+    {
+      g_ws.clients[i].fd = -1;
+    }
+  g_status_last[0] = '\0';
+  g_status_at = 0;
+}
+
+/****************************************************************************
+ * Name: camenc_capture_run
+ ****************************************************************************/
+
+int camenc_capture_run(const struct camenc_capture_s *capture)
+{
+  int ret;
+  if (capture == NULL)
+    {
+      return -EINVAL;
+    }
+  ret = nxmutex_trylock(&g_camenc_lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+  camenc_reset();
+  ret = camenc_run(0, NULL, capture);
+  nxmutex_unlock(&g_camenc_lock);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: main
+ ****************************************************************************/
+
+int main(int argc, FAR char *argv[])
+{
+  int ret = nxmutex_trylock(&g_camenc_lock);
+  if (ret < 0)
+    {
+      printf("camenc: camera is already in use: %d\n", ret);
+      return EXIT_FAILURE;
+    }
+  camenc_reset();
+  ret = camenc_run(argc, argv, NULL);
+  nxmutex_unlock(&g_camenc_lock);
   return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }

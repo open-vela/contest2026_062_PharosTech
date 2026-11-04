@@ -31,7 +31,7 @@ const filtered = computed(() => {
 });
 const current = computed<Card|null>(()=>cards.value.find(c=>c.id===state.selected)??filtered.value[0]??null);
 /* Eye link: the selected memory. */
-const scene = useEyeScene(props.type, () => { const card=current.value; return card ? memoryScene({text:card.text,tag:TAG_LABEL[card.tag]??card.tag}) : null; }, {hideWhenEmpty:true});
+const scene = useEyeScene(props.type, () => { const card=current.value; return card ? memoryScene({text:card.text,tag:TAG_LABEL[card.tag]??card.tag}) : null; }, {hideWhenEmpty:true,recordId:()=>current.value?.id});
 const active = computed(()=>scene.shown.value||scene.held.value);
 const subtitle = computed(()=>core.available.value ? `${cards.value.length} 条设备记忆` : '未连接支持此功能的 Core');
 function fmt(ts:number) {

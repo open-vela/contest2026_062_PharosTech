@@ -36,6 +36,7 @@ function onCustom(ev: Event): void {
         v-for="c in presets"
         :key="c"
         type="button"
+        :disabled="disabled"
         class="nk-swatch-dot"
         :class="{ on: norm(c) === norm(modelValue) }"
         :style="{ '--c': c }"

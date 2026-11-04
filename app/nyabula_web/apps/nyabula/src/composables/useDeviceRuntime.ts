@@ -4,9 +4,12 @@ import { useSessionStore } from '../stores/session';
 
 export interface DeviceInterface { name: string; index: number; up?: boolean; loopback?: boolean; ipv4?: string; ssid?: string }
 export interface DeviceRuntime {
+  boardModel?: string;
+  peripherals?: { kind: 'camera' | 'lighting'; name: string; path: string; available: boolean }[];
+  temperatures?: { zone: string; celsius: number }[];
   os: string; arch: string; simulator: boolean; sampledAtMs: number; uptimeMs: number;
   memory: { totalBytes: number; usedBytes: number; freeBytes: number };
-  cpu: { available: boolean; percent?: number; source?: string; samples?: number; reason?: string };
+  cpu: { available: boolean; percent?: number; cores?: number; source?: string; samples?: number; reason?: string };
   storage: { path: string; available: boolean; totalBytes?: number; freeBytes?: number; error?: number }[];
   network: { available: boolean; interfaces: DeviceInterface[]; error?: number; truncated?: boolean };
   audioDevices: { path: string; available: boolean; input?: boolean; output?: boolean; formats?: number; error?: number }[];

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /* Hardware attached to the device, as Core enumerates it in device.status:
- * audio devices, storage volumes and network interfaces. Nothing is invented
+ * audio, storage, network, camera and lighting nodes. Nothing is invented
  * and nothing is kept in the browser; discovery of nearby gadgets (Bluetooth,
  * home devices) has no device topic yet and is not offered. */
 import { computed } from 'vue';
@@ -22,6 +22,7 @@ const rows = computed<Row[]>(() => {
   const s = device.snapshot;
   if (!s) return [];
   return [
+    ...(s.peripherals ?? []).map(p => ({ id: 'p' + p.path, icon: p.kind === 'camera' ? 'camera' : 'light_mode', name: p.kind === 'camera' ? '摄像头' : '氛围灯带', sub: p.path, online: p.available })),
     ...s.audioDevices.map((a) => ({ id: 'a' + a.path, icon: a.input && !a.output ? 'mic' : 'volume_up', name: a.path, online: a.available,
       sub: a.available ? [a.output ? '输出' : '', a.input ? '输入' : ''].filter(Boolean).join(' / ') || '音频设备' : '音频设备 · 不可用' })),
     ...s.storage.map((v) => ({ id: 's' + v.path, icon: 'storage', name: v.path, online: v.available,
@@ -46,6 +47,8 @@ const subtitle = computed(() => !device.available ? '需要以主人身份连接
       <NkStatTile :value="counts.audio" unit="个" label="音频" icon="volume_up" />
       <NkStatTile :value="counts.storage" unit="个" label="存储" icon="storage" />
       <NkStatTile :value="counts.network" unit="个" label="网络" icon="wifi" />
+      <NkStatTile :value="counts.camera" unit="个" label="摄像头" icon="camera" />
+      <NkStatTile :value="counts.lighting" unit="个" label="灯光" icon="light_mode" />
     </div>
     <section class="ui-panel card">
       <NkListSection title="已接入硬件" :card="false">
@@ -54,7 +57,7 @@ const subtitle = computed(() => !device.available ? '需要以主人身份连接
         </NkRow>
       </NkListSection>
       <p v-if="!rows.length" class="muted small">{{ device.available ? '设备尚未返回硬件列表' : '未连接' }}</p>
-      <p class="muted small">列表来自设备实时枚举。周边蓝牙 / 家居设备的发现尚无设备接口，暂不提供。</p>
+      <p class="muted small">在线表示设备节点可用；摄像头开关在隐私页设置。</p>
       <EyeShowButton kind="wide" :shown="active" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
     </section>
   </div>
@@ -66,7 +69,7 @@ const subtitle = computed(() => !device.available ? '需要以主人身份连接
   display: flex; flex-direction: column; gap: 16px;
   padding: 16px;
 }
-.stats { display: flex; gap: 10px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit,minmax(105px,1fr)); gap: 10px; }
 .tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .feature.tablet .tiles { grid-template-columns: repeat(3, 1fr); }
 .feature.desktop .tiles { grid-template-columns: repeat(4, 1fr); }

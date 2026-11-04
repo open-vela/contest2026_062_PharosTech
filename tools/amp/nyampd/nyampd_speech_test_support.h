@@ -486,6 +486,7 @@ struct KwsScript
 {
   std::vector<std::string> labels{ "nihao_openvela", "hello_openvela" };
   bool fail_load = false;
+  std::atomic<unsigned int> prepares{ 0 };
   std::atomic<unsigned int> resets{ 0 };
   std::atomic<std::uint64_t> accepted{ 0 };
   std::mutex mutex;
@@ -496,6 +497,15 @@ class ScriptedKwsBackend final : public nyamp::KwsBackend
 {
 public:
   explicit ScriptedKwsBackend(KwsScript *script) : script_(script) {}
+
+  nyamp::models::Status Prepare(nyamp::KwsModel *model) override
+  {
+    ++script_->prepares;
+    if (model->phrase == "invalid")
+      return nyamp::models::Status::kInvalid;
+    model->extra_keywords = "test @custom";
+    return nyamp::models::Status::kOk;
+  }
 
   nyamp::models::Status Load(const nyamp::KwsModel &model) override
   {

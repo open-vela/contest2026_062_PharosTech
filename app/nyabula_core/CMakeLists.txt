@@ -63,19 +63,38 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
     list(APPEND NYABULA_CORE_DEPENDS libwebsockets)
   endif()
   if(CONFIG_NYABULA_CORE_PRODUCT)
-    list(APPEND NYABULA_CORE_SRCS ny_product_store.c ny_product_records.c
+    list(APPEND NYABULA_CORE_SRCS ny_product_store.c ny_product_privacy.c ny_product_records.c
          ny_plugins.c ny_plugin_upload.c ny_access.c
          ny_product_cli.c ny_product.c ny_product_timers.c ny_product_runtime.c
          ny_product_alarms.c ny_product_notifications.c ny_product_briefing.c
-         ny_product_eyes.c ny_product_device.c ny_product_media.c
+         ny_product_eyes.c ny_product_scene.c ny_product_device.c ny_product_media.c
          ny_product_maintenance.c ny_product_clock.c ny_sntp.c)
+    if(CONFIG_NYABULA_CORE_SPEAKER)
+      list(APPEND NYABULA_CORE_SRCS ny_product_speaker.c)
+    endif()
     if(CONFIG_NYABULA_CORE_AUDIO)
       list(APPEND NYABULA_CORE_SRCS ny_product_audio.c)
+    endif()
+    if(CONFIG_NYABULA_CORE_INTERCOM)
+      list(APPEND NYABULA_CORE_SRCS ny_product_intercom.c)
+    endif()
+    if(CONFIG_NYABULA_CORE_CAMERA)
+      list(APPEND NYABULA_CORE_SRCS ny_product_camera.c ny_camera_png.c
+           ny_camera_gaze.c ny_product_camera_gaze.c)
+      list(APPEND NYABULA_CORE_DEPENDS zlib)
+      include_directories(${NUTTX_APPS_DIR}/examples/camenc)
+      include_directories(${NUTTX_APPS_DIR}/system/zlib/zlib)
+    endif()
+    if(CONFIG_NYABULA_CORE_VISION)
+      list(APPEND NYABULA_CORE_SRCS ny_product_vision.c ny_product_identity.c)
+    endif()
+    if(CONFIG_NYABULA_CORE_LIGHTING)
+      list(APPEND NYABULA_CORE_SRCS ny_product_lighting.c ny_lighting_effects.c)
     endif()
     if(CONFIG_NYABULA_CORE_LIGHT)
       list(APPEND NYABULA_CORE_SRCS ny_product_light.c ny_light_math.c)
     endif()
-    if(CONFIG_NYABULA_CORE_BT OR CONFIG_NYABULA_CORE_DSP)
+    if(CONFIG_NYABULA_CORE_BT OR CONFIG_NYABULA_CORE_DSP OR CONFIG_NYABULA_CORE_INTERCOM)
       list(APPEND NYABULA_CORE_SRCS ny_audio_stream.c ny_pcm.c)
     endif()
     if(CONFIG_NYABULA_CORE_DSP)
@@ -143,7 +162,7 @@ if(CONFIG_CONTEST2026_062_NYABULA_CORE)
       # The voice chain: wake word, recognition and speech run on the compute
       # domain; these own the microphone, the speaker and the turn.
       list(APPEND NYABULA_CORE_SRCS ny_voice.c ny_voice_audio.c ny_voice_dsp.c
-           ny_voice_sm.c ny_voice_wire.c ny_voice_cloud.c)
+           ny_voice_sm.c ny_voice_probe.c ny_voice_wire.c ny_voice_cloud.c)
     endif()
   endif()
 

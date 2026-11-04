@@ -111,6 +111,13 @@ jobs:
           python3 tools/nyabula_core/tests/voice_keepalive_test.py app/nyabula_core
           python3 tools/nyabula_core/tests/voice_cloud_output_test.py app/nyabula_core --tick
           python3 tools/nyabula_core/tests/voice_cloud_output_test.py app/nyabula_core --dual --tick
+      - name: Check wake diagnostics and first-frame iris restoration
+        run: |
+          python3 tools/nyabula_core/tests/voice_probe_test.py app/nyabula_core
+          python3 tools/nyabula_core/tests/voice_reload_test.py app/nyabula_core
+          python3 tools/nyabula_core/tests/eye_boot_colors_test.py .
+          python3 tools/nyabula_core/tests/device_runtime_test.py
+          python3 tools/nyabula_core/tests/scene_renderer_test.py app/nyabula/src/nyabula_eye_renderer_lvgl.c
       - name: Preserve WAMR-owned context configuration
         run: |
           for context in 0 1; do

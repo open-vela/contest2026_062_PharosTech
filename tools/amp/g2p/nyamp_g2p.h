@@ -171,6 +171,9 @@ public:
 
   static std::string Normalize(const std::string &utf8_text);
 
+  // Symbol name for a model phoneme id; empty for an unknown id.
+  std::string SymbolName(std::int64_t id) const;
+
   const LoadStats &load_stats() const;
   Segmenter active_segmenter() const;
 

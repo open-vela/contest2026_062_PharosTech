@@ -20,6 +20,21 @@
  ****************************************************************************/
 
 #include "ny_product.h"
+#ifdef CONFIG_NYABULA_CORE_SPEAKER
+#include "ny_product_speaker.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_VISION
+#include "ny_product_vision.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
+#include "ny_product_intercom.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+#include "ny_product_camera.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_LIGHTING
+#include "ny_product_lighting.h"
+#endif
 #ifdef CONFIG_NYABULA_CORE_DSP
 #include "ny_product_dsp.h"
 #endif
@@ -73,6 +88,12 @@ static int ny_product_worker(int argc, char **argv)
           break;
         }
 
+#ifdef CONFIG_NYABULA_CORE_LIGHTING
+      ny_product_lighting_start();
+#endif
+#ifdef CONFIG_NYABULA_CORE_SPEAKER
+      ny_product_speaker_tick();
+#endif
       int ret = ny_product_timers_tick();
       int alarm_ret = ny_product_alarms_tick();
       int notice_ret = ny_product_notifications_tick();
@@ -104,6 +125,7 @@ static int ny_product_worker(int argc, char **argv)
       if (ret == 0)
         ret = media_ret;
       ny_product_eyes_tick();
+      ny_product_scene_tick();
 #ifdef CONFIG_NYABULA_CORE_AGENT
       ny_agent_eyes_tick();
 #endif
@@ -145,9 +167,25 @@ static int ny_product_worker(int argc, char **argv)
       usleep(100000);
     }
 
+#ifdef CONFIG_NYABULA_CORE_SPEAKER
+  ny_product_speaker_shutdown();
+#endif
 #ifdef CONFIG_NYABULA_CORE_DSP
   ny_product_dsp_shutdown();
 #endif
+#ifdef CONFIG_NYABULA_CORE_LIGHTING
+  ny_product_lighting_shutdown();
+#endif
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+#ifdef CONFIG_NYABULA_CORE_VISION
+  ny_product_vision_shutdown();
+#endif
+  ny_product_camera_shutdown();
+#endif
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
+  ny_product_intercom_shutdown();
+#endif
+  ny_product_scene_shutdown();
   ny_product_media_shutdown();
 #ifdef CONFIG_NYABULA_CORE_LIGHT
   ny_product_light_shutdown();

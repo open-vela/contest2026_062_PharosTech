@@ -101,10 +101,14 @@ export const MODEL_CATALOGUE: readonly ModelKindSpec[] = [
     files: [{ name: 'model.onnx', label: '说话人嵌入模型', required: true, aliases: [/\.onnx$/], typicalBytes: 28 * MB }],
   },
   {
-    kind: 'face', label: '人脸识别', icon: 'face',
-    purpose: '认出主人的脸。只在设备上比对，照片不会离开设备。',
-    source: 'OpenCV Zoo SFace（face_recognition_sface）',
-    files: [{ name: 'sface.onnx', label: '人脸特征模型', required: true, aliases: [/sface.*\.onnx$/] }],
+    kind: 'face', label: '人脸检测与身份', icon: 'face',
+    purpose: '在设备本地检测人脸，并与主动登记的家人档案比对。',
+    source: 'OpenCV Zoo YuNet / SFace · RK3576 RKNN',
+    files: [
+      { name: 'detector/yunet.rknn', label: '人脸检测模型', required: true, aliases: [/^yunet.*\.rknn$/], typicalBytes: 1.1 * MB },
+      { name: 'recognizer/sface.rknn', label: '身份特征模型', required: true, aliases: [/^sface.*\.rknn$/], typicalBytes: 20 * MB },
+      { name: 'sface.onnx', label: '离线转换用源模型', required: false, aliases: [/sface.*\.onnx$/] },
+    ],
   },
 ];
 

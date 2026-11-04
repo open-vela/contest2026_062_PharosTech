@@ -159,11 +159,14 @@ Status SpeakerEmbedder::Load(const SpeakerConfig &config)
     {
       return Status::kBusy;
     }
-  if (config.model_directory.empty() || config.num_threads < 1)
+  if (config.model_directory.empty() || config.num_threads < 1 ||
+      config.model_filename.empty() || config.model_filename == "." ||
+      config.model_filename == ".." ||
+      config.model_filename.find_first_of("/\\") != std::string::npos)
     {
       return Status::kInvalid;
     }
-  const std::string model = config.model_directory + "/speaker.onnx";
+  const std::string model = config.model_directory + "/" + config.model_filename;
   SherpaOnnxSpeakerEmbeddingExtractorConfig native{};
   native.model = model.c_str();
   native.num_threads = config.num_threads;

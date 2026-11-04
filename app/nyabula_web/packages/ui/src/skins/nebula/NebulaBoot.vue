@@ -14,6 +14,17 @@ const noAnchor = ref(false);
 const box = reactive({ w: 0, h: 0, x: 0, y: 0 });
 const flight = ref('');
 let engine: EyeEngine | null = null;
+const heldRenderers = new Set<EyeEngine>();
+function holdBlink(renderer: EyeEngine) {
+  if (heldRenderers.has(renderer)) return;
+  renderer.holdPresentationBlink(true);
+  heldRenderers.add(renderer);
+}
+function releaseBlinks() {
+  for (const renderer of heldRenderers) renderer.holdPresentationBlink(false);
+  heldRenderers.clear();
+}
+
 let frame = 0;
 let mirrorFrame = 0;
 let bareEyes = 1;
@@ -69,11 +80,13 @@ function intro() {
     // Every route uses the same opening engine and the same state timeline.
     // Destination appearance is inherited without following its live expression yet.
     engine = new EyeEngine(canvas.value, { background: 'transparent', attachPointer: false });
+    holdBlink(engine);
     const live = source ? EyeEngine.forCanvas(source) : undefined;
-    if (live) {
-      engine.setIris(live.irisHexL, live.irisHexR);
-      engine.setLight(live.lightCur);
-    }
+    // Cache controls the opening, even if a newer live colour has arrived.
+    // Without cache, retain the engine's green until the greeting is finished.
+    const cached = loading.bootIris;
+    if (cached) engine.setIris(cached.left, cached.right);
+    if (live) { holdBlink(live); engine.setLight(live.lightCur); }
     engine.setBare(1); engine.setZzzEnabled(false); engine.startAsleep(); engine.start();
     later(reduced ? 40 : 400, () => {
       engine?.setMode('sleepy');
@@ -100,7 +113,7 @@ function depart() {
       if (disposed || gone.value || !canvas.value) return;
       const current = target();
       const live = current ? EyeEngine.forCanvas(current) : undefined;
-      if (live) live.copyPresentationFrame(canvas.value, 0, 0, introPose, liveMix);
+      if (live) { holdBlink(live); live.copyPresentationFrame(canvas.value, 0, 0, introPose, liveMix); }
       else if (current) {
         canvas.value.width = current.width; canvas.value.height = current.height;
         canvas.value.getContext('2d')?.drawImage(current, 0, 0);
@@ -114,6 +127,8 @@ function depart() {
   loading.bootOverlayVisible = false;
   later(reduced ? 30 : 1000, () => {
     phase.value = 'land';
+    // Let the revealed frame settle before accepting a new remote blink.
+    later(reduced ? 0 : 400, releaseBlinks);
     document.documentElement.classList.remove('nb-eyes-handoff');
     gone.value = true;
     cancelAnimationFrame(frame); cancelAnimationFrame(mirrorFrame);
@@ -126,7 +141,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   disposed = true; timers.forEach(clearTimeout); cancelAnimationFrame(frame); cancelAnimationFrame(mirrorFrame);
-  engine?.destroy(); document.documentElement.classList.remove('nb-eyes-handoff');
+  releaseBlinks(); engine?.destroy(); document.documentElement.classList.remove('nb-eyes-handoff');
 });
 </script>
 <template>

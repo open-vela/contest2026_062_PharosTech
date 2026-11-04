@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <iterator>
+#include <sstream>
 
 namespace nyamp::voice
 {
@@ -41,9 +43,8 @@ constexpr double kTokenFrameSeconds = 0.04;
 // Collects the distinct "@label" values.  Returns false when a non-empty
 // line has no label, so ids can never silently shift between two builds of
 // the same keywords file.
-bool ReadLabels(const std::string &path, std::vector<std::string> *labels)
+bool ReadLabels(std::istream &file, std::vector<std::string> *labels)
 {
-  std::ifstream file(path);
   if (!file)
     {
       return false;
@@ -122,8 +123,18 @@ Status KeywordSpotter::Load(const KwsConfig &config)
   const std::string keywords = config.keywords_file.empty()
                                    ? config.model_directory + "/keywords.txt"
                                    : config.keywords_file;
+  std::ifstream keyword_file(keywords);
+  if (!keyword_file)
+    return Status::kInvalid;
+  std::string keyword_text((std::istreambuf_iterator<char>(keyword_file)),
+                           std::istreambuf_iterator<char>());
+  if (keyword_file.bad())
+    return Status::kInvalid;
+  if (!config.extra_keywords.empty())
+    keyword_text += "\n" + config.extra_keywords + "\n";
+  std::istringstream keyword_input(keyword_text);
   std::vector<std::string> labels;
-  if (!ReadLabels(keywords, &labels))
+  if (!ReadLabels(keyword_input, &labels))
     {
       return Status::kInvalid;
     }
@@ -141,6 +152,13 @@ Status KeywordSpotter::Load(const KwsConfig &config)
   native.keywords_score = config.keywords_score;
   native.keywords_threshold = config.keywords_threshold;
   native.keywords_file = keywords.c_str();
+  if (!config.extra_keywords.empty())
+    {
+      /* The runtime rejects simultaneous file and buffer configuration. */
+      native.keywords_file = nullptr;
+      native.keywords_buf = keyword_text.c_str();
+      native.keywords_buf_size = static_cast<int32_t>(keyword_text.size());
+    }
   impl_->spotter = SherpaOnnxCreateKeywordSpotter(&native);
   if (!impl_->spotter)
     {

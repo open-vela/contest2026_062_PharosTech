@@ -9,6 +9,8 @@
 #include "nyampd_blob.h"
 #include "nyampd_core.h"
 #include "nyampd_kws.h"
+#include "nyampd_vision.h"
+#include "nyampd_speaker.h"
 #include "nyampd_llm.h"
 #include "nyampd_provision.h"
 #include "nyampd_tts.h"
@@ -701,6 +703,8 @@ struct Speech
   nyamp::AsrService &asr;
   nyamp::TtsService &tts;
   nyamp::KwsService &kws;
+  nyamp::VisionService *vision = nullptr;
+  nyamp::SpeakerService *speaker = nullptr;
 };
 
 bool DrainEvents(int fd, nyamp::LlmService &llm, nyamp::BlobService &blob,
@@ -715,7 +719,9 @@ bool DrainEvents(int fd, nyamp::LlmService &llm, nyamp::BlobService &blob,
           !speech.kws.Poll(&backlog.frame) &&
           !speech.tts.Poll(&backlog.frame) &&
           !speech.asr.Poll(&backlog.frame) && !llm.Poll(&backlog.frame) &&
-          !blob.Poll(&backlog.frame))
+          !blob.Poll(&backlog.frame) &&
+          !(speech.vision && speech.vision->Poll(&backlog.frame)) &&
+          !(speech.speaker && speech.speaker->Poll(&backlog.frame)))
         {
           return true;
         }
@@ -835,8 +841,26 @@ int Run(const char *requested_device)
   tts.SetProvisioner(&provisioner);
   tts.SetWaker(wake);
 
-  Speech speech{ asr, tts, kws };
-  const nyamp::SpeechServices speech_services{ &asr, &tts, &kws };
+  ArenaSlot vision_slot(&arena, NYAMP_SLOT_VISION, NYAMP_SLOT_VISION_SIZE);
+  nyamp::AtomicGate vision_gate;
+  nyamp::VisionService::Factory vision_factory;
+  nyamp::VisionService::TrackerFactory tracker_factory;
+#ifdef NYAMP_WITH_VISION
+  vision_factory = nyamp::vision::CreateRknnDetector;
+  tracker_factory = nyamp::vision::CreateRknnTracker;
+#endif
+  nyamp::VisionService vision(generation, SharedCounterMilliseconds,
+                               vision_factory, &vision_slot, &vision_gate, &mint, tracker_factory);
+  vision.SetProvisioner(&provisioner);
+  vision.SetWaker(wake);
+  nyamp::SpeakerService::Factory speaker_factory;
+#ifdef NYAMP_WITH_SHERPA
+  speaker_factory=nyamp::CreateSherpaSpeakerBackend;
+#endif
+  nyamp::SpeakerService speaker(generation,speaker_factory,&kws);
+  speaker.SetProvisioner(&provisioner);speaker.SetWaker(wake);
+  Speech speech{ asr, tts, kws, &vision, &speaker };
+  const nyamp::SpeechServices speech_services{ &asr, &tts, &kws, &speaker };
 
   // Standard Linux RPMsg does not announce dynamically assigned addresses.
   // The first message lets the remote learn our endpoint address.
@@ -968,7 +992,7 @@ int Run(const char *requested_device)
                               SharedCounterMilliseconds(), generation,
                               response, sizeof(response), &response_size,
                               std::string_view(info, info_size), &llm, &blob,
-                              &speech_services);
+                              &speech_services, &vision);
 
           /* A zero-length result is a deferred response or a dropped frame,
            * not something to write.

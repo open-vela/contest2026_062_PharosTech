@@ -232,6 +232,8 @@ struct nyabula_eye_scene_payload_s
   bool privacy_camera;
   bool privacy_microphone;
   bool signal_good;
+  bool live_data; /* Explicit zero values are data, not demonstration defaults.
+                   */
   char title[NYABULA_EYE_TEXT_MEDIUM];
   char subtitle[NYABULA_EYE_TEXT_MEDIUM];
   char detail[NYABULA_EYE_TEXT_MEDIUM];
@@ -265,6 +267,12 @@ extern "C" {
 struct nyabula_eye_engine_s *nyabula_eye_engine_create(lv_obj_t *parent);
 struct nyabula_eye_engine_s *
 nyabula_eye_engine_create_dual(lv_obj_t *left_parent, lv_obj_t *right_parent);
+/* Initial colours are applied before the first animation/render callback.
+ * NULL retains the standalone engine defaults.
+ */
+struct nyabula_eye_engine_s *nyabula_eye_engine_create_dual_with_iris(
+    lv_obj_t *left_parent, lv_obj_t *right_parent,
+    const uint32_t iris_rgb[NYABULA_EYE_COUNT]);
 void nyabula_eye_engine_destroy(struct nyabula_eye_engine_s *engine);
 
 /* Render a single eye into its own display's canvas, sampling the animation

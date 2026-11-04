@@ -6,7 +6,7 @@ from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('core',type=Path);p.add_argument('cjson',type=Path);a=p.parse_args();core=a.core.resolve();dsp=core.parent/'nyabula_dsp'
 with tempfile.TemporaryDirectory(prefix='ny-dsp-player-') as temp:
  root=Path(temp);(root/'nuttx').mkdir();(root/'netutils').mkdir()
- (root/'nuttx/config.h').write_text('#define CONFIG_NYABULA_CORE_DSP 1\n#define CONFIG_NYABULA_CORE_BT 1\n#define CONFIG_NYABULA_CORE_MEDIA_ROOT "'+str(root)+'"\n#define CONFIG_NYABULA_CORE_MEDIA_DEVICE "satellite"\n#define CONFIG_NYABULA_CORE_DSP_BASS_DEVICE "bass"\n')
+ (root/'nuttx/config.h').write_text('#define CONFIG_NYABULA_CORE_DSP 1\n#define CONFIG_NYABULA_CORE_AUDIO 1\n#define CONFIG_NYABULA_CORE_BT 1\n#define CONFIG_NYABULA_CORE_MEDIA_ROOT "'+str(root)+'"\n#define CONFIG_NYABULA_CORE_MEDIA_DEVICE "satellite"\n#define CONFIG_NYABULA_CORE_DSP_BASS_DEVICE "bass"\n')
  (root/'nuttx/mutex.h').write_text('#include <pthread.h>\ntypedef pthread_mutex_t mutex_t;\n#define NXMUTEX_INITIALIZER PTHREAD_MUTEX_INITIALIZER\n#define nxmutex_lock(m) pthread_mutex_lock(m)\n#define nxmutex_unlock(m) pthread_mutex_unlock(m)\n')
  (root/'netutils/cJSON.h').symlink_to((a.cjson/'cJSON.h').resolve())
  with wave.open(str(root/'test.wav'),'wb') as w:
@@ -35,7 +35,11 @@ int ny_audio_stream_unity(struct ny_audio_stream_s*s){return 0;}
 int ny_audio_stream_pause(struct ny_audio_stream_s*s,bool paused){return 0;}
 size_t ny_audio_stream_queued(struct ny_audio_stream_s*s){if(!s)return 0;return s->dsp?ny_dsp_output_queued(s->dsp):2048;}
 void ny_audio_stream_stats(struct ny_audio_stream_s*s,struct ny_audio_stream_stats_s*v){memset(v,0,sizeof(*v));}
+uint64_t ny_product_time_ms(bool monotonic){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000+t.tv_nsec/1000000;}
 static atomic_bool call_active;
+static atomic_bool headphones_only;
+bool ny_product_audio_headphones_only(void){return atomic_load(&headphones_only);}
+unsigned int ny_product_audio_output_level(void){return 1000;}
 static int claims;
 int ny_product_bt_speaker_claim(bool alert){claims++;return 0;}
 void ny_product_bt_speaker_release(void){assert(claims>0);claims--;}
@@ -61,6 +65,33 @@ static void eq_switch_proof(void){
  assert(fabs(10*log10(power[0]/(9*256*.01*.01/2))+15)<.05);
  puts("EQ_SWITCH_PRESERVES_MASTER_AND_OUTPUT_GAIN_PASS");
 }
+static void route_proof(void){
+ cJSON *r; struct ny_product_dsp_settings_s cfg; uint32_t rev;
+ assert(call("dsp.config","{\"bassEnabled\":true}",&r)==0);cJSON_Delete(r);
+ char *before=strdup(saved);
+ atomic_store(&headphones_only,true);ny_product_dsp_tick();
+ assert(ny_product_dsp_acquire("route",&cfg,&rev)==0);assert(!cfg.bass);
+ assert(g_dsp_settings.bass && !strcmp(before,saved));
+ assert(call("dsp.config","{\"masterDb\":-15,\"persist\":false}",&r)==0);
+ assert(cJSON_IsTrue(cJSON_GetObjectItem(r,"bassSuppressed")));cJSON_Delete(r);
+ struct nyadsp_s *d=ny_product_dsp_take_update(&cfg,&rev);assert(d&&!cfg.bass);nyadsp_destroy(d);
+ atomic_store(&headphones_only,false);ny_product_dsp_tick();
+ d=ny_product_dsp_take_update(&cfg,&rev);assert(d&&cfg.bass);nyadsp_destroy(d);
+ assert(!strcmp(before,saved));free(before);ny_product_dsp_release(0);
+ assert(call("dsp.config","{\"restore\":true}",&r)==0);cJSON_Delete(r);
+ struct ny_dsp_output_s *out;struct ny_audio_stream_config_s stream={0};
+ stream.path="satellite";stream.rate=48000;stream.channels=2;stream.dsp_source="route";
+ assert(ny_dsp_output_open(&out,&stream)==0);assert(out->bass);
+ int16_t pcm[512]={0};atomic_store(&headphones_only,true);ny_product_dsp_tick();
+ assert(ny_dsp_output_write(out,pcm,sizeof(pcm),100)==sizeof(pcm));assert(!out->bass);
+ size_t stopped=written[1];
+ for(int i=0;i<40;i++)assert(ny_dsp_output_write(out,pcm,sizeof(pcm),100)==sizeof(pcm));
+ assert(written[1]==stopped);
+ atomic_store(&headphones_only,false);ny_product_dsp_tick();
+ assert(ny_dsp_output_write(out,pcm,sizeof(pcm),100)==sizeof(pcm));assert(out->bass);
+ assert(written[1]>stopped);ny_dsp_output_close(out);
+ puts("HEADPHONE_ROUTE_EFFECTIVE_SETTINGS_PRESERVE_PREFERENCES_PASS");
+}
 int main(void){cJSON*r;
  assert(call("dsp.status","{}",&r)==0);assert(!cJSON_IsTrue(cJSON_GetObjectItem(r,"running")));
  cJSON *cfg=cJSON_GetObjectItem(r,"config"), *bank=cJSON_GetObjectItem(cfg,"eqBands16");
@@ -81,6 +112,7 @@ int main(void){cJSON*r;
  assert(call("dsp.config","{\"restore\":true}",&r)==0);cJSON_Delete(r);
  assert(g_dsp_settings.filter.crossover_hz==120);
  puts("PRODUCT_DSP_CROSSOVER_40_500_BOUNDARY_PASS");
+ route_proof();
  char *old_saved=strdup(saved);
  assert(call("dsp.config","{\"satelliteHighpassHz\":250,\"bassLowpassHz\":500}",&r)==0);cJSON_Delete(r);
  assert(g_dsp_settings.crossover.satellite_highpass_hz==250 && g_dsp_settings.crossover.bass_lowpass_hz==500);

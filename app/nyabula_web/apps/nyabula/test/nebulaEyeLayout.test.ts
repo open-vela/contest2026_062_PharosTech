@@ -1,0 +1,24 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { createApp,h,ref } from 'vue';
+vi.mock('@nyabula/ui',()=>({UiIcon:{render:()=>h('i')}}));
+vi.mock('../src/views/eye/eye.logic',()=>({useEyePage:()=>({session:{connected:true,canControl:true,state:'connected'},eye:{ready:true,activeMode:'idle',activeScene:null,nativeQr:false},canvasReady:ref(true),showPairOverlay:ref(false),pairing:ref(false),pairError:ref(null)})}));
+vi.mock('../src/stores/eye',()=>({MODE_LABELS:{idle:'Idle'},SCENE_META:{}}));
+vi.mock('../src/views/eye/EyeControls.vue',()=>({default:{props:{hideMirror:Boolean},render(){return h('div',{'data-controls':true,'data-hide-mirror':String((this as any).hideMirror)});}}}));
+vi.mock('../src/views/eye/EyeStatusCard.vue',()=>({default:{render:()=>h('div')}}));
+vi.mock('../src/views/eye/EyeMirrorCard.vue',()=>({default:{render:()=>h('div',{'data-feed':true})}}));
+vi.mock('../src/components/WidgetGrid.vue',()=>({default:{render:()=>h('div',{'data-widgets':true})}}));
+vi.mock('../src/skins/nebula/eye/NebulaLens.vue',()=>({default:{render:()=>h('div',{'data-eyes':true})}}));
+vi.mock('vue-router',()=>({useRouter:()=>({})}));
+import NebulaEye from '../src/skins/nebula/eye/NebulaEye.vue';
+let app:ReturnType<typeof createApp>,host:HTMLElement;
+afterEach(()=>{app.unmount();host.remove();});
+it('renders eyes, controls, widgets, then the actual screen feed',()=>{
+ host=document.createElement('div');document.body.append(host);app=createApp({render:()=>h(NebulaEye)});
+ app.provide('formFactor',{formFactor:ref('desktop'),orientation:ref('landscape')});app.mount(host);
+ const children=[...host.querySelector('.nb-eye')!.children];
+ expect(children[0].classList.contains('stage')).toBe(true);
+ expect(children[1].classList.contains('ctrl')).toBe(true);
+ expect(children.at(-1)?.hasAttribute('data-feed')).toBe(true);
+ expect(host.querySelector('[data-controls]')?.getAttribute('data-hide-mirror')).toBe('true');
+ expect(host.querySelector('.ctrl [data-feed]')).toBeNull();
+});

@@ -68,7 +68,7 @@ const scene = useEyeScene(props.type, () => {
   const n = upcoming.value[0];
   const record = n ? core.items.value.find((r) => r.id === n.id) : undefined;
   return record ? calendarScene({ title: record.title, startAt: record.start_at }) : null;
-}, { hideWhenEmpty: true });
+}, { hideWhenEmpty: true, recordId: () => upcoming.value[0]?.id });
 const onEyes = computed(() => scene.shown.value || scene.held.value);
 
 /* Add-event editor. */

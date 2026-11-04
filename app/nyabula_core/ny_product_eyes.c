@@ -30,6 +30,7 @@
 #include <nyabula_eye_wire.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <sys/statfs.h>
 #include <unistd.h>
 
 #define NY_PRODUCT_EYE_SOURCE     "nyabot"
@@ -44,16 +45,21 @@ static atomic_uint g_eye_request;
 
 #include "ny_product_store.h"
 
-#define NY_PRODUCT_IRIS_DOMAIN    "eyes"
-#define NY_PRODUCT_IRIS_SOURCE    "nyiris"
-#define NY_PRODUCT_IRIS_PERIOD_MS 2000
-#define NY_PRODUCT_IRIS_DEFAULT   0x56ffb2
+#define NY_PRODUCT_IRIS_DOMAIN       "eyes"
+#define NY_PRODUCT_IRIS_SOURCE       "nyiris"
+#define NY_PRODUCT_IRIS_PERIOD_MS    2000
+#define NY_PRODUCT_IRIS_DEFAULT      0x56ffb2
+#define NY_PRODUCT_IRIS_BOOT_WAIT_MS 15000
+#define NY_PRODUCT_IRIS_BOOT_POLL_MS 100
 
 static uint64_t g_iris_next;
 static uint64_t g_iris_revision;
 static uint32_t g_iris_saved[NYABULA_EYE_COUNT];
 static uint32_t g_iris_seen[NYABULA_EYE_COUNT];
 static bool g_iris_restored;
+
+static int ny_product_iris_read(uint32_t colors[NYABULA_EYE_COUNT],
+                                uint64_t *revision);
 #endif
 
 /****************************************************************************
@@ -64,8 +70,9 @@ int ny_product_eyes_request(const struct ny_product_caller_s *caller,
                             const char *topic, const cJSON *data,
                             cJSON **result)
 {
-  bool expression = strcmp(topic, "eyes.expression") == 0;
-  if (!expression && strcmp(topic, "eyes.status") != 0)
+  bool control = strcmp(topic, "eyes.expression") == 0 ||
+                 strcmp(topic, "eyes.gaze") == 0;
+  if (!control && strcmp(topic, "eyes.status") != 0)
     return -ENOSYS;
 #ifndef CONFIG_NYABULA_CORE_EYE
   (void)caller;
@@ -79,7 +86,7 @@ int ny_product_eyes_request(const struct ny_product_caller_s *caller,
   int ret = nyabula_eye_service_snapshot(&snapshot);
   if (ret < 0)
     return ret;
-  if (expression)
+  if (control)
     {
       char id[48];
       snprintf(id, sizeof(id), "agent-eye-%u",
@@ -135,6 +142,66 @@ int ny_product_eyes_request(const struct ny_product_caller_s *caller,
 
 #ifdef CONFIG_NYABULA_CORE_EYE
 /****************************************************************************
+ * Name: ny_product_iris_read
+ ****************************************************************************/
+
+static int ny_product_iris_read(uint32_t colors[NYABULA_EYE_COUNT],
+                                uint64_t *revision)
+{
+  cJSON *root = NULL;
+  int ret = ny_product_store_read(NY_PRODUCT_IRIS_DOMAIN, &root, revision);
+  if (ret < 0 && ret != -ENOENT && ret != -EBADMSG)
+    {
+      cJSON_Delete(root);
+      return ret;
+    }
+  for (int eye = 0; eye < NYABULA_EYE_COUNT; eye++)
+    {
+      const cJSON *item =
+          cJSON_GetObjectItemCaseSensitive(root, eye == 0 ? "left" : "right");
+      colors[eye] = cJSON_IsNumber(item) && item->valuedouble >= 0 &&
+                            item->valuedouble <= 0xffffff
+                        ? (uint32_t)item->valuedouble
+                        : NY_PRODUCT_IRIS_DEFAULT;
+    }
+  cJSON_Delete(root);
+  return 0;
+}
+
+/****************************************************************************
+ * Name: nyabula_eye_service_boot_colors
+ ****************************************************************************/
+
+int nyabula_eye_service_boot_colors(uint32_t colors[NYABULA_EYE_COUNT])
+{
+#ifndef CONFIG_ARCH_SIM
+  /* Like Web startup, wait for the board's asynchronous FAT mount. Reading
+   * before it appears must not create a temporary empty settings database.
+   */
+  const char *path = CONFIG_NYABULA_CORE_STATE_DATABASE;
+  const char *slash = path[0] == '/' ? strchr(path + 1, '/') : NULL;
+  char root[32];
+  struct statfs info;
+  int waited;
+  if (slash == NULL || (size_t)(slash - path) >= sizeof(root))
+    return -EINVAL;
+  memcpy(root, path, slash - path);
+  root[slash - path] = '\0';
+  for (waited = 0; waited < NY_PRODUCT_IRIS_BOOT_WAIT_MS;
+       waited += NY_PRODUCT_IRIS_BOOT_POLL_MS)
+    {
+      if (statfs(root, &info) == 0 && info.f_type == MSDOS_SUPER_MAGIC)
+        break;
+      usleep(NY_PRODUCT_IRIS_BOOT_POLL_MS * 1000);
+    }
+  if (waited >= NY_PRODUCT_IRIS_BOOT_WAIT_MS)
+    return -ETIMEDOUT;
+#endif
+  uint64_t revision;
+  return ny_product_iris_read(colors, &revision);
+}
+
+/****************************************************************************
  * Name: ny_product_iris_submit
  ****************************************************************************/
 
@@ -188,33 +255,16 @@ int ny_product_eyes_tick(void)
 
   if (!g_iris_restored)
     {
-      cJSON *root = NULL;
-      int ret = ny_product_store_read(NY_PRODUCT_IRIS_DOMAIN, &root,
-                                      &g_iris_revision);
-
-      if (ret < 0 && ret != -ENOENT && ret != -EBADMSG)
-        {
-          return 0; /* The store is not there yet either. */
-        }
-
+      int ret = ny_product_iris_read(g_iris_saved, &g_iris_revision);
+      if (ret < 0)
+        return 0;
       for (eye = 0; eye < NYABULA_EYE_COUNT; eye++)
         {
-          const cJSON *item = cJSON_GetObjectItemCaseSensitive(
-              root, eye == 0 ? "left" : "right");
-
-          g_iris_saved[eye] = cJSON_IsNumber(item) && item->valuedouble >= 0 &&
-                                      item->valuedouble <= 0xffffff
-                                  ? (uint32_t)item->valuedouble
-                                  : NY_PRODUCT_IRIS_DEFAULT;
           g_iris_seen[eye] = g_iris_saved[eye];
           if (g_iris_saved[eye] != snapshot.iris_rgb[eye])
-            {
-              ny_product_iris_submit(eye == 0 ? "left" : "right",
-                                     g_iris_saved[eye]);
-            }
+            ny_product_iris_submit(eye == 0 ? "left" : "right",
+                                   g_iris_saved[eye]);
         }
-
-      cJSON_Delete(root);
       g_iris_restored = true;
       return 0;
     }

@@ -413,12 +413,20 @@ struct nyamp_buffer_s
  * layout) is sent once when the stream ends.
  */
 
-#define NYAMP_KWS_LOAD               1U
-#define NYAMP_KWS_UNLOAD             2U
-#define NYAMP_KWS_BEGIN              3U
-#define NYAMP_KWS_PUSH               4U
-#define NYAMP_KWS_END                6U
-#define NYAMP_KWS_LIST               7U
+#define NYAMP_KWS_LOAD         1U
+#define NYAMP_KWS_UNLOAD       2U
+#define NYAMP_KWS_BEGIN        3U
+#define NYAMP_KWS_PUSH         4U
+#define NYAMP_KWS_END          6U
+#define NYAMP_KWS_LIST         7U
+#define NYAMP_KWS_LOAD_TEXT    8U
+#define NYAMP_KWS_PREPARE_TEXT 9U
+#define NYAMP_KWS_TEXT_MAX     96U
+
+/* TEXT opcodes reuse LOAD's encoding, but its keywords field is a UTF-8
+ * phrase rather than a filename. PREPARE validates without changing a live
+ * stream. Legacy LOAD keeps its filename contract and has no new dependency.
+ */
 #define NYAMP_KWS_EVENT_DETECTED     0x80U
 #define NYAMP_KWS_EVENT_FINISH       0x81U
 
