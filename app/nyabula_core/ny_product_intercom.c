@@ -20,10 +20,9 @@
  *
  ****************************************************************************/
 
-
 #include "ny_product_intercom.h"
-#include "ny_product_privacy.h"
 #include "ny_audio_stream.h"
+#include "ny_product_privacy.h"
 #include "ny_voice.h"
 #include <errno.h>
 #include <math.h>
@@ -106,16 +105,20 @@ static cJSON *ny_intercom_status(void)
   cJSON *out = cJSON_CreateObject();
   if (out == NULL)
     return NULL;
-  bool ok = cJSON_AddStringToObject(out, "phase", g_intercom_phase) != NULL &&
-            cJSON_AddStringToObject(out, "duplex", "push-to-talk") != NULL &&
-            cJSON_AddStringToObject(out, "format", "s16le") != NULL &&
-            cJSON_AddNumberToObject(out, "sampleRate", NY_INTERCOM_RATE) != NULL &&
-            cJSON_AddNumberToObject(out, "channels", 1) != NULL &&
-            cJSON_AddNumberToObject(out, "capturedSamples", g_intercom_captured) != NULL &&
-            cJSON_AddNumberToObject(out, "playedSamples", g_intercom_played) != NULL &&
-            cJSON_AddNumberToObject(out, "queuedPackets", g_intercom_count) != NULL &&
-            cJSON_AddNumberToObject(out, "level", g_intercom_level) != NULL &&
-            cJSON_AddNumberToObject(out, "lastError", g_intercom_error) != NULL;
+  bool ok =
+      cJSON_AddStringToObject(out, "phase", g_intercom_phase) != NULL &&
+      cJSON_AddStringToObject(out, "duplex", "push-to-talk") != NULL &&
+      cJSON_AddStringToObject(out, "format", "s16le") != NULL &&
+      cJSON_AddNumberToObject(out, "sampleRate", NY_INTERCOM_RATE) != NULL &&
+      cJSON_AddNumberToObject(out, "channels", 1) != NULL &&
+      cJSON_AddNumberToObject(out, "capturedSamples", g_intercom_captured) !=
+          NULL &&
+      cJSON_AddNumberToObject(out, "playedSamples", g_intercom_played) !=
+          NULL &&
+      cJSON_AddNumberToObject(out, "queuedPackets", g_intercom_count) !=
+          NULL &&
+      cJSON_AddNumberToObject(out, "level", g_intercom_level) != NULL &&
+      cJSON_AddNumberToObject(out, "lastError", g_intercom_error) != NULL;
   if (!ok)
     {
       cJSON_Delete(out);
@@ -131,8 +134,8 @@ static cJSON *ny_intercom_status(void)
 static int ny_intercom_open(struct ny_audio_stream_s **stream, bool talk)
 {
   const struct ny_audio_stream_config_s config = {
-    .path = talk ? CONFIG_NYABULA_CORE_AUDIO_OUTPUT_DEVICE :
-                   CONFIG_NYABULA_CORE_AUDIO_INPUT_DEVICE,
+    .path = talk ? CONFIG_NYABULA_CORE_AUDIO_OUTPUT_DEVICE
+                 : CONFIG_NYABULA_CORE_AUDIO_INPUT_DEVICE,
     .capture = !talk,
     .wav = talk,
     .rate = NY_INTERCOM_RATE,
@@ -164,8 +167,8 @@ static void *ny_intercom_worker(void *arg)
     {
       nxmutex_lock(&g_intercom_lock);
       bool stop = g_intercom_stop;
-      if (g_intercom_talk && ny_product_time_ms(true) -
-          g_intercom_last_input > NY_INTERCOM_TALK_IDLE_MS)
+      if (g_intercom_talk && ny_product_time_ms(true) - g_intercom_last_input >
+                                 NY_INTERCOM_TALK_IDLE_MS)
         g_intercom_talk = false;
       bool wanted = g_intercom_talk || g_intercom_count != 0;
       nxmutex_unlock(&g_intercom_lock);
@@ -207,9 +210,8 @@ static void *ny_intercom_worker(void *arg)
               usleep(10000);
               continue;
             }
-          ssize_t written = ny_audio_stream_write(stream, packet.bytes,
-                                                   packet.length,
-                                                   NY_INTERCOM_IO_MS);
+          ssize_t written = ny_audio_stream_write(
+              stream, packet.bytes, packet.length, NY_INTERCOM_IO_MS);
           if (written != (ssize_t)packet.length)
             {
               ret = written < 0 ? (int)written : -ETIMEDOUT;
@@ -222,9 +224,8 @@ static void *ny_intercom_worker(void *arg)
         }
       else
         {
-          ssize_t got = ny_audio_stream_read(stream, packet.bytes,
-                                              sizeof(packet.bytes),
-                                              NY_INTERCOM_IO_MS);
+          ssize_t got = ny_audio_stream_read(
+              stream, packet.bytes, sizeof(packet.bytes), NY_INTERCOM_IO_MS);
           if (got < 0 || (got & 1))
             {
               ret = got < 0 ? (int)got : -EIO;
@@ -232,7 +233,8 @@ static void *ny_intercom_worker(void *arg)
             }
           if (got == 0)
             {
-              if (ny_product_time_ms(true) - heard_at > NY_INTERCOM_MIC_IDLE_MS)
+              if (ny_product_time_ms(true) - heard_at >
+                  NY_INTERCOM_MIC_IDLE_MS)
                 ret = -ETIMEDOUT;
               continue;
             }
@@ -252,7 +254,7 @@ static void *ny_intercom_worker(void *arg)
           if (!g_intercom_talk && !g_intercom_stop)
             {
               g_intercom_capture[g_intercom_capture_sequence++ %
-                                   NY_INTERCOM_CAPTURE] = packet;
+                                 NY_INTERCOM_CAPTURE] = packet;
               g_intercom_captured += packet.length / 2;
               g_intercom_level = sqrt((double)squares / (packet.length / 2));
               g_intercom_revision++;
@@ -357,8 +359,8 @@ void ny_product_intercom_close(struct ny_intercom_client_s *client)
 static int ny_intercom_push(const cJSON *data)
 {
   const cJSON *number = cJSON_GetObjectItemCaseSensitive(data, "sequence");
-  const char *encoded = cJSON_GetStringValue(
-      cJSON_GetObjectItemCaseSensitive(data, "data"));
+  const char *encoded =
+      cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data, "data"));
   if (!cJSON_IsNumber(number) || !isfinite(number->valuedouble) ||
       number->valuedouble < 0 || number->valuedouble > 4294967295.0 ||
       floor(number->valuedouble) != number->valuedouble || encoded == NULL ||
@@ -371,10 +373,11 @@ static int ny_intercom_push(const cJSON *data)
   if (g_intercom_count == NY_INTERCOM_PLAY)
     return -EBUSY;
   struct ny_intercom_packet_s *packet =
-      &g_intercom_play[(g_intercom_head + g_intercom_count) % NY_INTERCOM_PLAY];
-  int ret = mbedtls_base64_decode(packet->bytes, sizeof(packet->bytes),
-                                  &packet->length, (const unsigned char *)encoded,
-                                  strlen(encoded));
+      &g_intercom_play[(g_intercom_head + g_intercom_count) %
+                       NY_INTERCOM_PLAY];
+  int ret = mbedtls_base64_decode(
+      packet->bytes, sizeof(packet->bytes), &packet->length,
+      (const unsigned char *)encoded, strlen(encoded));
   if (ret != 0 || packet->length == 0 || (packet->length & 1))
     return -EINVAL;
   g_intercom_count++;
@@ -388,9 +391,9 @@ static int ny_intercom_push(const cJSON *data)
  ****************************************************************************/
 
 int ny_product_intercom_request(const struct ny_product_caller_s *caller,
-                                 struct ny_intercom_client_s *client,
-                                 const char *topic, const cJSON *data,
-                                 cJSON **result)
+                                struct ny_intercom_client_s *client,
+                                const char *topic, const cJSON *data,
+                                cJSON **result)
 {
   bool start = !strcmp(topic, "intercom.start");
   bool stop = !strcmp(topic, "intercom.stop");
@@ -444,7 +447,7 @@ int ny_product_intercom_request(const struct ny_product_caller_s *caller,
  ****************************************************************************/
 
 int ny_product_intercom_next(struct ny_intercom_client_s *client,
-                              const char **topic, cJSON **result)
+                             const char **topic, cJSON **result)
 {
   *result = NULL;
   if (!ny_product_privacy_mic_allowed())
@@ -472,7 +475,8 @@ int ny_product_intercom_next(struct ny_intercom_client_s *client,
       strcmp(g_intercom_phase, "listening") ||
       client->sequence >= g_intercom_capture_sequence)
     goto out;
-  /* Stay near live audio; never play a growing backlog after a stalled link. */
+  /* Stay near live audio; never play a growing backlog after a stalled link.
+   */
   if (g_intercom_capture_sequence - client->sequence > 2)
     client->sequence = g_intercom_capture_sequence - 1;
   struct ny_intercom_packet_s *packet =
@@ -486,9 +490,10 @@ int ny_product_intercom_next(struct ny_intercom_client_s *client,
       goto out;
     }
   ret = mbedtls_base64_encode(encoded, size, &written, packet->bytes,
-                               packet->length);
+                              packet->length);
   cJSON *out = ret == 0 ? cJSON_CreateObject() : NULL;
-  bool valid = out != NULL &&
+  bool valid =
+      out != NULL &&
       cJSON_AddNumberToObject(out, "sequence", client->sequence) != NULL &&
       cJSON_AddNumberToObject(out, "samples", packet->length / 2) != NULL &&
       cJSON_AddStringToObject(out, "data", (char *)encoded) != NULL;

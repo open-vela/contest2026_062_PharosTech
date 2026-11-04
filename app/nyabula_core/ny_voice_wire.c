@@ -1012,16 +1012,16 @@ void ny_voice_wire_transcript(char *transcript, size_t size,
  * Name: ny_voice_wire_request
  ****************************************************************************/
 int ny_voice_wire_request(struct ny_voice_wire_s *wire, uint16_t service,
-                           uint16_t opcode, const uint8_t *body, size_t size,
-                           int timeout_ms, uint8_t *reply, size_t *reply_size)
+                          uint16_t opcode, const uint8_t *body, size_t size,
+                          int timeout_ms, uint8_t *reply, size_t *reply_size)
 {
   if (!wire || !wire->io.request_id || !wire->io.send || !wire->io.recv ||
       timeout_ms <= 0)
     return -EINVAL;
   wire->request_id = wire->io.request_id(wire->io.arg);
   wire->generation = ny_voice_wire_generation(wire);
-  int ret = ny_voice_wire_call(wire, service, opcode, wire->request_id,
-                                body, size, timeout_ms, true, reply, reply_size);
+  int ret = ny_voice_wire_call(wire, service, opcode, wire->request_id, body,
+                               size, timeout_ms, true, reply, reply_size);
   if (ret == -ECANCELED || ret == -ETIMEDOUT)
     ny_voice_wire_cancel(wire, service);
   wire->request_id = 0;

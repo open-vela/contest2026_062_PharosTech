@@ -20,7 +20,6 @@
  *
  ****************************************************************************/
 
-
 #ifndef __APP_NYABULA_CORE_NY_PRODUCT_CAMERA_H
 #define __APP_NYABULA_CORE_NY_PRODUCT_CAMERA_H
 
@@ -43,10 +42,10 @@ int ny_product_camera_subscribe(struct ny_camera_client_s *client);
 void ny_product_camera_close(struct ny_camera_client_s *client);
 int ny_product_camera_next(struct ny_camera_client_s *client, cJSON **chunk);
 int ny_product_camera_request(const struct ny_product_caller_s *caller,
-                               const char *topic, const cJSON *data,
-                               cJSON **result);
+                              const char *topic, const cJSON *data,
+                              cJSON **result);
 int ny_product_camera_photo(unsigned int factor, uint8_t **png,
-                             size_t *length);
+                            size_t *length);
 /* Copy the newest cached raw frame, never a DMA-owned buffer. The caller
  * holds a subscription and returns EAGAIN while the next frame is pending.
  */

@@ -70,8 +70,8 @@ int ny_product_eyes_request(const struct ny_product_caller_s *caller,
                             const char *topic, const cJSON *data,
                             cJSON **result)
 {
-  bool control = strcmp(topic, "eyes.expression") == 0 ||
-                 strcmp(topic, "eyes.gaze") == 0;
+  bool control =
+      strcmp(topic, "eyes.expression") == 0 || strcmp(topic, "eyes.gaze") == 0;
   if (!control && strcmp(topic, "eyes.status") != 0)
     return -ENOSYS;
 #ifndef CONFIG_NYABULA_CORE_EYE

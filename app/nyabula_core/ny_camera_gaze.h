@@ -20,7 +20,6 @@
  *
  ****************************************************************************/
 
-
 #ifndef __APP_NYABULA_CORE_NY_CAMERA_GAZE_H
 #define __APP_NYABULA_CORE_NY_CAMERA_GAZE_H
 
@@ -49,7 +48,7 @@ struct ny_camera_gaze_s
 
 int ny_camera_gaze_fit(const struct ny_camera_gaze_point_s points[5],
                        struct ny_camera_gaze_s *mapping);
-int ny_camera_gaze_map(const struct ny_camera_gaze_s *mapping,
-                       double u, double v, double *x, double *y);
+int ny_camera_gaze_map(const struct ny_camera_gaze_s *mapping, double u,
+                       double v, double *x, double *y);
 
 #endif

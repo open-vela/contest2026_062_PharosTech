@@ -20,7 +20,6 @@
  *
  ****************************************************************************/
 
-
 #include "ny_product_privacy.h"
 #ifdef CONFIG_NYABULA_CORE_SPEAKER
 #include "ny_product_speaker.h"
@@ -139,8 +138,8 @@ static cJSON *ny_privacy_status(void)
  ****************************************************************************/
 
 int ny_product_privacy_request(const struct ny_product_caller_s *caller,
-                              const char *topic, const cJSON *data,
-                              cJSON **result)
+                               const char *topic, const cJSON *data,
+                               cJSON **result)
 {
   bool write = strcmp(topic, "privacy.set") == 0;
   if (!write && strcmp(topic, "privacy.status"))
@@ -158,10 +157,9 @@ int ny_product_privacy_request(const struct ny_product_caller_s *caller,
       const cJSON *a = cJSON_GetObjectItemCaseSensitive(data, "camera");
       const cJSON *b = cJSON_GetObjectItemCaseSensitive(data, "mic");
       const cJSON *rev = cJSON_GetObjectItemCaseSensitive(data, "revision");
-      if ((!a && !b) || (a && !cJSON_IsBool(a)) ||
-          (b && !cJSON_IsBool(b)) || !cJSON_IsNumber(rev) ||
-          !isfinite(rev->valuedouble) || rev->valuedouble < 0 ||
-          rev->valuedouble > 9007199254740991.0 ||
+      if ((!a && !b) || (a && !cJSON_IsBool(a)) || (b && !cJSON_IsBool(b)) ||
+          !cJSON_IsNumber(rev) || !isfinite(rev->valuedouble) ||
+          rev->valuedouble < 0 || rev->valuedouble > 9007199254740991.0 ||
           floor(rev->valuedouble) != rev->valuedouble)
         ret = -EINVAL;
       else if ((uint64_t)rev->valuedouble != g_privacy_revision)
@@ -178,7 +176,7 @@ int ny_product_privacy_request(const struct ny_product_caller_s *caller,
             {
               uint64_t updated = 0;
               ret = ny_product_store_write("privacy", saved,
-                        g_privacy_revision, &updated);
+                                           g_privacy_revision, &updated);
               if (ret == 0)
                 g_privacy_revision = updated;
             }

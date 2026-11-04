@@ -353,7 +353,8 @@ static bool ny_intent_task(const struct ny_intent_view_s *view,
 static bool ny_intent_lists(const char *text,
                             struct ny_agent_local_intent_s *intent);
 #if !defined(__NuttX__) || defined(CONFIG_NYABULA_CORE_OBJECT_TRACKING)
-static bool ny_intent_tracking(const char *text, struct ny_agent_local_intent_s *intent);
+static bool ny_intent_tracking(const char *text,
+                               struct ny_agent_local_intent_s *intent);
 #endif
 static bool ny_intent_lighting(const char *text,
                                struct ny_agent_local_intent_s *intent);
@@ -1922,17 +1923,34 @@ static bool ny_intent_lighting(const char *text,
 /****************************************************************************
  * Name: ny_intent_tracking
  ****************************************************************************/
-static bool ny_intent_tracking(const char *text,struct ny_agent_local_intent_s *intent)
+static bool ny_intent_tracking(const char *text,
+                               struct ny_agent_local_intent_s *intent)
 {
-  static const char *const prefix[]={" ","请","帮我","please "};
-  static const char *const suffix[]={" ","。","！",".","!"};
-  text=ny_intent_skip(text,prefix,NY_INTENT_COUNT(prefix));
-  const char *learn[]={"学习一下","学习这个物品","跟踪这个物品","learn this object","track this object"};
-  const char *stop[]={"停止物品追踪","停止跟踪","不要跟踪了","stop tracking"};
-  for(unsigned int i=0;i<sizeof(learn)/sizeof(learn[0]);i++)
-    if(!strncmp(text,learn[i],strlen(learn[i]))&&!*ny_intent_skip(text+strlen(learn[i]),suffix,NY_INTENT_COUNT(suffix))){intent->kind=NY_AGENT_LOCAL_TRACK_LEARN;intent->complete=true;return true;}
-  for(unsigned int i=0;i<sizeof(stop)/sizeof(stop[0]);i++)
-    if(!strncmp(text,stop[i],strlen(stop[i]))&&!*ny_intent_skip(text+strlen(stop[i]),suffix,NY_INTENT_COUNT(suffix))){intent->kind=NY_AGENT_LOCAL_TRACK_STOP;intent->complete=true;return true;}
+  static const char *const prefix[] = { " ", "请", "帮我", "please " };
+  static const char *const suffix[] = { " ", "。", "！", ".", "!" };
+  text = ny_intent_skip(text, prefix, NY_INTENT_COUNT(prefix));
+  const char *learn[] = { "学习一下", "学习这个物品", "跟踪这个物品",
+                          "learn this object", "track this object" };
+  const char *stop[] = { "停止物品追踪", "停止跟踪", "不要跟踪了",
+                         "stop tracking" };
+  for (unsigned int i = 0; i < sizeof(learn) / sizeof(learn[0]); i++)
+    if (!strncmp(text, learn[i], strlen(learn[i])) &&
+        !*ny_intent_skip(text + strlen(learn[i]), suffix,
+                         NY_INTENT_COUNT(suffix)))
+      {
+        intent->kind = NY_AGENT_LOCAL_TRACK_LEARN;
+        intent->complete = true;
+        return true;
+      }
+  for (unsigned int i = 0; i < sizeof(stop) / sizeof(stop[0]); i++)
+    if (!strncmp(text, stop[i], strlen(stop[i])) &&
+        !*ny_intent_skip(text + strlen(stop[i]), suffix,
+                         NY_INTENT_COUNT(suffix)))
+      {
+        intent->kind = NY_AGENT_LOCAL_TRACK_STOP;
+        intent->complete = true;
+        return true;
+      }
   return false;
 }
 
@@ -2007,7 +2025,7 @@ const char *ny_agent_local_intent_name(enum ny_agent_local_intent_e kind)
     "timer.list", "alarm.list", "task.list",   "expression",   "timer",
     "alarm",      "volume.set", "volume.up",   "volume.down",  "mute",
     "unmute",     "music.play", "music.pause", "music.resume", "music.stop",
-    "remember",   "task",       "lighting", "track.learn", "track.stop"
+    "remember",   "task",       "lighting",    "track.learn",  "track.stop"
   };
   return (size_t)kind < NY_INTENT_COUNT(names) ? names[kind] : "?";
 }
@@ -2257,12 +2275,22 @@ ny_agent_local_intent_call(const struct ny_agent_local_intent_s *intent,
                            const struct ny_agent_local_context_s *context,
                            const char **tool)
 {
-  if((intent->kind==NY_AGENT_LOCAL_TRACK_LEARN||intent->kind==NY_AGENT_LOCAL_TRACK_STOP)&&intent->complete)
+  if ((intent->kind == NY_AGENT_LOCAL_TRACK_LEARN ||
+       intent->kind == NY_AGENT_LOCAL_TRACK_STOP) &&
+      intent->complete)
     {
-      cJSON *root=cJSON_CreateObject();
-      bool ok=root&&cJSON_AddStringToObject(root,"topic",intent->kind==NY_AGENT_LOCAL_TRACK_LEARN?"vision.learn":"vision.stop")&&cJSON_AddObjectToObject(root,"arguments");
-      char *json=ok?cJSON_PrintUnformatted(root):NULL;cJSON_Delete(root);
-      *tool="nyabula_tracking";return json;
+      cJSON *root = cJSON_CreateObject();
+      bool ok =
+          root &&
+          cJSON_AddStringToObject(root, "topic",
+                                  intent->kind == NY_AGENT_LOCAL_TRACK_LEARN
+                                      ? "vision.learn"
+                                      : "vision.stop") &&
+          cJSON_AddObjectToObject(root, "arguments");
+      char *json = ok ? cJSON_PrintUnformatted(root) : NULL;
+      cJSON_Delete(root);
+      *tool = "nyabula_tracking";
+      return json;
     }
   if (intent->kind == NY_AGENT_LOCAL_LIGHTING && intent->complete)
     {
@@ -2596,8 +2624,9 @@ static void ny_intent_attempt(const char *tool, const cJSON *call, char *out,
   const cJSON *record = cJSON_GetObjectItemCaseSensitive(arguments, "record");
   char piece[NY_AGENT_LOCAL_RAW_MAX + 1];
   char span[64];
-  if(!strcmp(tool,"nyabula_tracking"))
-    snprintf(out,size,"%s",!strcmp(topic,"vision.stop")?"停止物品追踪":"学习眼前物品");
+  if (!strcmp(tool, "nyabula_tracking"))
+    snprintf(out, size, "%s",
+             !strcmp(topic, "vision.stop") ? "停止物品追踪" : "学习眼前物品");
   else if (!strcmp(tool, "nyabula_lighting"))
     snprintf(out, size, "调整灯光");
   else if (!strcmp(tool, "nyabula_expression"))
@@ -2921,10 +2950,14 @@ bool ny_agent_local_intent_fact(const char *tool, const char *arguments,
                  ny_intent_reason(fabs(error) <= 1000000 ? (int)error : -EIO,
                                   reason, sizeof(reason)));
     }
-  else if(!strcmp(tool,"nyabula_tracking")&&cJSON_IsObject(outcome))
+  else if (!strcmp(tool, "nyabula_tracking") && cJSON_IsObject(outcome))
     {
-      if(!strcmp(ny_intent_text(call,"topic"),"vision.stop"))snprintf(fact,size,"物品追踪已停止");
-      else snprintf(fact,size,"请把物品放在镜头中央，缓慢转动，保持几秒。正在学习，还没有确认记住。");
+      if (!strcmp(ny_intent_text(call, "topic"), "vision.stop"))
+        snprintf(fact, size, "物品追踪已停止");
+      else
+        snprintf(fact, size,
+                 "请把物品放在镜头中央，缓慢转动，保持几秒。正在学习，还没有确"
+                 "认记住。");
     }
   else if (!strcmp(tool, "nyabula_lighting") && cJSON_IsObject(outcome))
     {

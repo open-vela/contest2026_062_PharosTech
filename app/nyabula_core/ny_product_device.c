@@ -333,24 +333,30 @@ static cJSON *ny_product_device_peripherals(void)
     const char *path;
   } nodes[] = {
 #ifdef CONFIG_NYABULA_CORE_CAMERA
-    {"camera", "CSI camera", "/dev/video0"},
+    { "camera", "CSI camera", "/dev/video0" },
 #endif
 #ifdef CONFIG_NYABULA_CORE_LIGHTING
-    {"lighting", "WS2812 lighting", "/dev/ws2812"},
+    { "lighting", "WS2812 lighting", "/dev/ws2812" },
 #endif
-    {NULL,NULL,NULL}
+    { NULL, NULL, NULL }
   };
-  cJSON *items=cJSON_CreateArray();
-  if(!items)return NULL;
-  for(size_t i=0;nodes[i].path;i++)
+  cJSON *items = cJSON_CreateArray();
+  if (!items)
+    return NULL;
+  for (size_t i = 0; nodes[i].path; i++)
     {
-      cJSON *item=cJSON_CreateObject();
-      if(!item||!cJSON_AddStringToObject(item,"kind",nodes[i].kind)||
-         !cJSON_AddStringToObject(item,"name",nodes[i].name)||
-         !cJSON_AddStringToObject(item,"path",nodes[i].path)||
-         !cJSON_AddBoolToObject(item,"available",access(nodes[i].path,F_OK)==0)||
-         !cJSON_AddItemToArray(items,item))
-        {cJSON_Delete(item);cJSON_Delete(items);return NULL;}
+      cJSON *item = cJSON_CreateObject();
+      if (!item || !cJSON_AddStringToObject(item, "kind", nodes[i].kind) ||
+          !cJSON_AddStringToObject(item, "name", nodes[i].name) ||
+          !cJSON_AddStringToObject(item, "path", nodes[i].path) ||
+          !cJSON_AddBoolToObject(item, "available",
+                                 access(nodes[i].path, F_OK) == 0) ||
+          !cJSON_AddItemToArray(items, item))
+        {
+          cJSON_Delete(item);
+          cJSON_Delete(items);
+          return NULL;
+        }
     }
   return items;
 }

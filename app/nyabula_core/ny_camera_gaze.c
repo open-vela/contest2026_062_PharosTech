@@ -20,7 +20,6 @@
  *
  ****************************************************************************/
 
-
 #include "ny_camera_gaze.h"
 #include <errno.h>
 #include <math.h>
@@ -47,8 +46,8 @@ static double ny_camera_gaze_clamp(double value)
 int ny_camera_gaze_fit(const struct ny_camera_gaze_point_s points[5],
                        struct ny_camera_gaze_s *mapping)
 {
-  struct ny_camera_gaze_s candidate = {0};
-  double a[3][5] = {{0}};
+  struct ny_camera_gaze_s candidate = { 0 };
+  double a[3][5] = { { 0 } };
   double min_u = 1;
   double min_v = 1;
   double max_u = 0;
@@ -60,10 +59,10 @@ int ny_camera_gaze_fit(const struct ny_camera_gaze_point_s points[5],
   for (int i = 0; i < NY_CAMERA_GAZE_POINTS; i++)
     {
       const struct ny_camera_gaze_point_s *p = &points[i];
-      double row[] = {p->u, p->v, 1};
+      double row[] = { p->u, p->v, 1 };
       if (!isfinite(p->u) || !isfinite(p->v) || !isfinite(p->x) ||
-          !isfinite(p->y) || p->u < 0 || p->u > 1 || p->v < 0 ||
-          p->v > 1 || fabs(p->x) > 1 || fabs(p->y) > 1)
+          !isfinite(p->y) || p->u < 0 || p->u > 1 || p->v < 0 || p->v > 1 ||
+          fabs(p->x) > 1 || fabs(p->y) > 1)
         return -ERANGE;
       min_u = fmin(min_u, p->u);
       min_v = fmin(min_v, p->v);
@@ -146,8 +145,8 @@ int ny_camera_gaze_fit(const struct ny_camera_gaze_point_s points[5],
  * Name: ny_camera_gaze_map
  ****************************************************************************/
 
-int ny_camera_gaze_map(const struct ny_camera_gaze_s *mapping,
-                       double u, double v, double *x, double *y)
+int ny_camera_gaze_map(const struct ny_camera_gaze_s *mapping, double u,
+                       double v, double *x, double *y)
 {
   if (mapping == NULL || x == NULL || y == NULL)
     return -EINVAL;

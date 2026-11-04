@@ -20,7 +20,6 @@
  *
  ****************************************************************************/
 
-
 #include "ny_camera_png.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -72,18 +71,17 @@ static void ny_camera_png_chunk(uint8_t *p, const char *type, size_t size)
  ****************************************************************************/
 
 int ny_camera_png(const uint8_t *nv12, size_t size, uint32_t width,
-                   uint32_t height, uint32_t stride, unsigned int factor,
-                   uint8_t **output, size_t *length)
+                  uint32_t height, uint32_t stride, unsigned int factor,
+                  uint8_t **output, size_t *length)
 {
   if (output == NULL || length == NULL)
     return -EINVAL;
   *output = NULL;
   *length = 0;
   if (nv12 == NULL || width == 0 || height == 0 ||
-      width > NY_CAMERA_PNG_MAX_WIDTH ||
-      height > NY_CAMERA_PNG_MAX_HEIGHT || stride < width ||
-      stride > NY_CAMERA_PNG_MAX_WIDTH * 2 || (width | height | stride) & 1 ||
-      (factor != 1 && factor != 2) ||
+      width > NY_CAMERA_PNG_MAX_WIDTH || height > NY_CAMERA_PNG_MAX_HEIGHT ||
+      stride < width || stride > NY_CAMERA_PNG_MAX_WIDTH * 2 ||
+      (width | height | stride) & 1 || (factor != 1 && factor != 2) ||
       size < (size_t)stride * height * 3 / 2)
     return -EINVAL;
 
@@ -115,7 +113,8 @@ int ny_camera_png(const uint8_t *nv12, size_t size, uint32_t width,
           if (luma < 0)
             luma = 0;
           *row++ = ny_camera_png_byte((298 * luma + 409 * v + 128) >> 8);
-          *row++ = ny_camera_png_byte((298 * luma - 100 * u - 208 * v + 128) >> 8);
+          *row++ =
+              ny_camera_png_byte((298 * luma - 100 * u - 208 * v + 128) >> 8);
           *row++ = ny_camera_png_byte((298 * luma + 516 * u + 128) >> 8);
         }
     }

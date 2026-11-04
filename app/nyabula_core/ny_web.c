@@ -455,7 +455,8 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
                            cJSON_CreateString("core.scene-data-v1"));
 #endif
 #ifdef CONFIG_NYABULA_CORE_SPEAKER
-      cJSON_AddItemToArray(capabilities,cJSON_CreateString("core.speaker-v1"));
+      cJSON_AddItemToArray(capabilities,
+                           cJSON_CreateString("core.speaker-v1"));
 #endif
 #ifdef CONFIG_NYABULA_CORE_INTERCOM
       cJSON_AddItemToArray(capabilities,
@@ -465,14 +466,15 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
                            cJSON_CreateString("core.privacy-v1"));
 #ifdef CONFIG_NYABULA_CORE_VISION
       cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.vision-v1"));
-      cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.identity-v1"));
+      cJSON_AddItemToArray(capabilities,
+                           cJSON_CreateString("core.identity-v1"));
 #ifdef CONFIG_NYABULA_CORE_OBJECT_TRACKING
-      cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.tracker-v1"));
+      cJSON_AddItemToArray(capabilities,
+                           cJSON_CreateString("core.tracker-v1"));
 #endif
 #endif
 #ifdef CONFIG_NYABULA_CORE_CAMERA
-      cJSON_AddItemToArray(capabilities,
-                           cJSON_CreateString("core.camera-v1"));
+      cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.camera-v1"));
 #endif
 #ifdef CONFIG_NYABULA_CORE_LIGHTING
       cJSON_AddItemToArray(capabilities,
@@ -616,8 +618,8 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
                                               s->relay_send == NULL };
 #ifdef CONFIG_NYABULA_CORE_INTERCOM
   result = NULL;
-  ret = ny_product_intercom_request(&caller, &s->intercom, topic, data,
-                                     &result);
+  ret =
+      ny_product_intercom_request(&caller, &s->intercom, topic, data, &result);
   if (ret != -ENOSYS)
     {
       if (ret < 0)
@@ -649,7 +651,8 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
         {
           result = cJSON_CreateObject();
           if (result == NULL ||
-              cJSON_AddBoolToObject(result, "subscribed", s->camera.active) == NULL)
+              cJSON_AddBoolToObject(result, "subscribed", s->camera.active) ==
+                  NULL)
             {
               cJSON_Delete(result);
               ny_product_camera_close(&s->camera);
@@ -1013,7 +1016,8 @@ static int ny_web_camera_tick(int fd, struct nyabula_eye_ws_session_s *s)
               cJSON_Delete(chunk);
               return -ENOMEM;
             }
-          return nyabula_eye_ws_emit(fd, s, "event", NULL, "camera.error", chunk);
+          return nyabula_eye_ws_emit(fd, s, "event", NULL, "camera.error",
+                                     chunk);
         }
       ret = nyabula_eye_ws_emit(fd, s, "event", NULL, "camera.segment", chunk);
       if (ret < 0)

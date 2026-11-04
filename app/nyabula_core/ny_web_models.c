@@ -135,12 +135,12 @@
  * logs and a staged firmware image share it.
  */
 
-#define NY_MODELS_SPACE_MARGIN (64ull * 1024ull * 1024ull)
+#define NY_MODELS_SPACE_MARGIN    (64ull * 1024ull * 1024ull)
 
-#define NY_MODELS_RECV         16384
-#define NY_MODELS_HASH_READ    65536
-#define NY_MODELS_STALL_MS     60000
-#define NY_MODELS_WORKER_STACK 16384
+#define NY_MODELS_RECV            16384
+#define NY_MODELS_HASH_READ       65536
+#define NY_MODELS_STALL_MS        60000
+#define NY_MODELS_WORKER_STACK    16384
 #define NY_MODELS_WORKER_PRIORITY 100
 
 /* What is still read from a request that has already been refused, so that
@@ -2380,7 +2380,7 @@ static int ny_models_verify(const cJSON *data, cJSON **result)
        * worker task group so that caller exit cannot abandon the claim.
        */
       ret = task_create("ny_model_verify", NY_MODELS_WORKER_PRIORITY,
-                         NY_MODELS_WORKER_STACK, ny_models_verify_worker, NULL);
+                        NY_MODELS_WORKER_STACK, ny_models_verify_worker, NULL);
       ret = ret < 0 ? -errno : 0;
       if (ret != 0)
         {

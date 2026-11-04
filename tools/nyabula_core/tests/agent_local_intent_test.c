@@ -1502,7 +1502,7 @@ static void test_names(void)
     "timer.list", "alarm.list", "task.list",   "expression",   "timer",
     "alarm",      "volume.set", "volume.up",   "volume.down",  "mute",
     "unmute",     "music.play", "music.pause", "music.resume", "music.stop",
-    "remember",   "task",       "lighting", "track.learn", "track.stop"
+    "remember",   "task",       "lighting",    "track.learn",  "track.stop"
   };
   CHECK(COUNT(names) == (size_t)KINDS, "name table size");
   for (int kind = 0; kind < KINDS; kind++)
@@ -2896,20 +2896,33 @@ static void test_lighting(void)
 
 static void test_tracking(void)
 {
-  const char *learn[]={"学习一下","请学习一下。","学习这个物品","跟踪这个物品"};
-  const char *stop[]={"停止物品追踪","停止跟踪","不要跟踪了"};
+  const char *learn[] = { "学习一下", "请学习一下。", "学习这个物品",
+                          "跟踪这个物品" };
+  const char *stop[] = { "停止物品追踪", "停止跟踪", "不要跟踪了" };
   struct ny_agent_local_intent_s intent;
-  for(unsigned int i=0;i<COUNT(learn);i++)
+  for (unsigned int i = 0; i < COUNT(learn); i++)
     {
-      detect(learn[i],&intent);CHECK(intent.kind==NY_AGENT_LOCAL_TRACK_LEARN&&intent.complete,"learn intent");
-      const char *tool=NULL;cJSON *call=call_of(&intent,&g_context,&tool);
-      CHECK(call&&!strcmp(tool,"nyabula_tracking")&&!strcmp(text_of(call,"topic"),"vision.learn"),"tracking call");
+      detect(learn[i], &intent);
+      CHECK(intent.kind == NY_AGENT_LOCAL_TRACK_LEARN && intent.complete,
+            "learn intent");
+      const char *tool = NULL;
+      cJSON *call = call_of(&intent, &g_context, &tool);
+      CHECK(call && !strcmp(tool, "nyabula_tracking") &&
+                !strcmp(text_of(call, "topic"), "vision.learn"),
+            "tracking call");
       cJSON_Delete(call);
     }
-  for(unsigned int i=0;i<COUNT(stop);i++)
-    {detect(stop[i],&intent);CHECK(intent.kind==NY_AGENT_LOCAL_TRACK_STOP,"stop intent");}
-  detect("学习一下数学",&intent);CHECK(intent.kind==NY_AGENT_LOCAL_CHAT,"unrelated learning is not tracking");
-  detect("不要学习一下",&intent);CHECK(intent.kind==NY_AGENT_LOCAL_CHAT,"negated learning is not tracking");
+  for (unsigned int i = 0; i < COUNT(stop); i++)
+    {
+      detect(stop[i], &intent);
+      CHECK(intent.kind == NY_AGENT_LOCAL_TRACK_STOP, "stop intent");
+    }
+  detect("学习一下数学", &intent);
+  CHECK(intent.kind == NY_AGENT_LOCAL_CHAT,
+        "unrelated learning is not tracking");
+  detect("不要学习一下", &intent);
+  CHECK(intent.kind == NY_AGENT_LOCAL_CHAT,
+        "negated learning is not tracking");
 }
 
 /****************************************************************************

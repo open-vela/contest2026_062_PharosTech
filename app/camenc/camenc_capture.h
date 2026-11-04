@@ -20,14 +20,13 @@
  *
  ****************************************************************************/
 
-
 #ifndef __APP_CAMENC_CAMENC_CAPTURE_H
 #define __APP_CAMENC_CAMENC_CAPTURE_H
 
+#include "camenc_stream.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "camenc_stream.h"
 
 /* All callbacks run on the capture owner's task. Buffers are borrowed until
  * the callback returns; consumers must copy, never retain a DMA pointer.
@@ -43,8 +42,8 @@ struct camenc_capture_s
   const char *file;
   void *arg;
   camenc_emit_fn emit;
-  int (*frame)(void *arg, const uint8_t *nv12, size_t size,
-               uint32_t width, uint32_t height, uint32_t stride);
+  int (*frame)(void *arg, const uint8_t *nv12, size_t size, uint32_t width,
+               uint32_t height, uint32_t stride);
   bool (*stop)(void *arg);
 };
 

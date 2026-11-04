@@ -20,7 +20,6 @@
  *
  ****************************************************************************/
 
-
 #ifndef __APP_NYABULA_CORE_NY_PRODUCT_PRIVACY_H
 #define __APP_NYABULA_CORE_NY_PRODUCT_PRIVACY_H
 
@@ -32,8 +31,8 @@
 bool ny_product_privacy_camera_allowed(void);
 bool ny_product_privacy_mic_allowed(void);
 int ny_product_privacy_request(const struct ny_product_caller_s *caller,
-                              const char *topic, const cJSON *data,
-                              cJSON **result);
+                               const char *topic, const cJSON *data,
+                               cJSON **result);
 #else
 static inline bool ny_product_privacy_camera_allowed(void) { return true; }
 static inline bool ny_product_privacy_mic_allowed(void) { return true; }

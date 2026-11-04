@@ -49,7 +49,8 @@ struct SpeakerConfig
   // Directory holding speaker.onnx, from the manifest-verified model store.
   std::string model_directory;
   std::int32_t num_threads = 1;
-  // Existing file-test callers keep speaker.onnx; product uploads use model.onnx.
+  // Existing file-test callers keep speaker.onnx; product uploads use
+  // model.onnx.
   std::string model_filename = "speaker.onnx";
 };
 

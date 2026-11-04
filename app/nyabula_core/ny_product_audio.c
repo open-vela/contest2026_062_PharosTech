@@ -413,8 +413,8 @@ static void ny_audio_refresh_route(int fd)
 {
   struct es8388_control_s control;
   memset(&control, 0, sizeof(control));
-  if (ioctl(fd, ES8388IOC_GET_CONTROL,
-            (unsigned long)(uintptr_t)&control) >= 0)
+  if (ioctl(fd, ES8388IOC_GET_CONTROL, (unsigned long)(uintptr_t)&control) >=
+      0)
     {
       atomic_store(&g_audio_headphones_only,
                    control.active_route == ES8388_OUTPUT_ROUTE_LINE1);
@@ -446,8 +446,7 @@ static int ny_audio_push_output(int fd, const struct ny_audio_prefs_s *prefs)
   control.swap = prefs->swap;
   control.invert_left = prefs->invert_left;
   control.invert_right = prefs->invert_right;
-  if (ioctl(fd, ES8388IOC_SET_CONTROL,
-            (unsigned long)(uintptr_t)&control) < 0)
+  if (ioctl(fd, ES8388IOC_SET_CONTROL, (unsigned long)(uintptr_t)&control) < 0)
     {
       return -errno;
     }

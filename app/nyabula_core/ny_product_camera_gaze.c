@@ -20,7 +20,6 @@
  *
  ****************************************************************************/
 
-
 #include "ny_product_camera_gaze.h"
 #include "ny_camera_gaze.h"
 #include "ny_product_store.h"
@@ -28,31 +27,31 @@
 #include <math.h>
 #include <string.h>
 
-#define NY_CAMERA_GAZE_DOMAIN "camera-gaze"
-#define NY_CAMERA_GAZE_WIDTH  640
-#define NY_CAMERA_GAZE_HEIGHT 480
-#define NY_CAMERA_GAZE_MODE   6
-#define NY_CAMERA_GAZE_MAX_RMS 0.20
-#define NY_CAMERA_GAZE_MAX_ERROR 0.40
+#define NY_CAMERA_GAZE_DOMAIN        "camera-gaze"
+#define NY_CAMERA_GAZE_WIDTH         640
+#define NY_CAMERA_GAZE_HEIGHT        480
+#define NY_CAMERA_GAZE_MODE          6
+#define NY_CAMERA_GAZE_MAX_RMS       0.20
+#define NY_CAMERA_GAZE_MAX_ERROR     0.40
 #define NY_CAMERA_GAZE_POINT_HOLD_MS 1000
 #define NY_CAMERA_GAZE_MANUAL_MAX_MS 5000
 
 static int ny_camera_gaze_number(const cJSON *data, const char *key,
-                                  double low, double high, double *value);
+                                 double low, double high, double *value);
 static int ny_camera_gaze_parse(const cJSON *data,
                                 struct ny_camera_gaze_s *mapping);
 static cJSON *ny_camera_gaze_result(const cJSON *record, uint64_t revision,
                                     const struct ny_camera_gaze_s *mapping);
 static int ny_camera_gaze_apply(const struct ny_product_caller_s *caller,
-                                 double x, double y, uint32_t hold_ms,
-                                 cJSON **result);
+                                double x, double y, uint32_t hold_ms,
+                                cJSON **result);
 
 /****************************************************************************
  * Name: ny_camera_gaze_number
  ****************************************************************************/
 
 static int ny_camera_gaze_number(const cJSON *data, const char *key,
-                                  double low, double high, double *value)
+                                 double low, double high, double *value)
 {
   const cJSON *item = cJSON_GetObjectItemCaseSensitive(data, key);
   if (!cJSON_IsNumber(item) || !isfinite(item->valuedouble) ||
@@ -78,7 +77,8 @@ static int ny_camera_gaze_parse(const cJSON *data,
                             NY_CAMERA_GAZE_HEIGHT, &value) < 0 ||
       ny_camera_gaze_number(data, "mode", NY_CAMERA_GAZE_MODE,
                             NY_CAMERA_GAZE_MODE, &value) < 0 ||
-      !cJSON_IsArray(items) || cJSON_GetArraySize(items) != NY_CAMERA_GAZE_POINTS)
+      !cJSON_IsArray(items) ||
+      cJSON_GetArraySize(items) != NY_CAMERA_GAZE_POINTS)
     return -EINVAL;
   for (int i = 0; i < NY_CAMERA_GAZE_POINTS; i++)
     {
@@ -99,19 +99,22 @@ static int ny_camera_gaze_parse(const cJSON *data,
 static cJSON *ny_camera_gaze_result(const cJSON *record, uint64_t revision,
                                     const struct ny_camera_gaze_s *mapping)
 {
-  cJSON *result = record == NULL ? cJSON_CreateObject() :
-                                  cJSON_Duplicate(record, true);
+  cJSON *result =
+      record == NULL ? cJSON_CreateObject() : cJSON_Duplicate(record, true);
   if (result == NULL)
     return NULL;
-  bool ok = cJSON_AddNumberToObject(result, "revision", revision) != NULL &&
-            cJSON_AddBoolToObject(result, "calibrated", mapping != NULL) != NULL;
+  bool ok =
+      cJSON_AddNumberToObject(result, "revision", revision) != NULL &&
+      cJSON_AddBoolToObject(result, "calibrated", mapping != NULL) != NULL;
   if (mapping != NULL)
     {
       ok &= cJSON_AddNumberToObject(result, "rmsError", mapping->rms) != NULL;
-      ok &= cJSON_AddNumberToObject(result, "maxError", mapping->maximum) != NULL;
+      ok &= cJSON_AddNumberToObject(result, "maxError", mapping->maximum) !=
+            NULL;
       ok &= cJSON_AddBoolToObject(result, "acceptable",
-              mapping->rms <= NY_CAMERA_GAZE_MAX_RMS &&
-              mapping->maximum <= NY_CAMERA_GAZE_MAX_ERROR) != NULL;
+                                  mapping->rms <= NY_CAMERA_GAZE_MAX_RMS &&
+                                      mapping->maximum <=
+                                          NY_CAMERA_GAZE_MAX_ERROR) != NULL;
     }
   if (!ok)
     {
@@ -126,8 +129,8 @@ static cJSON *ny_camera_gaze_result(const cJSON *record, uint64_t revision,
  ****************************************************************************/
 
 static int ny_camera_gaze_apply(const struct ny_product_caller_s *caller,
-                                 double x, double y, uint32_t hold_ms,
-                                 cJSON **result)
+                                double x, double y, uint32_t hold_ms,
+                                cJSON **result)
 {
   cJSON *params = cJSON_CreateObject();
   if (params == NULL || cJSON_AddNumberToObject(params, "x", x) == NULL ||
@@ -147,8 +150,8 @@ static int ny_camera_gaze_apply(const struct ny_product_caller_s *caller,
  ****************************************************************************/
 
 int ny_product_camera_gaze_request(const struct ny_product_caller_s *caller,
-                                    const char *topic, const cJSON *data,
-                                    cJSON **result)
+                                   const char *topic, const cJSON *data,
+                                   cJSON **result)
 {
   bool get = !strcmp(topic, "camera.calibration.get");
   bool fit = !strcmp(topic, "camera.calibration.fit");
@@ -170,7 +173,7 @@ int ny_product_camera_gaze_request(const struct ny_product_caller_s *caller,
         return -EINVAL;
       if (cJSON_GetObjectItemCaseSensitive(data, "hold_ms") != NULL &&
           (ny_camera_gaze_number(data, "hold_ms", 0,
-                                  NY_CAMERA_GAZE_MANUAL_MAX_MS, &hold) < 0 ||
+                                 NY_CAMERA_GAZE_MANUAL_MAX_MS, &hold) < 0 ||
            floor(hold) != hold))
         return -EINVAL;
       return ny_camera_gaze_apply(caller, x, y, hold, result);
@@ -193,8 +196,10 @@ int ny_product_camera_gaze_request(const struct ny_product_caller_s *caller,
       cJSON_Delete(record);
       record = cJSON_CreateObject();
       if (record == NULL ||
-          cJSON_AddNumberToObject(record, "width", NY_CAMERA_GAZE_WIDTH) == NULL ||
-          cJSON_AddNumberToObject(record, "height", NY_CAMERA_GAZE_HEIGHT) == NULL ||
+          cJSON_AddNumberToObject(record, "width", NY_CAMERA_GAZE_WIDTH) ==
+              NULL ||
+          cJSON_AddNumberToObject(record, "height", NY_CAMERA_GAZE_HEIGHT) ==
+              NULL ||
           cJSON_AddNumberToObject(record, "mode", NY_CAMERA_GAZE_MODE) == NULL)
         {
           ret = -ENOMEM;
@@ -219,7 +224,7 @@ int ny_product_camera_gaze_request(const struct ny_product_caller_s *caller,
     {
       double expected;
       ret = ny_camera_gaze_number(data, "revision", 0, 9007199254740991.0,
-                                   &expected);
+                                  &expected);
       if (ret < 0 || floor(expected) != expected)
         {
           ret = -EINVAL;
@@ -236,13 +241,13 @@ int ny_product_camera_gaze_request(const struct ny_product_caller_s *caller,
             }
         }
       ret = ny_product_store_write(NY_CAMERA_GAZE_DOMAIN, record, expected,
-                                    &revision);
+                                   &revision);
       if (ret < 0)
         goto out;
     }
 
-  bool calibrated = record != NULL &&
-                    ny_camera_gaze_parse(record, &mapping) == 0;
+  bool calibrated =
+      record != NULL && ny_camera_gaze_parse(record, &mapping) == 0;
   if (point)
     {
       double u;
@@ -270,12 +275,12 @@ int ny_product_camera_gaze_request(const struct ny_product_caller_s *caller,
       ret = ny_camera_gaze_map(&mapping, u, v, &x, &y);
       if (ret < 0)
         goto out;
-      ret = ny_camera_gaze_apply(caller, x, y,
-                                 NY_CAMERA_GAZE_POINT_HOLD_MS, result);
+      ret = ny_camera_gaze_apply(caller, x, y, NY_CAMERA_GAZE_POINT_HOLD_MS,
+                                 result);
       goto out;
     }
-  *result = ny_camera_gaze_result(record, revision,
-                                  calibrated ? &mapping : NULL);
+  *result =
+      ny_camera_gaze_result(record, revision, calibrated ? &mapping : NULL);
   ret = *result == NULL ? -ENOMEM : 0;
 out:
   cJSON_Delete(record);
