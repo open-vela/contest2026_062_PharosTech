@@ -303,8 +303,9 @@ jobs:
 
       - name: Release uploaded CMake build tree
         run: |
-          cd ${{ env.OPENVELA_DIR }}
-          ./build.sh ${{ env.REPO_NAME }}/${{ matrix.config }} --cmake distclean
+          cd "${{ env.OPENVELA_DIR }}"
+          # Each matrix job owns this build tree; artifacts are already uploaded.
+          rm -rf -- cmake_out
           df -h .
 
       # Makefile 构建
