@@ -35,6 +35,8 @@ static unsigned volume=1000;
 static unsigned raw_pauses;
 static double power[2];
 static unsigned samples[2];
+/* Both bounded sinks model the speaker/USB route, not headphones. */
+bool ny_product_audio_headphones_only(void){return false;}
 unsigned int ny_product_audio_output_level(void){return volume;}
 static void pump(struct ny_audio_stream_s*s){
  while(s->started && s->count && s->end[s->head]<=now+1e-10){s->head=(s->head+1)%32;s->count--;}
