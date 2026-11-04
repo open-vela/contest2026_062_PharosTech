@@ -33,10 +33,11 @@ import subprocess
 import sys
 import tempfile
 
+from wire_flow_build import nyamp_build_wire_harness
+
 repo = pathlib.Path(sys.argv[1]).resolve()
 root = pathlib.Path(tempfile.mkdtemp(prefix="amp-voice-flow-"))
 amp = repo / "tools/amp"
-nyampd = amp / "nyampd"
 layout = repo / "chips/rk3576/include/rk3576_shmem_layout.h"
 
 # ---------------------------------------------------------------------------
@@ -185,27 +186,7 @@ int main(int argc, char **argv)
 }
 ''', encoding="utf-8")
 
-sources = ["nyampd_core.cpp", "nyampd_llm.cpp", "nyampd_frame.cpp",
-           "nyampd_sha256.cpp", "nyampd_blob.cpp", "nyampd_provision.cpp",
-           "nyampd_chat.cpp", "nyampd_audio.cpp", "nyampd_loader.cpp",
-           "nyampd_asr.cpp", "nyampd_tts.cpp", "nyampd_kws.cpp"]
-chat_sources = ["nyamp_json.cpp", "nyamp_unicode.cpp", "nyamp_tokenizer.cpp",
-                "nyamp_chat_template.cpp", "nyamp_chat_parse.cpp"]
-
-subprocess.run(["gcc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-c",
-                str(amp / "protocol/nyamp_protocol.c"),
-                "-o", str(root / "protocol.o")], check=True)
-subprocess.run(
-    ["g++", "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
-     "-I", str(nyampd), "-I", str(amp / "models"), "-I", str(amp / "protocol"),
-     "-I", str(amp / "chat"), "-I", str(amp / "g2p"),
-     str(root / "harness.cpp"),
-     *[str(nyampd / name) for name in sources],
-     *[str(amp / "chat" / name) for name in chat_sources],
-     str(amp / "models/nyamp_models.cpp"), str(amp / "g2p/nyamp_g2p.cpp"),
-     str(root / "protocol.o"),
-     "-o", str(root / "harness"), "-lpthread"],
-    check=True)
+harness_path = nyamp_build_wire_harness(repo, root, [root / "harness.cpp"])
 
 # ---------------------------------------------------------------------------
 # The wire, as tools/amp/protocol/README.md documents it.
@@ -232,7 +213,7 @@ arena = mmap.mmap(arena_file.fileno(), ARENA_SIZE)
 ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
 ours.settimeout(20)
 harness = subprocess.Popen(
-    [str(root / "harness"), str(theirs.fileno()), str(arena_path),
+    [str(harness_path), str(theirs.fileno()), str(arena_path),
      str(GENERATION), str(SLOT_SHARED), str(SLOT_SHARED_SIZE),
      str(SLOT_CAPTURE), str(SLOT_CAPTURE_SIZE)],
     pass_fds=[theirs.fileno()])
