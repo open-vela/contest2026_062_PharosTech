@@ -35,9 +35,10 @@ patch -d apps              -p1 -N < contest2026_062_PharosTech/patches/apps-nxpl
 - `nuttx-audio-fake-stop.patch`：仅 sim 的假音频驱动需要，序列化队列关闭与 STOP；
   `core_services` CI 显式应用。普通硬件 ES8388 路径不受影响。
 
-电话音频候选已于 2026-10-18 按用户要求接入本地 integration，启用
-A2DP Sink / AVRCP / HFP HF / SCO 与持久化配对。当前完成宿主测试和
-产品 AMP 完整链接；真实手机和 USB 2.1 仍待板测，不据此合入远端。
+音频候选于 2026-10-18 接入 integration，启用 A2DP Sink / AVRCP / HFP HF /
+SCO 与持久化配对。后续产品内容已通过 #104—#107 合入；B76/B86 的 USB 2.1
+播放及 B88 的 Windows/OPPO 双设备媒体控制已有板测，HFP 电话仍待验收。
+具体范围见[版本与验证](../docs/validation/README.md)。
 
 | 新增补丁 | 应用目录 | 修复 |
 |---|---|---|
