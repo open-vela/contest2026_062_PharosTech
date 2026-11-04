@@ -1,5 +1,7 @@
 # Nyabula 星喵
 
+![Nyabula 星喵：新硬件适配与 AI 智能硬件创新产品](docs/assets/nyabula-hero.png)
+
 **2026 首届 openvela AI 硬件开发者大赛 · Pharos Tech · 队伍 062**
 
 本项目提交两项相互支撑的成果：**把 RK3576 / KICKPI-K7 适配为可用的原生 openvela 平台；在平台上构建能交互、能执行、能扩展的 Nyabula AI 智能硬件产品。**
