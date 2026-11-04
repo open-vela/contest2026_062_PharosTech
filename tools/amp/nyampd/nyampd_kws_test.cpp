@@ -101,14 +101,16 @@ struct Bench
   explicit Bench(bool with_backend = true)
       : capture(kCaptureOffset, kCaptureSize), mint(kSpeechGeneration),
         kws(kSpeechGeneration,
-            with_backend
-                ? nyamp::KwsService::BackendFactory([this] {
-                    return std::make_unique<ScriptedKwsBackend>(&script);
-                  })
-                : nyamp::KwsService::BackendFactory(),
+            with_backend ? nyamp::KwsService::BackendFactory([this] {
+              return std::make_unique<ScriptedKwsBackend>(&script);
+            })
+                         : nyamp::KwsService::BackendFactory(),
             &capture, &gate, &mint),
-        asr(kSpeechGeneration, [] { return std::uint64_t(0); },
-            [this] { return std::make_unique<ScriptedAsrBackend>(&asr_script); },
+        asr(
+            kSpeechGeneration, [] { return std::uint64_t(0); },
+            [this] {
+              return std::make_unique<ScriptedAsrBackend>(&asr_script);
+            },
             &capture, &gate, &mint),
         client(nyamp::SpeechServices{ &asr, nullptr, &kws })
   {
@@ -117,7 +119,8 @@ struct Bench
 
   std::int32_t Load(const std::string &directory = "/models/kws",
                     const std::string &keywords = "", float threshold = 0,
-                    std::uint16_t paths = 0)
+                    std::uint16_t paths = 0,
+                    std::uint16_t opcode = NYAMP_KWS_LOAD)
   {
     nyamp_kws_load_s load{};
     std::uint8_t payload[NYAMP_INLINE_MAX];
@@ -132,7 +135,7 @@ struct Bench
     load.keywords_length = static_cast<std::uint16_t>(keywords.size());
     if (nyamp_kws_load_encode(payload, sizeof(payload), &size, &load) !=
             NYAMP_OK ||
-        !client.Call(kKws, NYAMP_KWS_LOAD, next_id++, payload, size, &status))
+        !client.Call(kKws, opcode, next_id++, payload, size, &status))
       {
         return 1;
       }
@@ -189,9 +192,9 @@ struct Bench
     /* A test that pushes a range outside the slot has nowhere to put the
      * samples, and the service must refuse it without looking at them.
      */
-    const bool writable =
-        push.buffer.offset >= kCaptureOffset &&
-        push.buffer.offset + push.buffer.length <= kCaptureOffset + kCaptureSize;
+    const bool writable = push.buffer.offset >= kCaptureOffset &&
+                          push.buffer.offset + push.buffer.length <=
+                              kCaptureOffset + kCaptureSize;
 
     if (!samples.empty() && writable)
       {
@@ -264,6 +267,41 @@ std::vector<float> Quiet(std::size_t count)
  * Tests
  ****************************************************************************/
 
+int TestTextPreparation()
+{
+  Bench bench;
+  CHECK(bench.Load() == NYAMP_MODEL_OK);
+  CHECK(bench.script.prepares == 0);
+  const auto original = bench.script.loaded.keywords_file;
+  nyamp_buffer_s grant{};
+  CHECK(bench.Begin(220, &grant) == NYAMP_MODEL_OK);
+  CHECK(bench.Load("/models/kws", "hello kitty", 0, 0,
+                   NYAMP_KWS_PREPARE_TEXT) == NYAMP_MODEL_OK);
+  CHECK(bench.script.loaded.keywords_file == original);
+  CHECK(bench.Load("/models/kws", "invalid", 0, 0, NYAMP_KWS_PREPARE_TEXT) ==
+        NYAMP_MODEL_INVALID);
+  CHECK(bench.Load("/models/kws", "", 0, 0, NYAMP_KWS_PREPARE_TEXT) ==
+        NYAMP_MODEL_INVALID);
+  CHECK(bench.Load("/models/kws", std::string(97, 'a'), 0, 0,
+                   NYAMP_KWS_PREPARE_TEXT) == NYAMP_MODEL_INVALID);
+  CHECK(bench.Push(220, grant, Quiet(1600), 0) == NYAMP_MODEL_OK);
+  Listener finished;
+  CHECK(bench.client.CancelFrame(kKws, 220));
+  CHECK(bench.Wait(220, &finished, [&] { return finished.finished; }));
+  CHECK(bench.Simple(kKws, NYAMP_KWS_UNLOAD, 221) == NYAMP_MODEL_OK);
+  CHECK(bench.Load("/models/kws", "hello kitty", 0, 0, NYAMP_KWS_LOAD_TEXT) ==
+        NYAMP_MODEL_OK);
+  CHECK(bench.script.loaded.phrase == "hello kitty");
+  CHECK(bench.script.loaded.extra_keywords == "test @custom");
+  CHECK(bench.script.loaded.keywords_file == original);
+  CHECK(bench.script.loaded.g2p_directory == "/models/tts");
+  CHECK(bench.Load("/models/kws", "hello kitty", 0, 0, NYAMP_KWS_LOAD_TEXT) ==
+        NYAMP_MODEL_OK);
+  CHECK(bench.Load("/models/kws", "another", 0, 0, NYAMP_KWS_LOAD_TEXT) ==
+        NYAMP_MODEL_BUSY);
+  return 0;
+}
+
 int TestAvailabilityAndLoad()
 {
   Bench bare(false);
@@ -310,8 +348,8 @@ int TestAvailabilityAndLoad()
   CHECK(bench.Load("/models/kws", "setB.txt", 0.25f, 8) == NYAMP_MODEL_BUSY);
 
   /* LIST: labels in keyword-id order. */
-  CHECK(bench.client.Call(kKws, NYAMP_KWS_LIST, 13, nullptr, 0, &status,
-                          &body));
+  CHECK(
+      bench.client.Call(kKws, NYAMP_KWS_LIST, 13, nullptr, 0, &status, &body));
   CHECK(status == NYAMP_MODEL_OK);
   std::uint16_t count = 0;
   CHECK(nyamp_kws_labels_decode(&count, body.data(), body.size()) == NYAMP_OK);
@@ -360,7 +398,8 @@ int TestStreamAndOffsets()
   CHECK(bench.Push(id, grant, wake, 48000, 0, &next) == NYAMP_MODEL_OK);
   CHECK(next == 64000);
 
-  CHECK(bench.Wait(id, &listener, [&] { return !listener.detections.empty(); }));
+  CHECK(
+      bench.Wait(id, &listener, [&] { return !listener.detections.empty(); }));
   const Detection &hit = listener.detections[0];
   CHECK(hit.label == "nihao_openvela" && hit.wire.keyword_id == 0);
   CHECK((hit.wire.flags & NYAMP_KWS_DETECTED_HAS_OFFSETS) != 0);
@@ -427,8 +466,8 @@ int TestStreamAndOffsets()
   CHECK(bench.Wait(id, &listener,
                    [&] { return listener.detections.size() == 3; }));
   CHECK(listener.detections[2].label == "hello_openvela");
-  CHECK((listener.detections[2].wire.flags &
-         NYAMP_KWS_DETECTED_HAS_OFFSETS) == 0);
+  CHECK((listener.detections[2].wire.flags & NYAMP_KWS_DETECTED_HAS_OFFSETS) ==
+        0);
   CHECK(listener.detections[2].wire.start_sample == 0 &&
         listener.detections[2].wire.end_sample == 0);
   CHECK(listener.detections[2].wire.trigger_sample > position &&
@@ -509,10 +548,10 @@ int TestWakeThenAttachedAsr()
 
   CHECK(bench.Load() == NYAMP_MODEL_OK);
   const std::string asr_model = "/models/asr";
-  CHECK(bench.client.Call(kAsr, NYAMP_ASR_LOAD, 1,
-                          reinterpret_cast<const std::uint8_t *>(
-                              asr_model.data()),
-                          asr_model.size(), &status));
+  CHECK(bench.client.Call(
+      kAsr, NYAMP_ASR_LOAD, 1,
+      reinterpret_cast<const std::uint8_t *>(asr_model.data()),
+      asr_model.size(), &status));
   CHECK(status == NYAMP_MODEL_OK);
   CHECK(bench.Begin(stream, &grant) == NYAMP_MODEL_OK);
 
@@ -587,10 +626,9 @@ int TestWakeThenAttachedAsr()
     else if (event.header.opcode == NYAMP_ASR_EVENT_FINISH)
       {
         std::uint32_t sequence = 0;
-        asr_finished = nyamp_asr_finish_decode(&asr_status, &sequence,
-                                               event.payload.data(),
-                                               event.payload.size()) ==
-                       NYAMP_OK;
+        asr_finished = nyamp_asr_finish_decode(
+                           &asr_status, &sequence, event.payload.data(),
+                           event.payload.size()) == NYAMP_OK;
       }
   };
 
@@ -599,8 +637,8 @@ int TestWakeThenAttachedAsr()
 
   CHECK(nyamp_asr_end_encode(payload, sizeof(payload), &size, 64000) ==
         NYAMP_OK);
-  CHECK(bench.client.Call(kAsr, NYAMP_ASR_END, asr_id, payload, size,
-                          &status));
+  CHECK(
+      bench.client.Call(kAsr, NYAMP_ASR_END, asr_id, payload, size, &status));
   CHECK(status == NYAMP_MODEL_OK);
   CHECK(bench.client.Pump([&] { return asr_finished; }, 20000, take));
   CHECK(asr_status == NYAMP_MODEL_OK && text == "现在几点");
@@ -625,17 +663,17 @@ int TestWakeThenAttachedAsr()
   asr_finished = false;
   CHECK(bench.Simple(kKws, NYAMP_KWS_END, 0x20) == NYAMP_MODEL_OK);
   bool second_finished = false;
-  CHECK(bench.client.Pump(
-      [&] { return second_finished && listener.finished; }, 20000,
-      [&](const WireEvent &event) {
-        listener.Take(event, stream);
-        if (event.header.service == kAsr &&
-            event.header.request_id == asr_id + 1 &&
-            event.header.opcode == NYAMP_ASR_EVENT_FINISH)
-          {
-            second_finished = true;
-          }
-      }));
+  CHECK(bench.client.Pump([&] { return second_finished && listener.finished; },
+                          20000,
+                          [&](const WireEvent &event) {
+                            listener.Take(event, stream);
+                            if (event.header.service == kAsr &&
+                                event.header.request_id == asr_id + 1 &&
+                                event.header.opcode == NYAMP_ASR_EVENT_FINISH)
+                              {
+                                second_finished = true;
+                              }
+                          }));
   CHECK(!bench.gate.held());
   return 0;
 }
@@ -829,9 +867,9 @@ int TestRealModel()
   CHECK(client.Call(kKws, NYAMP_KWS_END, 3, nullptr, 0, &status));
   CHECK(status == NYAMP_MODEL_OK);
   CHECK(client.Pump([&] { return listener.finished; }, 300000, take));
-  const double wall = std::chrono::duration<double>(
-                          std::chrono::steady_clock::now() - started)
-                          .count();
+  const double wall =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
+          .count();
   CHECK(listener.status == NYAMP_MODEL_OK && listener.in_order);
 
   unsigned int missed = 0;
@@ -904,6 +942,8 @@ int main()
     int (*run)();
   } const tests[] = {
     { "availability, load parameters and list", TestAvailabilityAndLoad },
+    { "text preparation preserves live model and legacy load",
+      TestTextPreparation },
     { "stream, offsets and discontinuities", TestStreamAndOffsets },
     { "cancel and unload", TestCancelAndUnload },
     { "wake word, then ASR attached to the stream", TestWakeThenAttachedAsr },

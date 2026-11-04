@@ -62,11 +62,12 @@ export function useCoreTimer(kind:CoreTimer['kind']) {
    * second for countdown/stopwatch, once a minute for the sleep timer. */
   const scene=useEyeScene(SCENE[kind],()=>{
     const t=current.value;
+    if(kind==='stopwatch'&&!t)return null;
     if(kind==='stopwatch')return stopwatchScene({elapsedMs:elapsed.value,running:running.value,label:t?.label});
     if(!t||waitingClock.value)return null;
     if(kind==='sleep')return finished.value?null:sleepTimerScene({remainingMs:remaining.value,running:running.value});
     return timerScene({durationMs:t.duration_ms,remainingMs:remaining.value,running:running.value,finished:finished.value,label:t.label});
-  },{hideWhenEmpty:true});
+  },{hideWhenEmpty:true,recordId:()=>current.value?.id});
   watch([running,visible,scene.held],([counting,shown,held])=>clock(!counting?0:shown?50:held?1000:0),{immediate:true});
 
   /* Sleep timer end. Core only marks the record `finished`; until it acts on

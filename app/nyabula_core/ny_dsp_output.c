@@ -178,6 +178,15 @@ static int ny_dsp_output_block(struct ny_dsp_output_s *output, int timeout_ms)
       return -EINTR;
     }
 #endif
+  bool headphones = ny_product_audio_headphones_only();
+  if (headphones && output->bass != NULL)
+    {
+      ny_audio_stream_close(output->bass);
+      output->bass = NULL;
+      output->bass_gain = 0;
+      nyadsp_clock_init(&output->clock);
+    }
+
   struct nyadsp_s *prepared = ny_product_dsp_take_update(&config, &revision);
   if (prepared != NULL)
     {
@@ -185,7 +194,7 @@ static int ny_dsp_output_block(struct ny_dsp_output_s *output, int timeout_ms)
 
       nyadsp_destroy(output->pending);
       output->pending = prepared;
-      if (config.bass && output->bass == NULL)
+      if (config.bass && !headphones && output->bass == NULL)
         {
           int ret = ny_dsp_output_open_bass(output);
           if (ret < 0)
@@ -381,7 +390,7 @@ int ny_dsp_output_open(struct ny_dsp_output_s **result,
       goto fail;
     }
 
-  if (settings.bass)
+  if (settings.bass && !ny_product_audio_headphones_only())
     {
       ret = ny_dsp_output_open_bass(output);
       if (ret < 0)

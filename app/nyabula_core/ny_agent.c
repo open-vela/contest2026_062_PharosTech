@@ -342,7 +342,8 @@ static char *ny_agent_tools(void)
       "\"sys.info\",\"system.time.get\",\"memory.list\","
       "\"task.list\",\"calendar.list\",\"timer.list\",\"eyes.status\","
       "\"agent.tools.catalog\",\"device.status\",\"music.status\",\"music."
-      "library\",\"weather.get\",\"alarm.list\",\"agent.skills.list\"]}},"
+      "library\",\"weather.get\",\"alarm.list\",\"agent.skills.list\","
+      "\"lighting.status\",\"camera.status\"]}},"
       "\"required\":[\"topic\"],\"additionalProperties\":false}},"
       "{\"name\":\"nyabula_action\","
       "\"description\":\"Submit an exact operation for owner approval. "
@@ -387,8 +388,11 @@ static char *ny_agent_tools(void)
       "\"name\":{\"type\":\"string\"}},\"additionalProperties\":false}}"
       ",{"
       "\"name\":\"nyabula_expression\","
-      "\"description\":\"Change only the cat eye expression. No physical "
-      "actuator movement. Returns actual display state; unavailable without "
+      "\"description\":\"Change the cat eye expression. "
+#ifdef CONFIG_NYABULA_CORE_LIGHTING
+      "Sleep also fades product lighting off; waking restores enabled zones. "
+#endif
+      "No motor movement. Returns actual display state; unavailable without "
       "the display service. No separate approval needed.\","
       "\"input_schema\":{\"type\":\"object\",\"properties\":{"
       "\"expression\":{\"type\":\"string\",\"enum\":[\"idle\","
@@ -401,6 +405,10 @@ static char *ny_agent_tools(void)
       "agent.tools.catalog "
       "with nyabula_read for names and argument examples. File paths are "
       "relative to the workspace. Network requests contact external services. "
+      "For camera images, discover camera_vision in agent.tools.catalog. "
+      "It captures and uploads a fresh frame to the configured MiMo vision "
+      "model only after owner approval. Use nyabula_action topic "
+      "agent.tools.call with name camera_vision and arguments {prompt}. "
       "For write_file/edit_file/run_shell instead request nyabula_action with "
       "topic agent.tools.call and arguments {name,arguments}.\","
       "\"input_schema\":{\"type\":\"object\",\"properties\":{"
@@ -444,6 +452,53 @@ static char *ny_agent_tools(void)
       "\"additionalProperties\":false}},"
       "\"required\":[\"operation\",\"arguments\"],\"additionalProperties\":"
       "false}}"
+#endif
+#if defined(CONFIG_NYABULA_CORE_VISION) && defined(CONFIG_NYABULA_CORE_OBJECT_TRACKING)
+      ",{\"name\":\"nyabula_tracking\",\"description\":\"Learn the object held in "
+      "the center of the local camera for a few seconds and track it with c"
+      "alibrated screen eyes. Use only when the user asks to learn or follo"
+      "w an object. No upload or identity inference. Ask the user to hold t"
+      "he object in the center and rotate slowly. A start response is not s"
+      "uccessful learning. vision.status reports learning, tracking or lost"
+      "; stop with vision.stop. Privacy camera switch is enforced.\",\"input_"
+      "schema\":{\"type\":\"object\",\"properties\":{\"topic\":{\"type\":\"string\",\"enu"
+      "m\":[\"vision.learn\",\"vision.stop\"]},\"arguments\":{\"type\":\"object\",\"pro"
+      "perties\":{},\"additionalProperties\":false}},\"required\":[\"topic\",\"argu"
+      "ments\"],\"additionalProperties\":false}}"
+#endif
+#ifdef CONFIG_NYABULA_CORE_LIGHTING
+      ",{\"name\":\"nyabula_lighting\",\"description\":\"Control reversible "
+      "cat lighting. Read lighting.status first. lighting.set changes "
+      "group left_ear, right_ear, ears, chest, base or all. Each group "
+      "has enabled, color #RRGGBB, brightness 0..100, brightnessDelta "
+      "-100..100, effect, colorMode and speed 1..3. colorMode "
+      "iris/complement is ears only; orbit/aurora is base only; status "
+      "is chest only. lighting.preset applies calm, aurora, focus or "
+      "party to all four zones. Music uses real playback level. While "
+      "asleep only switch-off is allowed. No separate approval is "
+      "needed; report the actual result, not a promise.\","
+      "\"input_schema\":{\"type\":\"object\",\"properties\":{\"topic\":{"
+      "\"type\":"
+      "\"string\",\"enum\":[\"lighting.set\",\"lighting.preset\"]},"
+      "\"arguments\":"
+      "{\"type\":\"object\",\"properties\":{\"group\":{\"type\":\"string\","
+      "\"enum\":"
+      "[\"left_ear\",\"right_ear\",\"ears\",\"chest\",\"base\",\"all\"]},"
+      "\"enabled\":"
+      "{\"type\":\"boolean\"},\"color\":{\"type\":\"string\",\"pattern\":"
+      "\"^#[0-9a-fA-F]{6}$\"},\"brightness\":{\"type\":\"integer\","
+      "\"minimum\":0,"
+      "\"maximum\":100},\"brightnessDelta\":{\"type\":\"integer\",\"minimum\":"
+      "-100,\"maximum\":100},\"effect\":{\"type\":\"string\",\"enum\":["
+      "\"steady\","
+      "\"breathe\",\"heartbeat\",\"aurora\",\"orbit\",\"music\",\"status\"]},"
+      "\"colorMode\":{\"type\":\"string\",\"enum\":[\"fixed\",\"iris\","
+      "\"complement\"]},\"speed\":{\"type\":\"integer\",\"minimum\":1,"
+      "\"maximum\":"
+      "3},\"name\":{\"type\":\"string\",\"enum\":[\"calm\",\"aurora\","
+      "\"focus\","
+      "\"party\"]}},\"additionalProperties\":false}},\"required\":[\"topic\","
+      "\"arguments\"],\"additionalProperties\":false}}"
 #endif
 #ifdef CONFIG_NYABULA_CORE_MEDIA
       ",{\"name\":\"nyabula_music\","
@@ -583,7 +638,8 @@ static int ny_agent_tool_execute(const char *name, const char *input,
     "task.list",    "calendar.list",       "timer.list",
     "eyes.status",  "agent.tools.catalog", "device.status",
     "music.status", "music.library",       "weather.get",
-    "alarm.list",   "agent.skills.list"
+    "alarm.list",   "agent.skills.list",   "lighting.status",
+    "camera.status", "vision.status"
   };
   static const char *const writes[] = {
     "memory.create",    "task.create",       "calendar.create",
@@ -593,6 +649,11 @@ static int ny_agent_tool_execute(const char *name, const char *input,
   static const char *const media_topics[] = { "music.play",   "music.pause",
                                               "music.resume", "music.stop",
                                               "music.volume", "music.output" };
+  static const char *const lighting_topics[] = { "lighting.set",
+                                                 "lighting.preset" };
+  static const char *const tracking_topics[]={"vision.learn","vision.stop"};
+  bool tracking=strcmp(name,"nyabula_tracking")==0;
+  bool lighting = strcmp(name, "nyabula_lighting") == 0;
   bool write = strcmp(name, "nyabula_action") == 0;
   bool skill = strcmp(name, "nyabula_skill_read") == 0;
   bool catalog = strcmp(name, "nyabula_mcp_catalog") == 0;
@@ -603,7 +664,8 @@ static int ny_agent_tool_execute(const char *name, const char *input,
   bool media = strcmp(name, "nyabula_music") == 0;
   bool plugin = strcmp(name, "nyabula_plugin") == 0;
   if (!write && !skill && !catalog && !expression && !thinking && !pairing &&
-      !builtin_read && !media && !plugin && strcmp(name, "nyabula_read") != 0)
+      !builtin_read && !media && !lighting && !tracking && !plugin &&
+      strcmp(name, "nyabula_read") != 0)
     return ERROR;
   cJSON *data = input != NULL &&
                         strlen(input) < (plugin || write ? 24576 : 2048) &&
@@ -632,14 +694,17 @@ static int ny_agent_tool_execute(const char *name, const char *input,
   bool allowed_topic =
       skill || catalog || expression || thinking || pairing || builtin_read;
   allowed_topic |= plugin && topic[0];
-  size_t count = media   ? sizeof(media_topics) / sizeof(media_topics[0])
+  size_t count = tracking ? sizeof(tracking_topics)/sizeof(tracking_topics[0]) : lighting
+                     ? sizeof(lighting_topics) / sizeof(lighting_topics[0])
+                 : media ? sizeof(media_topics) / sizeof(media_topics[0])
                  : write ? sizeof(writes) / sizeof(writes[0])
                          : sizeof(allowed) / sizeof(allowed[0]);
   for (size_t i = 0; i < count; i++)
     {
-      if (strcmp(media   ? media_topics[i]
-                 : write ? writes[i]
-                         : allowed[i],
+      if (strcmp(tracking ? tracking_topics[i] : lighting ? lighting_topics[i]
+                 : media  ? media_topics[i]
+                 : write  ? writes[i]
+                          : allowed[i],
                  topic) == 0)
         allowed_topic = true;
     }
@@ -651,8 +716,11 @@ static int ny_agent_tool_execute(const char *name, const char *input,
                       cJSON_IsNumber(
                           cJSON_GetObjectItemCaseSensitive(data, "offset"))) ||
                      cJSON_GetArraySize(data) ==
-                         (write || builtin_read || media || plugin ? 2 : 1)) &&
-                    (!(write || media || plugin) || cJSON_IsObject(arguments))
+                         (write || builtin_read || media || lighting || tracking || plugin
+                              ? 2
+                              : 1)) &&
+                    (!(write || media || lighting || tracking || plugin) ||
+                     cJSON_IsObject(arguments))
                 ? 0
                 : -EINVAL;
   char caller_id[64] = { 0 };
@@ -688,7 +756,7 @@ static int ny_agent_tool_execute(const char *name, const char *input,
       valid &= cJSON_AddStringToObject(
                    step, "state",
                    write && !principal[0] ? "pending" : "started") != NULL;
-      if ((write || media) && !principal[0])
+      if ((write || media || lighting || tracking) && !principal[0])
         {
           cJSON *copy = cJSON_Duplicate(arguments, true);
           if (copy == NULL || !cJSON_AddItemToObject(step, "arguments", copy))
@@ -730,7 +798,7 @@ static int ny_agent_tool_execute(const char *name, const char *input,
   nxmutex_unlock(&g_agent_lock);
   if (ret == 0 && principal[0] &&
       (write || skill || catalog || expression || thinking || pairing ||
-       builtin_read || media || plugin))
+       builtin_read || media || tracking || plugin))
     ret = -EACCES;
   if (ret == 0 && write)
     {
@@ -750,18 +818,42 @@ static int ny_agent_tool_execute(const char *name, const char *input,
           : catalog    ? ny_agent_mcp_catalog(data, &result)
           : empty == NULL
               ? -ENOMEM
-              : ny_product_request(&caller, topic,
-                                   skill || expression || thinking ||
-                                           pairing || builtin_read
-                                       ? data
-                                   : write || media || plugin ? arguments
-                                                              : empty,
-                                   &result);
+              : ny_product_request(
+                    &caller, topic,
+                    skill || expression || thinking || pairing || builtin_read
+                        ? data
+                    : write || media || lighting || tracking || plugin ? arguments
+                                                           : empty,
+                    &result);
+  if (ret == 0 && lighting)
+    {
+      double target = cJSON_GetNumberValue(
+          cJSON_GetObjectItemCaseSensitive(result, "revision"));
+      uint64_t deadline = ny_product_time_ms(true) + 1000;
+      while (ret == 0 && isfinite(target))
+        {
+          double applied_revision = cJSON_GetNumberValue(
+              cJSON_GetObjectItemCaseSensitive(result, "appliedRevision"));
+          double error = cJSON_GetNumberValue(
+              cJSON_GetObjectItemCaseSensitive(result, "lastError"));
+          if (applied_revision >= target && error == 0)
+            break;
+          if (ny_product_time_ms(true) >= deadline)
+            {
+              ret = -ETIMEDOUT;
+              break;
+            }
+          cJSON_Delete(result);
+          result = NULL;
+          usleep(10000);
+          ret = ny_product_request(&caller, "lighting.status", empty, &result);
+        }
+    }
   bool plugin_effect = plugin && (!strcmp(topic, "plugin.author.deploy") ||
                                   !strcmp(topic, "plugin.author.test"));
-  bool applied =
-      (write || expression || thinking || pairing || media || plugin_effect) &&
-      ret == 0;
+  bool applied = (write || expression || thinking || pairing || media ||
+                  lighting || tracking || plugin_effect) &&
+                 ret == 0;
   bool described_error =
       ret < 0 && result != NULL &&
       (builtin_read || plugin || !strcmp(topic, "agent.tools.call")) &&
@@ -811,7 +903,7 @@ static int ny_agent_tool_execute(const char *name, const char *input,
           if (uncertain)
             valid &= cJSON_AddBoolToObject(step, "sideEffectUncertain",
                                            true) != NULL;
-          else if (write || expression || media || plugin_effect)
+          else if (write || expression || media || tracking || plugin_effect)
             valid &= cJSON_AddBoolToObject(step, "sideEffectApplied",
                                            applied) != NULL;
           saved = valid ? ny_product_store_write("agent", root, revision,

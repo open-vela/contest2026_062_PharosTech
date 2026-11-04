@@ -184,6 +184,14 @@ int ny_product_eyes_request(const struct ny_product_caller_s *caller,
                             const char *topic, const cJSON *data,
                             cJSON **result);
 int ny_product_eyes_tick(void);
+int ny_product_scene_request(const struct ny_product_caller_s *caller,
+                             const char *topic, const cJSON *data,
+                             cJSON **result);
+int ny_product_scene_tick(void);
+void ny_product_scene_shutdown(void);
+int ny_product_scene_manual_submit(const char *source, const char *json,
+                                   size_t length);
+
 int ny_product_start(void);
 int ny_product_stop(void);
 cJSON *ny_product_runtime_status(void);

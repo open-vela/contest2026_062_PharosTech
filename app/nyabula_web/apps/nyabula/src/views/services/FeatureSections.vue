@@ -37,10 +37,10 @@ defineProps<{
     </NkListSection>
   </section>
 
-  <section class="stage planned" aria-labelledby="stage-planned">
+  <section v-if="page.plannedCount > 0" class="stage planned" aria-labelledby="stage-planned">
     <header class="stage-head">
       <h2 id="stage-planned" class="stage-title">规划中</h2>
-      <span class="stage-count">{{ page.plannedCount }} 项 · 等待硬件或驱动接入，暂不可用</span>
+      <span class="stage-count">{{ page.plannedCount }} 项 · 视觉服务接入中，暂不可用</span>
     </header>
     <NkListSection v-for="g in page.plannedGroups" :key="g.group" :title="g.group" :card="false">
       <div class="tiles" :style="{ gridTemplateColumns: columns }">

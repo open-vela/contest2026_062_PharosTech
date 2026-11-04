@@ -97,9 +97,14 @@
 #include "ny_product.h"
 #include "ny_product_store.h"
 #include "ny_voice.h"
+#include "ny_product_privacy.h"
+#ifdef CONFIG_NYABULA_CORE_SPEAKER
+#include "ny_product_speaker.h"
+#endif
 #include "ny_voice_audio.h"
 #include "ny_voice_cloud.h"
 #include "ny_voice_dsp.h"
+#include "ny_voice_probe.h"
 #include "ny_voice_sm.h"
 #include "ny_voice_wire.h"
 #include "nyamp_protocol.h"
@@ -205,32 +210,33 @@
 
 /* Keep room for PCM conversion and the product output pipeline. */
 
-#define NY_VOICE_PLAY_STACKSIZE  65536
+#define NY_VOICE_PLAY_STACKSIZE    65536
 
-#define NY_VOICE_TTS_WINDOW      22050U
-#define NY_VOICE_OUT_CHUNK       8192U
-#define NY_VOICE_PLAY_RESERVE_MS 16U
-#define NY_VOICE_PLAY_POLL_MS    10
-#define NY_VOICE_MIMO_POLL_MS    1
+#define NY_VOICE_TTS_WINDOW        22050U
+#define NY_VOICE_OUT_CHUNK         8192U
+#define NY_VOICE_PLAY_RESERVE_MS   16U
+#define NY_VOICE_PLAY_POLL_MS      10
+#define NY_VOICE_MIMO_POLL_MS      1
 
-#define NY_VOICE_MIMO_FRAMES     512U
-#define NY_VOICE_MIMO_DEPTH      4U
-#define NY_VOICE_MIMO_STACKSIZE  65536
+#define NY_VOICE_MIMO_FRAMES       512U
+#define NY_VOICE_MIMO_DEPTH        4U
+#define NY_VOICE_MIMO_STACKSIZE    65536
 
-#define NY_VOICE_SENTENCE_MAX    400U
-#define NY_VOICE_TEXT_MAX        2048U
-#define NY_VOICE_REPLY_MAX       8192U
-#define NY_VOICE_TRANSCRIPT_MAX  512U
-#define NY_VOICE_ERROR_MAX       96U
-#define NY_VOICE_EVENTS          32U
+#define NY_VOICE_SENTENCE_MAX      400U
+#define NY_VOICE_TEXT_MAX          2048U
+#define NY_VOICE_REPLY_MAX         8192U
+#define NY_VOICE_TRANSCRIPT_MAX    512U
+#define NY_VOICE_ERROR_MAX         96U
+#define NY_VOICE_EVENTS            32U
 
-#define NY_VOICE_LOAD_MS         120000
-#define NY_VOICE_TTS_LOAD_MS     300000
-#define NY_VOICE_RETRY_MS        5000U
-#define NY_VOICE_AGENT_POLL_MS   300U
-#define NY_VOICE_AGENT_RETRY_MS  10000U
-#define NY_VOICE_SESSION_MS      300000U
-#define NY_VOICE_CLAIM_MS        1500U
+#define NY_VOICE_LOAD_MS           120000
+#define NY_VOICE_PHRASE_PREPARE_MS 20000
+#define NY_VOICE_TTS_LOAD_MS       300000
+#define NY_VOICE_RETRY_MS          5000U
+#define NY_VOICE_AGENT_POLL_MS     300U
+#define NY_VOICE_AGENT_RETRY_MS    10000U
+#define NY_VOICE_SESSION_MS        300000U
+#define NY_VOICE_CLAIM_MS          1500U
 
 #define NY_VOICE_CUE_NOT_HEARD                   \
   "\xe6\xb2\xa1\xe5\x90\xac\xe6\xb8\x85\xef\xbc" \
@@ -305,6 +311,7 @@ struct ny_voice_settings_s
 {
   bool enabled;
   int wake_sensitivity; /* 0..100, 50 = the evaluated default.   */
+  char wake_phrase[NYAMP_KWS_TEXT_MAX + 1];
   uint32_t max_listen_ms;
   uint32_t reply_voice; /* TTS speaker id.                       */
   uint32_t reply_speed; /* Percent: 50..200.                     */
@@ -353,6 +360,11 @@ struct ny_voice_s
   uint32_t detections;
   struct nyamp_kws_detected_s wake;
   char wake_word[48];
+  struct ny_voice_probe_s probe;
+  bool probe_temporary;
+  bool probe_guard;
+  bool probe_finish;
+  bool kws_restart;
 
   struct ny_voice_model_s kws;
   struct ny_voice_model_s asr;
@@ -442,6 +454,11 @@ static int ny_voice_model_load(struct ny_voice_port_s *port,
 static int ny_voice_settings_load(void);
 static int ny_voice_settings_save(void);
 static float ny_voice_threshold(int sensitivity);
+static int ny_voice_prepare_phrase(const char *phrase);
+static bool ny_voice_diagnostics_tick(void);
+static int ny_voice_diagnostics_start(enum ny_voice_probe_kind_e kind,
+                                      uint32_t duration);
+static void ny_voice_diagnostics_end_locked(void);
 
 static void *ny_voice_capture_thread(void *arg);
 static size_t ny_voice_capture_convert(struct ny_voice_resample_s *resample,
@@ -630,6 +647,20 @@ static enum ny_voice_state_e ny_voice_state(void)
   state = g_voice.state;
   nxmutex_unlock(&g_voice.lock);
   return state;
+}
+
+/****************************************************************************
+ * Name: ny_voice_activity
+ ****************************************************************************/
+const char *ny_voice_activity(void)
+{
+  nxmutex_lock(&g_voice.lock);
+  bool active = g_voice.running && g_voice.settings.enabled;
+  bool error =
+      g_voice.capture_error != 0 || g_voice.kws.state == NY_VOICE_MODEL_ERROR;
+  enum ny_voice_state_e state = g_voice.state;
+  nxmutex_unlock(&g_voice.lock);
+  return !active ? "off" : error ? "error" : ny_voice_sm_state_name(state);
 }
 
 static void ny_voice_model_set(struct ny_voice_model_s *model,
@@ -860,11 +891,14 @@ static int ny_voice_model_load(struct ny_voice_port_s *port,
                                int timeout_ms)
 {
   struct ny_voice_wire_kws_s kws;
+  char phrase[NYAMP_KWS_TEXT_MAX + 1];
   int ret;
 
   memset(&kws, 0, sizeof(kws));
   nxmutex_lock(&g_voice.lock);
   kws.threshold = ny_voice_threshold(g_voice.settings.wake_sensitivity);
+  strlcpy(phrase, g_voice.settings.wake_phrase, sizeof(phrase));
+  kws.phrase = phrase;
   nxmutex_unlock(&g_voice.lock);
 
   ny_voice_model_set(model, NY_VOICE_MODEL_LOADING, 0);
@@ -895,6 +929,24 @@ static int ny_voice_model_load(struct ny_voice_port_s *port,
  * Settings
  ****************************************************************************/
 
+/****************************************************************************
+ * Name: ny_voice_prepare_phrase
+ ****************************************************************************/
+static int ny_voice_prepare_phrase(const char *phrase)
+{
+  /* Validation runs on its own port while the old listener remains active. */
+  struct ny_voice_port_s *port = calloc(1, sizeof(*port));
+  if (port == NULL)
+    return -ENOMEM;
+  int ret = ny_voice_port_open(port);
+  if (ret == 0)
+    ret = ny_voice_wire_kws_prepare(&port->wire, "kws", phrase,
+                                    NY_VOICE_PHRASE_PREPARE_MS);
+  ny_voice_port_close(port);
+  free(port);
+  return ret;
+}
+
 static int ny_voice_settings_load(void)
 {
   cJSON *root = NULL;
@@ -919,6 +971,8 @@ static int ny_voice_settings_load(void)
   if (root != NULL)
     {
       const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+      const cJSON *phrase =
+          cJSON_GetObjectItemCaseSensitive(root, "wakePhrase");
       const cJSON *wake =
           cJSON_GetObjectItemCaseSensitive(root, "wakeSensitivity");
       const cJSON *listen =
@@ -932,6 +986,10 @@ static int ny_voice_settings_load(void)
        */
 
       g_voice.settings.enabled = cJSON_IsTrue(enabled);
+      if (cJSON_IsString(phrase) &&
+          strlen(phrase->valuestring) <= NYAMP_KWS_TEXT_MAX)
+        strlcpy(g_voice.settings.wake_phrase, phrase->valuestring,
+                sizeof(g_voice.settings.wake_phrase));
       if (cJSON_IsNumber(wake) && wake->valueint >= 0 && wake->valueint <= 100)
         {
           g_voice.settings.wake_sensitivity = wake->valueint;
@@ -994,6 +1052,8 @@ static int ny_voice_settings_save(void)
                                            settings.reply_voice) != NULL;
   valid = valid && cJSON_AddNumberToObject(root, "replySpeed",
                                            settings.reply_speed) != NULL;
+  valid = valid && cJSON_AddStringToObject(root, "wakePhrase",
+                                           settings.wake_phrase) != NULL;
   ret = valid
             ? ny_product_store_write(NY_VOICE_STORE, root, revision, &revision)
             : -ENOMEM;
@@ -1091,6 +1151,7 @@ static void *ny_voice_capture_thread(void *arg)
 
       nxmutex_unlock(&g_voice.lock);
 
+      wanted = wanted && ny_product_privacy_mic_allowed();
       if (!wanted)
         {
           if (audio != NULL)
@@ -1189,6 +1250,9 @@ static void *ny_voice_capture_thread(void *arg)
       g_voice.gate_open = gate.open;
       g_voice.level = level;
       nxmutex_unlock(&g_voice.ring_lock);
+      nxmutex_lock(&g_voice.lock);
+      ny_voice_probe_feed(&g_voice.probe, g_voice_chunk, count, level);
+      nxmutex_unlock(&g_voice.lock);
       sem_post(&g_voice.captured);
     }
 
@@ -1305,6 +1369,24 @@ static void ny_voice_pump_events(struct ny_voice_port_s *port, int timeout_ms)
           continue;
         }
 
+#ifdef CONFIG_NYABULA_CORE_SPEAKER
+      uint32_t probe_id = g_voice.probe.active ? g_voice.probe.id : 0;
+      bool probe_guard = g_voice.probe_guard;
+      nxmutex_unlock(&g_voice.lock);
+      bool consumed = !probe_guard && ny_product_speaker_on_wake(
+          event.request_id, &event.detected, probe_id);
+      if (consumed)
+        continue;
+      nxmutex_lock(&g_voice.lock);
+#endif
+      if (g_voice.probe.active || g_voice.probe_guard)
+        {
+          ny_voice_probe_hit(&g_voice.probe, event.detected.label,
+                             event.detected.label_length);
+          nxmutex_unlock(&g_voice.lock);
+          continue;
+        }
+
       g_voice.wake = event.detected;
       g_voice.wake.label = NULL;
       snprintf(g_voice.wake_word, sizeof(g_voice.wake_word), "%.*s",
@@ -1337,6 +1419,7 @@ static void *ny_voice_pump_thread(void *arg)
       size_t count;
       bool streaming;
       bool reload;
+      bool restart;
       bool gap = false;
       bool gate;
       bool fresh;
@@ -1346,7 +1429,10 @@ static void *ny_voice_pump_thread(void *arg)
       state = g_voice.state;
       streaming = g_voice.streaming;
       reload = g_voice.kws_reload;
-      g_voice.kws_reload = false;
+      restart = g_voice.kws_restart;
+      g_voice.kws_restart = false;
+      if (state != NY_VOICE_OFF)
+        g_voice.kws_reload = false;
       if (g_voice.stopping)
         {
           nxmutex_unlock(&g_voice.lock);
@@ -1355,7 +1441,7 @@ static void *ny_voice_pump_thread(void *arg)
 
       nxmutex_unlock(&g_voice.lock);
 
-      if (streaming && (state == NY_VOICE_OFF || reload))
+      if (streaming && (state == NY_VOICE_OFF || reload || restart))
         {
           /* Give the capture slot back; a changed sensitivity is another
            * model as far as the service is concerned.
@@ -1364,12 +1450,6 @@ static void *ny_voice_pump_thread(void *arg)
           ny_voice_wire_kws_end(&port.wire);
           ny_voice_pump_events(&port, 1000);
           port.wire.request_id = 0;
-          if (reload)
-            {
-              ny_voice_wire_unload(&port.wire, NYAMP_SERVICE_KWS);
-              ny_voice_model_set(&g_voice.kws, NY_VOICE_MODEL_UNLOADED, 0);
-            }
-
           nxmutex_lock(&g_voice.lock);
           g_voice.streaming = false;
           nxmutex_unlock(&g_voice.lock);
@@ -1380,6 +1460,25 @@ static void *ny_voice_pump_thread(void *arg)
         {
           usleep(100000);
           continue;
+        }
+
+      /* A stopped stream still owns a loaded model. Apply settings changed
+       * while disabled before LOAD, not only while a stream is running.
+       */
+      if (reload)
+        {
+          ret = ny_voice_port_open(&port);
+          if (ret == 0)
+            ret = ny_voice_wire_unload(&port.wire, NYAMP_SERVICE_KWS);
+          if (ret < 0 && ret != -EINVAL)
+            {
+              nxmutex_lock(&g_voice.lock);
+              g_voice.kws_reload = true;
+              nxmutex_unlock(&g_voice.lock);
+              usleep(200000);
+              continue;
+            }
+          ny_voice_model_set(&g_voice.kws, NY_VOICE_MODEL_UNLOADED, 0);
         }
 
       if (!streaming)
@@ -1418,6 +1517,7 @@ static void *ny_voice_pump_thread(void *arg)
           restarted = true;
           nxmutex_lock(&g_voice.lock);
           g_voice.streaming = true;
+          g_voice.probe_guard = false;
           nxmutex_unlock(&g_voice.lock);
         }
 
@@ -2556,7 +2656,10 @@ static void ny_voice_turn_say(const char *text, enum ny_voice_cue_e cue,
   g_voice.speaking_wake = false;
   for (at = g_voice.play_text; *at != '\0'; at++)
     {
-      if (strncasecmp(at, "openvela", 8) == 0)
+      if (strncasecmp(at, "openvela", 8) == 0 ||
+          (g_voice.settings.wake_phrase[0] != '\0' &&
+           strncasecmp(at, g_voice.settings.wake_phrase,
+                       strlen(g_voice.settings.wake_phrase)) == 0))
         {
           g_voice.speaking_wake = true;
           break;
@@ -3327,7 +3430,7 @@ static int ny_voice_task(int argc, char **argv)
   ny_voice_sm_defaults(&config);
   nxmutex_lock(&g_voice.lock);
   config.max_listen_ms = g_voice.settings.max_listen_ms;
-  enabled = g_voice.settings.enabled;
+  enabled = g_voice.settings.enabled || g_voice.probe.active;
   nxmutex_unlock(&g_voice.lock);
   ny_voice_sm_init(&turn.sm, &config);
   if (!enabled)
@@ -3400,14 +3503,19 @@ static int ny_voice_task(int argc, char **argv)
       uint64_t text_ms;
       bool stale;
 
+      if (ny_voice_diagnostics_tick())
+        break;
+
       memset(&event, 0, sizeof(event));
       if (ny_voice_take(&queued, 50))
         {
           /* Playback that was already replaced reports in late. */
 
           nxmutex_lock(&g_voice.lock);
-          stale = queued.type == NY_VOICE_EV_SPEAK_DONE &&
-                  queued.job != g_voice.play_job;
+          stale = (queued.type == NY_VOICE_EV_SPEAK_DONE &&
+                   queued.job != g_voice.play_job) ||
+                  (queued.type == NY_VOICE_EV_WAKE &&
+                   (g_voice.probe.active || g_voice.probe_guard));
           nxmutex_unlock(&g_voice.lock);
           if (stale)
             {
@@ -3549,6 +3657,88 @@ static int ny_voice_task(int argc, char **argv)
 }
 
 /****************************************************************************
+ * Name: ny_voice_diagnostics_end_locked
+ ****************************************************************************/
+static void ny_voice_diagnostics_end_locked(void)
+{
+  g_voice.probe_guard = true;
+  g_voice.kws_restart = true;
+  g_voice.probe_finish = true;
+}
+
+/****************************************************************************
+ * Name: ny_voice_diagnostics_tick
+ ****************************************************************************/
+static bool ny_voice_diagnostics_tick(void)
+{
+  bool stop = false;
+  nxmutex_lock(&g_voice.lock);
+  bool ready =
+      g_voice.capture_open &&
+      (g_voice.probe.kind != NY_VOICE_PROBE_WAKE || g_voice.streaming);
+  int error = (g_voice.capture_hold || g_voice.claims != 0) ? -EBUSY : 0;
+  if (g_voice.probe.ready && !g_voice.capture_open &&
+      g_voice.capture_error < 0)
+    error = g_voice.capture_error;
+  if (g_voice.probe.kind == NY_VOICE_PROBE_WAKE &&
+      g_voice.kws.state == NY_VOICE_MODEL_ERROR)
+    error = g_voice.kws.error;
+  if (ny_voice_probe_tick(&g_voice.probe, ny_voice_now_ms(), ready, error))
+    ny_voice_diagnostics_end_locked();
+  if (g_voice.probe_finish)
+    {
+      stop = g_voice.probe_temporary && !g_voice.settings.enabled;
+      g_voice.probe_finish = false;
+      g_voice.probe_temporary = false;
+      if (stop)
+        {
+          g_voice.stopping = true;
+          g_voice.state = NY_VOICE_OFF;
+        }
+    }
+  nxmutex_unlock(&g_voice.lock);
+  return stop;
+}
+
+/****************************************************************************
+ * Name: ny_voice_diagnostics_start
+ ****************************************************************************/
+static int ny_voice_diagnostics_start(enum ny_voice_probe_kind_e kind,
+                                      uint32_t duration)
+{
+  bool running;
+  enum ny_voice_state_e state;
+  nxmutex_lock(&g_voice.lock);
+  state = g_voice.state;
+  running = g_voice.running;
+  if ((state != NY_VOICE_IDLE && state != NY_VOICE_OFF) ||
+      g_voice.capture_hold || g_voice.claims != 0 || g_voice.probe_finish)
+    {
+      nxmutex_unlock(&g_voice.lock);
+      return -EBUSY;
+    }
+  int ret =
+      ny_voice_probe_begin(&g_voice.probe, kind, duration, ny_voice_now_ms());
+  if (ret == 0)
+    g_voice.probe_temporary = !g_voice.settings.enabled;
+  nxmutex_unlock(&g_voice.lock);
+  if (ret < 0)
+    return ret;
+  ret = ny_voice_start();
+  if (ret < 0)
+    {
+      nxmutex_lock(&g_voice.lock);
+      ny_voice_probe_tick(&g_voice.probe, ny_voice_now_ms(), false, ret);
+      g_voice.probe_temporary = false;
+      nxmutex_unlock(&g_voice.lock);
+      return ret;
+    }
+  if (running && state == NY_VOICE_OFF)
+    ny_voice_post(NY_VOICE_EV_ENABLE, true, false, 0);
+  return 0;
+}
+
+/****************************************************************************
  * Name: ny_voice_status
  ****************************************************************************/
 
@@ -3592,7 +3782,51 @@ static cJSON *ny_voice_status(void)
   errors = cJSON_AddObjectToObject(root, "errors");
   mic = cJSON_AddObjectToObject(root, "microphone");
   config = cJSON_AddObjectToObject(root, "config");
-  valid = list != NULL && errors != NULL && mic != NULL && config != NULL;
+  if (config != NULL)
+    {
+      cJSON_AddStringToObject(config, "wakePhrase",
+                              g_voice.settings.wake_phrase);
+      cJSON_AddBoolToObject(config, "applying",
+                            g_voice.kws_reload || g_voice.kws_restart ||
+                                g_voice.kws.state == NY_VOICE_MODEL_LOADING);
+    }
+  cJSON *probe = cJSON_AddObjectToObject(root, "test");
+  const struct ny_voice_probe_s *test = &g_voice.probe;
+  uint64_t now = ny_voice_now_ms();
+  if (probe != NULL)
+    {
+      cJSON_AddNumberToObject(probe, "id", test->id);
+      cJSON_AddStringToObject(probe, "mode",
+                              test->kind == NY_VOICE_PROBE_WAKE  ? "wake"
+                              : test->kind == NY_VOICE_PROBE_MIC ? "microphone"
+                                                                 : "none");
+      cJSON_AddStringToObject(probe, "state",
+                              test->active
+                                  ? (test->ready ? "running" : "preparing")
+                              : test->error     ? "error"
+                              : test->cancelled ? "cancelled"
+                              : test->id        ? "done"
+                                                : "idle");
+      cJSON_AddBoolToObject(probe, "active", test->active);
+      cJSON_AddNumberToObject(probe, "remainingMs",
+                              test->active && test->ready &&
+                                      test->until_ms > now
+                                  ? test->until_ms - now
+                                  : 0);
+      cJSON_AddNumberToObject(probe, "durationMs", test->duration_ms);
+      cJSON_AddNumberToObject(probe, "samples", test->samples);
+      cJSON_AddNumberToObject(
+          probe, "rms",
+          test->samples ? sqrt((double)test->squares / test->samples) : 0);
+      cJSON_AddNumberToObject(probe, "maxRms", test->max_rms);
+      cJSON_AddNumberToObject(probe, "peak", test->peak);
+      cJSON_AddNumberToObject(probe, "clippedSamples", test->clipped);
+      cJSON_AddNumberToObject(probe, "detections", test->detections);
+      cJSON_AddStringToObject(probe, "word", test->word);
+      cJSON_AddNumberToObject(probe, "error", test->error);
+    }
+  valid = list != NULL && errors != NULL && mic != NULL && config != NULL &&
+          probe != NULL;
   valid =
       valid && cJSON_AddBoolToObject(root, "running", g_voice.running) != NULL;
   valid = valid && cJSON_AddBoolToObject(root, "enabled",
@@ -3640,6 +3874,9 @@ static cJSON *ny_voice_status(void)
                                            g_voice.capture_error) != NULL;
   valid = valid &&
           cJSON_AddBoolToObject(mic, "open", g_voice.capture_open) != NULL;
+  valid = valid && cJSON_AddBoolToObject(mic, "blockedByPlayback",
+                                         g_voice.capture_hold ||
+                                             g_voice.claims != 0) != NULL;
   valid = valid && cJSON_AddBoolToObject(mic, "gateOpen", gate) != NULL;
   valid = valid && cJSON_AddNumberToObject(mic, "level", level) != NULL;
   valid =
@@ -3717,6 +3954,13 @@ int ny_voice_capture_snapshot(int16_t *samples, size_t capacity)
 
 int ny_voice_start(void)
 {
+  if (!ny_product_privacy_mic_allowed())
+    return -EACCES;
+#ifdef CONFIG_NYABULA_CORE_SPEAKER
+  int speaker_ret = ny_product_speaker_initialize();
+  if (speaker_ret < 0)
+    return speaker_ret;
+#endif
   int ret = nxmutex_lock(&g_voice.lock);
 
   if (ret < 0)
@@ -3906,6 +4150,28 @@ int ny_voice_request(const struct ny_product_caller_s *caller,
     }
   else if (strcmp(topic, "voice.config") == 0)
     {
+      const cJSON *phrase =
+          cJSON_GetObjectItemCaseSensitive(data, "wakePhrase");
+      bool changed = false;
+      if (phrase != NULL)
+        {
+          if (!cJSON_IsString(phrase) ||
+              strlen(phrase->valuestring) > NYAMP_KWS_TEXT_MAX)
+            return -EINVAL;
+          nxmutex_lock(&g_voice.lock);
+          changed =
+              strcmp(phrase->valuestring, g_voice.settings.wake_phrase) != 0;
+          bool testing = g_voice.probe.active;
+          nxmutex_unlock(&g_voice.lock);
+          if (testing)
+            return -EBUSY;
+          if (changed && phrase->valuestring[0] != '\0')
+            {
+              ret = ny_voice_prepare_phrase(phrase->valuestring);
+              if (ret < 0)
+                return ret;
+            }
+        }
       const cJSON *wake =
           cJSON_GetObjectItemCaseSensitive(data, "wakeSensitivity");
       const cJSON *listen =
@@ -3928,6 +4194,12 @@ int ny_voice_request(const struct ny_product_caller_s *caller,
         }
 
       nxmutex_lock(&g_voice.lock);
+      if (changed)
+        {
+          strlcpy(g_voice.settings.wake_phrase, phrase->valuestring,
+                  sizeof(g_voice.settings.wake_phrase));
+          g_voice.kws_reload = true;
+        }
       if (wake != NULL && wake->valueint != g_voice.settings.wake_sensitivity)
         {
           g_voice.settings.wake_sensitivity = wake->valueint;
@@ -3951,6 +4223,45 @@ int ny_voice_request(const struct ny_product_caller_s *caller,
 
       nxmutex_unlock(&g_voice.lock);
       ret = ny_voice_settings_save();
+    }
+  else if (strcmp(topic, "voice.test.start") == 0)
+    {
+      const cJSON *mode = cJSON_GetObjectItemCaseSensitive(data, "mode");
+      const cJSON *duration =
+          cJSON_GetObjectItemCaseSensitive(data, "durationMs");
+      if (!cJSON_IsString(mode))
+        return -EINVAL;
+      enum ny_voice_probe_kind_e kind =
+          strcmp(mode->valuestring, "wake") == 0         ? NY_VOICE_PROBE_WAKE
+          : strcmp(mode->valuestring, "microphone") == 0 ? NY_VOICE_PROBE_MIC
+                                                         : NY_VOICE_PROBE_NONE;
+      uint32_t ms = kind == NY_VOICE_PROBE_WAKE ? 20000 : 5000;
+      if (duration != NULL)
+        {
+          if (!cJSON_IsNumber(duration) || !isfinite(duration->valuedouble) ||
+              duration->valuedouble < 1000 || duration->valuedouble > 30000 ||
+              floor(duration->valuedouble) != duration->valuedouble)
+            return -EINVAL;
+          ms = duration->valueint;
+        }
+      ret = ny_voice_diagnostics_start(kind, ms);
+    }
+  else if (strcmp(topic, "voice.test.stop") == 0)
+    {
+      nxmutex_lock(&g_voice.lock);
+      const cJSON *id = cJSON_GetObjectItemCaseSensitive(data, "id");
+      if (id != NULL && (!cJSON_IsNumber(id) || !isfinite(id->valuedouble) ||
+                         id->valuedouble < 1 || id->valuedouble > UINT32_MAX ||
+                         floor(id->valuedouble) != id->valuedouble))
+        { nxmutex_unlock(&g_voice.lock); return -EINVAL; }
+      if (id != NULL && (uint32_t)id->valuedouble != g_voice.probe.id)
+        { nxmutex_unlock(&g_voice.lock); return -ESTALE; }
+      if (g_voice.probe.active)
+        {
+          ny_voice_probe_cancel(&g_voice.probe);
+          ny_voice_diagnostics_end_locked();
+        }
+      nxmutex_unlock(&g_voice.lock);
     }
   else if (!ny_voice_running() || state == NY_VOICE_OFF)
     {
@@ -3999,3 +4310,38 @@ int ny_voice_request(const struct ny_product_caller_s *caller,
 }
 
 #endif /* CONFIG_NYABULA_CORE_VOICE */
+
+/****************************************************************************
+ * Name: ny_voice_capture_position
+ ****************************************************************************/
+uint64_t ny_voice_capture_position(void)
+{
+  nxmutex_lock(&g_voice.ring_lock);
+  uint64_t position = g_voice.ring.total;
+  nxmutex_unlock(&g_voice.ring_lock);
+  return position;
+}
+
+/****************************************************************************
+ * Name: ny_voice_accept_speaker_wake
+ ****************************************************************************/
+void ny_voice_accept_speaker_wake(const struct nyamp_kws_detected_s *wake)
+{
+  if (!wake || !ny_product_privacy_mic_allowed())
+    return;
+  nxmutex_lock(&g_voice.lock);
+  bool accept = g_voice.running && !g_voice.stopping &&
+    g_voice.state != NY_VOICE_OFF && !g_voice.probe.active &&
+    !g_voice.probe_guard && !g_voice.kws_restart &&
+    !(g_voice.state == NY_VOICE_SPEAKING && g_voice.speaking_wake);
+  if (accept)
+    {
+      g_voice.wake = *wake;
+      g_voice.wake.label = NULL;
+      snprintf(g_voice.wake_word, sizeof(g_voice.wake_word), "%.*s",
+                (int)wake->label_length, wake->label ? wake->label : "");
+    }
+  nxmutex_unlock(&g_voice.lock);
+  if (accept)
+    ny_voice_post(NY_VOICE_EV_WAKE, true, false, 0);
+}

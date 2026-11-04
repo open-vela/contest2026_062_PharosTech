@@ -18,6 +18,7 @@
  ****************************************************************************/
 
 #include "nyampd_kws.h"
+#include "nyampd_provision.h"
 
 #include <algorithm>
 
@@ -61,9 +62,9 @@ bool ValidComponent(const std::string &name)
 
 KwsService::KwsService(std::uint32_t generation, BackendFactory factory,
                        SharedSlot *capture, SlotGate *gate, LeaseMint *mint)
-    : generation_(generation), factory_(std::move(factory)),
-      capture_(capture), gate_(gate), mint_(mint),
-      queue_(kKwsEventQueueLimit), loader_(generation, &queue_)
+    : generation_(generation), factory_(std::move(factory)), capture_(capture),
+      gate_(gate), mint_(mint), queue_(kKwsEventQueueLimit),
+      loader_(generation, &queue_)
 {
 }
 
@@ -83,6 +84,7 @@ KwsService::~KwsService()
 
 void KwsService::SetProvisioner(ModelProvisioner *provisioner)
 {
+  provisioner_ = provisioner;
   loader_.SetProvisioner(provisioner);
 }
 
@@ -93,17 +95,18 @@ void KwsService::SetWaker(std::function<void()> waker)
 
 std::string KwsService::Info() const
 {
-  const char *state = !factory_          ? "none"
+  const char *state = !factory_           ? "none"
                       : loader_.loading() ? "loading"
                       : running_.load()   ? "listening"
                       : loaded_.load()    ? "ready"
                                           : "off";
-  return std::string(state) + ":" + std::to_string(Wire(loader_.last_status()));
+  return std::string(state) + ":" +
+         std::to_string(Wire(loader_.last_status()));
 }
 
 models::Status KwsService::BeginLoad(const nyamp_kws_load_s &load,
                                      const nyamp_header_s &request,
-                                     bool *deferred)
+                                     bool *deferred, bool text)
 {
   if (deferred != nullptr)
     {
@@ -117,11 +120,13 @@ models::Status KwsService::BeginLoad(const nyamp_kws_load_s &load,
 
   const std::string directory(load.directory, load.directory_length);
   const std::string keywords =
-      load.keywords_length == 0
+      text || load.keywords_length == 0
           ? std::string(kDefaultKeywords)
           : std::string(load.keywords, load.keywords_length);
 
-  if (directory.empty() || !ValidComponent(keywords))
+  if (directory.empty() || !ValidComponent(keywords) ||
+      (text && (load.keywords_length == 0 ||
+                load.keywords_length > NYAMP_KWS_TEXT_MAX)))
     {
       return models::Status::kInvalid;
     }
@@ -138,7 +143,9 @@ models::Status KwsService::BeginLoad(const nyamp_kws_load_s &load,
       directory + "/" + keywords + "?" + std::to_string(load.threshold) + "," +
       std::to_string(load.score) + "," +
       std::to_string(load.max_active_paths) + "," +
-      std::to_string(load.num_trailing_blanks);
+      std::to_string(load.num_trailing_blanks) +
+      (text ? "#phrase=" + std::string(load.keywords, load.keywords_length)
+            : "");
 
   if (loaded_.load())
     {
@@ -148,6 +155,10 @@ models::Status KwsService::BeginLoad(const nyamp_kws_load_s &load,
     }
 
   KwsModel model;
+  if (text)
+    model.phrase.assign(load.keywords, load.keywords_length);
+  const bool logical =
+      provisioner_ != nullptr && ModelProvisioner::IsLogicalName(directory);
   model.threshold = load.threshold;
   model.score = load.score;
   model.max_active_paths = load.max_active_paths;
@@ -155,7 +166,7 @@ models::Status KwsService::BeginLoad(const nyamp_kws_load_s &load,
 
   return loader_.Begin(
       directory, request, deferred,
-      [this, model, keywords, identity](const std::string &path) {
+      [this, model, keywords, identity, logical](const std::string &path) {
         std::lock_guard<std::mutex> lock(backend_mutex_);
         std::unique_ptr<KwsBackend> backend = factory_();
         if (!backend)
@@ -167,7 +178,11 @@ models::Status KwsService::BeginLoad(const nyamp_kws_load_s &load,
         resolved.directory = path;
         resolved.keywords_file = path + "/" + keywords;
 
-        const models::Status status = backend->Load(resolved);
+        models::Status status = resolved.phrase.empty()
+                                    ? models::Status::kOk
+                                    : PrepareModel(&resolved, logical);
+        if (status == models::Status::kOk)
+          status = backend->Load(resolved);
         if (status == models::Status::kOk)
           {
             std::lock_guard<std::mutex> labels_lock(labels_mutex_);
@@ -179,6 +194,66 @@ models::Status KwsService::BeginLoad(const nyamp_kws_load_s &load,
 
         return status;
       });
+}
+
+models::Status KwsService::PrepareModel(KwsModel *model, bool logical)
+{
+  if (logical)
+    {
+      std::string lexicon;
+      std::string tokens;
+      BlobStats stats;
+      const auto progress = [](const BlobProgress &) {};
+      auto result =
+          provisioner_->Provide("tts/lexicon.txt", &lexicon, progress, &stats);
+      if (result != BlobResult::kOk)
+        return static_cast<models::Status>(-BlobResultStatus(result));
+      result =
+          provisioner_->Provide("tts/tokens.txt", &tokens, progress, &stats);
+      if (result != BlobResult::kOk)
+        return static_cast<models::Status>(-BlobResultStatus(result));
+      const auto slash = tokens.rfind('/');
+      model->g2p_directory =
+          slash == std::string::npos ? "." : tokens.substr(0, slash);
+    }
+  else
+    {
+      const auto slash = model->directory.rfind('/');
+      model->g2p_directory =
+          (slash == std::string::npos ? "."
+                                      : model->directory.substr(0, slash)) +
+          "/tts";
+    }
+  auto compiler = factory_();
+  return compiler ? compiler->Prepare(model) : models::Status::kUnsupported;
+}
+
+models::Status KwsService::PrepareText(const nyamp_kws_load_s &load,
+                                       const nyamp_header_s &request,
+                                       bool *deferred)
+{
+  if (deferred != nullptr)
+    *deferred = false;
+  if (!factory_)
+    return models::Status::kUnsupported;
+  if (load.directory_length == 0 || load.keywords_length == 0 ||
+      load.keywords_length > NYAMP_KWS_TEXT_MAX)
+    return models::Status::kInvalid;
+  const std::string directory(load.directory, load.directory_length);
+  const std::string phrase(load.keywords, load.keywords_length);
+  const bool logical =
+      provisioner_ != nullptr && ModelProvisioner::IsLogicalName(directory);
+  // The temporary compiler does not touch the live spotter or capture stream.
+  return loader_.Begin(directory + "/tokens.txt", request, deferred,
+                       [this, phrase, logical](const std::string &path) {
+                         KwsModel model;
+                         const auto slash = path.rfind('/');
+                         model.directory = slash == std::string::npos
+                                               ? "."
+                                               : path.substr(0, slash);
+                         model.phrase = phrase;
+                         return PrepareModel(&model, logical);
+                       });
 }
 
 bool KwsService::StopStreamLocked()
@@ -374,8 +449,8 @@ std::int32_t KwsService::Push(const nyamp_kws_push_s &push,
     }
 
   std::vector<float> samples(count);
-  CopySamples(samples.data(),
-              base + (push.buffer.offset - capture_->offset()), count, format);
+  CopySamples(samples.data(), base + (push.buffer.offset - capture_->offset()),
+              count, format);
 
   if (restart)
     {
@@ -442,6 +517,12 @@ std::int32_t KwsService::List(std::uint8_t *body, std::size_t capacity,
   return NYAMP_MODEL_OK;
 }
 
+std::shared_ptr<CaptureRing> KwsService::StreamFor(std::uint64_t request_id)
+{
+  std::lock_guard<std::mutex> lock(stream_mutex_);
+  return running_.load() && stream_.id == request_id ? stream_.ring : nullptr;
+}
+
 std::shared_ptr<CaptureRing> KwsService::Stream()
 {
   std::lock_guard<std::mutex> lock(stream_mutex_);
@@ -486,10 +567,10 @@ void KwsService::Worker(std::uint64_t request_id,
        * control domain falls back on trigger_sample, which is always this
        * service's own count.
        */
-      const bool offsets =
-          hit.has_offsets && hit.start < hit.end && hit.end <= hit.trigger &&
-          hit.end - hit.start <= kKwsLongestPhraseSamples &&
-          hit.trigger - hit.end <= kKwsLongestLatencySamples;
+      const bool offsets = hit.has_offsets && hit.start < hit.end &&
+                           hit.end <= hit.trigger &&
+                           hit.end - hit.start <= kKwsLongestPhraseSamples &&
+                           hit.trigger - hit.end <= kKwsLongestLatencySamples;
 
       detected.sequence = sequence;
       detected.keyword_id = hit.keyword_id;
@@ -549,8 +630,8 @@ void KwsService::Worker(std::uint64_t request_id,
                 backend_->Accept(samples.data(), read.count, sink, stop);
             if (accepted != models::Status::kOk)
               {
-                status = cancel_.load() ? models::Status::kCancelled
-                                        : accepted;
+                status =
+                    cancel_.load() ? models::Status::kCancelled : accepted;
                 break;
               }
           }

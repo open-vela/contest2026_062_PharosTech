@@ -5,6 +5,7 @@ import { computed, ref, shallowRef, watch } from 'vue';
 import { coreEyeState, isCoreEyeSnapshot, type EyeState } from '@nyabula/eye-engine';
 import { useSessionStore } from './session';
 import { useToastStore } from '@nyabula/ui';
+import { rememberIris } from '../lib/irisCache';
 import { coreSceneName, sanitizeScenePayload } from '../composables/eyeScenePayload';
 
 export type SceneStyle = 'full' | 'minimal';
@@ -67,6 +68,7 @@ export const useEyeStore = defineStore('eye', () => {
   const toast = useToastStore();
   const lastState = shallowRef<EyeState | null>(null);
   const nativeCore = ref(false);
+  const nativeSceneData = computed(() => nativeCore.value && session.client?.capabilities.includes('core.scene-data-v1') === true);
   // Pairing QR payloads are deliberately omitted from public eye.state.
   // Show the authenticated device frames instead of inventing a local code.
   const nativeQr = computed(() => nativeCore.value && lastState.value?.scene?.type === 'qr');
@@ -99,6 +101,10 @@ export const useEyeStore = defineStore('eye', () => {
       lastState.value = coreEyeState(data);
     } else {
       lastState.value = data as unknown as EyeState;
+    }
+    const appearance = lastState.value?.appearance;
+    if (session.deviceKey && appearance?.irisLeft && appearance?.irisRight) {
+      rememberIris(session.deviceKey, { left: appearance.irisLeft, right: appearance.irisRight });
     }
     const ex = lastState.value?.expression;
     const sc = lastState.value?.scene;
@@ -163,6 +169,7 @@ export const useEyeStore = defineStore('eye', () => {
     if (!nativeCore.value) pendingScene.value = null;
     inflight++;
     try {
+      if (nativeSceneData.value && webScene.value) { await session.request('scene.hide', {}); webScene.value=null; pendingScene.value=null; }
       await session.request(nativeCore.value ? 'eyes.expression' : 'eye.mode', nativeCore.value ? { expression: mode } : { mode });
     } catch (e) {
       pendingMode.value = prev;
@@ -173,7 +180,7 @@ export const useEyeStore = defineStore('eye', () => {
     }
   }
 
-  async function setScene(type: string | null, style: SceneStyle = sceneStyle.value, payload?: Record<string, unknown>, options?: Record<string, unknown>): Promise<void> {
+  async function setScene(type: string | null, style: SceneStyle = sceneStyle.value, payload?: Record<string, unknown>, options?: Record<string, unknown>, recordId?: string): Promise<void> {
     if (nativeCore.value && type === 'sleep') return setMode('sleep');
     pendingScene.value = type;
     if (type) sceneStyle.value = style;
@@ -190,6 +197,10 @@ export const useEyeStore = defineStore('eye', () => {
         // Not a device scene (e.g. a planned feature): nothing may be sent.
         if (type && !scene) { pendingScene.value = undefined; return; }
         if (!scene && nativeQr.value) await session.request('panel.pair.hide', {});
+        else if (nativeSceneData.value) await session.request(scene ? 'scene.show' : 'scene.hide', scene ? {
+          scene, style, ...(recordId ? { recordId } : {}), utcOffsetMinutes:-new Date().getTimezoneOffset(),
+          payload:corePayload(payload, options),
+        } : {});
         else await session.request(scene ? 'eyes.scene.show' : 'eyes.scene.hide', scene ? { scene, style, payload:corePayload(payload, options) } : {});
         webScene.value = type;
       } else { await session.request('eye.scene', data); webScene.value = type; }
@@ -214,7 +225,9 @@ export const useEyeStore = defineStore('eye', () => {
     sendingUpdate = true;
     const client = session.client;
     try {
-      if (nativeCore.value) await session.request('eyes.scene.update', { payload:corePayload(payload) });
+      if (nativeSceneData.value) {
+        if (type === 'caption') await session.request('scene.show', {scene:'caption',style:sceneStyle.value,payload:corePayload(payload)});
+      } else if (nativeCore.value) await session.request('eyes.scene.update', { payload:corePayload(payload) });
       else await session.request('eye.scene', { type, style:sceneStyle.value, payload });
     } catch { /* A dropped frame is replaced by the next one; show() reports real failures. */ }
     finally {
@@ -323,5 +336,5 @@ export const useEyeStore = defineStore('eye', () => {
     void flushIris();
   }
 
-  return { lastState, nativeCore, nativeQr, ready, activeMode, activeScene, webScene, sceneStyle, lightPreview, ambientOnDevice, irisColors, setMode, setScene, updateScene, toggleScene, look, setAmbient, setIris };
+  return { lastState, nativeCore, nativeSceneData, nativeQr, ready, activeMode, activeScene, webScene, sceneStyle, lightPreview, ambientOnDevice, irisColors, setMode, setScene, updateScene, toggleScene, look, setAmbient, setIris };
 });

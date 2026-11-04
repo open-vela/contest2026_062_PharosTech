@@ -28,7 +28,7 @@ if(NYAMP_MODELS_INCLUDE)
   target_compile_definitions(nyamp_voice PUBLIC NYAMP_VOICE_WITH_MODELS=1)
 endif()
 
-foreach(test nyamp_kws_file_test nyamp_speaker_file_test)
+foreach(test nyamp_kws_file_test nyamp_kws_load_test nyamp_speaker_file_test)
   add_executable(${test} ${test}.cpp)
   target_include_directories(${test} PRIVATE ${NYAMP_SHERPA_INCLUDE})
   target_link_libraries(${test} PRIVATE nyamp_voice)

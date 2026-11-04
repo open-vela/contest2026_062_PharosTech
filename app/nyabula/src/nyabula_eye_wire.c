@@ -214,6 +214,7 @@ static cJSON *nyabula_eye_wire_payload_json(
   NYABULA_JSON_NUMBER(progress);
 #undef NYABULA_JSON_NUMBER
 
+  cJSON_AddBoolToObject(json, "live_data", payload->live_data);
   cJSON_AddBoolToObject(json, "active", payload->active);
   cJSON_AddBoolToObject(json, "playing", payload->playing);
   cJSON_AddBoolToObject(json, "privacy_camera", payload->privacy_camera);

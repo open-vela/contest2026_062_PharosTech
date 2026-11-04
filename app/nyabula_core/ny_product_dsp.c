@@ -20,6 +20,7 @@
  ****************************************************************************/
 
 #include "ny_product_dsp.h"
+#include "ny_product_audio.h"
 #include "ny_audio_stream.h"
 #include "ny_dsp_output.h"
 #include "ny_product_store.h"
@@ -55,6 +56,8 @@
 static mutex_t g_dsp_request_lock = NXMUTEX_INITIALIZER;
 static mutex_t g_dsp_lock = NXMUTEX_INITIALIZER;
 static struct nyadsp_s *g_dsp_prepared;
+static struct ny_product_dsp_settings_s g_dsp_prepared_settings;
+static bool g_dsp_headphones_only;
 static struct ny_product_dsp_settings_s g_dsp_settings;
 static bool g_dsp_loaded;
 static struct ny_product_dsp_settings_s g_dsp_saved_settings;
@@ -75,6 +78,7 @@ static uint32_t g_dsp_revision;
 static uint64_t g_dsp_frames;
 static int g_dsp_error;
 static float g_dsp_peak;
+static uint64_t g_dsp_meter_at;
 static double g_dsp_clock_ppm;
 static char g_dsp_track[NY_DSP_TRACK_MAX];
 static uint32_t g_dsp_usb_starved;
@@ -94,6 +98,7 @@ static int ny_dsp_presets(const char *topic, const cJSON *data,
 static uint32_t ny_dsp_le32(const unsigned char *p);
 static int ny_dsp_open(const char *name, size_t *remaining);
 static void *ny_dsp_worker(void *arg);
+static void ny_dsp_refresh_route(void);
 
 /****************************************************************************
  * Name: ny_dsp_number
@@ -484,6 +489,11 @@ static cJSON *ny_dsp_status(void)
   cJSON_AddBoolToObject(root, "running", g_dsp_running || g_dsp_output_owned);
   cJSON_AddStringToObject(root, "source", g_dsp_source);
   cJSON_AddBoolToObject(root, "settingsSaved", g_dsp_settings_saved);
+  cJSON_AddBoolToObject(root, "bassSuppressed",
+                        ny_product_audio_headphones_only());
+  cJSON_AddBoolToObject(root, "bassEffective",
+                        g_dsp_settings.bass &&
+                        !ny_product_audio_headphones_only());
   cJSON_AddBoolToObject(root, "stopping", g_dsp_stopping);
   cJSON_AddStringToObject(root, "track", g_dsp_track);
   cJSON_AddNumberToObject(root, "sampleRate", NYADSP_SAMPLE_RATE);
@@ -911,7 +921,10 @@ int ny_product_dsp_request(const struct ny_product_caller_s *caller,
        */
 
       nxmutex_unlock(&g_dsp_lock);
-      prepared = ny_dsp_output_create(&next);
+      bool headphones = ny_product_audio_headphones_only();
+      struct ny_product_dsp_settings_s effective = next;
+      effective.bass = next.bass && !headphones;
+      prepared = ny_dsp_output_create(&effective);
       ret = prepared == NULL ? -ENOMEM : 0;
       if (saving && ret == 0)
         {
@@ -936,6 +949,8 @@ int ny_product_dsp_request(const struct ny_product_caller_s *caller,
             {
               prepared = NULL;
             }
+          g_dsp_prepared_settings = effective;
+          g_dsp_headphones_only = headphones;
           g_dsp_settings = next;
           g_dsp_settings_saved = saving || restoring;
           if (saving)
@@ -1007,6 +1022,48 @@ out:
 }
 
 /****************************************************************************
+ * Name: ny_dsp_refresh_route
+ *
+ * Description:
+ *   Prepare route-only changes on the control thread without persisting them.
+ ****************************************************************************/
+
+static void ny_dsp_refresh_route(void)
+{
+  struct nyadsp_s *prepared = NULL;
+  struct nyadsp_s *retired = NULL;
+  struct ny_product_dsp_settings_s effective;
+  bool headphones = ny_product_audio_headphones_only();
+
+  nxmutex_lock(&g_dsp_request_lock);
+  nxmutex_lock(&g_dsp_lock);
+  if (g_dsp_loaded && headphones != g_dsp_headphones_only)
+    {
+      effective = g_dsp_settings;
+      effective.bass = effective.bass && !headphones;
+      nxmutex_unlock(&g_dsp_lock);
+      prepared = ny_dsp_output_create(&effective);
+      nxmutex_lock(&g_dsp_lock);
+      if (prepared != NULL)
+        {
+          retired = g_dsp_prepared;
+          g_dsp_prepared = g_dsp_output_owned ? prepared : NULL;
+          if (g_dsp_output_owned)
+            {
+              prepared = NULL;
+            }
+          g_dsp_prepared_settings = effective;
+          g_dsp_headphones_only = headphones;
+          g_dsp_revision++;
+        }
+    }
+  nxmutex_unlock(&g_dsp_lock);
+  nyadsp_destroy(prepared);
+  nyadsp_destroy(retired);
+  nxmutex_unlock(&g_dsp_request_lock);
+}
+
+/****************************************************************************
  * Name: ny_product_dsp_tick
  *
  * Description:
@@ -1019,6 +1076,7 @@ int ny_product_dsp_tick(void)
   pthread_attr_t attr;
   int ret = 0;
 
+  ny_dsp_refresh_route();
   nxmutex_lock(&g_dsp_lock);
   if (g_dsp_requested)
     {
@@ -1112,6 +1170,8 @@ int ny_product_dsp_acquire(const char *source,
       g_dsp_satellite_queued = 0;
       g_dsp_bass_queued = 0;
       *settings = g_dsp_settings;
+      g_dsp_headphones_only = ny_product_audio_headphones_only();
+      settings->bass = settings->bass && !g_dsp_headphones_only;
       *revision = g_dsp_revision;
     }
 
@@ -1148,7 +1208,7 @@ ny_product_dsp_take_update(struct ny_product_dsp_settings_s *settings,
   nxmutex_lock(&g_dsp_lock);
   prepared = g_dsp_prepared;
   g_dsp_prepared = NULL;
-  *settings = g_dsp_settings;
+  *settings = g_dsp_prepared_settings;
   *revision = g_dsp_revision;
   nxmutex_unlock(&g_dsp_lock);
   return prepared;
@@ -1165,6 +1225,7 @@ void ny_product_dsp_progress(size_t frames, float peak, double ppm,
   nxmutex_lock(&g_dsp_lock);
   g_dsp_frames += frames;
   g_dsp_peak = peak;
+  g_dsp_meter_at = ny_product_time_ms(true);
   g_dsp_clock_ppm = ppm;
   g_dsp_usb_starved = starved;
   g_dsp_satellite_queued = satellite_frames;
@@ -1173,9 +1234,25 @@ void ny_product_dsp_progress(size_t frames, float peak, double ppm,
 }
 
 /****************************************************************************
- * Name: ny_product_dsp_release
+ * Name: ny_product_dsp_meter
  ****************************************************************************/
 
+bool ny_product_dsp_meter(float *peak, char *source, size_t size)
+{
+  uint64_t now = ny_product_time_ms(true);
+  nxmutex_lock(&g_dsp_lock);
+  bool active = (g_dsp_running || g_dsp_output_owned) && g_dsp_meter_at != 0 &&
+                now - g_dsp_meter_at < 250;
+  *peak = active ? g_dsp_peak : 0;
+  if (size)
+    strlcpy(source, active ? g_dsp_source : "", size);
+  nxmutex_unlock(&g_dsp_lock);
+  return active;
+}
+
+/****************************************************************************
+ * Name: ny_product_dsp_release
+ ****************************************************************************/
 void ny_product_dsp_release(int error)
 {
   struct nyadsp_s *prepared;

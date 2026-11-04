@@ -20,6 +20,7 @@ const PLANNED = [
 ];
 
 const asleep = computed(() => eye.activeMode === 'sleep');
+const lighting = computed(() => session.client?.capabilities.includes('core.lighting-v1') === true);
 const subtitle = computed(() => (!session.connected ? '设备离线' : asleep.value ? '休眠中' : `清醒 · ${MODE_LABELS[eye.activeMode] ?? eye.activeMode}`));
 
 function setAsleep(v: boolean): void {
@@ -36,13 +37,13 @@ function setAsleep(v: boolean): void {
           <span class="hero-icon"><UiIcon :name="asleep ? 'moon' : 'light_mode'" :size="40" /></span>
           <div>
             <div class="hero-title">{{ asleep ? '正在休眠' : '清醒中' }}</div>
-            <div class="muted">{{ asleep ? '眼睛已闭上，可在这里唤醒' : '切换后眼睛会慢慢闭上' }}</div>
+            <div class="muted">{{ lighting ? (asleep ? '眼睛已闭合，灯光已渐暗熄灭' : '眼睛慢慢闭合，四区灯光渐暗') : (asleep ? '眼睛已闭上，可在这里唤醒' : '切换后眼睛会慢慢闭上') }}</div>
           </div>
         </div>
         <NkListSection>
           <NkToggleRow :model-value="asleep" icon="moon" title="休眠" :sub="asleep ? '点按唤醒' : '点按进入休眠'" :disabled="!session.canControl" @update:model-value="setAsleep" />
         </NkListSection>
-        <p class="muted small">休眠是设备上的眼睛表情，关闭网页后保持；唤醒会把表情交还给猫猫自己。睡眠定时到点也会进入这里的休眠。</p>
+        <p class="muted small">休眠状态由设备保持，关闭网页不受影响。<template v-if="lighting">唤醒后恢复休眠前开启的灯区。</template>睡眠定时到点也会进入休眠。</p>
       </section>
       <section class="ui-panel card">
         <NkListSection title="规划中" :card="false">

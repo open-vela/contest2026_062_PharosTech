@@ -447,6 +447,42 @@ config NYABULA_CORE_AUDIO_INPUT_DEVICE
 	default "/dev/audio/pcm_in0"
 	depends on NYABULA_CORE_AUDIO
 
+config NYABULA_CORE_INTERCOM
+	bool "Session-owned remote push-to-talk intercom"
+	default n
+	depends on NYABULA_CORE_PRODUCT && NYABULA_CORE_WEB && NYABULA_CORE_VOICE && CRYPTO_MBEDTLS
+	---help---
+		Authenticated bidirectional PCM audio. One panel owns a call;
+		press-to-talk switches the shared codec from capture to playback.
+		Closing the session releases it without changing saved audio settings.
+
+config NYABULA_CORE_CAMERA
+	bool "Authenticated product camera and snapshots"
+	default n
+	depends on NYABULA_CORE_PRODUCT && EXAMPLES_CAMENC = y && CRYPTO_MBEDTLS
+	select LIB_ZLIB
+	---help---
+		Reuse native camenc capture and encoding without its public demo
+		listener. Preview belongs to authenticated panel sessions and stops
+		when the last consumer leaves. Snapshots are explicit, in-memory PNGs.
+
+config NYABULA_CORE_VISION
+	bool "Local camera analysis on the AMP compute domain"
+	default n
+	depends on NYABULA_CORE_CAMERA && NYABULA_CORE_COMPUTE && RK3576_SHMEM
+	---help---
+		Send native NV12 frames through a dedicated shared-memory grant to
+		the Linux vision backend. Capture remains owned by openvela.
+
+config NYABULA_CORE_LIGHTING
+	bool "Four-zone WS2812 product lighting"
+	default y if KICKPI_K7_WS2812
+	depends on NYABULA_CORE_PRODUCT && (WS2812_CHARDEV || ARCH_SIM)
+	---help---
+		Own the 33-pixel ear, chest and base chain. Provides lighting.*
+		topics, real playback-reactive effects and startup/sleep fades.
+		Every boot begins black; saved preferences never restore power.
+
 config NYABULA_CORE_LIGHT
 	bool "Ambient light sensor: pupils that react to the room"
 	default y
@@ -467,6 +503,24 @@ config NYABULA_CORE_LIGHT_DEVICE
 	---help---
 		The node must convert on ANIOC_TRIGGER and return one
 		struct adc_msg_s per read, as rk3576_saradc.c does.
+
+config NYABULA_CORE_OBJECT_TRACKING
+	bool "Experimental object learning and tracking"
+	default n
+	depends on NYABULA_CORE_VISION
+	---help---
+		Keep object tracking available for development. Real-model loading
+		and tracking validation are incomplete, so product entry points are
+		disabled unless this option is explicitly enabled.
+
+config NYABULA_CORE_SPEAKER
+	bool "Local owner voiceprint enrollment and optional wake filtering"
+	default n
+	depends on NYABULA_CORE_VOICE && CRYPTO_MBEDTLS
+	---help---
+		Reuse the compute-domain KWS ring and speaker embedding backend.
+		Enrollment is explicit. Voiceprints stay in the device state store;
+		owner-only responses remain off until enabled by the owner.
 
 config NYABULA_CORE_VOICE
 	bool "Voice assistant: wake word, speech recognition, agent, speech"

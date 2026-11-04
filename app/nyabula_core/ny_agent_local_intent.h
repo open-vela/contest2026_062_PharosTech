@@ -66,7 +66,10 @@ enum ny_agent_local_intent_e
   NY_AGENT_LOCAL_MUSIC_RESUME,
   NY_AGENT_LOCAL_MUSIC_STOP,
   NY_AGENT_LOCAL_REMEMBER,
-  NY_AGENT_LOCAL_TASK
+  NY_AGENT_LOCAL_TASK,
+  NY_AGENT_LOCAL_LIGHTING,
+  NY_AGENT_LOCAL_TRACK_LEARN,
+  NY_AGENT_LOCAL_TRACK_STOP
 };
 
 struct ny_agent_local_intent_s
@@ -82,6 +85,8 @@ struct ny_agent_local_intent_s
   int minute;
   unsigned int repeat;    /* ALARM: bit 0 is Sunday                      */
   const char *expression; /* EXPRESSION: one of the 13 names             */
+  const char *lighting_topic;
+  char lighting_args[256];
   char text[NY_AGENT_LOCAL_TEXT_MAX]; /* Label, memory, title, track hint */
 };
 

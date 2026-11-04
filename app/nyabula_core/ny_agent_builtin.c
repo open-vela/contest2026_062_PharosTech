@@ -23,6 +23,9 @@
 #include "infra/config_store.h"
 #include "ny_agent.h"
 #include "ny_mimo.h"
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+#include "ny_product_camera.h"
+#endif
 #include "tools/tool_fetch_url.h"
 #include "tools/tool_files.h"
 #include "tools/tool_shell.h"
@@ -51,7 +54,19 @@ struct ny_agent_builtin_s
 static int ny_agent_builtin_weather(const char *input, char *output,
                                     size_t capacity);
 
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+static int ny_agent_builtin_camera(const char *input, char *output,
+                                    size_t capacity);
+#endif
+
 static const struct ny_agent_builtin_s g_builtin[] = {
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+  { "camera_vision",
+    "Capture one fresh camera image and send it to the configured MiMo "
+    "vision model. Owner approval is required before capture or upload.",
+    "{\"prompt\":\"Describe what is in front of the camera\"}",
+    true, false, ny_agent_builtin_camera },
+#endif
   { "mimo_vision", "Understand a user-provided public HTTPS image with MiMo",
     "{\"url\":\"https://example.com/cat.jpg\",\"prompt\":\"Describe this "
     "image\"}",
@@ -96,6 +111,39 @@ static int ny_agent_builtin_providers(const char *topic, const cJSON *data,
                                       cJSON **result);
 static int ny_agent_builtin_request(const char *topic, const cJSON *data,
                                     cJSON **result);
+
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+/****************************************************************************
+ * Name: ny_agent_builtin_camera
+ ****************************************************************************/
+
+static int ny_agent_builtin_camera(const char *input, char *output,
+                                    size_t capacity)
+{
+  cJSON *args = cJSON_Parse(input);
+  const char *prompt = ny_agent_builtin_string(args, "prompt");
+  int ret = !cJSON_IsObject(args) || cJSON_GetArraySize(args) != 1 ||
+            !prompt[0] || strlen(prompt) > 1024 ? -EINVAL : 0;
+  cJSON *config = NULL;
+  if (ret == 0)
+    ret = ny_mimo_config("agent.config.mimo.get", NULL, &config);
+  if (ret == 0 && !cJSON_IsTrue(
+        cJSON_GetObjectItemCaseSensitive(config, "credentialsReady")))
+    ret = -ENOKEY;
+  cJSON_Delete(config);
+  uint8_t *png = NULL;
+  size_t length = 0;
+  if (ret == 0)
+    ret = ny_product_camera_photo(2, &png, &length);
+  if (ret == 0)
+    ret = ny_mimo_vision_png(png, length, prompt, output, capacity);
+  if (ret < 0)
+    snprintf(output, capacity, "Camera vision failed (%d)", ret);
+  free(png);
+  cJSON_Delete(args);
+  return ret;
+}
+#endif
 
 /****************************************************************************
  * Name: ny_agent_builtin_weather

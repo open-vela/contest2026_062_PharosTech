@@ -78,6 +78,8 @@ extern "C" {
 int ny_voice_start(void);
 int ny_voice_stop(void);
 bool ny_voice_running(void);
+/* Static activity name; no microphone acquisition and no JSON allocation. */
+const char *ny_voice_activity(void);
 
 /****************************************************************************
  * Name: ny_voice_speaker_claim / ny_voice_speaker_release
@@ -104,6 +106,9 @@ void ny_voice_speaker_release(void);
  * This never opens the microphone. Returns samples copied or a negative errno.
  */
 int ny_voice_capture_snapshot(int16_t *samples, size_t capacity);
+struct nyamp_kws_detected_s;
+uint64_t ny_voice_capture_position(void);
+void ny_voice_accept_speaker_wake(const struct nyamp_kws_detected_s *wake);
 
 #ifdef __cplusplus
 }

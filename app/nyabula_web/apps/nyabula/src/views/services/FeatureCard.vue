@@ -5,7 +5,7 @@
  * dimmed with a tag and what it waits for; its control is never mounted, so
  * it cannot reach the device. */
 import { defineAsyncComponent, type Component } from 'vue';
-import { Skeleton, UiIcon } from '@nyabula/ui';
+import { Skeleton, UiIcon, MdButton } from '@nyabula/ui';
 import type { FeatureDef } from './features/contract';
 import type { FormFactor } from '../../composables/useFormFactor';
 
@@ -45,8 +45,8 @@ const Mini: Component | null = props.def.mini && !planned
              side is missing, so it is worth looking at. -->
         <button class="fc-fallback" @click="emit('open')">预览界面 <UiIcon name="chevron_right" :size="16" /></button>
       </template>
-      <component :is="Mini" v-else-if="Mini" :type="def.type" :ff="ff" :active="active" :payload="payload" />
-      <button v-else class="fc-fallback" @click="emit('open')">打开设置 <UiIcon name="chevron_right" :size="16" /></button>
+      <component :is="Mini" v-else-if="Mini" :type="def.type" :ff="ff" :active="active" :payload="payload" @open="emit('open')" />
+      <MdButton v-else variant="tonal" class="fc-settings" @click="emit('open')">打开设置 <UiIcon name="chevron_right" :size="16" /></MdButton>
     </div>
   </section>
 </template>
@@ -120,4 +120,5 @@ const Mini: Component | null = props.def.mini && !planned
 .fc-more:hover { background: var(--md-surface-container-highest); color: var(--md-on-surface); }
 .fc-body { flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 64px; }
 .fc-fallback { border: none; background: transparent; color: var(--md-primary); font: 600 13px var(--font-body); cursor: pointer; display: inline-flex; align-items: center; gap: 2px; padding: 0; }
+.fc-settings { align-self: flex-start; min-height: 40px; padding: 8px 16px; border: 1px solid color-mix(in srgb, var(--md-primary) 35%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--md-primary) 12%, transparent); color: var(--md-on-surface); gap: 6px; }
 </style>

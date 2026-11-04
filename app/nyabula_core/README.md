@@ -39,6 +39,11 @@ QuickJS/WAMR、Core与Eye。它不启用SD host；LCD与SD共用FSPI1引脚，
 /data/nyabula/trusted-keys.json。先提供签名包与trust store，再运行插件。
 程序不会自动绕过缺失的授权或签名。打包工具在tools/nyabula_plugin。
 
+## 四区灯光
+
+产品AMP现支持左耳、右耳、胸口与底座灯光，网页和Agent共用设备端接口。
+开机清零，灯效不依赖网页常驻；控制与配置见[四区灯光说明](../../docs/lighting.md)。
+
 ## 网页面板服务的自动恢复
 
 产品启动仍使用 `nyabula_web &`。监听循环遇到异常后由服务自身重建监听，

@@ -25,6 +25,7 @@
 #include "nyabula_core.h"
 #include <netutils/cJSON.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define NYABULA_EYE_JSON_LIMIT       4096
 #define NYABULA_EYE_JSON_DEPTH       16
@@ -38,6 +39,11 @@ extern "C" {
  * copy data and may be called from Core workers. Success means queued;
  * snapshot.last_status reports application on the display owner thread.
  */
+
+/* Optional product provider, called before creating any visible eye frame.
+ * -ENOSYS keeps standalone defaults. Other errors leave the service detached.
+ */
+int nyabula_eye_service_boot_colors(uint32_t iris_rgb[NYABULA_EYE_COUNT]);
 
 int nyabula_eye_service_attach(lv_obj_t *left, lv_obj_t *right);
 int nyabula_eye_service_tick(void);

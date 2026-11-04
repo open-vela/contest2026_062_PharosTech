@@ -1,11 +1,5 @@
 <script setup lang="ts">
-/* Nebula eye control (design-lab A): the lens stage with a live caption on
- * the left, a glass control column on the right (expressions / scenes /
- * more with a sliding-light segment). Stacks on tablet portrait and phone.
- * Parity with views/eye (same useEyePage): all expressions, grouped scenes
- * with full/minimal style and exit, ambient light preview, device state
- * readout, gaze drag + toy mode + pairing (NebulaLens), widgets, read-only
- * role handling. */
+/* Eyes first, controls below, optional device-screen feed last. */
 import { computed, inject, ref } from 'vue';
 import { UiIcon } from '@nyabula/ui';
 import WidgetGrid from '../../../components/WidgetGrid.vue';
@@ -13,6 +7,7 @@ import type { useFormFactor } from '../../../composables/useFormFactor';
 import { useEyePage } from '../../../views/eye/eye.logic';
 import { MODE_LABELS, SCENE_META } from '../../../stores/eye';
 import EyeStatusCard from '../../../views/eye/EyeStatusCard.vue';
+import EyeMirrorCard from '../../../views/eye/EyeMirrorCard.vue';
 import EyeControls from '../../../views/eye/EyeControls.vue';
 import NebulaLens from './NebulaLens.vue';
 
@@ -59,13 +54,13 @@ const caption = computed(() => {
       </div>
     </section>
 
-    <aside class="ctrl nb-glass nb-in" style="--d: 120ms">
+    <section class="ctrl nb-glass nb-in" :class="`tab-${tab}`" style="--d: 120ms">
       <div class="nb-seg" :style="{ '--n': TABS.length, '--i': tabIndex }">
         <span class="seg-light" />
         <button v-for="t in TABS" :key="t.id" :class="{ on: tab === t.id }" @click="tab = t.id">{{ t.label }}</button>
       </div>
 
-      <EyeControls :page="page" :only="tab === 'more' ? 'light' : tab" /><EyeStatusCard v-if="tab === 'more'" :page="page" />
+      <EyeControls :page="page" :only="tab === 'more' ? 'light' : tab" hide-mirror /><EyeStatusCard v-if="tab === 'more'" :page="page" />
 
       <div class="actions">
         <button class="nb-btn primary" :disabled="!session.canControl" @click="eye.setMode(eye.activeMode === 'sleep' ? 'idle' : 'sleep')">
@@ -73,72 +68,25 @@ const caption = computed(() => {
         </button>
         <button v-if="eye.activeScene" class="nb-btn" @click="eye.setScene(null)"><UiIcon name="close" :size="17" /> 退出场景</button>
       </div>
-    </aside>
+    </section>
 
     <WidgetGrid class="widgets" :form-factor="ff.formFactor.value" />
+    <EyeMirrorCard v-if="!eye.nativeQr" class="screen-feed" />
   </div>
 </template>
 
 <style scoped>
-.nb-eye {
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 1fr);
-  gap: 28px;
-  align-items: center;
-  padding: 0 clamp(16px, 3vw, 36px) 24px;
-  max-width: 1320px;
-  margin: 0 auto;
-  width: 100%;
-  min-height: calc(100% - 20px);
-}
-.stage { display: flex; flex-direction: column; align-items: center; gap: 20px; min-width: 0; }
-.lens-box { width: min(600px, 100%); aspect-ratio: 16 / 10; }
-.cap { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.cap-mode { font-size: 26px; color: var(--nb-fg); }
-.cap-hint { margin: 0; color: var(--nb-dim); font-size: 12.5px; }
-.ctrl { padding: 22px; display: flex; flex-direction: column; gap: 18px; min-width: 0; }
-.grid { display: grid; gap: 8px; }
-.modes { grid-template-columns: repeat(4, 1fr); }
-.sc-grid { grid-template-columns: repeat(4, 1fr); }
-.cell {
-  border: 1px solid var(--nb-line);
-  background: var(--nb-soft);
-  color: var(--nb-sub);
-  padding: 12px 4px;
-  border-radius: 16px;
-  font: 600 13px var(--font-body);
-  cursor: pointer;
-  animation: nb-rise 0.5s var(--nb-ease) both;
-  transition: color 0.2s, background 0.25s, border-color 0.25s, box-shadow 0.3s, transform 0.35s var(--nb-spring);
-}
-.cell:hover:not(:disabled) { color: var(--nb-fg); background: var(--nb-soft-2); transform: translateY(-2px); }
-.cell:active:not(:disabled) { transform: scale(0.93); }
-.cell:disabled { opacity: 0.4; cursor: default; }
-.cell.on { color: var(--nb-fg); border-color: rgba(var(--nb-acc-rgb), 0.55); background: rgba(var(--nb-acc-rgb), 0.12); box-shadow: 0 0 24px -8px rgba(var(--nb-acc-rgb), 0.8); }
-.sc { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 12px; }
-.sc.on :deep(.ui-icon) { color: var(--nb-acc); }
-.scenes { display: flex; flex-direction: column; gap: 14px; max-height: min(52vh, 520px); overflow-y: auto; padding-right: 4px; margin-right: -4px; }
-.scene-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.nb-seg.mini { width: 150px; }
-.nb-seg.mini > button { padding: 6px; font-size: 12.5px; }
-.group { display: grid; gap: 8px; }
-.more { display: flex; flex-direction: column; gap: 20px; }
-.block { display: grid; gap: 10px; }
-.light { display: flex; align-items: center; gap: 12px; color: var(--nb-sub); }
-.light-val { font: 600 14px var(--font-body); color: var(--nb-acc); min-width: 44px; text-align: right; }
-.light-hint { margin: 0; color: var(--nb-sub); font-size: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.kv { margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.kv > div { padding: 10px 12px; border-radius: 14px; background: var(--nb-soft); border: 1px solid var(--nb-line); display: flex; flex-direction: column; gap: 2px; }
-.kv dt { font-size: 11.5px; color: var(--nb-sub); }
-.kv dd { margin: 0; font: 600 13.5px var(--font-body); color: var(--nb-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.empty { margin: 0; color: var(--nb-sub); font-size: 13px; }
-.actions { display: flex; gap: 10px; flex-wrap: wrap; }
-.widgets { grid-column: 1 / -1; }
-
-.stacked { grid-template-columns: 1fr; gap: 18px; align-items: start; }
-.stacked .lens-box { width: 100%; aspect-ratio: auto; height: min(44vh, 400px); }
-.stacked .cap-mode { font-size: 22px; }
-.stacked .scenes { max-height: none; overflow: visible; }
-.stacked .modes, .stacked .sc-grid { grid-template-columns: repeat(3, 1fr); }
-.stacked .ctrl { padding: 16px; }
+.nb-eye { display:flex; flex-direction:column; gap:24px; padding:12px clamp(16px,3vw,36px) 28px; max-width:1120px; margin:0 auto; width:100%; }
+.stage { display:flex; flex-direction:column; align-items:center; gap:12px; min-width:0; }
+.lens-box { width:min(880px,100%); height:clamp(260px,38vh,420px); }
+.cap { text-align:center; display:flex; align-items:center; justify-content:center; gap:12px; flex-wrap:wrap; }
+.cap-mode { font-size:20px; color:var(--nb-fg); }
+.cap-hint { margin:0; color:var(--nb-sub); font-size:13px; flex-basis:100%; }
+.ctrl { padding:20px; display:flex; flex-direction:column; gap:18px; min-width:0; }
+.ctrl>.nb-seg { align-self:center; width:min(480px,100%); }
+.tab-modes :deep(.controls) { display:grid; grid-template-columns:1fr 1fr; align-items:start; }
+.actions { display:flex; gap:10px; flex-wrap:wrap; }
+.screen-feed { margin-top:8px; }
+.stacked .lens-box { height:clamp(220px,32vh,340px); }
+@media(max-width:760px) { .tab-modes :deep(.controls) { grid-template-columns:1fr; }.ctrl { padding:14px; }.nb-eye { gap:18px; } }
 </style>

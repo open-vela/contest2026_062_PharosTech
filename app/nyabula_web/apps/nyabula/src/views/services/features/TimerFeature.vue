@@ -56,7 +56,7 @@ async function reset(){await timer.action('delete');}
         />
         <MdButton v-if="finished || timer.waitingClock.value" variant="outlined" :disabled="timer.core.busy.value" @click="reset">清除此计时器</MdButton>
         <EyeShowButton kind="wide" :shown="onEyes" :disabled="!scene.canShow.value" @toggle="scene.toggle()" />
-        <p class="muted hint">{{ onEyes ? '猫眼上的读数每秒同步一次；离开「功能」页后停止同步。' : armed ? '计时由设备运行，可随时显示到猫眼。' : '开始计时后可显示到猫眼。' }}</p>
+        <p class="muted hint">{{ onEyes ? (scene.deviceOwned.value ? '猫眼读数由设备持续更新，离开页面后也会继续。' : '保持面板连接时同步到猫眼。') : armed ? '计时由设备运行，可随时显示到猫眼。' : '开始计时后可显示到猫眼。' }}</p>
       </section>
       <section class="ui-panel card">
         <h3 class="section-title">设定时长</h3>

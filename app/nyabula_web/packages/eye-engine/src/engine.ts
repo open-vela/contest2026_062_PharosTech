@@ -165,6 +165,10 @@ export interface EyeEngineOptions {
   localLook?: boolean;
   /** Opt-in mouse hover tracking; drag behavior remains unchanged. */
   toyMode?: boolean;
+  /** Hover/drag region while toy mode is active; ordinary drag stays on canvas. */
+  toyScope?: 'canvas' | 'viewport';
+  /** Calibration: a press latches its target; hover, drag and leave do not move it. */
+  clickHold?: boolean;
   /**
    * Canvas background. 'transparent' (default) clears the frame instead of
    * painting a full black backdrop, so the two eyes float over whatever the
@@ -332,6 +336,7 @@ export class EyeEngine {
   setZzzEnabled(on: boolean): void { this.zzzEnabled = on; if (!on) this.zzz.length = 0; }
 
   private presentationBlink = 0;
+  private presentationBlinkHeld = false;
   private running = false;
   private clockOffsetMs = 0;
   private lastOneShotAt = 0;
@@ -411,7 +416,18 @@ export class EyeEngine {
     this.irisHexR = right;
   }
 
+  /** Keep an opening/landing presentation free of blinks without changing
+   * the remote auto-blink setting. Hidden blinks are discarded, not queued. */
+  holdPresentationBlink(held: boolean): void {
+    if (held === this.presentationBlinkHeld) return;
+    this.presentationBlinkHeld = held;
+    this.blinkPhase = -1;
+    this.presentationBlink = 0;
+    this.nextBlink = TIMING.blinkIntervalMin;
+  }
+
   blink(eyes = 3): void {
+    if (this.presentationBlinkHeld) return;
     this.blinkEyes = eyes;
     this.blinkPhase = 0;
   }
@@ -748,16 +764,26 @@ export class EyeEngine {
 
   private attachPointer(): void {
     const cv = this.canvas;
+    const viewportToy = () => !this.opts.clickHold && this.opts.toyMode && this.opts.toyScope === 'viewport' && typeof window !== 'undefined';
     const norm = (e: PointerEvent) => {
-      const rect = cv.getBoundingClientRect();
+      const viewport = viewportToy();
+      const rect = viewport ? { left:0, top:0, width:window.innerWidth, height:window.innerHeight } : cv.getBoundingClientRect();
       const w = rect.width || 1;
       const h = rect.height || 1;
       const nx = clamp((e.clientX - rect.left - w / 2) / (w / 2), -1, 1);
-      const ny = clamp((e.clientY - rect.top - h * 0.46) / (h / 2), -1, 1);
+      const ny = clamp((e.clientY - rect.top - h * (viewport ? .5 : .46)) / (h / 2), -1, 1);
       return { nx, ny };
     };
     let pointerId: number | null = null;
     const onDown = (e: PointerEvent) => {
+      if (this.opts.clickHold) {
+        if (!e.isPrimary || e.button !== 0) return;
+        const { nx, ny } = norm(e);
+        if (this.opts.localLook !== false) this.lookAt(nx, ny, Infinity);
+        this.opts.onInteraction?.(nx, ny, 'down');
+        return;
+      }
+      if (viewportToy()) return;
       if (!e.isPrimary || e.button !== 0 || pointerId !== null) return;
       pointerId = e.pointerId;
       cv.setPointerCapture?.(e.pointerId);
@@ -766,6 +792,8 @@ export class EyeEngine {
       this.opts.onInteraction?.(nx, ny, 'down');
     };
     const onMove = (e: PointerEvent) => {
+      if (this.opts.clickHold) return;
+      if (viewportToy()) return;
       if (pointerId !== e.pointerId && !(this.opts.toyMode && pointerId === null && e.isPrimary && e.pointerType === 'mouse')) return;
       const { nx, ny } = norm(e);
       if (this.opts.localLook !== false) this.lookAt(nx, ny);
@@ -779,11 +807,41 @@ export class EyeEngine {
       this.opts.onInteraction?.(nx, ny, 'up');
     };
     const onLeave = (e: PointerEvent) => {
+      if (this.opts.clickHold) return;
+      if (viewportToy()) return;
       if (pointerId !== null || !this.opts.toyMode) return;
       this.releaseLook();
       const { nx, ny } = norm(e);
       this.opts.onInteraction?.(nx, ny, 'up');
     };
+    if (this.opts.toyScope === 'viewport' && typeof window !== 'undefined') {
+      const follow = (e: PointerEvent) => {
+        if (!viewportToy() || !e.isPrimary || (e.pointerType !== 'mouse' && !e.buttons)) return;
+        const { nx, ny } = norm(e);
+        if (this.opts.localLook !== false) this.lookAt(nx, ny);
+        this.opts.onInteraction?.(nx, ny, 'move');
+      };
+      const release = () => {
+        if (!viewportToy()) return;
+        this.releaseLook(); this.opts.onInteraction?.(0, 0, 'up');
+      };
+      const up = (e: PointerEvent) => { if (e.pointerType !== 'mouse') release(); };
+      const leave = (e: PointerEvent) => { if (!e.relatedTarget) release(); };
+      window.addEventListener('pointermove', follow, { passive:true });
+      window.addEventListener('pointerdown', follow, { passive:true });
+      window.addEventListener('pointerup', up, { passive:true });
+      window.addEventListener('pointercancel', up, { passive:true });
+      window.addEventListener('pointerout', leave, { passive:true });
+      window.addEventListener('blur', release);
+      this.detachFns.push(() => {
+        window.removeEventListener('pointermove', follow);
+        window.removeEventListener('pointerdown', follow);
+        window.removeEventListener('pointerup', up);
+        window.removeEventListener('pointercancel', up);
+        window.removeEventListener('pointerout', leave);
+        window.removeEventListener('blur', release);
+      });
+    }
     cv.addEventListener('pointerleave', onLeave);
     cv.addEventListener('pointerdown', onDown);
     cv.addEventListener('pointermove', onMove);
@@ -920,7 +978,7 @@ export class EyeEngine {
 
   /* ---------- behaviors: blink / saccade ---------- */
   private behaviors(dt: number): void {
-    if (this.sceneType || this.scenePhase !== 'none') {
+    if (this.presentationBlinkHeld || this.sceneType || this.scenePhase !== 'none') {
       this.blinkPhase = -1;
     } else if (this.blinkPhase >= 0) {
       this.blinkPhase += dt * TIMING.blinkSpeed;
@@ -1647,10 +1705,19 @@ export class EyeEngine {
     ctx.fillText(side < 0 ? '场景移植中' : 'coming soon', 0, IR * 0.22);
   }
 
+  private sceneText(key: string, fallback: string): string {
+    const value=this.scenePayload[key];
+    return typeof value==='string' ? value : this.scenePayload.live_data ? '' : fallback;
+  }
+  private sceneNumber(key: string, fallback: number): number {
+    const value=this.scenePayload[key];
+    return typeof value==='number' && Number.isFinite(value) ? value : this.scenePayload.live_data ? 0 : fallback;
+  }
+
   private drawMusicPlayback(ctx: CanvasRenderingContext2D, IR: number, IC: RGB, C: number[], startedAt: number): void {
-    const duration = 235;
-    const elapsed = (this.tNow - startedAt) % duration;
-    const progress = elapsed / duration;
+    const duration = this.sceneNumber('duration_ms',235000)/1000;
+    const elapsed = this.scenePayload.live_data ? this.sceneNumber('position_ms',0)/1000 : (this.tNow-startedAt)%Math.max(.001,duration);
+    const progress = duration>0?clamp(elapsed/duration,0,1):0;
     const cover = ctx.createRadialGradient(-IR * 0.22, -IR * 0.30, IR * 0.03, 0, 0, IR * 0.92);
     cover.addColorStop(0, rgba(shade(IC, 1.35), 0.18));
     cover.addColorStop(0.45, rgba(IC, 0.08));
@@ -1688,12 +1755,12 @@ export class EyeEngine {
     const es = String(Math.floor(elapsed % 60)).padStart(2, '0');
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = fontEnglish(IR * 0.080);
+    ctx.font = fontMixed(IR * 0.080);
     ctx.fillStyle = rgba(C, 0.50);
-    ctx.fillText('NYABULA MIX', 0, IR * 0.36);
+    ctx.fillText(this.sceneText('title', 'NYABULA MIX'), 0, IR * 0.36);
     ctx.font = fontEnglish(IR * 0.090);
     ctx.fillStyle = rgba(C, 0.76);
-    ctx.fillText(`${em}:${es}  /  03:55`, 0, IR * 0.49);
+    ctx.fillText(`${em}:${es} / ${duration>0?`${String(Math.floor(duration/60)).padStart(2,'0')}:${String(Math.floor(duration%60)).padStart(2,'0')}`:'--:--'}`, 0, IR * 0.49);
   }
 
   private drawMusicSpectrum(ctx: CanvasRenderingContext2D, IR: number, IC: RGB, C: number[], alpha: number): void {
@@ -1705,10 +1772,10 @@ export class EyeEngine {
     ctx.font = fontTitle(IR * 0.080);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('频谱', 0, -IR * 0.48);
+    ctx.fillText(this.scenePayload.live_data ? (this.scenePayload.signal_good?'输出电平':'播放状态') : '频谱', 0, -IR * 0.48);
     for (let i = 0; i < bars; i++) {
-      const wave = 0.5 + 0.5 * Math.sin(this.tNow * (3.4 + (i % 3) * 0.24) + i * 0.88);
-      const envelope = 0.58 + 0.42 * Math.sin(((i + 1) / (bars + 1)) * Math.PI);
+      const wave = this.scenePayload.live_data ? (this.scenePayload.playing && this.scenePayload.signal_good ? clamp((this.sceneNumber('percent',0)/100-i/bars)*bars,0,1):0) : 0.5 + 0.5 * Math.sin(this.tNow*(3.4+(i%3)*.24)+i*.88);
+      const envelope = this.scenePayload.live_data ? 1 : 0.58 + 0.42 * Math.sin(((i + 1) / (bars + 1)) * Math.PI);
       const h = IR * (0.13 + 0.49 * wave * envelope);
       const x = (i - (bars - 1) / 2) * (bw + gap);
       const grad = ctx.createLinearGradient(0, IR * 0.31, 0, -IR * 0.31);
@@ -1730,13 +1797,13 @@ export class EyeEngine {
     ctx.translate(0, IR * 0.08);
     ctx.font = fontBody(IR * 0.095);
     ctx.fillStyle = rgba(C, 0.22);
-    ctx.fillText('灯火落进夜里', 0, -IR * 0.30);
+    ctx.fillText(this.sceneText('previous_line', '灯火落进夜里'), 0, -IR * 0.30);
     ctx.font = fontTitle(IR * 0.155);
     ctx.fillStyle = rgba(C, 0.94);
-    ctx.fillText('我听见你', 0, -IR * 0.03);
+    ctx.fillText(this.sceneText('current_line', '我听见你'), 0, -IR * 0.03);
     ctx.font = fontBody(IR * 0.095);
     ctx.fillStyle = rgba(C, 0.30);
-    ctx.fillText('轻轻回应', 0, IR * 0.27);
+    ctx.fillText(this.sceneText('next_line', '轻轻回应'), 0, IR * 0.27);
     ctx.restore();
   }
 
@@ -1776,7 +1843,7 @@ export class EyeEngine {
       : typeof payload.seconds === 'number' ? payload.seconds : 300;
     const initial = typeof payload.remaining_ms === 'number' ? payload.remaining_ms / 1000 : total;
     const active = payload.active ?? payload.running ?? true;
-    const precise = Math.max(0, initial - (active ? this.tNow - startedAt : 0));
+    const precise = Math.max(0, initial - (active && !payload.live_data ? this.tNow - startedAt : 0));
     const remaining = Math.ceil(precise);
     const mm = String(Math.floor(remaining / 60)).padStart(2, '0');
     const ss = String(remaining % 60).padStart(2, '0');
@@ -2289,11 +2356,11 @@ export class EyeEngine {
     } else {
       ctx.fillStyle = rgba(C, 0.98);
       ctx.font = fontEnglish(IR * 0.43);
-      ctx.fillText('07:30', 0, -IR * 0.07);
+      ctx.fillText(this.scenePayload.live_data || typeof this.scenePayload.hour==='number' ? `${String(this.sceneNumber('hour',7)).padStart(2,'0')}:${String(this.sceneNumber('minute',30)).padStart(2,'0')}` : '07:30', 0, -IR * 0.07);
       if (this.alarmCopy !== 'none') {
         ctx.fillStyle = rgba(C, 0.62);
         ctx.font = fontBody(IR * 0.105);
-        ctx.fillText(this.alarmCopy === 'name' ? '早安，Nyabula' : '喝水 · 吃药', 0, IR * 0.26);
+        ctx.fillText(this.sceneText('title', this.alarmCopy === 'name' ? '早安，Nyabula' : '喝水 · 吃药'), 0, IR * 0.26);
       }
     }
   }
@@ -2312,14 +2379,14 @@ export class EyeEngine {
     } else {
       ctx.fillStyle = rgba(C, this.callState === 'ended' ? 0.58 : 0.98);
       ctx.font = this.callState === 'ended' ? fontTitle(IR * 0.25) : fontEnglish(IR * 0.27);
-      ctx.fillText(this.callState === 'ended' ? '通话结束' : 'BEACON', 0, -IR * 0.11);
+      ctx.fillText(this.sceneText('title', this.callState === 'ended' ? '通话结束' : 'BEACON'), 0, -IR * 0.11);
       ctx.fillStyle = rgba(C, 0.48);
       ctx.font = fontMixed(IR * 0.10);
       const detail =
         this.callState === 'incoming' ? '+86 138 0013 8000'
         : this.callState === 'active' ? '00:42 · 通话中'
         : '通话时长 03:18';
-      ctx.fillText(detail, 0, IR * 0.17);
+      ctx.fillText(this.scenePayload.live_data ? this.sceneText('detail','') : detail, 0, IR * 0.17);
     }
   }
 
@@ -2462,7 +2529,7 @@ export class EyeEngine {
   /* ----- stopwatch ----- */
   private drawStopwatchScene(ctx: CanvasRenderingContext2D, IR: number, IC: RGB, side: number, minimal: boolean, startedAt: number): void {
     const C = this.sceneGlow(ctx, IC, 0.58);
-    const elapsed = this.tNow - startedAt;
+    const elapsed = this.scenePayload.live_data ? this.sceneNumber('elapsed_ms',0)/1000 : this.tNow-startedAt;
     this.drawSceneBackdrop(ctx, IR, minimal);
     ctx.shadowBlur = 0;
     ctx.textAlign = 'center';
@@ -2504,20 +2571,20 @@ export class EyeEngine {
       ctx.fillRect(-IR * 0.48, -IR * 0.29, IR * 0.96, IR * 0.025);
       ctx.fillStyle = rgba(C, 0.98);
       ctx.font = fontEnglish(IR * 0.50);
-      ctx.fillText('16', 0, IR * 0.05);
+      ctx.fillText(String(this.sceneNumber('day', Number('16'))), 0, IR * 0.05);
       ctx.fillStyle = rgba(C, 0.52);
       ctx.font = fontTitle(IR * 0.11);
-      ctx.fillText('8 月 · 星期日', 0, IR * 0.36);
+      ctx.fillText(this.scenePayload.live_data ? `${this.sceneNumber('month',0)} 月` : '8 月 · 星期日', 0, IR * 0.36);
     } else {
       ctx.fillStyle = rgba(C, 0.98);
       ctx.font = fontEnglish(IR * 0.40);
-      ctx.fillText('09:30', 0, -IR * 0.18);
+      ctx.fillText(this.scenePayload.live_data ? `${String(this.sceneNumber('hour',0)).padStart(2,'0')}:${String(this.sceneNumber('minute',0)).padStart(2,'0')}` : '09:30', 0, -IR * 0.18);
       ctx.fillStyle = rgba(C, 0.67);
       ctx.font = fontTitle(IR * 0.14);
-      ctx.fillText('产品设计评审', 0, IR * 0.13);
+      ctx.fillText(this.sceneText('title', '产品设计评审'), 0, IR * 0.13);
       ctx.fillStyle = rgba(C, 0.34);
       ctx.font = fontBody(IR * 0.085);
-      ctx.fillText('还有 25 分钟', 0, IR * 0.35);
+      ctx.fillText(this.sceneText('detail', '还有 25 分钟'), 0, IR * 0.35);
     }
   }
 
@@ -2546,7 +2613,7 @@ export class EyeEngine {
         ctx.restore();
       }
     } else {
-      const remaining = Math.max(0, 1800 - (this.tNow - startedAt));
+      const remaining = this.scenePayload.live_data ? this.sceneNumber('remaining_ms',0)/1000 : Math.max(0,1800-(this.tNow-startedAt));
       ctx.fillStyle = rgba(C, 0.98);
       ctx.font = fontEnglish(IR * 0.48);
       ctx.fillText(String(Math.ceil(remaining / 60)), 0, -IR * 0.12);
@@ -2555,7 +2622,7 @@ export class EyeEngine {
       ctx.fillText('分钟', 0, IR * 0.18);
       ctx.fillStyle = rgba(C, 0.30);
       ctx.font = fontBody(IR * 0.08);
-      ctx.fillText('音乐结束后休眠', 0, IR * 0.36);
+      ctx.fillText(this.sceneText('detail','音乐结束后休眠'), 0, IR * 0.36);
     }
   }
 
@@ -2580,10 +2647,10 @@ export class EyeEngine {
       const detail = this.networkState === 'wifi' ? 'Nyabula · 5 GHz' : this.networkState === 'bluetooth' ? 'BeaconPhone' : '等待重新连接';
       ctx.fillStyle = rgba(C, this.networkState === 'offline' ? 0.54 : 0.98);
       ctx.font = fontTitle(IR * 0.22);
-      ctx.fillText(title, 0, -IR * 0.13);
+      ctx.fillText(this.sceneText('title', title), 0, -IR * 0.13);
       ctx.fillStyle = rgba(C, 0.44);
       ctx.font = fontMixed(IR * 0.09);
-      ctx.fillText(detail, 0, IR * 0.16);
+      ctx.fillText(this.sceneText('detail', detail), 0, IR * 0.16);
       if (this.networkState !== 'offline') {
         const pulse = 0.55 + 0.35 * Math.sin(this.tNow * 2.2);
         ctx.fillStyle = rgba(C, pulse);
@@ -2604,7 +2671,7 @@ export class EyeEngine {
     ctx.textBaseline = 'middle';
     const iconMap: Record<string, string> = { speaker: 'speaker', headphone: 'headphones', both: 'audio_both', mute: 'audio_mute' };
     if (side < 0) {
-      this.drawDial(ctx, IR, C, muted ? 0 : 0.64);
+      this.drawDial(ctx, IR, C, muted ? 0 : this.scenePayload.live_data ? this.sceneNumber('percent',0)/100 : 0.64);
       const icon = iconMap[this.audioRoute] ?? 'speaker';
       if (this.audioPrevRoute) {
         const previous = iconMap[this.audioPrevRoute] ?? 'speaker';
@@ -2617,13 +2684,13 @@ export class EyeEngine {
       const label = labels[this.audioRoute] ?? labels.speaker;
       ctx.fillStyle = rgba(C, muted ? 0.48 : 0.98);
       ctx.font = fontTitle(IR * 0.22);
-      ctx.fillText(label, 0, -IR * 0.14);
+      ctx.fillText(this.sceneText('title', label), 0, -IR * 0.14);
       ctx.fillStyle = rgba(C, 0.74);
       ctx.font = fontEnglish(IR * 0.36);
-      ctx.fillText(muted ? '—' : '64%', 0, IR * 0.14);
+      ctx.fillText(this.scenePayload.live_data ? `${this.sceneNumber('percent',0)}%` : muted ? '—' : '64%', 0, IR * 0.14);
       ctx.fillStyle = rgba(C, 0.34);
       ctx.font = fontBody(IR * 0.085);
-      ctx.fillText('媒体音量', 0, IR * 0.39);
+      ctx.fillText(this.sceneText('subtitle', '媒体音量'), 0, IR * 0.39);
     }
   }
 
@@ -2645,7 +2712,10 @@ export class EyeEngine {
     for (let i = 0; i <= 48; i++) {
       const x = IR * (-0.62 + (i / 48) * 1.24);
       const nx = x / IR;
-      const y = IR * (-0.04 - Math.exp(-Math.pow((nx + 0.28) * 4, 2)) * 0.16 + Math.exp(-Math.pow((nx - 0.22) * 5, 2)) * 0.11);
+      const bands=this.scenePayload.eq_bands as number[]|undefined;
+      const at=i/48*9, index=Math.min(8,Math.floor(at));
+      const gain=(bands?.[index]??0)+((bands?.[index+1]??0)-(bands?.[index]??0))*(at-index);
+      const y = this.scenePayload.live_data ? IR*(-.04-.30*clamp(gain/12,-1,1)) : IR * (-0.04 - Math.exp(-Math.pow((nx + 0.28) * 4, 2)) * 0.16 + Math.exp(-Math.pow((nx - 0.22) * 5, 2)) * 0.11);
       if (i) ctx.lineTo(x, y);
       else ctx.moveTo(x, y);
     }
@@ -2681,7 +2751,9 @@ export class EyeEngine {
         const bars = 7;
         for (let i = 0; i < bars; i++) {
           const x = (i - (bars - 1) / 2) * IR * 0.16;
-          const h = IR * (0.22 + 0.28 * (0.5 + 0.5 * Math.sin(i * 1.6 + this.tNow * 0.7)));
+          const bands=this.scenePayload.eq_bands as number[]|undefined;
+          const level=this.scenePayload.live_data?clamp(Math.abs(bands?.[i]??0)/12,0,1):.5+.5*Math.sin(i*1.6+this.tNow*.7);
+          const h=IR*(.22+.28*level);
           ctx.fillStyle = rgba(C, 0.30 + i * 0.07);
           ctx.beginPath();
           ctx.roundRect(x - IR * 0.035, -h / 2, IR * 0.07, h, IR * 0.035);
@@ -2694,8 +2766,8 @@ export class EyeEngine {
       this.drawEqCurve(ctx, IR, C, cal);
       ctx.restore();
       ctx.fillStyle = rgba(C, 0.58);
-      ctx.font = cal ? fontTitle(IR * 0.10) : fontEnglish(IR * 0.085);
-      ctx.fillText(cal ? '测量中 · 2/4' : 'NYABULA FLAT', 0, IR * 0.43);
+      ctx.font = cal || this.scenePayload.live_data ? fontTitle(IR * 0.10) : fontEnglish(IR * 0.085);
+      ctx.fillText(this.sceneText('title', cal ? '测量中 · 2/4' : 'NYABULA FLAT'), 0, IR * 0.43);
     }
   }
 
@@ -2721,7 +2793,7 @@ export class EyeEngine {
       ctx.stroke();
       ctx.fillStyle = rgba(C, 0.40);
       ctx.font = fontTitle(IR * 0.09);
-      ctx.fillText('聆听中', 0, IR * 0.42);
+      ctx.fillText(this.scenePayload.live_data ? '字幕' : '聆听中', 0, IR * 0.42);
     } else {
       ctx.fillStyle = rgba(C, 0.28);
       ctx.font = fontBody(IR * 0.095);
@@ -2771,13 +2843,13 @@ export class EyeEngine {
     } else {
       ctx.fillStyle = rgba(C, 0.98);
       ctx.font = fontTitle(IR * 0.22);
-      ctx.fillText('早间简报', 0, -IR * 0.24);
+      ctx.fillText(this.sceneText('title', '早间简报'), 0, -IR * 0.24);
       ctx.fillStyle = rgba(C, 0.55);
       ctx.font = fontBody(IR * 0.10);
-      ctx.fillText('天气 · 日程 · 资讯', 0, IR * 0.03);
+      ctx.fillText(this.sceneText('detail', '天气 · 日程 · 资讯'), 0, IR * 0.03);
       ctx.fillStyle = rgba(C, 0.36);
       ctx.font = fontMixed(IR * 0.085);
-      ctx.fillText('正在朗读  1 / 3', 0, IR * 0.29);
+      ctx.fillText(this.scenePayload.live_data ? `${this.scenePayload.playing?'正在朗读':'第'} ${this.sceneNumber('briefing_index',0)} / ${this.sceneNumber('briefing_count',0)}` : '正在朗读  1 / 3', 0, IR * 0.29);
     }
   }
 
@@ -2837,13 +2909,13 @@ export class EyeEngine {
     } else {
       ctx.fillStyle = rgba(C, 0.55);
       ctx.font = fontBody(IR * 0.09);
-      ctx.fillText('准备记住', 0, -IR * 0.31);
+      ctx.fillText(this.sceneText('detail', '准备记住'), 0, -IR * 0.31);
       ctx.fillStyle = rgba(C, 0.98);
       ctx.font = fontTitle(IR * 0.17);
-      ctx.fillText('你喜欢轻音乐', 0, -IR * 0.04);
+      ctx.fillText(this.sceneText('title', '你喜欢轻音乐'), 0, -IR * 0.04);
       ctx.fillStyle = rgba(C, 0.42);
       ctx.font = fontBody(IR * 0.085);
-      ctx.fillText('等待语音确认', 0, IR * 0.26);
+      ctx.fillText(this.sceneText('subtitle', '等待语音确认'), 0, IR * 0.26);
     }
   }
 
@@ -2859,13 +2931,13 @@ export class EyeEngine {
     } else {
       ctx.fillStyle = rgba(C, 0.98);
       ctx.font = fontEnglish(IR * 0.37);
-      ctx.fillText('2', 0, -IR * 0.18);
+      ctx.fillText(String(this.sceneNumber('device_count', Number('2'))), 0, -IR * 0.18);
       ctx.fillStyle = rgba(C, 0.58);
       ctx.font = fontTitle(IR * 0.11);
-      ctx.fillText('台设备在线', 0, IR * 0.08);
+      ctx.fillText(this.sceneText('subtitle', '台设备在线'), 0, IR * 0.08);
       ctx.fillStyle = rgba(C, 0.32);
       ctx.font = fontMixed(IR * 0.075);
-      ctx.fillText('手机 · CODEX · 局域网 MCP', 0, IR * 0.31);
+      ctx.fillText(this.sceneText('detail', '手机 · CODEX · 局域网 MCP'), 0, IR * 0.31);
     }
   }
 
@@ -2881,13 +2953,13 @@ export class EyeEngine {
     } else {
       ctx.fillStyle = rgba(C, 0.98);
       ctx.font = fontEnglish(IR * 0.22);
-      ctx.fillText('OPENVELA', 0, -IR * 0.24);
+      ctx.fillText(this.sceneText('title', 'OPENVELA'), 0, -IR * 0.24);
       ctx.fillStyle = rgba(C, 0.58);
       ctx.font = fontTitle(IR * 0.105);
-      ctx.fillText('本地大脑就绪', 0, IR * 0.01);
+      ctx.fillText(this.sceneText('subtitle', '本地大脑就绪'), 0, IR * 0.01);
       ctx.fillStyle = rgba(C, 0.31);
       ctx.font = fontMixed(IR * 0.08);
-      ctx.fillText('AMP · NPU 可用', 0, IR * 0.27);
+      ctx.fillText(this.sceneText('detail', 'AMP · NPU 可用'), 0, IR * 0.27);
     }
   }
 
@@ -2966,13 +3038,13 @@ export class EyeEngine {
     } else {
       ctx.fillStyle = rgba(C, 0.98);
       ctx.font = fontTitle(IR * 0.22);
-      ctx.fillText('专注陪伴', 0, -IR * 0.17);
+      ctx.fillText(this.sceneText('title', '专注陪伴'), 0, -IR * 0.17);
       ctx.fillStyle = rgba(C, 0.50);
       ctx.font = fontBody(IR * 0.09);
-      ctx.fillText('安静模式', 0, IR * 0.10);
+      ctx.fillText(this.sceneText('subtitle', '安静模式'), 0, IR * 0.10);
       ctx.fillStyle = rgba(C, 0.27);
       ctx.font = fontBody(IR * 0.075);
-      ctx.fillText('仅保留重要提醒', 0, IR * 0.32);
+      ctx.fillText(this.sceneText('detail', '仅保留重要提醒'), 0, IR * 0.32);
     }
   }
 
@@ -3034,13 +3106,13 @@ export class EyeEngine {
     } else {
       ctx.fillStyle = rgba(C, 0.98);
       ctx.font = fontMixed(IR * 0.27);
-      ctx.fillText('2.1 已启用', 0, -IR * 0.22);
+      ctx.fillText(this.sceneText('title', '2.1 已启用'), 0, -IR * 0.22);
       ctx.fillStyle = rgba(C, 0.70);
       ctx.font = fontMixed(IR * 0.33);
-      ctx.fillText('80 Hz', 0, IR * 0.08);
+      ctx.fillText(this.scenePayload.live_data ? `${this.sceneNumber('crossover_hz',0)} Hz` : '80 Hz', 0, IR * 0.08);
       ctx.fillStyle = rgba(C, 0.31);
       ctx.font = fontMixed(IR * 0.075);
-      ctx.fillText('低音在线 · LR 分频', 0, IR * 0.34);
+      ctx.fillText(this.sceneText('detail', '低音在线 · LR 分频'), 0, IR * 0.34);
     }
   }
 }

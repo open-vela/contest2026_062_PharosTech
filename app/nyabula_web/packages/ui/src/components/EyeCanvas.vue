@@ -11,6 +11,8 @@ const props = defineProps<{
   eyeState?: EyeState | null;
   clockOffsetMs?: number;
   toyMode?: boolean;
+  toyScope?: 'canvas' | 'viewport';
+  clickHold?: boolean;
   /** Canvas backdrop. Default 'transparent': only the two round eyes are
    *  painted, so they float over whatever the host renders behind them. */
   background?: string;
@@ -23,6 +25,7 @@ const emit = defineEmits<{
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 let engine: EyeEngine | null = null;
+let heldLook: { x: number; y: number } | null = null;
 let lastLookSent = 0;
 let pendingLook: { x: number; y: number } | null = null;
 let lookTimer: ReturnType<typeof setTimeout> | null = null;
@@ -38,7 +41,13 @@ onMounted(() => {
   engine = new EyeEngine(cv, {
     background: props.background ?? 'transparent',
     toyMode: props.toyMode,
+    toyScope: props.toyScope,
+    clickHold: props.clickHold,
     onInteraction: (x, y, phase) => {
+      if (props.clickHold) {
+        if (phase === 'down') { heldLook = { x, y }; emit('look', heldLook); }
+        return;
+      }
       if (phase === 'up') {
         cancelPendingLook();
         emit('look', { release: true });
@@ -75,7 +84,10 @@ watch(() => props.toyMode, (value) => {
 watch(
   () => props.eyeState,
   (s) => {
-    if (s && engine) engine.applyRemoteState(s, props.clockOffsetMs ?? 0);
+    if (s && engine) {
+      engine.applyRemoteState(s, props.clockOffsetMs ?? 0);
+      if (props.clickHold && heldLook) engine.lookAt(heldLook.x, heldLook.y, Infinity);
+    }
   },
 );
 

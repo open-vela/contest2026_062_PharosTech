@@ -84,6 +84,7 @@ struct ny_product_audio_levels_s
  ****************************************************************************/
 
 unsigned int ny_product_audio_output_level(void);
+bool ny_product_audio_headphones_only(void);
 
 int ny_product_audio_levels(struct ny_product_audio_levels_s *levels);
 
@@ -104,5 +105,10 @@ int ny_product_audio_levels(struct ny_product_audio_levels_s *levels);
 
 int ny_product_audio_set_levels(int volume, int muted, int gain);
 
+#else
+static inline bool ny_product_audio_headphones_only(void)
+{
+  return false;
+}
 #endif /* CONFIG_NYABULA_CORE_AUDIO */
 #endif /* __NYABULA_CORE_NY_PRODUCT_AUDIO_H */

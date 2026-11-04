@@ -25,6 +25,12 @@
 
 #include "ny_web.h"
 #include "ny_product.h"
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
+#include "ny_product_intercom.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+#include "ny_product_camera.h"
+#endif
 #include "ny_ui.h"
 #include "ny_web_auth.h"
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
@@ -121,6 +127,12 @@ struct nyabula_eye_ws_session_s
   enum ny_product_role_e member_role;
   uint32_t member_generation;
 #endif
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+  struct ny_camera_client_s camera;
+#endif
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
+  struct ny_intercom_client_s intercom;
+#endif
   bool fragmented;
   size_t used;
   uint64_t fragment_deadline;
@@ -140,6 +152,12 @@ static int nyabula_eye_ws_error(int fd, struct nyabula_eye_ws_session_s *s,
                                 const char *code);
 static bool nyabula_eye_ws_auth(const char *actual, const char *expected);
 static int ny_web_ui_changed(int fd, struct nyabula_eye_ws_session_s *s);
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
+static int ny_web_intercom_tick(int fd, struct nyabula_eye_ws_session_s *s);
+#endif
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+static int ny_web_camera_tick(int fd, struct nyabula_eye_ws_session_s *s);
+#endif
 static bool ny_web_session_current(struct nyabula_eye_ws_session_s *s);
 static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
                                   const char *token);
@@ -381,6 +399,12 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
           goto out;
         }
 
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+      ny_product_camera_close(&s->camera);
+#endif
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
+      ny_product_intercom_close(&s->intercom);
+#endif
       s->pair_auth = pair;
 
       bool eye_ready = nyabula_eye_service_snapshot(&snapshot) == 0;
@@ -426,6 +450,34 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
       cJSON_AddItemToArray(capabilities,
                            cJSON_CreateString("core.product-v1"));
       cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.device-v1"));
+#ifdef CONFIG_NYABULA_CORE_EYE
+      cJSON_AddItemToArray(capabilities,
+                           cJSON_CreateString("core.scene-data-v1"));
+#endif
+#ifdef CONFIG_NYABULA_CORE_SPEAKER
+      cJSON_AddItemToArray(capabilities,cJSON_CreateString("core.speaker-v1"));
+#endif
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
+      cJSON_AddItemToArray(capabilities,
+                           cJSON_CreateString("core.intercom-v1"));
+#endif
+      cJSON_AddItemToArray(capabilities,
+                           cJSON_CreateString("core.privacy-v1"));
+#ifdef CONFIG_NYABULA_CORE_VISION
+      cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.vision-v1"));
+      cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.identity-v1"));
+#ifdef CONFIG_NYABULA_CORE_OBJECT_TRACKING
+      cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.tracker-v1"));
+#endif
+#endif
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+      cJSON_AddItemToArray(capabilities,
+                           cJSON_CreateString("core.camera-v1"));
+#endif
+#ifdef CONFIG_NYABULA_CORE_LIGHTING
+      cJSON_AddItemToArray(capabilities,
+                           cJSON_CreateString("core.lighting-v1"));
+#endif
       cJSON_AddItemToArray(capabilities, cJSON_CreateString("core.alarms-v1"));
       cJSON_AddItemToArray(capabilities,
                            cJSON_CreateString("core.notifications-v1"));
@@ -553,19 +605,65 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
     }
 
 #ifdef CONFIG_NYABULA_CORE_PRODUCT
-  /* The product layer also answers eyes.expression, for the agent: it shows
-   * the feeling under the agent's name on a five second lease, which is
-   * right for an emotion and wrong for a choice the owner made on the
-   * panel.  That topic is this transport's own, so it is not offered to the
-   * product layer at all.
+  /* Internal expression/gaze calls use the agent's source and priority.
+   * Direct panel controls retain the panel source, priority and lifetime,
+   * so these two topics bypass the product handler here.
    */
 
   const struct ny_product_caller_s caller = { s->member_id[0] ? s->member_id
                                                               : "owner",
                                               s->member_role,
                                               s->relay_send == NULL };
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
   result = NULL;
-  ret = strcmp(topic, "eyes.expression") == 0
+  ret = ny_product_intercom_request(&caller, &s->intercom, topic, data,
+                                     &result);
+  if (ret != -ENOSYS)
+    {
+      if (ret < 0)
+        {
+          cJSON_Delete(result);
+          ret = nyabula_eye_ws_error(fd, s, id, topic, ny_web_error_name(ret));
+        }
+      else
+        ret = nyabula_eye_ws_emit(fd, s, "res", id, topic, result);
+      goto out;
+    }
+#endif
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+  if (!strcmp(topic, "camera.preview.start") ||
+      !strcmp(topic, "camera.preview.stop"))
+    {
+      if (caller.role != NY_PRODUCT_OWNER)
+        ret = -EACCES;
+      else if (!strcmp(topic, "camera.preview.start"))
+        ret = ny_product_camera_subscribe(&s->camera);
+      else
+        {
+          ny_product_camera_close(&s->camera);
+          ret = 0;
+        }
+      if (ret < 0)
+        ret = nyabula_eye_ws_error(fd, s, id, topic, ny_web_error_name(ret));
+      else
+        {
+          result = cJSON_CreateObject();
+          if (result == NULL ||
+              cJSON_AddBoolToObject(result, "subscribed", s->camera.active) == NULL)
+            {
+              cJSON_Delete(result);
+              ny_product_camera_close(&s->camera);
+              ret = -ENOMEM;
+            }
+          else
+            ret = nyabula_eye_ws_emit(fd, s, "res", id, topic, result);
+        }
+      goto out;
+    }
+#endif
+  result = NULL;
+  ret = (strcmp(topic, "eyes.expression") == 0 ||
+         strcmp(topic, "eyes.gaze") == 0)
             ? -ENOSYS
             : ny_product_request(&caller, topic, data, &result);
   if (ret != -ENOSYS)
@@ -668,8 +766,14 @@ static int nyabula_eye_ws_request(int fd, struct nyabula_eye_ws_session_s *s,
       goto out;
     }
 
-  ret = nyabula_eye_service_submit(NYABULA_WS_SOURCE, s->output,
-                                   strlen(s->output));
+#ifdef CONFIG_NYABULA_CORE_PRODUCT
+  if (!strncmp(topic, "eyes.scene.", 11))
+    ret = ny_product_scene_manual_submit(NYABULA_WS_SOURCE, s->output,
+                                         strlen(s->output));
+  else
+#endif
+    ret = nyabula_eye_service_submit(NYABULA_WS_SOURCE, s->output,
+                                     strlen(s->output));
   cJSON_Delete(command);
   if (ret < 0)
     {
@@ -738,6 +842,16 @@ static int nyabula_eye_ws_client(int fd, const char *token, const char *origin)
         {
           struct nyabula_core_snapshot_s snapshot;
           next_state = now + NYABULA_WS_STATE_MS;
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+          ret = ny_web_camera_tick(fd, s);
+          if (ret < 0)
+            break;
+#endif
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
+          ret = ny_web_intercom_tick(fd, s);
+          if (ret < 0)
+            break;
+#endif
           ret = ny_web_ui_changed(fd, s);
           if (ret < 0)
             {
@@ -871,6 +985,68 @@ static int nyabula_eye_ws_client(int fd, const char *token, const char *origin)
   return ret;
 }
 
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+/****************************************************************************
+ * Name: ny_web_camera_tick
+ ****************************************************************************/
+
+static int ny_web_camera_tick(int fd, struct nyabula_eye_ws_session_s *s)
+{
+  /* Keep each event below the existing LAN/relay message limit. A bounded
+   * burst catches up on small frames without starving control traffic.
+   * Both transports reach here only after their current-auth check.
+   */
+
+  for (int i = 0; i < 4 && s->camera.active; i++)
+    {
+      cJSON *chunk = NULL;
+      int ret = ny_product_camera_next(&s->camera, &chunk);
+      if (ret == -EAGAIN)
+        return 0;
+      if (ret < 0)
+        {
+          ny_product_camera_close(&s->camera);
+          chunk = cJSON_CreateObject();
+          if (chunk == NULL ||
+              cJSON_AddNumberToObject(chunk, "error", ret) == NULL)
+            {
+              cJSON_Delete(chunk);
+              return -ENOMEM;
+            }
+          return nyabula_eye_ws_emit(fd, s, "event", NULL, "camera.error", chunk);
+        }
+      ret = nyabula_eye_ws_emit(fd, s, "event", NULL, "camera.segment", chunk);
+      if (ret < 0)
+        return ret;
+    }
+  return 0;
+}
+#endif
+
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
+/****************************************************************************
+ * Name: ny_web_intercom_tick
+ ****************************************************************************/
+
+static int ny_web_intercom_tick(int fd, struct nyabula_eye_ws_session_s *s)
+{
+  for (int i = 0; i < 3 && s->intercom.id != 0; i++)
+    {
+      cJSON *data = NULL;
+      const char *topic = NULL;
+      int ret = ny_product_intercom_next(&s->intercom, &topic, &data);
+      if (ret == -EAGAIN)
+        return 0;
+      if (ret < 0)
+        return ret;
+      ret = nyabula_eye_ws_emit(fd, s, "event", NULL, topic, data);
+      if (ret < 0)
+        return ret;
+    }
+  return 0;
+}
+#endif
+
 /****************************************************************************
  * Name: ny_web_ui_changed
  ****************************************************************************/
@@ -937,6 +1113,12 @@ void ny_web_relay_close(void *session)
       return;
     }
 
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+  ny_product_camera_close(&s->camera);
+#endif
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
+  ny_product_intercom_close(&s->intercom);
+#endif
   if (s->authenticated)
     {
       bool last;
@@ -1038,6 +1220,16 @@ int ny_web_relay_tick(void *session)
     }
 
   s->next_state = now + NYABULA_WS_STATE_MS;
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+  ret = ny_web_camera_tick(-1, s);
+  if (ret < 0)
+    return ret;
+#endif
+#ifdef CONFIG_NYABULA_CORE_INTERCOM
+  ret = ny_web_intercom_tick(-1, s);
+  if (ret < 0)
+    return ret;
+#endif
   ret = ny_web_ui_changed(-1, s);
   if (ret < 0)
     {

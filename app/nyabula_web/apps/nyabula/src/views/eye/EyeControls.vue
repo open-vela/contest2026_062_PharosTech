@@ -13,6 +13,8 @@ const props = defineProps<{
   /** Which blocks to render (phone segments pass one at a time). */
   only?: 'modes' | 'scenes' | 'light';
   dense?: boolean;
+  /** A shell may place the live device feed after its controls. */
+  hideMirror?: boolean;
 }>();
 const { eye, modes, sceneGroups, onLight } = props.page;
 const styleItems = [
@@ -29,7 +31,7 @@ function pickStyle(v: string) {
 
 <template>
   <div class="controls" :class="{ dense }">
-    <EyeMirrorCard v-if="(!only || only === 'modes') && !eye.nativeQr" />
+    <EyeMirrorCard v-if="!hideMirror && (!only || only === 'modes') && !eye.nativeQr" />
     <MdCard v-if="!only || only === 'modes'" title="表情">
       <div class="mode-grid">
         <button
@@ -53,6 +55,8 @@ function pickStyle(v: string) {
         <SegmentedTabs :items="styleItems" :model-value="style" @update:model-value="pickStyle" />
         <MdButton variant="outlined" :disabled="!eye.activeScene" @click="eye.setScene(null)">退出场景</MdButton>
       </div>
+      <p v-if="eye.nativeSceneData" class="scene-note">由设备持续更新；待配置的项目会打开对应功能页。</p>
+      <p v-if="page.catalogError.value" class="scene-error" role="alert">{{ page.catalogError.value }}</p>
       <div v-for="g in sceneGroups" :key="g.group" class="scene-group">
         <p class="scene-group-title">{{ g.group }}</p>
         <div class="chips">
@@ -60,10 +64,11 @@ function pickStyle(v: string) {
             v-for="s in g.scenes"
             :key="s.id"
             :selected="eye.activeScene === s.id"
-            :disabled="!page.session.canControl"
-            @click="eye.toggleScene(s.id)"
+            :disabled="!page.session.canControl || page.sceneInfo(s.id).blocked"
+            :title="page.sceneInfo(s.id).hint"
+            @click="page.pickScene(s.id)"
           >
-            <UiIcon :name="s.icon" :size="15" /> {{ s.label }}
+            <UiIcon :name="s.icon" :size="15" /> {{ s.label }}<small v-if="page.sceneInfo(s.id).needsSetup">待配置</small>
           </MdChip>
         </div>
       </div>
@@ -108,6 +113,9 @@ function pickStyle(v: string) {
 .scene-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .scene-group { margin-top: 10px; }
 .scene-group-title { font-size: 12px; color: var(--md-on-surface-variant); margin: 0 0 6px; letter-spacing: 0.06em; }
+.scene-note { margin:8px 0;color:var(--md-on-surface-variant);font-size:13px; }
+.scene-error { color:var(--md-error);font-size:13px; }
+.chips small { margin-left:4px;font-size:11px;color:var(--md-on-surface-variant); }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chips :deep(.md-chip) { display: inline-flex; align-items: center; gap: 5px; }
 .light-row { display: flex; align-items: center; gap: 12px; }

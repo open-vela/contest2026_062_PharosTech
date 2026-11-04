@@ -16,6 +16,8 @@ import type { ScenePayload } from './eyeScenePayload';
 export interface EyeSceneOptions {
   /** Minimum spacing of payload updates (not below 1000). */
   intervalMs?: number;
+  /** Selected Core record, so the device keeps the same source after navigation. */
+  recordId?: () => string | undefined;
   /** Hide the scene when the builder stops returning a payload. */
   hideWhenEmpty?: boolean;
 }
@@ -49,12 +51,12 @@ export function useEyeScene(type: string, build: () => ScenePayload | null, opti
     const value = payload.value;
     if (!value) return Promise.resolve();
     // Already up and ours: a changed payload travels as an update, not a restart.
-    if (held.value && shown.value) { schedule(); return Promise.resolve(); }
+    if (held.value && shown.value && !eye.nativeSceneData) { schedule(); return Promise.resolve(); }
     cancel();
     hadPayload = true;
     sent = JSON.stringify(value);
     lastPush = performance.now();
-    return eye.setScene(type, eye.sceneStyle, value);
+    return eye.setScene(type, eye.sceneStyle, value, undefined, options.recordId?.());
   }
   function hide(): Promise<void> {
     cancel();
@@ -67,7 +69,7 @@ export function useEyeScene(type: string, build: () => ScenePayload | null, opti
 
   function push(): void {
     timer = undefined;
-    if (!held.value || !session.canControl) return;
+    if (!held.value || !session.canControl || (eye.nativeSceneData && type !== 'caption')) return;
     const value = payload.value;
     if (!value) {
       if (options.hideWhenEmpty && hadPayload) void hide();
@@ -82,6 +84,7 @@ export function useEyeScene(type: string, build: () => ScenePayload | null, opti
   }
   /** Send a changed payload now if the last one is old enough, else when it is. */
   function schedule(): void {
+    if (eye.nativeSceneData && type !== 'caption') { cancel(); return; }
     if (!held.value) { cancel(); sent = ''; return; }
     if (timer) return;
     const value = payload.value;
@@ -92,7 +95,10 @@ export function useEyeScene(type: string, build: () => ScenePayload | null, opti
     else timer = setTimeout(push, wait);
   }
   watch([held, payload], schedule, { immediate: true });
+  if (options.recordId) watch(options.recordId, (id, previous) => {
+    if (eye.nativeSceneData && held.value && previous && id && id !== previous) void show();
+  });
   onBeforeUnmount(cancel);
 
-  return { shown, held, canShow, payload, show, hide, toggle };
+  return { shown, held, canShow, payload, show, hide, toggle, deviceOwned: computed(() => eye.nativeSceneData) };
 }

@@ -214,20 +214,21 @@ int ny_access_auth(const char *token, char *id, size_t size,
 bool ny_access_allowed(enum ny_product_role_e role, const char *topic)
 {
   static const char *const read_topics[] = {
-    "sys.ping",    "sys.info",    "eyes.state.get", "plugin.list",
-    "plugin.icon", "ui.tree",     "device.status",  "network.status",
-    "weather.get", "light.status"
+    "sys.ping",    "sys.info",     "eyes.state.get", "plugin.list",
+    "plugin.icon", "ui.tree",      "device.status",  "network.status",
+    "weather.get", "light.status", "lighting.status"
   };
   static const char *const family_topics[] = {
-    "ui.event",          "eyes.expression", "eyes.gaze",     "eyes.blink",
-    "eyes.auto_blink",   "eyes.ambient",    "eyes.iris",     "eyes.scene.show",
-    "eyes.scene.update", "eyes.scene.hide", "alarm.list",    "alarm.create",
-    "alarm.update",      "alarm.delete",    "alarm.snooze",  "alarm.dismiss",
-    "timer.list",        "timer.create",    "timer.pause",   "timer.resume",
-    "timer.delete",      "timer.lap",       "music.library", "music.status",
-    "music.play",        "music.pause",     "music.resume",  "music.stop",
-    "music.volume",      "dsp.status",      "dsp.config",    "dsp.play",
-    "dsp.stop",          "bt.status"
+    "lighting.set",  "lighting.preset", "scene.show",        "scene.hide",
+    "scene.list",    "scene.status",    "ui.event",          "eyes.expression",
+    "eyes.gaze",     "eyes.blink",      "eyes.auto_blink",   "eyes.ambient",
+    "eyes.iris",     "eyes.scene.show", "eyes.scene.update", "eyes.scene.hide",
+    "alarm.list",    "alarm.create",    "alarm.update",      "alarm.delete",
+    "alarm.snooze",  "alarm.dismiss",   "timer.list",        "timer.create",
+    "timer.pause",   "timer.resume",    "timer.delete",      "timer.lap",
+    "music.library", "music.status",    "music.play",        "music.pause",
+    "music.resume",  "music.stop",      "music.volume",      "dsp.status",
+    "dsp.config",    "dsp.play",        "dsp.stop",          "bt.status"
   };
   if (role == NY_PRODUCT_OWNER)
     return true;

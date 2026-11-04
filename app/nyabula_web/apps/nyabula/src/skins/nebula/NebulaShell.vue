@@ -95,11 +95,11 @@ const settingsActive = computed(() => route.name === 'settings');
 
     <header class="top">
       <div class="cluster left">
-        <Transition name="nb-pop">
-          <button v-if="shell.depth.value > 0" class="round nb-glass" title="返回" @click="shell.back()">
+        <div class="back-slot" :class="{ visible: shell.depth.value > 0 }" :inert="shell.depth.value === 0 || undefined">
+          <button :tabindex="shell.depth.value > 0 ? 0 : -1" :aria-hidden="shell.depth.value === 0" class="round nb-glass" title="返回" @click="shell.back()">
             <UiIcon name="arrow_back" :size="20" />
           </button>
-        </Transition>
+        </div>
         <NbDevicePill v-if="!phone || shell.depth.value === 0" :compact="phone" />
         <Transition name="nb-title" mode="out-in">
           <h1 v-if="!phone || shell.depth.value > 0" :key="shell.title.value" class="title nb-title">{{ shell.title.value }}</h1>
@@ -186,6 +186,10 @@ const settingsActive = computed(() => route.name === 'settings');
 .phone .top { padding: calc(10px + var(--safe-t)) 12px 0; }
 .cluster { display: flex; align-items: center; gap: 10px; min-width: 0; pointer-events: auto; }
 .cluster.left { flex: 1; }
+.back-slot { width: 0; flex: none; margin-right: -10px; opacity: 0; visibility: hidden; transform: translateX(-10px) scale(.9); transition: width .3s var(--nb-ease), margin-right .3s var(--nb-ease), opacity .2s ease, transform .3s var(--nb-ease), visibility .3s; }
+.back-slot.visible { width: 44px; margin-right: 0; opacity: 1; visibility: visible; transform: none; }
+.phone .back-slot.visible { width: 42px; }
+@media (prefers-reduced-motion: reduce) { .back-slot { transition: none; } }
 .title { margin: 0 0 0 6px; font-size: 19px; color: var(--nb-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .phone .title { margin: 0; font-size: 18px; }
 .round {

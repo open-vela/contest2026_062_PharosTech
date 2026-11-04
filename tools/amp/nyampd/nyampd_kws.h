@@ -71,6 +71,9 @@ struct KwsModel
   float score = 0.0f;
   std::uint16_t max_active_paths = 0;
   std::uint16_t num_trailing_blanks = 0;
+  std::string phrase;
+  std::string g2p_directory;
+  std::string extra_keywords;
 };
 
 struct KwsHit
@@ -103,6 +106,11 @@ public:
   using Sink = std::function<bool(const KwsHit &)>;
 
   virtual ~KwsBackend() = default;
+  virtual models::Status Prepare(KwsModel *model)
+  {
+    return model->phrase.empty() ? models::Status::kOk
+                                 : models::Status::kUnsupported;
+  }
   virtual models::Status Load(const KwsModel &model) = 0;
   virtual void Unload() = 0;
   virtual models::Status Accept(const float *samples, std::size_t count,
@@ -156,7 +164,10 @@ public:
    * keywords name is one path component inside it.
    */
   models::Status BeginLoad(const nyamp_kws_load_s &load,
-                           const nyamp_header_s &request, bool *deferred);
+                           const nyamp_header_s &request, bool *deferred,
+                           bool text = false);
+  models::Status PrepareText(const nyamp_kws_load_s &load,
+                             const nyamp_header_s &request, bool *deferred);
   models::Status Unload();
 
   /* Wire statuses. */
@@ -173,6 +184,7 @@ public:
                     std::size_t *size);
 
   std::shared_ptr<CaptureRing> Stream() override;
+  std::shared_ptr<CaptureRing> StreamFor(std::uint64_t request_id) override;
 
   bool Poll(Frame *frame);
 
@@ -188,6 +200,7 @@ private:
     std::shared_ptr<CaptureRing> ring;
   };
 
+  models::Status PrepareModel(KwsModel *model, bool logical);
   void Worker(std::uint64_t request_id, std::shared_ptr<CaptureRing> ring);
   bool StopStreamLocked();
 
@@ -199,6 +212,7 @@ private:
 
   FrameQueue queue_;
   ModelLoader loader_;
+  ModelProvisioner *provisioner_ = nullptr;
 
   /* Held by the worker for the life of a stream; see AsrService. */
   std::mutex backend_mutex_;

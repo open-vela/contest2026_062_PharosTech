@@ -419,3 +419,83 @@ it('includes an in-progress blink in the exact handoff pose', () => {
  expect(render.mock.calls[0][2]).toEqual([.3, 0]);
  render.mockRestore(); e.destroy();
 });
+
+it('discards hidden blinks during boot handoff and resumes without changing remote settings',()=>{
+ const e=new EyeEngine(stubCanvas());
+ e.blink();(e as any).presentationBlink=.5;
+ e.holdPresentationBlink(true);
+ expect(e.capturePresentation().blink).toEqual([0,0]);
+ e.applyRemoteState({autoBlink:false,blinkNonce:1} as EyeState);
+ e.applyRemoteState({autoBlink:false,blinkNonce:2,blinkEyes:1} as EyeState);
+ e.blink();e.step(.1);
+ expect((e as any).blinkPhase).toBe(-1);
+ e.holdPresentationBlink(false);e.step(.1);
+ expect((e as any).autoBlink).toBe(false);expect((e as any).blinkPhase).toBe(-1);
+ e.blink(1);expect((e as any).blinkPhase).toBe(0);
+ e.holdPresentationBlink(true);e.applyRemoteState({autoBlink:true} as EyeState);
+ for(let i=0;i<600;i++)e.step(.016);
+ expect((e as any).blinkPhase).toBe(-1);
+ e.holdPresentationBlink(false);e.step(.016);expect((e as any).blinkPhase).toBe(-1);
+ for(let i=0;i<600;i++)e.step(.016);
+ expect((e as any).autoBlink).toBe(true);
+ e.destroy();
+});
+
+it('tracks the whole viewport only in opt-in toy mode and releases listeners',()=>{
+ const windowTarget=Object.assign(new EventTarget(),{innerWidth:1000,innerHeight:600});
+ vi.stubGlobal('window',windowTarget);
+ const interaction=vi.fn();
+ const e=new EyeEngine(stubCanvas(),{toyScope:'viewport',toyMode:true,onInteraction:interaction});
+ const move=(x:number,y:number)=>windowTarget.dispatchEvent(Object.assign(new Event('pointermove'),{isPrimary:true,pointerType:'mouse',clientX:x,clientY:y,buttons:0}));
+ move(1000,600);expect(interaction).toHaveBeenLastCalledWith(1,1,'move');
+ move(0,0);expect(interaction).toHaveBeenLastCalledWith(-1,-1,'move');
+ move(500,300);expect(interaction).toHaveBeenLastCalledWith(0,0,'move');
+ windowTarget.dispatchEvent(new Event('blur'));expect(interaction).toHaveBeenLastCalledWith(0,0,'up');
+ e.setToyMode(false);const count=interaction.mock.calls.length;move(800,400);expect(interaction).toHaveBeenCalledTimes(count);
+ e.setToyMode(true);e.destroy();move(800,400);expect(interaction).toHaveBeenCalledTimes(count);
+ vi.unstubAllGlobals();
+});
+
+it('latches calibration clicks across hover, pointer release, leave and elapsed time', () => {
+  const canvas = Object.assign(new EventTarget(), {
+    getContext: () => null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 480 }),
+  });
+  const interaction = vi.fn();
+  const engine = new EyeEngine(canvas as unknown as HTMLCanvasElement, { clickHold: true, onInteraction: interaction });
+  const pointer = (type: string, x: number, y: number) => canvas.dispatchEvent(Object.assign(new Event(type), { isPrimary: true, button: 0, pointerId: 1, pointerType: 'mouse', clientX: x, clientY: y }));
+  pointer('pointermove', 600, 120); expect(interaction).not.toHaveBeenCalled();
+  pointer('pointerdown', 600, 120);
+  expect((engine as any).lookTarget.x).toBeCloseTo(.5);
+  expect((engine as any).lookTarget.y).toBeCloseTo(-.42);
+  pointer('pointermove', 10, 10); pointer('pointerup', 10, 10); pointer('pointerleave', 10, 10);
+  for (let i = 0; i < 600; i++) engine.step(.1);
+  expect(interaction).toHaveBeenCalledTimes(1);
+  expect((engine as any).lookTarget.x).toBeCloseTo(.5);
+  expect((engine as any).lookHold).toBe(Infinity);
+  pointer('pointerdown', 0, 0); expect((engine as any).lookTarget.x).toBe(-1);
+  engine.releaseLook(); expect((engine as any).lookTarget).toBeNull();
+  engine.destroy(); pointer('pointerdown', 600, 120); expect(interaction).toHaveBeenCalledTimes(2);
+});
+
+it('renders live audio levels and blank text without demonstration defaults',()=>{
+ const e=new EyeEngine(stubCanvas());const engine=e as any;
+ vi.spyOn(engine,'sceneGlow').mockReturnValue([100,200,100]);
+ vi.spyOn(engine,'drawSceneBackdrop').mockImplementation(()=>{});
+ vi.spyOn(engine,'drawMaterialIcon').mockImplementation(()=>{});
+ const dial=vi.spyOn(engine,'drawDial').mockImplementation(()=>{});
+ const ctx={globalAlpha:1,fillText:vi.fn()};
+ engine.scenePayload={live_data:true,percent:91};
+ engine.drawAudioScene(ctx,100,[100,200,100],-1,false);
+ expect(dial.mock.calls.at(-1)?.[3]).toBe(.91);
+ engine.drawAudioScene(ctx,100,[100,200,100],1,false);
+ expect(ctx.fillText.mock.calls.some((c:any[])=>c[0]==='91%')).toBe(true);
+ engine.scenePayload={live_data:true,percent:0};ctx.fillText.mockClear();
+ engine.drawAudioScene(ctx,100,[100,200,100],1,false);
+ expect(ctx.fillText.mock.calls.some((c:any[])=>c[0]==='0%')).toBe(true);
+ expect(ctx.fillText.mock.calls.some((c:any[])=>c[0]==='64%')).toBe(false);
+ expect(engine.sceneText('detail','fake')).toBe('');
+ expect(engine.sceneNumber('elapsed_ms',300000)).toBe(0);
+ engine.scenePayload={};expect(engine.sceneText('detail','demo')).toBe('demo');
+ e.destroy();
+});

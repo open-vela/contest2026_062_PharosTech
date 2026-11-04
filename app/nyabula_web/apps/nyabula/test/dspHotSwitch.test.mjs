@@ -24,7 +24,7 @@ test('rejected switch restores displayed mode and retains dirty state',async()=>
   assert.equal(f.error.value,'device busy');assert.equal(f.dirty.value,false);assert.equal(f.liveBusy.value,false);
 });
 test('playing does not disable the switch; an in-flight request does',async()=>{
-  const tag=source.match(/<MdSwitch v-model="draft\.bassEnabled"[^>]+>/)[0];
+  const tag=source.match(/<MdSwitch :model-value="draft\.bassEnabled[^"\n]*"[^>]+>/)[0];
   assert.doesNotMatch(tag,/status\.running/);assert.match(tag,/liveBusy/);assert.match(tag,/toggleBass/);
   const f=fixture();f.liveBusy.value=true;await f.run();assert.equal(f.requests.length,0);
 });

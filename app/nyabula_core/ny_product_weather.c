@@ -621,6 +621,24 @@ int ny_product_weather_request(const struct ny_product_caller_s *caller,
       bool public = !strcmp(provider, "open-meteo");
       const char *city = ny_weather_text(data, "city");
       const char *province = ny_weather_text(data, "province");
+      const cJSON *location_id =
+          cJSON_GetObjectItemCaseSensitive(data, "locationId");
+      if (location_id == NULL && public &&
+          !strcmp(city, ny_weather_text(g_weather_config, "city")) &&
+          !strcmp(province, ny_weather_text(g_weather_config, "province")) &&
+          !strcmp(provider, ny_weather_text(g_weather_config, "provider")))
+        location_id =
+            cJSON_GetObjectItemCaseSensitive(g_weather_config, "locationId");
+      if (location_id != NULL && !cJSON_IsNull(location_id) &&
+          (!public || !cJSON_IsNumber(location_id) ||
+           !isfinite(location_id->valuedouble) ||
+           location_id->valuedouble < 1 ||
+           location_id->valuedouble > UINT32_MAX ||
+           floor(location_id->valuedouble) != location_id->valuedouble))
+        {
+          ret = -EINVAL;
+          goto out;
+        }
       const cJSON *provided_key =
           cJSON_GetObjectItemCaseSensitive(data, "key");
       const char *key = provided_key
@@ -657,6 +675,9 @@ int ny_product_weather_request(const struct ny_product_caller_s *caller,
           cJSON_AddBoolToObject(
               candidate, "enabled",
               cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "enabled")));
+      if (location_id != NULL && cJSON_IsNumber(location_id))
+        ok = ok && cJSON_AddNumberToObject(candidate, "locationId",
+                                           location_id->valuedouble);
 #ifdef CONFIG_AI_AGENT_SIM_HTTP_FIXTURE
       const char *port = ny_weather_text(data, "fixture_port");
       if (port[0])

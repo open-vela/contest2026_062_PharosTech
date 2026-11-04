@@ -42,7 +42,7 @@ const UINTS: Record<string, number> = {
 };
 const FLOATS = ['temperature_c', 'feels_like_c', 'humidity_percent', 'wind_kph', 'visibility_km', 'distance_m',
   'heart_rate_bpm', 'crossover_hz', 'progress'];
-const BOOLS = ['active', 'playing', 'privacy_camera', 'privacy_microphone', 'signal_good'];
+const BOOLS = ['live_data', 'active', 'playing', 'privacy_camera', 'privacy_microphone', 'signal_good'];
 /** Text fields and their device buffer size minus the terminator (bytes of UTF-8). */
 const TEXTS: Record<string, number> = {
   title: 47, subtitle: 47, detail: 47, value: 23, previous_line: 47, current_line: 47, next_line: 47,
@@ -205,15 +205,18 @@ export function companionScene(c: { enabled: boolean; mode: string; quietNow: bo
 /* ---- system ------------------------------------------------------------ */
 
 export interface HardwareSummary {
+  peripherals?: {kind:string;available:boolean}[];
   audioDevices?: { available: boolean }[];
   storage?: { available: boolean }[];
   network?: { interfaces?: { up?: boolean; loopback?: boolean }[] };
 }
-export function hardwareCounts(s: HardwareSummary | null | undefined): { audio: number; storage: number; network: number; total: number } {
+export function hardwareCounts(s: HardwareSummary | null | undefined): { audio: number; storage: number; network: number; camera: number; lighting: number; total: number } {
   const audio = s?.audioDevices?.filter(d => d.available).length ?? 0;
   const storage = s?.storage?.filter(d => d.available).length ?? 0;
   const network = s?.network?.interfaces?.filter(i => i.up === true && !i.loopback).length ?? 0;
-  return { audio, storage, network, total: audio + storage + network };
+  const camera = s?.peripherals?.filter(d => d.kind === 'camera' && d.available).length ?? 0;
+  const lighting = s?.peripherals?.filter(d => d.kind === 'lighting' && d.available).length ?? 0;
+  return { audio, storage, network, camera, lighting, total: audio + storage + network + camera + lighting };
 }
 /** The big figure is drawn with a Latin-only face, and a count of 0 falls back
  *  to a demo "2", so the number is always sent as the (ASCII) title too. */
@@ -221,7 +224,7 @@ export function devicesScene(s: HardwareSummary | null | undefined): ScenePayloa
   const c = hardwareCounts(s);
   return {
     device_count: Math.min(255, c.total), title: String(c.total), subtitle: '个硬件在线',
-    detail: `音频 ${c.audio} · 存储 ${c.storage} · 网络 ${c.network}`,
+    detail: `音频 ${c.audio} · 存储 ${c.storage} · 网络 ${c.network}` + (c.camera || c.lighting ? ` · 摄影 ${c.camera} · 灯光 ${c.lighting}` : ''),
   };
 }
 

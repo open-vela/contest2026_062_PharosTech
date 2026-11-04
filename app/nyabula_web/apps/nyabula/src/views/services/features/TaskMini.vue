@@ -24,7 +24,7 @@ const current = computed(() => tasks.value.find((t) => t.state === 'running') ??
 const title = computed(() => current.value?.title ?? (core.available.value ? '暂无待办' : '未连接支持任务的 Core'));
 const sub = computed(() => (current.value?.state === 'running' ? `进度 ${Math.round(current.value.progress)}% · ` : '') + `完成 ${doneCount.value} / ${total.value}`);
 
-const scene = useEyeScene(props.type, () => (current.value ? taskScene({ title: current.value.title, progress: current.value.progress, state: current.value.state }) : null), { hideWhenEmpty: true });
+const scene = useEyeScene(props.type, () => (current.value ? taskScene({ title: current.value.title, progress: current.value.progress, state: current.value.state }) : null), { hideWhenEmpty: true, recordId: () => current.value?.id });
 </script>
 
 <template>

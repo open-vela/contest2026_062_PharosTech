@@ -20,6 +20,21 @@
  ****************************************************************************/
 
 #include "ny_product.h"
+#ifdef CONFIG_NYABULA_CORE_SPEAKER
+#include "ny_product_speaker.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_VISION
+#include "ny_product_vision.h"
+#include "ny_product_identity.h"
+#endif
+#include "ny_product_privacy.h"
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+#include "ny_product_camera.h"
+#include "ny_product_camera_gaze.h"
+#endif
+#ifdef CONFIG_NYABULA_CORE_LIGHTING
+#include "ny_product_lighting.h"
+#endif
 #ifdef CONFIG_NYABULA_CORE_DSP
 #include "ny_product_dsp.h"
 #endif
@@ -357,11 +372,46 @@ int ny_product_request(const struct ny_product_caller_s *caller,
   if (ret != -ENOSYS)
     return ret;
 #endif
+#ifdef CONFIG_NYABULA_CORE_VISION
+  ret = ny_product_identity_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+  ret = ny_product_vision_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+#ifdef CONFIG_NYABULA_CORE_SPEAKER
+  ret = ny_product_speaker_request(caller, topic, data, result);
+  if (ret != -ENOSYS) return ret;
+#endif
+  ret = ny_product_privacy_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+
   ret = ny_product_system(caller, topic, data, result);
   if (ret != -ENOSYS)
     {
       return ret;
     }
+
+#ifdef CONFIG_NYABULA_CORE_LIGHTING
+  ret = ny_product_lighting_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
+#ifdef CONFIG_NYABULA_CORE_CAMERA
+  ret = ny_product_camera_gaze_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+  ret = ny_product_camera_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
+#endif
+
+  ret = ny_product_scene_request(caller, topic, data, result);
+  if (ret != -ENOSYS)
+    return ret;
 
   ret = ny_product_eyes_request(caller, topic, data, result);
   if (ret != -ENOSYS)

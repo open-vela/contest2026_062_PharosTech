@@ -381,6 +381,7 @@ nyabula_eye_json_parse_payload(cJSON *object,
   NYABULA_PAYLOAD_NUMBER(progress);
 #undef NYABULA_PAYLOAD_NUMBER
 
+  payload->live_data = nyabula_eye_json_boolean(object, "live_data", false);
   payload->active = nyabula_eye_json_boolean(object, "active", false);
   payload->playing = nyabula_eye_json_boolean(object, "playing", false);
   payload->privacy_camera =

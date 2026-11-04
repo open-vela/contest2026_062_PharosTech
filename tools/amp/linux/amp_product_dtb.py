@@ -66,6 +66,33 @@ AMP_CLOCKS = (
 )
 
 
+# Capture and encode remain in openvela. These additions apply only when
+# the new camera profile is explicitly requested; old callers are unchanged.
+CAMERA_DOMAINS = (11, 15)  # RK3576_PD_VEPU0, RK3576_PD_VI
+CAMERA_CLOCKS = (
+    "PCLK_I2C4", "CLK_I2C4", "PCLK_MIPI_DCPHY",
+    "PCLK_VI_ROOT", "PCLK_CSI_HOST_0", "ICLK_CSIHOST0", "ICLK_CSIHOST01",
+    "DCLK_VICAP", "ACLK_VICAP", "HCLK_VICAP", "CLK_VICAP_I0CLK",
+    "HCLK_VEPU0_ROOT", "ACLK_VEPU0_ROOT", "HCLK_VEPU0", "ACLK_VEPU0", "CLK_VEPU0_CORE",
+)
+CAMERA_IRQS = (342, 350)  # GIC INTIDs, not DT SPI-relative numbers
+
+
+def camera_irqs(body):
+    match = re.search(r"amp-irqs = <([^>]*)>;", body)
+    if not match:
+        raise ValueError("base AMP interrupt ownership is missing")
+    cells = [int(value, 0) for value in match[1].split()]
+    if len(cells) % 6:
+        raise ValueError("amp-irqs must contain u64 irq/priority/affinity triples")
+    owned = {(cells[i] << 32) | cells[i + 1] for i in range(0, len(cells), 6)}
+    for irq in CAMERA_IRQS:
+        if irq not in owned:
+            cells.extend((0, irq, 0, 0x80, 0, 0))
+    value = "amp-irqs = <%s>;" % " ".join("0x%x" % cell for cell in cells)
+    return body[:match.start()] + value + body[match.end():]
+
+
 def node_span(text, header):
     """Return (start, index of the closing brace) of the node at header."""
     start = text.index(header)
@@ -103,11 +130,14 @@ def main():
     parser.add_argument("base")
     parser.add_argument("output")
     parser.add_argument("--cru-header", required=True)
+    parser.add_argument("--camera", action="store_true", help="hold native capture clocks, power and IRQs")
     args = parser.parse_args()
+    selected_clocks = AMP_CLOCKS + (CAMERA_CLOCKS if args.camera else ())
+    selected_domains = ALWAYS_ON_DOMAINS + (CAMERA_DOMAINS if args.camera else ())
 
     ids = dict(re.findall(r"#define\s+(\w+)\s+(\d+)",
                           Path(args.cru_header).read_text()))
-    missing = [name for name in AMP_CLOCKS if name not in ids]
+    missing = [name for name in selected_clocks if name not in ids]
     if missing:
         sys.exit("clock ids not found in %s: %s" % (args.cru_header, missing))
 
@@ -128,7 +158,7 @@ def main():
             sys.exit("node %s is not in the base tree" % header)
         text = set_status(text, header + " {", "disabled")
 
-    for domain in ALWAYS_ON_DOMAINS:
+    for domain in selected_domains:
         header = "power-domain@%x {" % domain
         if header not in text:
             header = "power-domain@%d {" % domain
@@ -143,12 +173,14 @@ def main():
     body = text[start:end]
     cru = re.search(r"clocks = <(0x[0-9a-f]+) ", body).group(1)
     power = re.search(r"power-domains = <(0x[0-9a-f]+) 0x05>", text).group(1)
-    clocks = " ".join("%s 0x%x" % (cru, int(ids[name])) for name in AMP_CLOCKS)
-    domains = " ".join("%s 0x%02x" % (power, d) for d in ALWAYS_ON_DOMAINS)
+    clocks = " ".join("%s 0x%x" % (cru, int(ids[name])) for name in selected_clocks)
+    domains = " ".join("%s 0x%02x" % (power, d) for d in selected_domains)
     body = re.sub(r"\n\s*power-domains = <[^>]*>;", "", body)
     body = re.sub(r"clocks = <[^>]*>;",
                   "clocks = <%s>;\n\t\tpower-domains = <%s>;" % (clocks, domains),
                   body, count=1)
+    if args.camera:
+        body = camera_irqs(body)
     text = text[:start] + body + text[end:]
 
     with tempfile.NamedTemporaryFile("w", suffix=".dts", delete=False) as handle:

@@ -15,6 +15,9 @@ import BareShell from './layouts/BareShell.vue';
 import { useDeviceAccessStore } from './stores/deviceAccess';
 import { useDeviceAccessGuard } from './composables/useDeviceAccessGuard';
 import NotificationCenter from './components/NotificationCenter.vue';
+import { useSessionStore } from './stores/session';
+import { useEyeStore } from './stores/eye';
+import { readIrisCache } from './lib/irisCache';
 
 const ff = useFormFactor();
 provide('formFactor', ff);
@@ -30,6 +33,12 @@ const shell = computed(() => bare.value ? BareShell : APP_SKINS[theme.skin].shel
 if (__NYA_DEVICE__) useDeviceAccessGuard();
 const dialog = useDialogStore();
 const loading = useLoadingStore();
+const session = useSessionStore();
+useEyeStore();
+watch(() => session.deviceKey, key => {
+  loading.bootIris = key ? readIrisCache(key) : null;
+}, { immediate: true, flush: 'sync' });
+
 /* Route curtain: the whole shell shrinks 10% behind it (Myself behaviour);
  * while any overlay is on screen, CSS animations underneath pause. */
 const shrunk = computed(() => loading.routeLoading);

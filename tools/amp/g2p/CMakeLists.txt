@@ -25,7 +25,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(NYAMP_G2P_TOOLS "Build the nyamp-g2p CLI and the unit test" ON)
 
-add_library(nyamp_g2p STATIC nyamp_g2p.cpp)
+add_library(nyamp_g2p STATIC nyamp_g2p.cpp nyamp_kws_phrase.cpp)
 target_include_directories(nyamp_g2p PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(nyamp_g2p PRIVATE -Wall -Wextra -Werror)
 
@@ -42,7 +42,11 @@ if(NYAMP_G2P_TOOLS)
   # (see README.md).  The test reads NYAMP_G2P_ASSETS / NYAMP_G2P_GOLDEN
   # from the environment and exits with 77 when the assets are missing, so
   # CTest shows "skipped" rather than a pass that checked nothing.
+  add_executable(nyamp_kws_phrase_test nyamp_kws_phrase_test.cpp)
+  target_link_libraries(nyamp_kws_phrase_test PRIVATE nyamp_g2p)
+  target_compile_options(nyamp_kws_phrase_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
   enable_testing()
+  add_test(NAME nyamp_kws_phrase_test COMMAND nyamp_kws_phrase_test)
   add_test(NAME nyamp_g2p_test COMMAND nyamp_g2p_test)
   set_tests_properties(nyamp_g2p_test PROPERTIES SKIP_RETURN_CODE 77)
 endif()

@@ -24,6 +24,21 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 AMP = {
+    # Product LED chain on header pin 24: 1 + 1 + 8 + 23 pixels.
+    'RK3576_SPI': 'y', 'WS2812_CHARDEV': 'y',
+    'KICKPI_K7_WS2812': 'y', 'WS2812_CHARDEV_MAX_PIXELS': '33',
+    'NYABULA_CORE_LIGHTING': 'y',
+    # Native camera capture/encoding; keep the AMP DMA carveout at 16 MiB.
+    'RK3576_MIPI_DCPHY': 'y', 'RK3576_MIPI_CSI': 'y',
+    'RK3576_VICAP': 'y', 'RK3576_VEPU': 'y', 'RK3576_VEPU_CODEC': 'y',
+    'RK3576_VEPU_SELFTEST': 'n', 'RK3576_VEPU_CODEC_SELFTEST': 'n',
+    'DRIVERS_VIDEO': 'y', 'VIDEO_STREAM': 'y', 'VIDEO_OV5647': 'y',
+    'KICKPI_K7_CAMERA': 'y', 'OV5647_I2C_ADDR': '0x36',
+    'OV5647_I2C_FREQUENCY': '100000', 'EXAMPLES_CAMENC': 'y',
+    'NYABULA_CORE_CAMERA': 'y', 'LIB_ZLIB': 'y',
+    'NYABULA_CORE_INTERCOM': 'y',
+    'NET_TCPBACKLOG': 'y', 'NET_SOLINGER': 'y',
+
     'SMP': 'y', 'SMP_NCPUS': '4', 'SMP_DEFAULT_CPUSET': '0xf',
     'PM_NDOMAINS': '5', 'ARM64_PSCI': 'y',
     'ARM64_GICV2_PREINITIALIZED': 'y', 'ARM64_GICV2_STATIC_SPI': 'y',

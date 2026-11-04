@@ -68,7 +68,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
-#include <pthread.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -141,6 +141,7 @@
 #define NY_MODELS_HASH_READ    65536
 #define NY_MODELS_STALL_MS     60000
 #define NY_MODELS_WORKER_STACK 16384
+#define NY_MODELS_WORKER_PRIORITY 100
 
 /* What is still read from a request that has already been refused, so that
  * the refusal arrives as a response and not as a connection reset: one
@@ -294,7 +295,7 @@ static void ny_models_walk(struct ny_models_walk_s *walk, size_t length,
 static cJSON *ny_models_list(void);
 static cJSON *ny_models_status(void);
 static int ny_models_remove(const cJSON *data, cJSON **result);
-static void *ny_models_verify_worker(void *argument);
+static int ny_models_verify_worker(int argc, char **argv);
 static int ny_models_verify(const cJSON *data, cJSON **result);
 
 /****************************************************************************
@@ -2280,9 +2281,11 @@ static int ny_models_remove(const cJSON *data, cJSON **result)
  *
  ****************************************************************************/
 
-static void *ny_models_verify_worker(void *argument)
+static int ny_models_verify_worker(int argc, char **argv)
 {
-  struct ny_models_verify_s *job = argument;
+  (void)argc;
+  (void)argv;
+  struct ny_models_verify_s *job = &g_models_verify;
   struct ny_models_paths_s *paths = malloc(sizeof(*paths));
   char actual[NY_MODELS_SHA256_HEX + 1];
   char expected[NY_MODELS_SHA256_HEX + 1];
@@ -2333,7 +2336,7 @@ static void *ny_models_verify_worker(void *argument)
   strlcpy(job->expected, recorded ? expected : "", sizeof(job->expected));
   nxmutex_unlock(&g_models_lock);
   ny_models_release();
-  return NULL;
+  return 0;
 }
 
 /****************************************************************************
@@ -2344,8 +2347,6 @@ static int ny_models_verify(const cJSON *data, cJSON **result)
 {
   const cJSON *path = cJSON_GetObjectItemCaseSensitive(data, "path");
   char file[NY_MODELS_FILE_MAX];
-  pthread_attr_t attributes;
-  pthread_t thread;
   uint64_t size;
   int ret;
 
@@ -2375,12 +2376,12 @@ static int ny_models_verify(const cJSON *data, cJSON **result)
 
   if (size > 0)
     {
-      pthread_attr_init(&attributes);
-      pthread_attr_setstacksize(&attributes, NY_MODELS_WORKER_STACK);
-      pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
-      ret = pthread_create(&thread, &attributes, ny_models_verify_worker,
-                           &g_models_verify);
-      pthread_attr_destroy(&attributes);
+      /* Verification may be requested by a short-lived NSH caller. Own the
+       * worker task group so that caller exit cannot abandon the claim.
+       */
+      ret = task_create("ny_model_verify", NY_MODELS_WORKER_PRIORITY,
+                         NY_MODELS_WORKER_STACK, ny_models_verify_worker, NULL);
+      ret = ret < 0 ? -errno : 0;
       if (ret != 0)
         {
           nxmutex_lock(&g_models_lock);

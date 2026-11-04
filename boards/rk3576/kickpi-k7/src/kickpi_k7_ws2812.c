@@ -25,6 +25,9 @@
  ****************************************************************************/
 
 #include <errno.h>
+#include <fcntl.h>
+#include <nuttx/fs/fs.h>
+#include <nuttx/kmalloc.h>
 #include <syslog.h>
 
 #include <nuttx/spi/spi.h>
@@ -79,6 +82,8 @@
 
 static FAR struct gpio_dev_s *g_ws2812_mosi;
 
+static int kickpi_k7_ws2812_clear(void);
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -105,6 +110,32 @@ static void kickpi_k7_ws2812_xfer(bool xfer)
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: kickpi_k7_ws2812_clear
+ *
+ * Description:
+ *   A CPU reset does not remove strip power. Clear the configured chain
+ *   before any application starts so a previous boot cannot leave it lit.
+ ****************************************************************************/
+
+static int kickpi_k7_ws2812_clear(void)
+{
+  const size_t size = CONFIG_WS2812_CHARDEV_MAX_PIXELS * sizeof(uint32_t);
+  uint32_t *pixels = kmm_zalloc(size);
+  struct file output;
+  if (pixels == NULL)
+    return -ENOMEM;
+  int ret = file_open(&output, KICKPI_K7_WS2812_DEVPATH, O_WRONLY);
+  if (ret == 0)
+    {
+      ssize_t written = file_write(&output, pixels, size);
+      ret = written < 0 ? (int)written : (size_t)written == size ? 0 : -EIO;
+      file_close(&output);
+    }
+  kmm_free(pixels);
+  return ret;
+}
 
 /****************************************************************************
  * Name: kickpi_k7_ws2812_initialize
@@ -164,7 +195,7 @@ int kickpi_k7_ws2812_initialize(void)
       return ret;
     }
 
-  return OK;
+  return kickpi_k7_ws2812_clear();
 }
 
 #endif /* CONFIG_KICKPI_K7_WS2812 */

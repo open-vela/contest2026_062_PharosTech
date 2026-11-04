@@ -8,6 +8,7 @@
  * the submit button clear of the on-screen keyboard. */
 import { nextTick, ref, watch } from 'vue';
 import { RouterView } from 'vue-router';
+import PanelUpdateBanner from '../components/PanelUpdateBanner.vue';
 import { useKeyboardInset } from '../composables/useKeyboardInset';
 
 const kb = useKeyboardInset();
@@ -29,6 +30,7 @@ watch(kb, async (now, before) => {
 
 <template>
   <div class="bare">
+    <PanelUpdateBanner />
     <main ref="main" class="bare-main" :style="{ paddingBottom: `${kb}px`, scrollPaddingBottom: `${kb + 12}px` }">
       <RouterView v-slot="{ Component }">
         <Transition name="page" mode="out-in">
@@ -40,6 +42,6 @@ watch(kb, async (now, before) => {
 </template>
 
 <style scoped>
-.bare { height: 100dvh; background: var(--md-surface); }
-.bare-main { height: 100%; overflow-y: auto; position: relative; }
+.bare { display: flex; flex-direction: column; height: 100dvh; background: var(--md-surface); }
+.bare-main { flex: 1; min-height: 0; overflow-y: auto; position: relative; }
 </style>

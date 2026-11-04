@@ -17,6 +17,8 @@ const kinds = computed(() => [
   { icon: 'volume_up', label: '音频', n: counts.value.audio },
   { icon: 'storage', label: '存储', n: counts.value.storage },
   { icon: 'wifi', label: '网络', n: counts.value.network },
+  { icon: 'camera', label: '摄像头', n: counts.value.camera },
+  { icon: 'light_mode', label: '灯光', n: counts.value.lighting },
 ]);
 </script>
 
@@ -37,9 +39,9 @@ const kinds = computed(() => [
 .dm-count { display: flex; align-items: baseline; gap: 4px; flex: none; }
 .dm-count b { font: 700 20px var(--font-body); color: var(--md-primary); font-variant-numeric: tabular-nums; }
 .dm-count span { font-size: 12px; color: var(--md-on-surface-variant); }
-.dm-icons { flex: 1; display: flex; gap: 2px; }
+.dm-icons { flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; }
 .dm-dev {
-  width: 40px; height: 40px; border: none; border-radius: 50%; display: grid; place-items: center; padding: 0;
+  flex: 1; width: 0; min-width: 22px; max-width: 32px; aspect-ratio: 1; border: none; border-radius: 50%; display: grid; place-items: center; padding: 0;
   background: transparent; color: var(--md-outline);
 }
 .dm-dev.on { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }

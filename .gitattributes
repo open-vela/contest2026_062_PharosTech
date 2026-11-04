@@ -6,3 +6,8 @@ boards/rk3576/kickpi-k7/nboot/*.dtb binary
 
 # Shell entry points must execute on Linux after Git export.
 *.sh text eol=lf
+
+# Extensionless Linux startup files are executed directly from initramfs.
+tools/amp/linux/init text eol=lf
+tools/amp/linux/inittab text eol=lf
+tools/amp/linux/mount-data text eol=lf

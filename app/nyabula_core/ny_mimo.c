@@ -67,6 +67,8 @@ static int ny_mimo_request(struct ny_mimo_settings_s *settings, cJSON *body,
                            char *response, size_t capacity,
                            vela_http_event_t event, void *context);
 static void ny_mimo_le32(unsigned char *output, uint32_t value);
+static int ny_mimo_vision_request(const char *url, const char *prompt,
+                                   char *output, size_t capacity);
 
 /****************************************************************************
  * Name: ny_mimo_host_supported
@@ -607,6 +609,8 @@ int ny_mimo_speak(const char *text, ny_mimo_pcm_t callback, void *context)
 
 int ny_mimo_vision_tool(const char *input, char *output, size_t capacity)
 {
+  if (input == NULL || output == NULL || capacity < 2)
+    return -EINVAL;
   cJSON *args = cJSON_Parse(input);
   const char *url = ny_mimo_string(args, "url");
   const char *prompt = ny_mimo_string(args, "prompt");
@@ -618,6 +622,18 @@ int ny_mimo_vision_tool(const char *input, char *output, size_t capacity)
                "Provide a public HTTPS image URL and prompt.");
       return -EINVAL;
     }
+  int ret = ny_mimo_vision_request(url, prompt, output, capacity);
+  cJSON_Delete(args);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: ny_mimo_vision_request
+ ****************************************************************************/
+
+static int ny_mimo_vision_request(const char *url, const char *prompt,
+                                   char *output, size_t capacity)
+{
   struct ny_mimo_settings_s settings;
   int ret = ny_mimo_load(&settings);
   cJSON *body = cJSON_CreateObject();
@@ -657,7 +673,6 @@ int ny_mimo_vision_tool(const char *input, char *output, size_t capacity)
       cJSON_Delete(message);
       valid = false;
     }
-  cJSON_Delete(args);
   char *response = valid ? malloc(128 * 1024) : NULL;
   ret = !response ? -ENOMEM
                   : ny_mimo_request(&settings, body, response, 128 * 1024,
@@ -679,5 +694,33 @@ int ny_mimo_vision_tool(const char *input, char *output, size_t capacity)
   free(response);
   cJSON_Delete(body);
   memset(&settings, 0, sizeof(settings));
+  return ret;
+}
+
+/****************************************************************************
+ * Name: ny_mimo_vision_png
+ ****************************************************************************/
+
+int ny_mimo_vision_png(const uint8_t *png, size_t length, const char *prompt,
+                        char *output, size_t capacity)
+{
+  static const char prefix[] = "data:image/png;base64,";
+  if (png == NULL || length < 8 || length > 256 * 1024 ||
+      memcmp(png, "\x89PNG\r\n\x1a\n", 8) || prompt == NULL || !prompt[0] ||
+      strlen(prompt) > 1024 || output == NULL || capacity < 2)
+    return -EINVAL;
+  size_t room = (length + 2) / 3 * 4 + 1;
+  char *url = malloc(sizeof(prefix) - 1 + room);
+  if (url == NULL)
+    return -ENOMEM;
+  memcpy(url, prefix, sizeof(prefix) - 1);
+  size_t written;
+  int ret = mbedtls_base64_encode((unsigned char *)url + sizeof(prefix) - 1,
+                                  room, &written, png, length);
+  if (ret == 0)
+    ret = ny_mimo_vision_request(url, prompt, output, capacity);
+  else
+    ret = -EIO;
+  free(url);
   return ret;
 }

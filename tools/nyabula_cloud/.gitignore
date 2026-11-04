@@ -1,0 +1,10 @@
+*.db
+*.db-*
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/data/
+/webroot/
+/dist/

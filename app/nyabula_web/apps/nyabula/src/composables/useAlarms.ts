@@ -26,7 +26,7 @@ export function useAlarms() {
   const scene = useEyeScene('alarm', () => {
     const a = ringing.value[0] ?? nextAlarm.value;
     return a ? alarmScene({ time: a.time, label: a.label, ringing: a.status === 'ringing' }) : null;
-  }, { hideWhenEmpty: true });
+  }, { hideWhenEmpty: true, recordId: () => (ringing.value[0] ?? nextAlarm.value)?.id });
 
   /* A ring puts the alarm on the eyes by itself; when it ends, only a scene
    * this watcher put there is taken down again. */

@@ -37,6 +37,10 @@
  */
 
 #include "ny_agent_local_intent.h"
+#ifdef __NuttX__
+#include <nuttx/config.h>
+#endif
+#include "ny_lighting_effects.h"
 #include "ny_utf8.h"
 #include <errno.h>
 #include <inttypes.h>
@@ -348,6 +352,11 @@ static bool ny_intent_task(const struct ny_intent_view_s *view,
                            struct ny_agent_local_intent_s *intent);
 static bool ny_intent_lists(const char *text,
                             struct ny_agent_local_intent_s *intent);
+#if !defined(__NuttX__) || defined(CONFIG_NYABULA_CORE_OBJECT_TRACKING)
+static bool ny_intent_tracking(const char *text, struct ny_agent_local_intent_s *intent);
+#endif
+static bool ny_intent_lighting(const char *text,
+                               struct ny_agent_local_intent_s *intent);
 static bool ny_intent_volume(const char *text,
                              struct ny_agent_local_intent_s *intent);
 static bool ny_intent_schedule(const struct ny_intent_view_s *view,
@@ -1731,6 +1740,205 @@ static void ny_intent_reset(struct ny_agent_local_intent_s *intent,
 }
 
 /****************************************************************************
+ * Name: ny_intent_lighting
+ * Description: Explicit, reversible light commands. Discussion and negation
+ *   do not actuate a lamp; arbitrary color names remain a model request.
+ ****************************************************************************/
+static bool ny_intent_lighting(const char *text,
+                               struct ny_agent_local_intent_s *intent)
+{
+  static const char *const nouns[] = { "灯",    "左耳",     "右耳",
+                                       "耳朵",  "胸口",     "底座",
+                                       "light", "left ear", "right ear",
+                                       "chest", "base ring" };
+  static const char *const actions[] = {
+    "打开",     "开启", "点亮",    "开灯",     "关灯",   "关闭",
+    "关掉",     "熄灭", "关了",    "灭掉",     "亮起来", "跟着",
+    "切换",     "调",   "设",      "变",       "换",     "改",
+    "同步",     "跟随", "互补",    "亮一点",   "暗一点", "turn on",
+    "turn off", "set ", "change ", "brighter", "dimmer"
+  };
+  static const char *const negatives[] = { "不要",  "别",     "不想",
+                                           "不能",  "如果",   "假如",
+                                           "don't", "do not", "what if" };
+  static const char *const deferred[] = {
+    "提醒",     "记得",   "到时候", "分钟后",   "小时后",  "秒后",
+    "之后",     "以后",   "明天",   "今晚",     "一会",    "稍后",
+    "remember", "remind", "later",  "tomorrow", "tonight", "when "
+  };
+  static const char *const off_words[] = { "关灯", "关闭", "关掉",    "熄灭",
+                                           "关了", "灭掉", "turn off" };
+  static const char *const on_words[] = { "亮起来", "开灯", "打开",
+                                          "开启",   "点亮", "turn on" };
+  if (!NY_INTENT_ANY(text, nouns) || !NY_INTENT_ANY(text, actions) ||
+      NY_INTENT_ANY(text, negatives) || NY_INTENT_ANY(text, deferred))
+    return false;
+  bool left = strstr(text, "左耳") || strstr(text, "left ear");
+  bool right = strstr(text, "右耳") || strstr(text, "right ear");
+  const char *group =
+      strstr(text, "双耳") || strstr(text, "左右耳") || (left && right)
+          ? "ears"
+      : left                                          ? "left_ear"
+      : right                                         ? "right_ear"
+      : strstr(text, "耳朵") || strstr(text, "耳灯")  ? "ears"
+      : strstr(text, "胸口") || strstr(text, "chest") ? "chest"
+      : strstr(text, "底座") || strstr(text, "光环") ||
+              strstr(text, "base ring")
+          ? "base"
+          : "all";
+  bool off = NY_INTENT_ANY(text, off_words),
+       on = NY_INTENT_ANY(text, on_words);
+  const char *preset = NULL, *effect = NULL, *mode = NULL, *color = NULL;
+  int brightness = -1, delta = 0;
+  if (!off)
+    {
+      if (!strcmp(group, "all"))
+        preset = strstr(text, "静谧") || strstr(text, "氛围") ||
+                         strstr(text, "calm")
+                     ? "calm"
+                 : strstr(text, "极光") || strstr(text, "aurora") ? "aurora"
+                 : strstr(text, "专注") || strstr(text, "focus")  ? "focus"
+                 : strstr(text, "随乐") || strstr(text, "party")  ? "party"
+                                                                  : NULL;
+      if (strstr(text, "音乐") || strstr(text, "律动") ||
+          strstr(text, "music"))
+        effect = "music";
+      else if (strstr(text, "呼吸") || strstr(text, "breathe"))
+        effect = "breathe";
+      else if (strstr(text, "心跳") || strstr(text, "heartbeat"))
+        effect = "heartbeat";
+      else if (strstr(text, "环绕") || strstr(text, "追光") ||
+               strstr(text, "orbit"))
+        effect = "orbit";
+      else if (strstr(text, "极光") || strstr(text, "aurora"))
+        effect = "aurora";
+      else if (strstr(text, "状态") || strstr(text, "status"))
+        effect = "status";
+      else if (strstr(text, "常亮") || strstr(text, "steady"))
+        effect = "steady";
+      if (strstr(text, "瞳色") || strstr(text, "眼睛颜色") ||
+          strstr(text, "eye color"))
+        {
+          mode = strstr(text, "互补") || strstr(text, "相反") ||
+                         strstr(text, "opposite") || strstr(text, "complement")
+                     ? "complement"
+                     : "iris";
+          if (!strcmp(group, "all"))
+            group = "ears";
+        }
+      static const struct
+      {
+        const char *cn;
+        const char *en;
+        const char *hex;
+      } colors[] = { { "暖白", "warm white", "#ffbf8c" },
+                     { "暖光", "warm light", "#ffbf8c" },
+                     { "红", "red", "#ff0000" },
+                     { "蓝", "blue", "#0000ff" },
+                     { "黄", "yellow", "#ffff00" },
+                     { "绿", "green", "#00ff00" },
+                     { "紫", "purple", "#a16bff" },
+                     { "粉", "pink", "#ff78a1" },
+                     { "青", "cyan", "#00ffff" },
+                     { "橙", "orange", "#ff9a40" },
+                     { "白", "white", "#ffffff" } };
+      for (size_t i = 0; i < NY_INTENT_COUNT(colors); i++)
+        if (strstr(text, colors[i].cn) || strstr(text, colors[i].en))
+          {
+            color = colors[i].hex;
+            break;
+          }
+      const char *level = strstr(text, "亮度");
+      if (!level)
+        level = strstr(text, "brightness");
+      if (level)
+        {
+          if (strstr(text, "最大") || strstr(text, "最高") ||
+              strstr(text, "max"))
+            brightness = NY_LIGHTING_MAX_BRIGHTNESS;
+          else if (strstr(text, "最小") || strstr(text, "最低") ||
+                   strstr(text, "min"))
+            brightness = 0;
+          else if (strstr(text, "一半"))
+            brightness = NY_LIGHTING_MAX_BRIGHTNESS / 2;
+          else if (!ny_intent_percent(text, level, NY_AGENT_LOCAL_TEXT_MAX,
+                                      &brightness))
+            brightness = -1;
+        }
+      if (mode)
+        color = NULL;
+      if (preset && effect && !strcmp(effect, "music"))
+        preset = "party";
+      if (brightness < 0)
+        delta = strstr(text, "亮一点") || strstr(text, "调亮") ||
+                        strstr(text, "brighter")
+                    ? 5
+                : strstr(text, "暗一点") || strstr(text, "调暗") ||
+                        strstr(text, "dimmer")
+                    ? -5
+                    : 0;
+    }
+  if (!off && !on && !preset && !effect && !mode && !color && brightness < 0 &&
+      delta == 0)
+    return false;
+  if ((left && right) && color)
+    return false;
+  cJSON *arguments = cJSON_CreateObject();
+  if (!arguments)
+    return false;
+  bool valid;
+  if (preset)
+    valid = cJSON_AddStringToObject(arguments, "name", preset) != NULL;
+  else
+    {
+      valid = cJSON_AddStringToObject(arguments, "group", group) &&
+              cJSON_AddBoolToObject(arguments, "enabled", !off);
+      if (color)
+        valid = valid && cJSON_AddStringToObject(arguments, "color", color);
+      if (mode)
+        valid = valid && cJSON_AddStringToObject(arguments, "colorMode", mode);
+      if (effect)
+        valid = valid && cJSON_AddStringToObject(arguments, "effect", effect);
+      if (brightness >= 0)
+        valid = valid &&
+                cJSON_AddNumberToObject(arguments, "brightness", brightness);
+      if (delta)
+        valid = valid &&
+                cJSON_AddNumberToObject(arguments, "brightnessDelta", delta);
+    }
+  valid =
+      valid && cJSON_PrintPreallocated(arguments, intent->lighting_args,
+                                       sizeof(intent->lighting_args), false);
+  cJSON_Delete(arguments);
+  if (!valid)
+    return false;
+  intent->kind = NY_AGENT_LOCAL_LIGHTING;
+  intent->lighting_topic = preset ? "lighting.preset" : "lighting.set";
+  intent->complete = true;
+  return true;
+}
+
+#if !defined(__NuttX__) || defined(CONFIG_NYABULA_CORE_OBJECT_TRACKING)
+/****************************************************************************
+ * Name: ny_intent_tracking
+ ****************************************************************************/
+static bool ny_intent_tracking(const char *text,struct ny_agent_local_intent_s *intent)
+{
+  static const char *const prefix[]={" ","请","帮我","please "};
+  static const char *const suffix[]={" ","。","！",".","!"};
+  text=ny_intent_skip(text,prefix,NY_INTENT_COUNT(prefix));
+  const char *learn[]={"学习一下","学习这个物品","跟踪这个物品","learn this object","track this object"};
+  const char *stop[]={"停止物品追踪","停止跟踪","不要跟踪了","stop tracking"};
+  for(unsigned int i=0;i<sizeof(learn)/sizeof(learn[0]);i++)
+    if(!strncmp(text,learn[i],strlen(learn[i]))&&!*ny_intent_skip(text+strlen(learn[i]),suffix,NY_INTENT_COUNT(suffix))){intent->kind=NY_AGENT_LOCAL_TRACK_LEARN;intent->complete=true;return true;}
+  for(unsigned int i=0;i<sizeof(stop)/sizeof(stop[0]);i++)
+    if(!strncmp(text,stop[i],strlen(stop[i]))&&!*ny_intent_skip(text+strlen(stop[i]),suffix,NY_INTENT_COUNT(suffix))){intent->kind=NY_AGENT_LOCAL_TRACK_STOP;intent->complete=true;return true;}
+  return false;
+}
+
+#endif
+
+/****************************************************************************
  * Name: ny_agent_local_intent_detect
  ****************************************************************************/
 
@@ -1769,7 +1977,13 @@ void ny_agent_local_intent_detect(const char *utterance,
   if (!found && !NY_INTENT_ANY(lower, g_intent_discussion))
     {
       bool told = ny_intent_narrated(lower);
-      found = (!told && (NY_INTENT_TRY(ny_intent_volume(lower, intent)) ||
+      found = false;
+#if !defined(__NuttX__) || defined(CONFIG_NYABULA_CORE_OBJECT_TRACKING)
+      found = !told && NY_INTENT_TRY(ny_intent_tracking(lower, intent));
+#endif
+      found = found ||
+              (!told && NY_INTENT_TRY(ny_intent_lighting(lower, intent))) ||
+              (!told && (NY_INTENT_TRY(ny_intent_volume(lower, intent)) ||
                          NY_INTENT_TRY(ny_intent_schedule(&view, intent)))) ||
               NY_INTENT_TRY(ny_intent_music(&view, intent)) ||
               NY_INTENT_TRY(ny_intent_face(lower, intent)) ||
@@ -1793,7 +2007,7 @@ const char *ny_agent_local_intent_name(enum ny_agent_local_intent_e kind)
     "timer.list", "alarm.list", "task.list",   "expression",   "timer",
     "alarm",      "volume.set", "volume.up",   "volume.down",  "mute",
     "unmute",     "music.play", "music.pause", "music.resume", "music.stop",
-    "remember",   "task"
+    "remember",   "task",       "lighting", "track.learn", "track.stop"
   };
   return (size_t)kind < NY_INTENT_COUNT(names) ? names[kind] : "?";
 }
@@ -2043,6 +2257,31 @@ ny_agent_local_intent_call(const struct ny_agent_local_intent_s *intent,
                            const struct ny_agent_local_context_s *context,
                            const char **tool)
 {
+  if((intent->kind==NY_AGENT_LOCAL_TRACK_LEARN||intent->kind==NY_AGENT_LOCAL_TRACK_STOP)&&intent->complete)
+    {
+      cJSON *root=cJSON_CreateObject();
+      bool ok=root&&cJSON_AddStringToObject(root,"topic",intent->kind==NY_AGENT_LOCAL_TRACK_LEARN?"vision.learn":"vision.stop")&&cJSON_AddObjectToObject(root,"arguments");
+      char *json=ok?cJSON_PrintUnformatted(root):NULL;cJSON_Delete(root);
+      *tool="nyabula_tracking";return json;
+    }
+  if (intent->kind == NY_AGENT_LOCAL_LIGHTING && intent->complete)
+    {
+      cJSON *root = cJSON_CreateObject();
+      cJSON *arguments = cJSON_Parse(intent->lighting_args);
+      bool valid =
+          root && arguments && intent->lighting_topic &&
+          cJSON_AddStringToObject(root, "topic", intent->lighting_topic);
+      if (valid && cJSON_AddItemToObject(root, "arguments", arguments))
+        arguments = NULL;
+      else
+        valid = false;
+      char *json = valid ? cJSON_PrintUnformatted(root) : NULL;
+      cJSON_Delete(arguments);
+      cJSON_Delete(root);
+      *tool = "nyabula_lighting";
+      return json;
+    }
+
   cJSON *root = cJSON_CreateObject();
   cJSON *arguments = NULL;
   cJSON *record = NULL;
@@ -2357,7 +2596,11 @@ static void ny_intent_attempt(const char *tool, const cJSON *call, char *out,
   const cJSON *record = cJSON_GetObjectItemCaseSensitive(arguments, "record");
   char piece[NY_AGENT_LOCAL_RAW_MAX + 1];
   char span[64];
-  if (!strcmp(tool, "nyabula_expression"))
+  if(!strcmp(tool,"nyabula_tracking"))
+    snprintf(out,size,"%s",!strcmp(topic,"vision.stop")?"停止物品追踪":"学习眼前物品");
+  else if (!strcmp(tool, "nyabula_lighting"))
+    snprintf(out, size, "调整灯光");
+  else if (!strcmp(tool, "nyabula_expression"))
     {
       const char *name = ny_intent_text(call, "expression");
       const char *label = name;
@@ -2677,6 +2920,26 @@ bool ny_agent_local_intent_fact(const char *tool, const char *arguments,
         snprintf(fact, size, "%s没有成功：%s", attempt,
                  ny_intent_reason(fabs(error) <= 1000000 ? (int)error : -EIO,
                                   reason, sizeof(reason)));
+    }
+  else if(!strcmp(tool,"nyabula_tracking")&&cJSON_IsObject(outcome))
+    {
+      if(!strcmp(ny_intent_text(call,"topic"),"vision.stop"))snprintf(fact,size,"物品追踪已停止");
+      else snprintf(fact,size,"请把物品放在镜头中央，缓慢转动，保持几秒。正在学习，还没有确认记住。");
+    }
+  else if (!strcmp(tool, "nyabula_lighting") && cJSON_IsObject(outcome))
+    {
+      const cJSON *args = cJSON_GetObjectItemCaseSensitive(call, "arguments");
+      const char *group = ny_intent_text(args, "group");
+      const char *label = !strcmp(group, "left_ear")    ? "左耳"
+                          : !strcmp(group, "right_ear") ? "右耳"
+                          : !strcmp(group, "ears")      ? "双耳"
+                          : !strcmp(group, "chest")     ? "胸口"
+                          : !strcmp(group, "base")      ? "底座"
+                                                        : "四区";
+      snprintf(fact, size, "%s灯光已%s", label,
+               cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(args, "enabled"))
+                   ? "关闭"
+                   : "按设置更新");
     }
   else if (read && cJSON_IsObject(outcome))
     ny_intent_fact_read(ny_intent_text(call, "topic"), outcome,

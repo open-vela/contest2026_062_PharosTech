@@ -936,8 +936,9 @@ static void nyabula_eye_engine_refr_start_cb(lv_event_t *e)
     }
 }
 
-struct nyabula_eye_engine_s *
-nyabula_eye_engine_create_dual(lv_obj_t *left_parent, lv_obj_t *right_parent)
+struct nyabula_eye_engine_s *nyabula_eye_engine_create_dual_with_iris(
+    lv_obj_t *left_parent, lv_obj_t *right_parent,
+    const uint32_t iris_rgb[NYABULA_EYE_COUNT])
 {
   struct nyabula_eye_engine_s *engine;
   int eye_id;
@@ -989,7 +990,9 @@ nyabula_eye_engine_create_dual(lv_obj_t *left_parent, lv_obj_t *right_parent)
 
   for (eye_id = 0; eye_id < NYABULA_EYE_COUNT; eye_id++)
     {
-      engine->iris_rgb[eye_id] = NYABULA_EYE_DEFAULT_IRIS_RGB;
+      engine->iris_rgb[eye_id] = iris_rgb == NULL
+                                     ? NYABULA_EYE_DEFAULT_IRIS_RGB
+                                     : iris_rgb[eye_id] & 0xffffff;
     }
 
   nyabula_eye_engine_apply_expression(engine, 0.0f);
@@ -1024,6 +1027,13 @@ nyabula_eye_engine_create_dual(lv_obj_t *left_parent, lv_obj_t *right_parent)
 
   nyabula_eye_engine_animation_cb(engine->timer);
   return engine;
+}
+
+struct nyabula_eye_engine_s *
+nyabula_eye_engine_create_dual(lv_obj_t *left_parent, lv_obj_t *right_parent)
+{
+  return nyabula_eye_engine_create_dual_with_iris(left_parent, right_parent,
+                                                  NULL);
 }
 
 struct nyabula_eye_engine_s *nyabula_eye_engine_create(lv_obj_t *parent)

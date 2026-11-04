@@ -26,7 +26,7 @@ const doneCount=computed(()=>tasks.value.filter(t=>t.done).length);
 const ratio=computed(()=>total.value?doneCount.value/total.value:0);
 const current=computed<Task|null>(()=>tasks.value.find(t=>t.id===state.selected)??tasks.value[0]??null);
 /* Eye link: the selected task as saved on the device; edits follow by themselves. */
-const scene=useEyeScene(props.type,()=>{const t=current.value;return t?taskScene({title:t.title,progress:t.progress,state:t.state}):null;},{hideWhenEmpty:true});
+const scene=useEyeScene(props.type,()=>{const t=current.value;return t?taskScene({title:t.title,progress:t.progress,state:t.state}):null;},{hideWhenEmpty:true,recordId:()=>current.value?.id});
 const active=computed(()=>scene.shown.value||scene.held.value);
 const subtitle=computed(()=>core.available.value?`完成 ${doneCount.value} / ${total.value}`:'未连接支持此功能的 Core');
 const draftState=ref<TaskState>('queued');
