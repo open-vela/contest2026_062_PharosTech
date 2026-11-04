@@ -14,7 +14,9 @@ openvela 产品固件，不是 AMP 地址布局；两种二进制不能互换。
 AMP/评委配置由 `tools/generate_product_profiles.py` 从普通产品配置生成。
 修改普通 defconfig 或生成器后重新生成，用 `--check` 检查是否同步。
 产品 AMP 强制 SMP4（A53 MPIDR 0..3），Linux 仅保留 A72 MPIDR 0x100..0x103；
-第二堆为 `0x70000000 / 256 MiB`。旧产品工作区的 UP 配置不再满足验收。蓝牙音频仍待真手机验收，已隔离到本地 `organize/hold-bluetooth-20261017`，不纳入本轮产品候选。
+第二堆为 `0x70000000 / 256 MiB`。旧产品工作区的 UP 配置不再满足验收。
+当前主线已包含蓝牙音乐、公共 DSP 与双设备选源；B88 有 Windows/OPPO 实机
+媒体控制与切换证据。HFP 真实双向通话仍待验收，见[当前验证记录](../../docs/validation/README.md)。
 
 ```sh
 TEAM=contest2026_062_PharosTech
@@ -47,5 +49,7 @@ bash "$TEAM/tools/amp/nuttx/apply.sh" nuttx
 无屏配置才开启 `/eyeprobe`：它可能展示配对信息，仅用于受控演示网络；不能
 为了让无屏机器显示而更改所有生产固件的认证边界。
 
-本轮使用 `app/nyabula_web` 的设备面板。根工作区 Web 中的 Nebula/Instrument
-新皮肤和 design-lab 尚未完成设备联调，未纳入此产品配置或候选提交。
+使用 `app/nyabula_web` 的设备面板；经典、星云与仪器三皮肤已随产品进入主线，
+并有实际设备交互记录。根工作区 design-lab 仍是独立探索，不替代产品入口。
+B90—B94 的最新本地增强与主线差异见[产品总览](../../docs/product/README.md)
+和[版本记录](../../docs/validation/README.md#最新本地候选)。

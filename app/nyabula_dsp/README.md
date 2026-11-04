@@ -120,7 +120,10 @@ python3 tools/nyabula_dsp/render.py input.wav out/rendered \
 产品接入包含 ES8388 + USB 输出生命周期、WAV 输入、设置持久化、WebUI、
 双设备队列反馈时钟修正与通话优先抢占。宿主回归和产品交叉编译见音频服务文档。
 
-尚待真实板卡验证：双设备时钟与端到端延迟、USB 热拔插、实际箱体分频和安全增益。
+B76 已验证双输出队列时钟校正、低音热开关、暂停恢复与全局音量，用户随后确认试听；
+B86 云端长句三轮 USB 欠载均为 0，30% 音量接回低音后听感通过。
+这些结果不等同声学相位或端到端延迟测量；USB 物理热拔插、实际箱体校准和
+全部功放增益组合仍需独立验证。见[音频验证](../../docs/validation/README.md#音频与语音)。
 TTS、A2DP 和文件播放共用 `ny_dsp_output`；`nyadsp_resample` 以整数相位和48抽头窗函数 sinc 转换8–192 kHz输入至48 kHz。48 kHz输入精确直通。HFP保持原有8/16 kHz路径。
 
 `nyadsp_create_eq(config, kinds, fullrange, error)` 为新增入口，不改变 ABI v1 配置结构、旧构造函数和离线工具合同。四个 kinds 为 OFF/PEAK/LOW_SHELF/HIGH_SHELF；架式采用 RBJ Q 参数。

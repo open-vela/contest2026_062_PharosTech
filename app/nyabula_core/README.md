@@ -1,5 +1,9 @@
 # Nyabula Core 与 Eye/Display
 
+本页保留 Core/Eye 集成接口与对应配置的使用方法。完整产品服务、Agent、插件
+和连接能力见[当前产品总览](../../docs/product/README.md)；旧阶段验证见
+[VALIDATION.md](VALIDATION.md)，后续板测见[版本与验证](../../docs/validation/README.md)。
+
 Core的插件运行时来自已验证提交512956f0。本次在最新团队主线集成Eye视觉子模块，
 并连接已合入的Nyabula Display。
 
@@ -10,7 +14,7 @@ QuickJS/WAMR、Core与Eye。它不启用SD host；LCD与SD共用FSPI1引脚，
 接屏前按板级接线要求准备。AMP的LCD/IRQ所有权需另外配置。
 
 真机使用面板GPIO TE中断：屏0为`/dev/gpio1`，屏1为`/dev/gpio2`。
-软件TE仅保留在模拟器验证配置中，模拟器调度结果不代表真机帧率。
+软件TE用于模拟器与无屏评审配置；普通产品保持硬TE，模拟器调度结果不代表真机帧率。
 屏幕控制器选择GC9B72，使用ST77916-family驱动中的GC9B72初始化序列，
 不能沿用该驱动默认的ST77916控制器配置。
 
@@ -102,5 +106,5 @@ Eye产品入口持有Eye实例；attach/detach只能在LVGL所有者线程进行
 提交与销毁，销毁后的新请求返回ENODEV。常驻渲染循环仍不提供强制
 kill后的清理保证；需要重启显示时使用系统重启。
 
-UI生产配置关闭mock；本PR不接AI模型、网络offload或新沙箱。测试结果以PR正文
+本页所述历史Core/Eye集成关闭mock，当时不接AI模型、网络offload或新沙箱。测试结果以对应PR正文
 和项目实测日志为准，内存LCD接收端的渲染证明不等于物理面板验证。

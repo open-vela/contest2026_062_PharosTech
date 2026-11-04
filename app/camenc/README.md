@@ -166,8 +166,10 @@ wins）。刷新页面能立刻拿到画面，靠的就是这条规则，而不�
 
 ## 5. 移植到 nyabula
 
-本仓当前分支里，唯一的 HTTP/WebSocket **服务器**实现就是 `camenc_ws.c`
-（`nyabula_core/ny_http.c` 是出站 HTTP 客户端，不是服务器）。两条路线：
+`camenc_ws.c` 是独立推流示例服务器；当前 Nyabula Core 已有自己的产品
+HTTP/WebSocket 服务。`nyabula_core/ny_http.c` 仍是出站 HTTP 客户端。
+将相机接入产品时可选择以下两条路线；当前 `product_amp` 尚未启用完整相机链，
+资源所有权见[当前 AMP 边界](../../tools/amp/COMPUTE_CURRENT.md)。
 
 **路线 A（最小改动）**：把 `camenc_stream.c`、`camenc_ws.c`、`web/page.html`
 一起搬过去，由你们的事件循环线程带着它（`camenc_ws` 自己不开线程），占一个端口。
