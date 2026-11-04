@@ -1,0 +1,362 @@
+{
+  "schema_version": "1.0",
+  "batch_id": "2026-11-04",
+  "team_id": "contest2026_062_PharosTech",
+  "github_login": "BeaconCat",
+  "window": {
+    "after": "2026-09-20T09:46:40.930785+00:00",
+    "through": "2026-11-04T12:38:35.346126+00:00"
+  },
+  "collector": {
+    "repository": "open-vela/.claude",
+    "commit": "ac36068f8571b2cced14c5f23f6cebb47026d1c6",
+    "parser": "adapters/codex/backfill_codex.py:parse_rollout",
+    "writer": "adapters/shared/snapshot_core.py:append_events"
+  },
+  "source_format": "codex-rollout-jsonl and losslessly decoded jsonl.zst",
+  "scope": "Nyabula project user/assistant text; explicit current-task exclusion",
+  "excluded_current_task": "01a0bda7-5332-7c41-90c4-b2bf78953832",
+  "sources": [
+    {
+      "name": "rollout-2026-08-21T00-19-15-01a01ff8-3713-7b73-bc99-76802baeee07.jsonl.zst",
+      "session_id": "01a01ff8-3713-7b73-bc99-76802baeee07",
+      "metadata_session_id": "01a01ff8-3713-7b73-bc99-76802baeee07",
+      "bytes": 48237192,
+      "mtime_ns": 1792950503537519800,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "b10cd7c0d24ceae90dfcc6422ef2cdccd0f5426845d43fba5bcecc0a59813606",
+      "compressed": true,
+      "eligible_events": 1
+    },
+    {
+      "name": "rollout-2026-09-09T23-31-32-019fad8f-e5af-7383-970c-0a7699f47cde_01a086cb-b726-7e93-a89d-4a1e4e3d0fdc.jsonl.zst",
+      "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 10430420,
+      "mtime_ns": 1792238262492138100,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "892edd1c9d0332f368f73453906bb31430794db8b95c24c113bb7515a6e40c7d",
+      "compressed": true,
+      "eligible_events": 41
+    },
+    {
+      "name": "rollout-2026-10-17T19-57-57-019fad8f-e5af-7383-970c-0a7699f47cde_01a149b9-d51b-7413-9fef-146c51845450.jsonl.zst",
+      "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 4362321,
+      "mtime_ns": 1792246231639184600,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "068a656363a4ea3e39eda2a4fd9e97e7c271c74928e9167b330a709dcad6fb5c",
+      "compressed": true,
+      "eligible_events": 18
+    },
+    {
+      "name": "rollout-2026-10-17T22-10-39-019fad8f-e5af-7383-970c-0a7699f47cde_01a14a33-4fca-7370-b64c-849d9d1805ef.jsonl.zst",
+      "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 63935017,
+      "mtime_ns": 1792689544663583400,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "cbeb801c8c5dcf00a5d62042736cbe54d7302a509b81bca36081971b33639b8e",
+      "compressed": true,
+      "eligible_events": 239
+    },
+    {
+      "name": "rollout-2026-10-18T02-12-12-01a14b10-74fa-7630-8de6-28b1c93bc83f.jsonl.zst",
+      "session_id": "01a14b10-74fa-7630-8de6-28b1c93bc83f",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 3686617,
+      "mtime_ns": 1792260732596752600,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "9760b95afb5147fa43b6bd9a30c77f303d7d76745e89d2e94bf0dd0b32da438a",
+      "compressed": true,
+      "eligible_events": 2
+    },
+    {
+      "name": "rollout-2026-10-18T02-12-30-01a14b10-be14-7572-bbaa-24386457aadb.jsonl.zst",
+      "session_id": "01a14b10-be14-7572-bbaa-24386457aadb",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 2343497,
+      "mtime_ns": 1792260751328978300,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "cdde66c3170fd049be9666fa0e697e371e9a23dccfaa04c44c16a30168d2baa1",
+      "compressed": true,
+      "eligible_events": 2
+    },
+    {
+      "name": "rollout-2026-10-18T02-12-46-01a14b10-fc7a-7f82-93fa-ef155c82f761.jsonl.zst",
+      "session_id": "01a14b10-fc7a-7f82-93fa-ef155c82f761",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 2009878,
+      "mtime_ns": 1792260767270301000,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "32c4f6aa749d25155c78ee3ebcfa197d87162fd11f58b31cfa59611e6e9be0cf",
+      "compressed": true,
+      "eligible_events": 3
+    },
+    {
+      "name": "rollout-2026-10-18T16-52-49-01a14e36-b1cf-73e2-a403-42aa6542ab88.jsonl.zst",
+      "session_id": "01a14e36-b1cf-73e2-a403-42aa6542ab88",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 660276,
+      "mtime_ns": 1792313569750105200,
+      "forked_from_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "stored_prefix_sha256": "01e7160145005aca08c3a8a60d89890bd4a6afdd8a97a09811ba0b63ccb11b54",
+      "compressed": true,
+      "eligible_events": 5
+    },
+    {
+      "name": "rollout-2026-10-23T01-19-07-019fad8f-e5af-7383-970c-0a7699f47cde_01a1649f-a82f-78f1-a544-182b44d8a64e.jsonl",
+      "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 56744257,
+      "mtime_ns": 1793324240211692300,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "e3c8d372b4e4895ce8b781498251ec49e80c0aed4be8f2c31efa721a741845d8",
+      "compressed": false,
+      "eligible_events": 144
+    },
+    {
+      "name": "rollout-2026-10-26T01-48-31-01a01ff8-3713-7b73-bc99-76802baeee07_01a1742d-a624-7b42-87a0-3bf391b5ab1c.jsonl",
+      "session_id": "01a01ff8-3713-7b73-bc99-76802baeee07",
+      "metadata_session_id": "01a01ff8-3713-7b73-bc99-76802baeee07",
+      "bytes": 40729674,
+      "mtime_ns": 1793760899107144900,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "df4ad371adf2bfbd21606fcaa8547c914f57d683a6a8032bd5364dce1384d58f",
+      "compressed": false,
+      "eligible_events": 87
+    },
+    {
+      "name": "rollout-2026-10-29T23-33-11-01a1884b-3260-7222-9d8b-20ee71e125b9.jsonl",
+      "session_id": "01a1884b-3260-7222-9d8b-20ee71e125b9",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 2405774,
+      "mtime_ns": 1793287992182687200,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "720d13bfeb1ae5e8768032cbd6ad0e21ff1e9c3c5e15fbde5959e9979792f717",
+      "compressed": false,
+      "eligible_events": 7
+    },
+    {
+      "name": "rollout-2026-10-30T09-37-23-019fad8f-e5af-7383-970c-0a7699f47cde_01a18a74-5b7b-7863-a632-67407debc81e.jsonl",
+      "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 79126932,
+      "mtime_ns": 1793507884103717300,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "d65fff9d7f49bdd026d140acbcfab249e8d1f83aa26ef00f9b8b9ac56b42ae59",
+      "compressed": false,
+      "eligible_events": 176
+    },
+    {
+      "name": "rollout-2026-11-01T12-38-10-019fad8f-e5af-7383-970c-0a7699f47cde_01a19566-940a-7950-9a2e-00caa227380c.jsonl",
+      "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 33363217,
+      "mtime_ns": 1793550074005127700,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "a2343e995ca7ec4d3dd62bd7b02502e5f770e95a0e8cc797e6ee60d52d387baf",
+      "compressed": false,
+      "eligible_events": 89
+    },
+    {
+      "name": "rollout-2026-11-02T00-21-19-019fad8f-e5af-7383-970c-0a7699f47cde_01a197ea-57da-78a3-a0ec-0e0b835d8615.jsonl",
+      "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 68318,
+      "mtime_ns": 1793550108059915300,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "9270f5b324296c2b19ade2fc76d43c5692af157b590cf19e7c699e57cb580adc",
+      "compressed": false,
+      "eligible_events": 1
+    },
+    {
+      "name": "rollout-2026-11-02T00-21-51-019fad8f-e5af-7383-970c-0a7699f47cde_01a197ea-d3b3-7c03-903a-7d655aa1cc53.jsonl",
+      "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 67318,
+      "mtime_ns": 1793550124892989600,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "e842770bf7037c385d73336b2540688dce2fa698584e29b16efc9b7eefab1b3d",
+      "compressed": false,
+      "eligible_events": 1
+    },
+    {
+      "name": "rollout-2026-11-02T00-23-59-019fad8f-e5af-7383-970c-0a7699f47cde_01a197ec-c7ee-7211-967e-4d521d08bd01.jsonl",
+      "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 56103269,
+      "mtime_ns": 1793796492284002200,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "8818e4edda5890400d53ade30f148bd87dc84d99bf5b690485b5e619a3fd4e78",
+      "compressed": false,
+      "eligible_events": 170
+    },
+    {
+      "name": "rollout-2026-11-04T01-56-15-01a1a28d-f6e3-78b0-bf47-17846a89548a.jsonl",
+      "session_id": "01a1a28d-f6e3-78b0-bf47-17846a89548a",
+      "metadata_session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "bytes": 405213,
+      "mtime_ns": 1793728575534789700,
+      "forked_from_id": null,
+      "stored_prefix_sha256": "ca6927e89287b6189f3713c7ae56e40fd49003c89ba048f3ad0c463df043cf07",
+      "compressed": false,
+      "eligible_events": 2
+    }
+  ],
+  "sessions": [
+    {
+      "session_id": "01a01ff8-3713-7b73-bc99-76802baeee07",
+      "title": "Nyabula 硬件探索者",
+      "source": "vscode",
+      "events": 88,
+      "roles": {
+        "user": 32,
+        "assistant": 56
+      },
+      "first_ts": "2026-10-25T17:48:26.424Z",
+      "last_ts": "2026-11-04T02:54:58.753Z",
+      "bytes": 85200,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a01ff8-3713-7b73-bc99-76802baeee07.jsonl",
+      "seq_start": 2132,
+      "seq_end": 2219,
+      "source_export_sha256": "ffa4c1c10a89aebb1452220f637b78b0a1d834c38c34eea75d047a47f86f840c",
+      "publication_export_sha256": "4792709ba47090d1c1fc5ae06b9c46ebf288c1924982fdc10c7a77089b0f8e5b",
+      "redacted_count": 0
+    },
+    {
+      "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
+      "title": "Nyabula 总研发空间",
+      "source": "vscode",
+      "events": 879,
+      "roles": {
+        "user": 370,
+        "assistant": 509
+      },
+      "first_ts": "2026-09-23T14:05:20.453Z",
+      "last_ts": "2026-11-04T12:36:38.635Z",
+      "bytes": 475862,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__019fad8f-e5af-7383-970c-0a7699f47cde.jsonl",
+      "seq_start": 2785,
+      "seq_end": 3663,
+      "source_export_sha256": "05fd1e5897927c4d39394b91f5fb19aabaf5f015ee839f32cf366340d509fb3f",
+      "publication_export_sha256": "67d61c2a43fceb5f0c2b0a23b192e9846becd4336ccf3415745a73e6fe57f8b2",
+      "redacted_count": 4
+    },
+    {
+      "session_id": "01a14b10-74fa-7630-8de6-28b1c93bc83f",
+      "title": "/root/qa_nebula",
+      "source": "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"019fad8f-e5af-7383-970c-0a7699f47cde\",\"depth\":1,\"agent_path\":\"/root/qa_nebula\",\"agent_nickname\":\"Noether\",\"agent_role\":null}}}",
+      "events": 2,
+      "roles": {
+        "user": 1,
+        "assistant": 1
+      },
+      "first_ts": "2026-10-17T18:12:19.434Z",
+      "last_ts": "2026-10-17T18:33:07.002Z",
+      "bytes": 29489,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a14b10-74fa-7630-8de6-28b1c93bc83f.jsonl",
+      "seq_start": 0,
+      "seq_end": 1,
+      "source_export_sha256": "40d385db5323da876594364b97bbdd54902fde317532b09cde0d02416a71b86d",
+      "publication_export_sha256": "a83ac8fb1f9d76208359ad96f42f4ab3f88ff10abb395427805bd0eaa5db818e",
+      "redacted_count": 0
+    },
+    {
+      "session_id": "01a14b10-be14-7572-bbaa-24386457aadb",
+      "title": "/root/qa_daylight",
+      "source": "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"019fad8f-e5af-7383-970c-0a7699f47cde\",\"depth\":1,\"agent_path\":\"/root/qa_daylight\",\"agent_nickname\":\"James\",\"agent_role\":null}}}",
+      "events": 2,
+      "roles": {
+        "user": 1,
+        "assistant": 1
+      },
+      "first_ts": "2026-10-17T18:12:33.414Z",
+      "last_ts": "2026-10-17T18:48:03.760Z",
+      "bytes": 29463,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a14b10-be14-7572-bbaa-24386457aadb.jsonl",
+      "seq_start": 0,
+      "seq_end": 1,
+      "source_export_sha256": "762ca8351b682d4fd8c57e6c4ff8d504bb097c862ad7b9c752a8bcae3105f7ea",
+      "publication_export_sha256": "ab8aa1601f482340cc80a320d76825eb528459e48b3941c593b4700f541ec49d",
+      "redacted_count": 0
+    },
+    {
+      "session_id": "01a14b10-fc7a-7f82-93fa-ef155c82f761",
+      "title": "/root/qa_instrument",
+      "source": "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"019fad8f-e5af-7383-970c-0a7699f47cde\",\"depth\":1,\"agent_path\":\"/root/qa_instrument\",\"agent_nickname\":\"Parfit\",\"agent_role\":null}}}",
+      "events": 3,
+      "roles": {
+        "user": 1,
+        "assistant": 2
+      },
+      "first_ts": "2026-10-17T18:12:48.895Z",
+      "last_ts": "2026-10-17T18:23:45.360Z",
+      "bytes": 29874,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a14b10-fc7a-7f82-93fa-ef155c82f761.jsonl",
+      "seq_start": 0,
+      "seq_end": 2,
+      "source_export_sha256": "ad521051e3114bea5a7cc0b2bb8144a0a76b5b1900c42082f94d94f0b5be1bcf",
+      "publication_export_sha256": "dfb95038e3671ac1a79c0935ecbd9d5f20a303e31f21ce0c76228c582d3ca54b",
+      "redacted_count": 0
+    },
+    {
+      "session_id": "01a14e36-b1cf-73e2-a403-42aa6542ab88",
+      "title": "/root/audio_locations",
+      "source": "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"019fad8f-e5af-7383-970c-0a7699f47cde\",\"depth\":1,\"agent_path\":\"/root/audio_locations\",\"agent_nickname\":\"Hubble\",\"agent_role\":null}}}",
+      "events": 5,
+      "roles": {
+        "assistant": 4,
+        "user": 1
+      },
+      "first_ts": "2026-10-18T08:52:49.752Z",
+      "last_ts": "2026-10-18T10:41:49.011Z",
+      "bytes": 12236,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a14e36-b1cf-73e2-a403-42aa6542ab88.jsonl",
+      "seq_start": 0,
+      "seq_end": 4,
+      "source_export_sha256": "b114be4251778129f01bdc0ee3742cf470fc1c3d2031a94235fca13bc9275f0a",
+      "publication_export_sha256": "7ce29e23acd7865a6a9fb3e29a09476947f7fafa44b6f8ba5bf46015c1f21d29",
+      "redacted_count": 0
+    },
+    {
+      "session_id": "01a1884b-3260-7222-9d8b-20ee71e125b9",
+      "title": "/root/nyabot_browser_audit",
+      "source": "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"019fad8f-e5af-7383-970c-0a7699f47cde\",\"depth\":1,\"agent_path\":\"/root/nyabot_browser_audit\",\"agent_nickname\":\"Carver\",\"agent_role\":null}}}",
+      "events": 7,
+      "roles": {
+        "user": 1,
+        "assistant": 6
+      },
+      "first_ts": "2026-10-29T15:33:14.296Z",
+      "last_ts": "2026-10-29T17:15:49.190Z",
+      "bytes": 34535,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a1884b-3260-7222-9d8b-20ee71e125b9.jsonl",
+      "seq_start": 0,
+      "seq_end": 6,
+      "source_export_sha256": "af1ebca543a21fd0b3bf46c6cdba845ee22ce4e0422019aa7430b4316e61cc17",
+      "publication_export_sha256": "4f7a5152b7d707f8a7b01bb6a20b5a0568eed1b31173e9d53d182c1ee2f0d435",
+      "redacted_count": 0
+    },
+    {
+      "session_id": "01a1a28d-f6e3-78b0-bf47-17846a89548a",
+      "title": "/root/camera_cloud_locations",
+      "source": "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"019fad8f-e5af-7383-970c-0a7699f47cde\",\"depth\":1,\"agent_path\":\"/root/camera_cloud_locations\",\"agent_nickname\":\"Euler\",\"agent_role\":null}}}",
+      "events": 2,
+      "roles": {
+        "user": 1,
+        "assistant": 1
+      },
+      "first_ts": "2026-11-03T17:56:17.270Z",
+      "last_ts": "2026-11-03T17:56:56.509Z",
+      "bytes": 32259,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a1a28d-f6e3-78b0-bf47-17846a89548a.jsonl",
+      "seq_start": 0,
+      "seq_end": 1,
+      "source_export_sha256": "b51db8c8f3e44d15fac8275e3250aba3a36ad525ac6e4a860fb171e26d427392",
+      "publication_export_sha256": "8d0c16c82029427db407f35a04eb4309bfc7483327f8f1994e326911364db461",
+      "redacted_count": 0
+    }
+  ]
+}

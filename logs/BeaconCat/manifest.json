@@ -2,15 +2,15 @@
   "schema_version": "1.0",
   "team_id": "contest2026_062_PharosTech",
   "github_login": "BeaconCat",
-  "generator": "nyabula-merged-exports@2026-09-20",
-  "updated_at": "2026-09-20T10:24:43.814220+00:00",
+  "generator": "nyabula-incremental-official-collector@2026-11-04",
+  "updated_at": "2026-11-04T12:54:48.666778+00:00",
   "sessions": [
     {
       "session_id": "019fad8f-e5af-7383-970c-0a7699f47cde",
       "tool": "codex",
       "started_at": "2026-07-29T11:08:41.418Z",
-      "last_event_at": "2026-09-16T03:03:13.772Z",
-      "event_count": 2785,
+      "last_event_at": "2026-11-04T12:36:38.635Z",
+      "event_count": 3664,
       "file_path": "logs/BeaconCat/2026-07-29/codex__019fad8f-e5af-7383-970c-0a7699f47cde.jsonl",
       "collection_mode": "backfill-sqlite",
       "health": "degraded",
@@ -62,7 +62,7 @@
         ]
       },
       "display_title": "Nyabula 总研发空间",
-      "redacted_count_total": 7,
+      "redacted_count_total": 11,
       "source_format": "codex-rollout-jsonl",
       "explicit_session_selection": true,
       "data_completeness_warning": "PR52 text-only parser; tools/non-text are separate supplements; system/developer/reasoning omitted. collection_mode spelling is inherited from PR52.",
@@ -76,7 +76,17 @@
         "policy": "VNC and wireless credentials; literal values kept out of the repository",
         "additional_substitutions": 7,
         "changed_event_count": 7
-      }
+      },
+      "continuations": [
+        {
+          "batch": "2026-11-04",
+          "file_path": "logs/BeaconCat/2026-11-04/codex__019fad8f-e5af-7383-970c-0a7699f47cde.jsonl",
+          "event_count": 879,
+          "seq_start": 2785,
+          "seq_end": 3663,
+          "publication_export_sha256": "67d61c2a43fceb5f0c2b0a23b192e9846becd4336ccf3415745a73e6fe57f8b2"
+        }
+      ]
     },
     {
       "session_id": "01a00f21-7931-7452-b86d-03a20c83cf3a",
@@ -158,8 +168,8 @@
       "session_id": "01a01ff8-3713-7b73-bc99-76802baeee07",
       "tool": "codex",
       "started_at": "2026-08-20T16:19:51.944Z",
-      "last_event_at": "2026-09-16T02:48:21.537Z",
-      "event_count": 2132,
+      "last_event_at": "2026-11-04T02:54:58.753Z",
+      "event_count": 2220,
       "file_path": "logs/BeaconCat/2026-08-20/codex__01a01ff8-3713-7b73-bc99-76802baeee07.jsonl",
       "collection_mode": "backfill-sqlite",
       "health": "degraded",
@@ -190,7 +200,17 @@
         "policy": "VNC and wireless credentials; literal values kept out of the repository",
         "additional_substitutions": 6,
         "changed_event_count": 6
-      }
+      },
+      "continuations": [
+        {
+          "batch": "2026-11-04",
+          "file_path": "logs/BeaconCat/2026-11-04/codex__01a01ff8-3713-7b73-bc99-76802baeee07.jsonl",
+          "event_count": 88,
+          "seq_start": 2132,
+          "seq_end": 2219,
+          "publication_export_sha256": "4792709ba47090d1c1fc5ae06b9c46ebf288c1924982fdc10c7a77089b0f8e5b"
+        }
+      ]
     },
     {
       "session_id": "01a031c6-3dbe-7b02-b577-68b8f0e35043",
@@ -443,6 +463,96 @@
         "additional_substitutions": 0,
         "changed_event_count": 0
       }
+    },
+    {
+      "session_id": "01a14b10-74fa-7630-8de6-28b1c93bc83f",
+      "tool": "codex",
+      "started_at": "2026-10-17T18:12:19.434Z",
+      "last_event_at": "2026-10-17T18:33:07.002Z",
+      "event_count": 2,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a14b10-74fa-7630-8de6-28b1c93bc83f.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "data_completeness_warning": "Official Codex text-event format; tool/media records are outside this standard event stream.",
+      "source_format": "codex-rollout-jsonl",
+      "batch": "2026-11-04",
+      "publication_export_sha256": "a83ac8fb1f9d76208359ad96f42f4ab3f88ff10abb395427805bd0eaa5db818e",
+      "redacted_count_total": 0
+    },
+    {
+      "session_id": "01a14b10-be14-7572-bbaa-24386457aadb",
+      "tool": "codex",
+      "started_at": "2026-10-17T18:12:33.414Z",
+      "last_event_at": "2026-10-17T18:48:03.760Z",
+      "event_count": 2,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a14b10-be14-7572-bbaa-24386457aadb.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "data_completeness_warning": "Official Codex text-event format; tool/media records are outside this standard event stream.",
+      "source_format": "codex-rollout-jsonl",
+      "batch": "2026-11-04",
+      "publication_export_sha256": "ab8aa1601f482340cc80a320d76825eb528459e48b3941c593b4700f541ec49d",
+      "redacted_count_total": 0
+    },
+    {
+      "session_id": "01a14b10-fc7a-7f82-93fa-ef155c82f761",
+      "tool": "codex",
+      "started_at": "2026-10-17T18:12:48.895Z",
+      "last_event_at": "2026-10-17T18:23:45.360Z",
+      "event_count": 3,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a14b10-fc7a-7f82-93fa-ef155c82f761.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "data_completeness_warning": "Official Codex text-event format; tool/media records are outside this standard event stream.",
+      "source_format": "codex-rollout-jsonl",
+      "batch": "2026-11-04",
+      "publication_export_sha256": "dfb95038e3671ac1a79c0935ecbd9d5f20a303e31f21ce0c76228c582d3ca54b",
+      "redacted_count_total": 0
+    },
+    {
+      "session_id": "01a14e36-b1cf-73e2-a403-42aa6542ab88",
+      "tool": "codex",
+      "started_at": "2026-10-18T08:52:49.752Z",
+      "last_event_at": "2026-10-18T10:41:49.011Z",
+      "event_count": 5,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a14e36-b1cf-73e2-a403-42aa6542ab88.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "data_completeness_warning": "Official Codex text-event format; tool/media records are outside this standard event stream.",
+      "source_format": "codex-rollout-jsonl",
+      "batch": "2026-11-04",
+      "publication_export_sha256": "7ce29e23acd7865a6a9fb3e29a09476947f7fafa44b6f8ba5bf46015c1f21d29",
+      "redacted_count_total": 0
+    },
+    {
+      "session_id": "01a1884b-3260-7222-9d8b-20ee71e125b9",
+      "tool": "codex",
+      "started_at": "2026-10-29T15:33:14.296Z",
+      "last_event_at": "2026-10-29T17:15:49.190Z",
+      "event_count": 7,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a1884b-3260-7222-9d8b-20ee71e125b9.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "data_completeness_warning": "Official Codex text-event format; tool/media records are outside this standard event stream.",
+      "source_format": "codex-rollout-jsonl",
+      "batch": "2026-11-04",
+      "publication_export_sha256": "4f7a5152b7d707f8a7b01bb6a20b5a0568eed1b31173e9d53d182c1ee2f0d435",
+      "redacted_count_total": 0
+    },
+    {
+      "session_id": "01a1a28d-f6e3-78b0-bf47-17846a89548a",
+      "tool": "codex",
+      "started_at": "2026-11-03T17:56:17.270Z",
+      "last_event_at": "2026-11-03T17:56:56.509Z",
+      "event_count": 2,
+      "file_path": "logs/BeaconCat/2026-11-04/codex__01a1a28d-f6e3-78b0-bf47-17846a89548a.jsonl",
+      "collection_mode": "backfill-sqlite",
+      "health": "degraded",
+      "data_completeness_warning": "Official Codex text-event format; tool/media records are outside this standard event stream.",
+      "source_format": "codex-rollout-jsonl",
+      "batch": "2026-11-04",
+      "publication_export_sha256": "8d0c16c82029427db407f35a04eb4309bfc7483327f8f1994e326911364db461",
+      "redacted_count_total": 0
     }
   ]
 }
