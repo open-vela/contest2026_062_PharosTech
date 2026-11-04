@@ -23,12 +23,11 @@ import subprocess
 import sys
 import tempfile
 
+from wire_flow_build import nyamp_build_wire_harness
+
 repo = pathlib.Path(sys.argv[1]).resolve()
 root = pathlib.Path(tempfile.mkdtemp(prefix="amp-chat-flow-"))
 amp = repo / "tools/amp"
-nyampd = amp / "nyampd"
-chat = amp / "chat"
-models = amp / "models"
 protocol = amp / "protocol"
 client = repo / "app/nyampctl"
 
@@ -190,7 +189,7 @@ for source in ("nyampctl_llm.c",):
          str(client / source), "-o", str(target)], check=True)
     objects.append(str(target))
 
-for source in (root / "client.c", protocol / "nyamp_protocol.c"):
+for source in (root / "client.c",):
     target = root / (source.name + ".o")
     subprocess.run(
         ["cc", "-std=gnu11", "-D_GNU_SOURCE", "-Wall", "-Werror", "-c",
@@ -198,27 +197,9 @@ for source in (root / "client.c", protocol / "nyamp_protocol.c"):
          str(source), "-o", str(target)], check=True)
     objects.append(str(target))
 
-subprocess.run(
-    ["g++", "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
-     "-I", str(nyampd), "-I", str(models), "-I", str(protocol),
-     "-I", str(chat), "-I", str(nyampd.parent / "g2p"),
-     str(root / "harness.cpp"),
-     # The dispatcher references every service, so the speech ones are linked
-     # even though this flow never reaches them.
-     *[str(nyampd / name) for name in (
-         "nyampd_core.cpp", "nyampd_llm.cpp", "nyampd_frame.cpp",
-         "nyampd_sha256.cpp", "nyampd_blob.cpp", "nyampd_provision.cpp",
-         "nyampd_chat.cpp", "nyampd_audio.cpp", "nyampd_loader.cpp",
-         "nyampd_asr.cpp", "nyampd_tts.cpp", "nyampd_kws.cpp")],
-     str(nyampd.parent / "g2p" / "nyamp_g2p.cpp"),
-     *[str(chat / name) for name in (
-         "nyamp_json.cpp", "nyamp_unicode.cpp", "nyamp_tokenizer.cpp",
-         "nyamp_chat_template.cpp", "nyamp_chat_parse.cpp")],
-     str(models / "nyamp_models.cpp"), *objects,
-     "-o", str(root / "harness"), "-lpthread"],
-    check=True)
+harness = nyamp_build_wire_harness(repo, root, [root / "harness.cpp", *objects])
 
-result = subprocess.run([str(root / "harness"), str(root)],
+result = subprocess.run([str(harness), str(root)],
                         capture_output=True, text=True, timeout=60)
 sys.stderr.write(result.stderr)
 assert result.returncode == 0, result.stdout
