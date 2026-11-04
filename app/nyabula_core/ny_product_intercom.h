@@ -20,7 +20,6 @@
  *
  ****************************************************************************/
 
-
 #ifndef __APP_NYABULA_CORE_NY_PRODUCT_INTERCOM_H
 #define __APP_NYABULA_CORE_NY_PRODUCT_INTERCOM_H
 #include "ny_product.h"
@@ -33,11 +32,11 @@ struct ny_intercom_client_s
 };
 
 int ny_product_intercom_request(const struct ny_product_caller_s *caller,
-                                 struct ny_intercom_client_s *client,
-                                 const char *topic, const cJSON *data,
-                                 cJSON **result);
+                                struct ny_intercom_client_s *client,
+                                const char *topic, const cJSON *data,
+                                cJSON **result);
 int ny_product_intercom_next(struct ny_intercom_client_s *client,
-                              const char **topic, cJSON **result);
+                             const char **topic, cJSON **result);
 void ny_product_intercom_close(struct ny_intercom_client_s *client);
 void ny_product_intercom_shutdown(void);
 #endif

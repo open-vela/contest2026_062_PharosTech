@@ -453,17 +453,22 @@ static char *ny_agent_tools(void)
       "\"required\":[\"operation\",\"arguments\"],\"additionalProperties\":"
       "false}}"
 #endif
-#if defined(CONFIG_NYABULA_CORE_VISION) && defined(CONFIG_NYABULA_CORE_OBJECT_TRACKING)
-      ",{\"name\":\"nyabula_tracking\",\"description\":\"Learn the object held in "
+#if defined(CONFIG_NYABULA_CORE_VISION) && \
+    defined(CONFIG_NYABULA_CORE_OBJECT_TRACKING)
+      ",{\"name\":\"nyabula_tracking\",\"description\":\"Learn the object "
+      "held in "
       "the center of the local camera for a few seconds and track it with c"
       "alibrated screen eyes. Use only when the user asks to learn or follo"
       "w an object. No upload or identity inference. Ask the user to hold t"
       "he object in the center and rotate slowly. A start response is not s"
       "uccessful learning. vision.status reports learning, tracking or lost"
       "; stop with vision.stop. Privacy camera switch is enforced.\",\"input_"
-      "schema\":{\"type\":\"object\",\"properties\":{\"topic\":{\"type\":\"string\",\"enu"
-      "m\":[\"vision.learn\",\"vision.stop\"]},\"arguments\":{\"type\":\"object\",\"pro"
-      "perties\":{},\"additionalProperties\":false}},\"required\":[\"topic\",\"argu"
+      "schema\":{\"type\":\"object\",\"properties\":{\"topic\":{\"type\":"
+      "\"string\",\"enu"
+      "m\":[\"vision.learn\",\"vision.stop\"]},\"arguments\":{\"type\":"
+      "\"object\",\"pro"
+      "perties\":{},\"additionalProperties\":false}},\"required\":[\"topic\","
+      "\"argu"
       "ments\"],\"additionalProperties\":false}}"
 #endif
 #ifdef CONFIG_NYABULA_CORE_LIGHTING
@@ -634,11 +639,11 @@ static int ny_agent_tool_execute(const char *name, const char *input,
                                  char *output, size_t capacity)
 {
   static const char *const allowed[] = {
-    "sys.info",     "system.time.get",     "memory.list",
-    "task.list",    "calendar.list",       "timer.list",
-    "eyes.status",  "agent.tools.catalog", "device.status",
-    "music.status", "music.library",       "weather.get",
-    "alarm.list",   "agent.skills.list",   "lighting.status",
+    "sys.info",      "system.time.get",     "memory.list",
+    "task.list",     "calendar.list",       "timer.list",
+    "eyes.status",   "agent.tools.catalog", "device.status",
+    "music.status",  "music.library",       "weather.get",
+    "alarm.list",    "agent.skills.list",   "lighting.status",
     "camera.status", "vision.status"
   };
   static const char *const writes[] = {
@@ -651,8 +656,9 @@ static int ny_agent_tool_execute(const char *name, const char *input,
                                               "music.volume", "music.output" };
   static const char *const lighting_topics[] = { "lighting.set",
                                                  "lighting.preset" };
-  static const char *const tracking_topics[]={"vision.learn","vision.stop"};
-  bool tracking=strcmp(name,"nyabula_tracking")==0;
+  static const char *const tracking_topics[] = { "vision.learn",
+                                                 "vision.stop" };
+  bool tracking = strcmp(name, "nyabula_tracking") == 0;
   bool lighting = strcmp(name, "nyabula_lighting") == 0;
   bool write = strcmp(name, "nyabula_action") == 0;
   bool skill = strcmp(name, "nyabula_skill_read") == 0;
@@ -694,17 +700,19 @@ static int ny_agent_tool_execute(const char *name, const char *input,
   bool allowed_topic =
       skill || catalog || expression || thinking || pairing || builtin_read;
   allowed_topic |= plugin && topic[0];
-  size_t count = tracking ? sizeof(tracking_topics)/sizeof(tracking_topics[0]) : lighting
-                     ? sizeof(lighting_topics) / sizeof(lighting_topics[0])
-                 : media ? sizeof(media_topics) / sizeof(media_topics[0])
-                 : write ? sizeof(writes) / sizeof(writes[0])
-                         : sizeof(allowed) / sizeof(allowed[0]);
+  size_t count =
+      tracking   ? sizeof(tracking_topics) / sizeof(tracking_topics[0])
+      : lighting ? sizeof(lighting_topics) / sizeof(lighting_topics[0])
+      : media    ? sizeof(media_topics) / sizeof(media_topics[0])
+      : write    ? sizeof(writes) / sizeof(writes[0])
+                 : sizeof(allowed) / sizeof(allowed[0]);
   for (size_t i = 0; i < count; i++)
     {
-      if (strcmp(tracking ? tracking_topics[i] : lighting ? lighting_topics[i]
-                 : media  ? media_topics[i]
-                 : write  ? writes[i]
-                          : allowed[i],
+      if (strcmp(tracking   ? tracking_topics[i]
+                 : lighting ? lighting_topics[i]
+                 : media    ? media_topics[i]
+                 : write    ? writes[i]
+                            : allowed[i],
                  topic) == 0)
         allowed_topic = true;
     }
@@ -716,7 +724,8 @@ static int ny_agent_tool_execute(const char *name, const char *input,
                       cJSON_IsNumber(
                           cJSON_GetObjectItemCaseSensitive(data, "offset"))) ||
                      cJSON_GetArraySize(data) ==
-                         (write || builtin_read || media || lighting || tracking || plugin
+                         (write || builtin_read || media || lighting ||
+                                  tracking || plugin
                               ? 2
                               : 1)) &&
                     (!(write || media || lighting || tracking || plugin) ||
@@ -822,8 +831,9 @@ static int ny_agent_tool_execute(const char *name, const char *input,
                     &caller, topic,
                     skill || expression || thinking || pairing || builtin_read
                         ? data
-                    : write || media || lighting || tracking || plugin ? arguments
-                                                           : empty,
+                    : write || media || lighting || tracking || plugin
+                        ? arguments
+                        : empty,
                     &result);
   if (ret == 0 && lighting)
     {

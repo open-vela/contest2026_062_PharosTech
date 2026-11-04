@@ -3035,7 +3035,8 @@ stream_start:
                                         key);
               if (ret < 0)
                 {
-                  printf("camenc: muxing frame %d failed: %d\n", frame_index, ret);
+                  printf("camenc: muxing frame %d failed: %d\n", frame_index,
+                         ret);
                   break;
                 }
 
@@ -3173,8 +3174,8 @@ stream_start:
 
           if (capture != NULL && capture->frame != NULL)
             {
-              ret = capture->frame(capture->arg, g_cam[camidx].start,
-                                   src_size, width, height, cam_stride);
+              ret = capture->frame(capture->arg, g_cam[camidx].start, src_size,
+                                   width, height, cam_stride);
               if (ret < 0)
                 {
                   break;
@@ -3215,14 +3216,14 @@ stream_start:
 
           if (g_zerocopy)
             {
-              ret = camenc_queue_import(encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT,
-                                        g_cam[camidx].start, frame_index % (int)nbuf_out,
-                                        "encoder input");
+              ret = camenc_queue_import(
+                  encfd, V4L2_BUF_TYPE_VIDEO_OUTPUT, g_cam[camidx].start,
+                  frame_index % (int)nbuf_out, "encoder input");
             }
           else
             {
-              ret =
-                  camenc_queue(encfd, out, "encoder input", frame_index % (int)nbuf_out);
+              ret = camenc_queue(encfd, out, "encoder input",
+                                 frame_index % (int)nbuf_out);
             }
 
           if (ret < 0)
@@ -3379,7 +3380,8 @@ stream_start:
 
           if (serving)
             {
-              camenc_status_publish(&g_ws, &threea_state, (uint32_t)frame_index, mode);
+              camenc_status_publish(&g_ws, &threea_state,
+                                    (uint32_t)frame_index, mode);
             }
 
           camenc_stage_account(CAMENC_STAGE_STATUS, mark);
@@ -3404,9 +3406,9 @@ stream_start:
           printf("frame %6d: %6" PRIu32 " bytes, %5.1f fps, %" PRIu64
                  " bytes out, %" PRIu32 " out of order\n",
                  frame_index, ebuf.bytesused,
-                 span != 0
-                     ? 1000000.0 * (double)(frame_index - last_report) / (double)span
-                     : 0.0,
+                 span != 0 ? 1000000.0 * (double)(frame_index - last_report) /
+                                 (double)span
+                           : 0.0,
                  sink.bytes, g_enc_out_of_order);
 
           /* The breakdown, per frame, as mean and worst case.  Both, because

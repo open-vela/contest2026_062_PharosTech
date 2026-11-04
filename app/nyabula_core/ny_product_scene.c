@@ -504,23 +504,30 @@ static int ny_product_scene_build(struct ny_product_scene_binding_s *binding,
           cJSON_GetObjectItemCaseSensitive(
               data, "storage")) if (ny_product_scene_bool(row, "available"))
           storage++;
-      cJSON_ArrayForEach(row,cJSON_GetObjectItemCaseSensitive(data,"peripherals"))
-        if(ny_product_scene_bool(row,"available"))
-          {
-            const char *kind=ny_product_scene_text(row,"kind");
-            if(!strcmp(kind,"camera"))camera++;
-            if(!strcmp(kind,"lighting"))lighting++;
-          }
+      cJSON_ArrayForEach(
+          row, cJSON_GetObjectItemCaseSensitive(
+                   data,
+                   "peripherals")) if (ny_product_scene_bool(row, "available"))
+      {
+        const char *kind = ny_product_scene_text(row, "kind");
+        if (!strcmp(kind, "camera"))
+          camera++;
+        if (!strcmp(kind, "lighting"))
+          lighting++;
+      }
       if (!strcmp(type, "devices"))
         {
           NUM("device_count", audio + storage + networks + camera + lighting);
-          snprintf(text, sizeof(text), "%d", audio + storage + networks + camera + lighting);
+          snprintf(text, sizeof(text), "%d",
+                   audio + storage + networks + camera + lighting);
           TXT("title", text);
           TXT("subtitle", "个硬件在线");
           snprintf(text, sizeof(text), "音频 %d · 存储 %d · 网络 %d", audio,
                    storage, networks);
-          if(camera||lighting)
-            snprintf(text,sizeof(text),"音频 %d 存储 %d 网络 %d 摄影 %d 灯光 %d",audio,storage,networks,camera,lighting);
+          if (camera || lighting)
+            snprintf(text, sizeof(text),
+                     "音频 %d 存储 %d 网络 %d 摄影 %d 灯光 %d", audio, storage,
+                     networks, camera, lighting);
           TXT("detail", text);
         }
       else if (!strcmp(type, "network"))

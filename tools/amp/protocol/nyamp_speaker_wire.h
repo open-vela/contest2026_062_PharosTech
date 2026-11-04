@@ -20,41 +20,49 @@
  *
  ****************************************************************************/
 
-
 #ifndef __TOOLS_AMP_PROTOCOL_NYAMP_SPEAKER_WIRE_H
 #define __TOOLS_AMP_PROTOCOL_NYAMP_SPEAKER_WIRE_H
 #include "nyamp_protocol.h"
 #include <string.h>
-#define NYAMP_SPK_LOAD 1U
-#define NYAMP_SPK_UNLOAD 2U
-#define NYAMP_SPK_ENROL_BEGIN 3U
-#define NYAMP_SPK_ENROL_ADD 4U
-#define NYAMP_SPK_ENROL_COMMIT 5U
-#define NYAMP_SPK_ENROL_ABORT 6U
-#define NYAMP_SPK_TEMPLATE_PUT 7U
-#define NYAMP_SPK_DELETE 8U
-#define NYAMP_SPK_VERIFY 10U
-#define NYAMP_SPK_RANGE_SIZE 24U
+#define NYAMP_SPK_LOAD          1U
+#define NYAMP_SPK_UNLOAD        2U
+#define NYAMP_SPK_ENROL_BEGIN   3U
+#define NYAMP_SPK_ENROL_ADD     4U
+#define NYAMP_SPK_ENROL_COMMIT  5U
+#define NYAMP_SPK_ENROL_ABORT   6U
+#define NYAMP_SPK_TEMPLATE_PUT  7U
+#define NYAMP_SPK_DELETE        8U
+#define NYAMP_SPK_VERIFY        10U
+#define NYAMP_SPK_RANGE_SIZE    24U
 #define NYAMP_SPK_TEMPLATE_SIZE 400U
 /* Range: KWS BEGIN request id, start sample, end sample (three LE u64s).
  * A stream id is required: a sample offset alone cannot survive a restart.
  * ADD replies with take count; COMMIT with kept count, cohesion and NYVP.
  * VERIFY replies with cosine score and sample count, never authorization.
  */
-static inline uint64_t nyamp_spk_get(const uint8_t *p,unsigned int n)
+static inline uint64_t nyamp_spk_get(const uint8_t *p, unsigned int n)
 {
-  uint64_t v=0;for(unsigned int i=0;i<n;i++)v|=(uint64_t)p[i]<<(i*8);return v;
+  uint64_t v = 0;
+  for (unsigned int i = 0; i < n; i++)
+    v |= (uint64_t)p[i] << (i * 8);
+  return v;
 }
-static inline void nyamp_spk_put(uint8_t *p,uint64_t v,unsigned int n)
+static inline void nyamp_spk_put(uint8_t *p, uint64_t v, unsigned int n)
 {
-  for(unsigned int i=0;i<n;i++)p[i]=(uint8_t)(v>>(i*8));
+  for (unsigned int i = 0; i < n; i++)
+    p[i] = (uint8_t)(v >> (i * 8));
 }
-static inline void nyamp_spk_float_put(uint8_t *p,float f)
+static inline void nyamp_spk_float_put(uint8_t *p, float f)
 {
-  uint32_t v;memcpy(&v,&f,4);nyamp_spk_put(p,v,4);
+  uint32_t v;
+  memcpy(&v, &f, 4);
+  nyamp_spk_put(p, v, 4);
 }
 static inline float nyamp_spk_float_get(const uint8_t *p)
 {
-  uint32_t v=(uint32_t)nyamp_spk_get(p,4);float f;memcpy(&f,&v,4);return f;
+  uint32_t v = (uint32_t)nyamp_spk_get(p, 4);
+  float f;
+  memcpy(&f, &v, 4);
+  return f;
 }
 #endif

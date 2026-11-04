@@ -95,9 +95,9 @@
 #include "ny_compute.h"
 #include "ny_mimo.h"
 #include "ny_product.h"
+#include "ny_product_privacy.h"
 #include "ny_product_store.h"
 #include "ny_voice.h"
-#include "ny_product_privacy.h"
 #ifdef CONFIG_NYABULA_CORE_SPEAKER
 #include "ny_product_speaker.h"
 #endif
@@ -1373,8 +1373,9 @@ static void ny_voice_pump_events(struct ny_voice_port_s *port, int timeout_ms)
       uint32_t probe_id = g_voice.probe.active ? g_voice.probe.id : 0;
       bool probe_guard = g_voice.probe_guard;
       nxmutex_unlock(&g_voice.lock);
-      bool consumed = !probe_guard && ny_product_speaker_on_wake(
-          event.request_id, &event.detected, probe_id);
+      bool consumed = !probe_guard &&
+                      ny_product_speaker_on_wake(event.request_id,
+                                                 &event.detected, probe_id);
       if (consumed)
         continue;
       nxmutex_lock(&g_voice.lock);
@@ -4253,9 +4254,15 @@ int ny_voice_request(const struct ny_product_caller_s *caller,
       if (id != NULL && (!cJSON_IsNumber(id) || !isfinite(id->valuedouble) ||
                          id->valuedouble < 1 || id->valuedouble > UINT32_MAX ||
                          floor(id->valuedouble) != id->valuedouble))
-        { nxmutex_unlock(&g_voice.lock); return -EINVAL; }
+        {
+          nxmutex_unlock(&g_voice.lock);
+          return -EINVAL;
+        }
       if (id != NULL && (uint32_t)id->valuedouble != g_voice.probe.id)
-        { nxmutex_unlock(&g_voice.lock); return -ESTALE; }
+        {
+          nxmutex_unlock(&g_voice.lock);
+          return -ESTALE;
+        }
       if (g_voice.probe.active)
         {
           ny_voice_probe_cancel(&g_voice.probe);
@@ -4331,15 +4338,15 @@ void ny_voice_accept_speaker_wake(const struct nyamp_kws_detected_s *wake)
     return;
   nxmutex_lock(&g_voice.lock);
   bool accept = g_voice.running && !g_voice.stopping &&
-    g_voice.state != NY_VOICE_OFF && !g_voice.probe.active &&
-    !g_voice.probe_guard && !g_voice.kws_restart &&
-    !(g_voice.state == NY_VOICE_SPEAKING && g_voice.speaking_wake);
+                g_voice.state != NY_VOICE_OFF && !g_voice.probe.active &&
+                !g_voice.probe_guard && !g_voice.kws_restart &&
+                !(g_voice.state == NY_VOICE_SPEAKING && g_voice.speaking_wake);
   if (accept)
     {
       g_voice.wake = *wake;
       g_voice.wake.label = NULL;
       snprintf(g_voice.wake_word, sizeof(g_voice.wake_word), "%.*s",
-                (int)wake->label_length, wake->label ? wake->label : "");
+               (int)wake->label_length, wake->label ? wake->label : "");
     }
   nxmutex_unlock(&g_voice.lock);
   if (accept)

@@ -52,7 +52,6 @@ struct KwsConfig
   // otherwise, because an unlabelled line would have no stable keyword id.
   std::string keywords_file;
 
-
   // Defaults are the operating point chosen by the host evaluation in
   // README.md, not the sherpa-onnx library defaults.  The wake phrase
   // switches language in the middle, so its keyword path is long and the

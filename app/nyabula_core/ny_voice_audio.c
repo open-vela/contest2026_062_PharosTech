@@ -38,8 +38,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "ny_voice_audio.h"
 #include "ny_product_privacy.h"
+#include "ny_voice_audio.h"
 #ifdef CONFIG_NYABULA_CORE_DSP
 #include "ny_audio_stream.h"
 #endif

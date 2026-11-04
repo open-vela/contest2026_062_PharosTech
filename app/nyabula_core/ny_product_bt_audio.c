@@ -41,8 +41,8 @@
 #include <nuttx/mutex.h>
 
 #include "ny_audio_stream.h"
-#include "ny_product_privacy.h"
 #include "ny_pcm.h"
+#include "ny_product_privacy.h"
 #include "ny_sbc.h"
 
 /****************************************************************************
@@ -513,7 +513,8 @@ static int ny_bt_audio_call_open(struct ny_bt_audio_worker_s *worker)
       config.wav = false;
       config.buffers = NY_BT_CALL_MIC_BUFFERS;
       ret = ny_product_privacy_mic_allowed()
-                ? ny_audio_stream_open(&worker->microphone, &config) : 0;
+                ? ny_audio_stream_open(&worker->microphone, &config)
+                : 0;
       if (ret == 0)
         {
           worker->rate = rate;

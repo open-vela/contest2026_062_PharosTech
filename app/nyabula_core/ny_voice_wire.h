@@ -181,8 +181,8 @@ void ny_voice_wire_init(struct ny_voice_wire_s *wire,
 int ny_voice_wire_errno(int32_t status);
 /* One finite voice-family RPC. No stream or event ownership survives it. */
 int ny_voice_wire_request(struct ny_voice_wire_s *wire, uint16_t service,
-                           uint16_t opcode, const uint8_t *body, size_t size,
-                           int timeout_ms, uint8_t *reply, size_t *reply_size);
+                          uint16_t opcode, const uint8_t *body, size_t size,
+                          int timeout_ms, uint8_t *reply, size_t *reply_size);
 
 /****************************************************************************
  * Name: ny_voice_wire_load / ny_voice_wire_unload

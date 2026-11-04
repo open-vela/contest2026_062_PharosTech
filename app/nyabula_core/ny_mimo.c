@@ -68,7 +68,7 @@ static int ny_mimo_request(struct ny_mimo_settings_s *settings, cJSON *body,
                            vela_http_event_t event, void *context);
 static void ny_mimo_le32(unsigned char *output, uint32_t value);
 static int ny_mimo_vision_request(const char *url, const char *prompt,
-                                   char *output, size_t capacity);
+                                  char *output, size_t capacity);
 
 /****************************************************************************
  * Name: ny_mimo_host_supported
@@ -632,7 +632,7 @@ int ny_mimo_vision_tool(const char *input, char *output, size_t capacity)
  ****************************************************************************/
 
 static int ny_mimo_vision_request(const char *url, const char *prompt,
-                                   char *output, size_t capacity)
+                                  char *output, size_t capacity)
 {
   struct ny_mimo_settings_s settings;
   int ret = ny_mimo_load(&settings);
@@ -702,7 +702,7 @@ static int ny_mimo_vision_request(const char *url, const char *prompt,
  ****************************************************************************/
 
 int ny_mimo_vision_png(const uint8_t *png, size_t length, const char *prompt,
-                        char *output, size_t capacity)
+                       char *output, size_t capacity)
 {
   static const char prefix[] = "data:image/png;base64,";
   if (png == NULL || length < 8 || length > 256 * 1024 ||

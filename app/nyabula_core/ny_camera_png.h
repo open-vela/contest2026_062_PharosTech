@@ -20,7 +20,6 @@
  *
  ****************************************************************************/
 
-
 #ifndef __APP_NYABULA_CORE_NY_CAMERA_PNG_H
 #define __APP_NYABULA_CORE_NY_CAMERA_PNG_H
 #include <stddef.h>
@@ -31,6 +30,6 @@
  */
 
 int ny_camera_png(const uint8_t *nv12, size_t size, uint32_t width,
-                   uint32_t height, uint32_t stride, unsigned int factor,
-                   uint8_t **output, size_t *length);
+                  uint32_t height, uint32_t stride, unsigned int factor,
+                  uint8_t **output, size_t *length);
 #endif

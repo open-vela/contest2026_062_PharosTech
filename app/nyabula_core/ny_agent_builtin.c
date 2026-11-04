@@ -56,7 +56,7 @@ static int ny_agent_builtin_weather(const char *input, char *output,
 
 #ifdef CONFIG_NYABULA_CORE_CAMERA
 static int ny_agent_builtin_camera(const char *input, char *output,
-                                    size_t capacity);
+                                   size_t capacity);
 #endif
 
 static const struct ny_agent_builtin_s g_builtin[] = {
@@ -64,8 +64,8 @@ static const struct ny_agent_builtin_s g_builtin[] = {
   { "camera_vision",
     "Capture one fresh camera image and send it to the configured MiMo "
     "vision model. Owner approval is required before capture or upload.",
-    "{\"prompt\":\"Describe what is in front of the camera\"}",
-    true, false, ny_agent_builtin_camera },
+    "{\"prompt\":\"Describe what is in front of the camera\"}", true, false,
+    ny_agent_builtin_camera },
 #endif
   { "mimo_vision", "Understand a user-provided public HTTPS image with MiMo",
     "{\"url\":\"https://example.com/cat.jpg\",\"prompt\":\"Describe this "
@@ -118,17 +118,19 @@ static int ny_agent_builtin_request(const char *topic, const cJSON *data,
  ****************************************************************************/
 
 static int ny_agent_builtin_camera(const char *input, char *output,
-                                    size_t capacity)
+                                   size_t capacity)
 {
   cJSON *args = cJSON_Parse(input);
   const char *prompt = ny_agent_builtin_string(args, "prompt");
   int ret = !cJSON_IsObject(args) || cJSON_GetArraySize(args) != 1 ||
-            !prompt[0] || strlen(prompt) > 1024 ? -EINVAL : 0;
+                    !prompt[0] || strlen(prompt) > 1024
+                ? -EINVAL
+                : 0;
   cJSON *config = NULL;
   if (ret == 0)
     ret = ny_mimo_config("agent.config.mimo.get", NULL, &config);
-  if (ret == 0 && !cJSON_IsTrue(
-        cJSON_GetObjectItemCaseSensitive(config, "credentialsReady")))
+  if (ret == 0 && !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(
+                      config, "credentialsReady")))
     ret = -ENOKEY;
   cJSON_Delete(config);
   uint8_t *png = NULL;

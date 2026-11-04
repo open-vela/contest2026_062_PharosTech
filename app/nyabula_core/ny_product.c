@@ -24,8 +24,8 @@
 #include "ny_product_speaker.h"
 #endif
 #ifdef CONFIG_NYABULA_CORE_VISION
-#include "ny_product_vision.h"
 #include "ny_product_identity.h"
+#include "ny_product_vision.h"
 #endif
 #include "ny_product_privacy.h"
 #ifdef CONFIG_NYABULA_CORE_CAMERA
@@ -382,7 +382,8 @@ int ny_product_request(const struct ny_product_caller_s *caller,
 #endif
 #ifdef CONFIG_NYABULA_CORE_SPEAKER
   ret = ny_product_speaker_request(caller, topic, data, result);
-  if (ret != -ENOSYS) return ret;
+  if (ret != -ENOSYS)
+    return ret;
 #endif
   ret = ny_product_privacy_request(caller, topic, data, result);
   if (ret != -ENOSYS)

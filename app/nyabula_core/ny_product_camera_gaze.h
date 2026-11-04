@@ -20,11 +20,10 @@
  *
  ****************************************************************************/
 
-
 #ifndef __APP_NYABULA_CORE_NY_PRODUCT_CAMERA_GAZE_H
 #define __APP_NYABULA_CORE_NY_PRODUCT_CAMERA_GAZE_H
 #include "ny_product.h"
 int ny_product_camera_gaze_request(const struct ny_product_caller_s *caller,
-                                    const char *topic, const cJSON *data,
-                                    cJSON **result);
+                                   const char *topic, const cJSON *data,
+                                   cJSON **result);
 #endif

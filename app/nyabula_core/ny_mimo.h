@@ -45,6 +45,6 @@ int ny_mimo_vision_tool(const char *input, char *output, size_t capacity);
  * image bytes are placed in tool history or persisted by this function.
  */
 int ny_mimo_vision_png(const uint8_t *png, size_t length, const char *prompt,
-                        char *output, size_t capacity);
+                       char *output, size_t capacity);
 
 #endif

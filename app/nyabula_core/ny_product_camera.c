@@ -20,11 +20,10 @@
  *
  ****************************************************************************/
 
-
 #include "ny_product_camera.h"
-#include "ny_product_privacy.h"
-#include "ny_camera_png.h"
 #include "camenc_capture.h"
+#include "ny_camera_png.h"
+#include "ny_product_privacy.h"
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -35,19 +34,19 @@
 #include <string.h>
 #include <unistd.h>
 
-#define NY_CAMERA_WIDTH          640
-#define NY_CAMERA_HEIGHT         480
-#define NY_CAMERA_MODE           6
-#define NY_CAMERA_RAW_SIZE       (NY_CAMERA_WIDTH * NY_CAMERA_HEIGHT * 3 / 2)
-#define NY_CAMERA_STACK          16384
-#define NY_CAMERA_SEGMENTS       64
-#define NY_CAMERA_SEGMENT_MAX    (512 * 1024)
-#define NY_CAMERA_BUFFER_MAX     (2 * 1024 * 1024)
-#define NY_CAMERA_INIT_MAX       4096
-#define NY_CAMERA_CHUNK          12288
-#define NY_CAMERA_PHOTO_WAIT_MS  8000
+#define NY_CAMERA_WIDTH               640
+#define NY_CAMERA_HEIGHT              480
+#define NY_CAMERA_MODE                6
+#define NY_CAMERA_RAW_SIZE            (NY_CAMERA_WIDTH * NY_CAMERA_HEIGHT * 3 / 2)
+#define NY_CAMERA_STACK               16384
+#define NY_CAMERA_SEGMENTS            64
+#define NY_CAMERA_SEGMENT_MAX         (512 * 1024)
+#define NY_CAMERA_BUFFER_MAX          (2 * 1024 * 1024)
+#define NY_CAMERA_INIT_MAX            4096
+#define NY_CAMERA_CHUNK               12288
+#define NY_CAMERA_PHOTO_WAIT_MS       8000
 #define NY_CAMERA_PHOTO_WARMUP_FRAMES 32
-#define NY_CAMERA_PHOTO_TTL_MS   600000
+#define NY_CAMERA_PHOTO_TTL_MS        600000
 
 struct ny_camera_segment_s
 {
@@ -84,17 +83,17 @@ static void ny_camera_clear(void);
 static void ny_camera_evict(void);
 static bool ny_camera_stop(void *arg);
 static int ny_camera_emit(void *arg, enum camenc_seg_e seg,
-                           const uint8_t *data, size_t length, bool key);
+                          const uint8_t *data, size_t length, bool key);
 static int ny_camera_frame(void *arg, const uint8_t *nv12, size_t size,
-                            uint32_t width, uint32_t height, uint32_t stride);
+                           uint32_t width, uint32_t height, uint32_t stride);
 static int ny_camera_worker(int argc, char **argv);
 static int ny_camera_acquire(void);
 static void ny_camera_release(void);
 static cJSON *ny_camera_status(void);
 static int ny_camera_chunk(const uint8_t *bytes, size_t total, size_t offset,
-                            cJSON **result);
+                           cJSON **result);
 static int ny_camera_number(const cJSON *data, const char *key,
-                             uint64_t maximum, uint64_t *value);
+                            uint64_t maximum, uint64_t *value);
 
 /****************************************************************************
  * Name: ny_camera_evict
@@ -145,7 +144,7 @@ static bool ny_camera_stop(void *arg)
  ****************************************************************************/
 
 static int ny_camera_emit(void *arg, enum camenc_seg_e seg,
-                           const uint8_t *data, size_t length, bool key)
+                          const uint8_t *data, size_t length, bool key)
 {
   (void)arg;
   if (length == 0 || length > NY_CAMERA_SEGMENT_MAX ||
@@ -187,7 +186,7 @@ static int ny_camera_emit(void *arg, enum camenc_seg_e seg,
  ****************************************************************************/
 
 static int ny_camera_frame(void *arg, const uint8_t *nv12, size_t size,
-                            uint32_t width, uint32_t height, uint32_t stride)
+                           uint32_t width, uint32_t height, uint32_t stride)
 {
   (void)arg;
   if (width != NY_CAMERA_WIDTH || height != NY_CAMERA_HEIGHT ||
@@ -199,8 +198,7 @@ static int ny_camera_frame(void *arg, const uint8_t *nv12, size_t size,
   /* Stream startup precedes sensor exposure convergence. Keep preview live,
    * but take a still only after the measured startup transient has passed.
    */
-  if (g_camera_raw_pending &&
-      g_camera_frames >= NY_CAMERA_PHOTO_WARMUP_FRAMES)
+  if (g_camera_raw_pending && g_camera_frames >= NY_CAMERA_PHOTO_WARMUP_FRAMES)
     {
       memcpy(g_camera_raw, nv12, NY_CAMERA_RAW_SIZE);
       g_camera_raw_sequence++;
@@ -219,15 +217,13 @@ static int ny_camera_worker(int argc, char **argv)
 {
   (void)argc;
   (void)argv;
-  const struct camenc_capture_s capture = {
-    .mode = NY_CAMERA_MODE,
-    .frames = INT_MAX,
-    .qp = 28,
-    .gop = 30,
-    .emit = ny_camera_emit,
-    .frame = ny_camera_frame,
-    .stop = ny_camera_stop
-  };
+  const struct camenc_capture_s capture = { .mode = NY_CAMERA_MODE,
+                                            .frames = INT_MAX,
+                                            .qp = 28,
+                                            .gop = 30,
+                                            .emit = ny_camera_emit,
+                                            .frame = ny_camera_frame,
+                                            .stop = ny_camera_stop };
   int ret = camenc_capture_run(&capture);
   nxmutex_lock(&g_camera_lock);
   g_camera_running = false;
@@ -280,7 +276,7 @@ static int ny_camera_acquire(void)
        * capture descriptors and cleanup even after that caller exits.
        */
       ret = task_create("ny_camera", CONFIG_EXAMPLES_CAMENC_PRIORITY,
-                         NY_CAMERA_STACK, ny_camera_worker, NULL);
+                        NY_CAMERA_STACK, ny_camera_worker, NULL);
       if (ret < 0)
         {
           ret = -errno;
@@ -346,7 +342,7 @@ void ny_product_camera_close(struct ny_camera_client_s *client)
  ****************************************************************************/
 
 static int ny_camera_chunk(const uint8_t *bytes, size_t total, size_t offset,
-                            cJSON **result)
+                           cJSON **result)
 {
   if (offset >= total)
     return -ERANGE;
@@ -358,8 +354,8 @@ static int ny_camera_chunk(const uint8_t *bytes, size_t total, size_t offset,
   size_t length;
   if (encoded == NULL)
     return -ENOMEM;
-  int ret = mbedtls_base64_encode(encoded, size, &length, bytes + offset,
-                                  count);
+  int ret =
+      mbedtls_base64_encode(encoded, size, &length, bytes + offset, count);
   cJSON *out = ret == 0 ? cJSON_CreateObject() : NULL;
   bool ok = out != NULL &&
             cJSON_AddNumberToObject(out, "offset", offset) != NULL &&
@@ -412,7 +408,7 @@ int ny_product_camera_next(struct ny_camera_client_s *client, cJSON **chunk)
         {
           if (cJSON_AddStringToObject(*chunk, "kind", "init") == NULL ||
               cJSON_AddNumberToObject(*chunk, "generation",
-                                       g_camera_generation) == NULL ||
+                                      g_camera_generation) == NULL ||
               cJSON_AddNumberToObject(*chunk, "sequence", 0) == NULL)
             ret = -ENOMEM;
           else
@@ -433,9 +429,10 @@ int ny_product_camera_next(struct ny_camera_client_s *client, cJSON **chunk)
   if (ret > 0)
     {
       if (cJSON_AddStringToObject(*chunk, "kind", "fragment") == NULL ||
-          cJSON_AddNumberToObject(*chunk, "generation",
-                                   g_camera_generation) == NULL ||
-          cJSON_AddNumberToObject(*chunk, "sequence", client->sequence) == NULL ||
+          cJSON_AddNumberToObject(*chunk, "generation", g_camera_generation) ==
+              NULL ||
+          cJSON_AddNumberToObject(*chunk, "sequence", client->sequence) ==
+              NULL ||
           cJSON_AddBoolToObject(*chunk, "key", s->key) == NULL)
         ret = -ENOMEM;
       else
@@ -463,8 +460,7 @@ out:
  * Name: ny_product_camera_photo
  ****************************************************************************/
 
-int ny_product_camera_photo(unsigned int factor, uint8_t **png,
-                             size_t *length)
+int ny_product_camera_photo(unsigned int factor, uint8_t **png, size_t *length)
 {
   *png = NULL;
   *length = 0;
@@ -508,9 +504,9 @@ int ny_product_camera_photo(unsigned int factor, uint8_t **png,
     }
   ny_camera_release();
   if (ret == 0)
-    ret = ny_camera_png(raw, NY_CAMERA_RAW_SIZE, NY_CAMERA_WIDTH,
-                        NY_CAMERA_HEIGHT, NY_CAMERA_WIDTH, factor, png,
-                        length);
+    ret =
+        ny_camera_png(raw, NY_CAMERA_RAW_SIZE, NY_CAMERA_WIDTH,
+                      NY_CAMERA_HEIGHT, NY_CAMERA_WIDTH, factor, png, length);
   free(raw);
   if (ret == 0 && !ny_product_privacy_camera_allowed())
     {
@@ -532,18 +528,22 @@ static cJSON *ny_camera_status(void)
   if (out == NULL)
     return NULL;
   nxmutex_lock(&g_camera_lock);
-  bool ok = cJSON_AddBoolToObject(out, "available",
-              access("/dev/video0", F_OK) == 0 &&
-              access("/dev/video1", F_OK) == 0) != NULL;
+  bool ok =
+      cJSON_AddBoolToObject(out, "available",
+                            access("/dev/video0", F_OK) == 0 &&
+                                access("/dev/video1", F_OK) == 0) != NULL;
   ok &= cJSON_AddBoolToObject(out, "running", g_camera_running) != NULL;
-  ok &= cJSON_AddStringToObject(out, "phase", g_camera_stopping &&
-          g_camera_running ? "stopping" : g_camera_running ?
-          (g_camera_frames ? "streaming" : "starting") :
-          g_camera_error ? "error" : "idle") != NULL;
+  ok &= cJSON_AddStringToObject(
+            out, "phase",
+            g_camera_stopping && g_camera_running ? "stopping"
+            : g_camera_running ? (g_camera_frames ? "streaming" : "starting")
+            : g_camera_error   ? "error"
+                               : "idle") != NULL;
   ok &= cJSON_AddNumberToObject(out, "width", NY_CAMERA_WIDTH) != NULL;
   ok &= cJSON_AddNumberToObject(out, "height", NY_CAMERA_HEIGHT) != NULL;
   ok &= cJSON_AddNumberToObject(out, "frames", g_camera_frames) != NULL;
-  ok &= cJSON_AddNumberToObject(out, "lastFrameMs", g_camera_last_frame) != NULL;
+  ok &=
+      cJSON_AddNumberToObject(out, "lastFrameMs", g_camera_last_frame) != NULL;
   ok &= cJSON_AddNumberToObject(out, "readers", g_camera_readers) != NULL;
   ok &= cJSON_AddNumberToObject(out, "bufferBytes", g_camera_bytes) != NULL;
   ok &= cJSON_AddNumberToObject(out, "lastError", g_camera_error) != NULL;
@@ -561,7 +561,7 @@ static cJSON *ny_camera_status(void)
  ****************************************************************************/
 
 static int ny_camera_number(const cJSON *data, const char *key,
-                             uint64_t maximum, uint64_t *value)
+                            uint64_t maximum, uint64_t *value)
 {
   const cJSON *item = cJSON_GetObjectItemCaseSensitive(data, key);
   if (!cJSON_IsNumber(item) || !isfinite(item->valuedouble) ||
@@ -577,12 +577,13 @@ static int ny_camera_number(const cJSON *data, const char *key,
  ****************************************************************************/
 
 int ny_product_camera_request(const struct ny_product_caller_s *caller,
-                               const char *topic, const cJSON *data,
-                               cJSON **result)
+                              const char *topic, const cJSON *data,
+                              cJSON **result)
 {
   if (strcmp(topic, "camera.status") && strcmp(topic, "camera.stop") &&
       strcmp(topic, "camera.photo.capture") &&
-      strcmp(topic, "camera.photo.read") && strcmp(topic, "camera.photo.clear"))
+      strcmp(topic, "camera.photo.read") &&
+      strcmp(topic, "camera.photo.clear"))
     return -ENOSYS;
   if (caller->role != NY_PRODUCT_OWNER)
     return -EACCES;
@@ -621,12 +622,13 @@ int ny_product_camera_request(const struct ny_product_caller_s *caller,
       g_camera_photo_size = length;
       g_camera_photo_id++;
       g_camera_photo_at = ny_product_time_ms(true);
-      bool ok = out != NULL &&
-        cJSON_AddNumberToObject(out, "photoId", g_camera_photo_id) != NULL &&
-        cJSON_AddNumberToObject(out, "bytes", length) != NULL &&
-        cJSON_AddNumberToObject(out, "width", NY_CAMERA_WIDTH) != NULL &&
-        cJSON_AddNumberToObject(out, "height", NY_CAMERA_HEIGHT) != NULL &&
-        cJSON_AddStringToObject(out, "mime", "image/png") != NULL;
+      bool ok =
+          out != NULL &&
+          cJSON_AddNumberToObject(out, "photoId", g_camera_photo_id) != NULL &&
+          cJSON_AddNumberToObject(out, "bytes", length) != NULL &&
+          cJSON_AddNumberToObject(out, "width", NY_CAMERA_WIDTH) != NULL &&
+          cJSON_AddNumberToObject(out, "height", NY_CAMERA_HEIGHT) != NULL &&
+          cJSON_AddStringToObject(out, "mime", "image/png") != NULL;
       nxmutex_unlock(&g_camera_lock);
       if (!ok)
         {
@@ -637,8 +639,8 @@ int ny_product_camera_request(const struct ny_product_caller_s *caller,
       return 0;
     }
   nxmutex_lock(&g_camera_lock);
-  if (g_camera_photo != NULL && ny_product_time_ms(true) -
-      g_camera_photo_at > NY_CAMERA_PHOTO_TTL_MS)
+  if (g_camera_photo != NULL &&
+      ny_product_time_ms(true) - g_camera_photo_at > NY_CAMERA_PHOTO_TTL_MS)
     {
       free(g_camera_photo);
       g_camera_photo = NULL;
@@ -660,13 +662,13 @@ int ny_product_camera_request(const struct ny_product_caller_s *caller,
       ret = ny_camera_number(data, "photoId", 9007199254740991ULL, &id);
       if (ret == 0)
         ret = ny_camera_number(data, "offset", NY_CAMERA_SEGMENT_MAX * 2,
-                                &offset);
+                               &offset);
       if (ret == 0 && (g_camera_photo == NULL || id != g_camera_photo_id))
         ret = -ENOENT;
       if (ret == 0)
         {
           ret = ny_camera_chunk(g_camera_photo, g_camera_photo_size, offset,
-                                 result);
+                                result);
           if (ret > 0)
             ret = 0;
         }

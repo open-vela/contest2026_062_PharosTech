@@ -20,9 +20,9 @@
  ****************************************************************************/
 
 #include "ny_product_dsp.h"
-#include "ny_product_audio.h"
 #include "ny_audio_stream.h"
 #include "ny_dsp_output.h"
+#include "ny_product_audio.h"
 #include "ny_product_store.h"
 #include "nyadsp.h"
 #ifdef CONFIG_NYABULA_CORE_BT
@@ -493,7 +493,7 @@ static cJSON *ny_dsp_status(void)
                         ny_product_audio_headphones_only());
   cJSON_AddBoolToObject(root, "bassEffective",
                         g_dsp_settings.bass &&
-                        !ny_product_audio_headphones_only());
+                            !ny_product_audio_headphones_only());
   cJSON_AddBoolToObject(root, "stopping", g_dsp_stopping);
   cJSON_AddStringToObject(root, "track", g_dsp_track);
   cJSON_AddNumberToObject(root, "sampleRate", NYADSP_SAMPLE_RATE);

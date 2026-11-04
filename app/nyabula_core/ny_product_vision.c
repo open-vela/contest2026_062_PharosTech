@@ -407,8 +407,8 @@ static int ny_vision_worker(int argc, char **argv)
     {
       const char *recognizer = "face/recognizer";
       ret = ny_vision_call(port, NYAMP_VISION_IDENTITY_LOAD,
-                           (const uint8_t *)recognizer, strlen(recognizer), NULL, NULL,
-                           60000, false);
+                           (const uint8_t *)recognizer, strlen(recognizer),
+                           NULL, NULL, 60000, false);
       if (ret < 0)
         goto done;
     }

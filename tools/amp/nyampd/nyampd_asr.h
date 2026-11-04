@@ -64,7 +64,10 @@ class CaptureSource
 public:
   virtual ~CaptureSource() = default;
   virtual std::shared_ptr<CaptureRing> Stream() = 0;
-  virtual std::shared_ptr<CaptureRing> StreamFor(std::uint64_t) { return nullptr; }
+  virtual std::shared_ptr<CaptureRing> StreamFor(std::uint64_t)
+  {
+    return nullptr;
+  }
 };
 
 /****************************************************************************
