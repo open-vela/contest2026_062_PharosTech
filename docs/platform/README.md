@@ -100,7 +100,7 @@ N-Boot #9/#10/#11 仍为开放 PR，最新 AMP 维护功能需要配套启动器
 | 以太网 | 30分钟、29.4 GB，无丢包/误码记录 | 双网口回环，作者板测；[#101](https://github.com/open-vela/contest2026_062_PharosTech/pull/101) |
 | WiFi SoftAP | 20/20通过 | WPA2/WPA3控制与数据面；[#60](https://github.com/open-vela/contest2026_062_PharosTech/pull/60) |
 | USB3 BOT | 峰值约36 MiB/s | 指定ASMedia/Hub，不含UAS；[#68](https://github.com/open-vela/contest2026_062_PharosTech/pull/68) |
-| ADB | 260次帧拉取、8 MiB双向传输通过 | B24；含并发、主机重连、板重启；近期仍有延迟offline、原因未定；[记录](../validation/README.md#平台与传输) |
+| ADB | 260次帧拉取、8 MiB双向传输通过 | B24；含并发、主机重连、板重启；[记录](../validation/README.md#平台与传输) |
 | Codec | 66项检测到目标基频 | 两项右路削顶仍需归因；[#58](https://github.com/open-vela/contest2026_062_PharosTech/pull/58) |
 | Eye渲染 | 每屏每帧40→4 ms | 1.8 GHz指定场景；[#86](https://github.com/open-vela/contest2026_062_PharosTech/pull/86) |
 
