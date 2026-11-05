@@ -63,7 +63,7 @@ Nyabula 是一只基于 KICKPI-K7 的桌面 AI 陪伴猫：双圆屏表达状态
 </tbody>
 </table>
 
-下面每行展示同一页面的三种主题，点击图片可查看完整尺寸。主体截图来自 **B109 实机与同期面板**；Cloud 账号的三张补图来自本地模拟器，已在图注标明。敏感字段已遮盖，摄影预览关闭。各项实测条件见[验证记录](docs/validation/README.md)。
+下面每行展示同一页面的三种主题，点击图片可查看完整尺寸。主体截图来自 **B109 实机与同期面板**；Cloud 账号与高级更新页由本地模拟器补拍，已在图注标明。敏感字段已遮盖，摄影预览关闭。各项实测条件见[验证记录](docs/validation/README.md)。
 
 [语音与双眼](#语音与双眼让交互有回应) · [音乐与调音](#从蓝牙音乐到三路音频输出) · [灯光](#让灯光跟随设备状态) · [摄影与隐私](#看见人也把隐私开关交给人) · [日常工具](#让计时提醒和记录留在设备上) · [扩展](#让-agent-给设备增加工具) · [连接与维护](#从本地连接到远程访问) · [主题与屏幕](#同一套功能适应不同屏幕)
 
@@ -566,15 +566,17 @@ TTS、A2DP 和文件播放共用 **48 kHz DSP 出口**。先在音频路由中�
 </tbody>
 </table>
 
-固件更新沿用 A/B 非运行槽与已知好槽恢复路径。日志用于定位实际错误，关于页用于核对软件与协议版本；日志截图已遮盖敏感内容。当前设备保留 A21 恢复槽，历史 ADB 传输通过不代表近期延迟 offline 问题已解决。
+更新页读取 **普通 openvela 与 AMP 两个启动域的 A/B 四槽状态**，显示运行/启动标记、可启动性、版本和镜像大小。常规更新写入非运行槽并回读校验；展开高级选项后，还能看到 **N-Boot、trust、bootctrl、nuttx_a/b、amp_a/b、config、data** 的维护目标与写入条件。运行槽和 `data` 禁止从面板覆盖，挂载分区与引导程序保留风险确认。
+
+下图已展开全部高级目标，使用按固件目标定义配置的模拟器演示数据。日志用于定位错误，关于页用于核对版本；当前实机保留 A21 恢复槽，近期 ADB 延迟 offline 问题仍未解决。
 
 <table>
 <thead><tr><th width="33%">星云 Nebula</th><th width="33%">经典 Classic</th><th width="33%">仪器 Instrument</th></tr></thead>
 <tbody>
 <tr>
-<td valign="top"><strong>设备设置：更新</strong><br><a href="docs/assets/screenshots/20261104/nebula/device-update.png"><img src="docs/assets/screenshots/20261104/nebula/device-update.png" alt="设备设置：更新，nebula主题" width="100%"></a></td>
-<td valign="top"><strong>设备设置：更新</strong><br><a href="docs/assets/screenshots/20261104/classic/device-update.png"><img src="docs/assets/screenshots/20261104/classic/device-update.png" alt="设备设置：更新，classic主题" width="100%"></a></td>
-<td valign="top"><strong>设备设置：更新</strong><br><a href="docs/assets/screenshots/20261104/instrument/device-update.png"><img src="docs/assets/screenshots/20261104/instrument/device-update.png" alt="设备设置：更新，instrument主题" width="100%"></a></td>
+<td valign="top"><strong>更新 · 高级展开 · 模拟器</strong><br><a href="docs/assets/screenshots/20261105-sim/nebula/device-update-advanced.png"><img src="docs/assets/screenshots/20261105-sim/nebula/device-update-advanced.png" alt="高级更新展开，nebula主题，模拟器" width="100%"></a></td>
+<td valign="top"><strong>更新 · 高级展开 · 模拟器</strong><br><a href="docs/assets/screenshots/20261105-sim/classic/device-update-advanced.png"><img src="docs/assets/screenshots/20261105-sim/classic/device-update-advanced.png" alt="高级更新展开，classic主题，模拟器" width="100%"></a></td>
+<td valign="top"><strong>更新 · 高级展开 · 模拟器</strong><br><a href="docs/assets/screenshots/20261105-sim/instrument/device-update-advanced.png"><img src="docs/assets/screenshots/20261105-sim/instrument/device-update-advanced.png" alt="高级更新展开，instrument主题，模拟器" width="100%"></a></td>
 </tr>
 <tr>
 <td valign="top"><strong>设备设置：日志</strong><br><a href="docs/assets/screenshots/20261104/nebula/device-logs.png"><img src="docs/assets/screenshots/20261104/nebula/device-logs.png" alt="设备设置：日志，nebula主题" width="100%"></a></td>
