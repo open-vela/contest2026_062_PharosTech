@@ -31,7 +31,7 @@ Nyabula 是一只基于 KICKPI-K7 的桌面 AI 陪伴猫：双圆屏表达状态
 | 摄像头与编码 | **openvela 原生** CSI0 / VICAP / OV5647、软件 NEON 图像处理与 3A、VEPU510 H.264、camenc 浏览器推流 |
 | 音频与 USB | SAI / ES8388 录放、USB Device / ADB、xHCI Host、Hub、MSC/exFAT、USB Audio；WS2812 灯带 |
 
-**代表性结果：** eMMC 指定只读实验约 **75.5 MiB/s**；千兆以太网作者板测 **30 分钟传输 29.4 GB**；SoftAP **20 轮通过**；历史 B24 的 ADB 传输测试通过，但近期仍出现延迟 offline。完整条件和来源见[平台实测](docs/platform/README.md#代表性实测)。
+**代表性结果：** eMMC 指定只读实验约 **75.5 MiB/s**；千兆以太网作者板测 **30 分钟传输 29.4 GB**；SoftAP **20 轮通过**；B24 的 ADB 传输测试通过。完整条件和来源见[平台实测](docs/platform/README.md#代表性实测)。
 
 显示、相机、以太网和灯带提供独立配置。当前 VOP 为 esmart0 透传，相机支持 CSI0，编码为固定 QP 的 H.264；产品已集成原生采集与编码，B103 用户确认预览画面正常。原生 NPU 是[独立实验路线](docs/platform/README.md#原生-npu-实验路线)，尚未上板验收。
 
@@ -568,7 +568,7 @@ TTS、A2DP 和文件播放共用 **48 kHz DSP 出口**。先在音频路由中�
 
 更新页读取 **普通 openvela 与 AMP 两个启动域的 A/B 四槽状态**，显示运行/启动标记、可启动性、版本和镜像大小。常规更新写入非运行槽并回读校验；展开高级选项后，还能看到 **N-Boot、trust、bootctrl、nuttx_a/b、amp_a/b、config、data** 的维护目标与写入条件。运行槽和 `data` 禁止从面板覆盖，挂载分区与引导程序保留风险确认。
 
-下图已展开全部高级目标，使用按固件目标定义配置的模拟器演示数据。日志用于定位错误，关于页用于核对版本；当前实机保留 A21 恢复槽，近期 ADB 延迟 offline 问题仍未解决。
+下图已展开全部高级目标，使用按固件目标定义配置的模拟器演示数据。日志用于定位错误，关于页用于核对版本；当前实机保留 A21 恢复槽。
 
 <table>
 <thead><tr><th width="33%">星云 Nebula</th><th width="33%">经典 Classic</th><th width="33%">仪器 Instrument</th></tr></thead>

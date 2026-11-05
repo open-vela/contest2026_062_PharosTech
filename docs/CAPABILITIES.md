@@ -56,7 +56,7 @@
 
 | 能力 | 交付与验证 | 已实现内容 | 当前范围 | 入口 |
 |---|---|---|---|---|
-| USB Device ADB 与恢复 | 团队主线；板测确认 | DWC3、ADB文件传输、SMP IRQ临界区、reset/ENDTRANSFER资源回收与物理拔插修复 | B24 260次拉帧及8MiB往返；近期仍延迟offline，原因未定 | [L6927](validation/EVIDENCE.md#l6927) · [L7147](validation/EVIDENCE.md#l7147) · [源码/说明](../chips/rk3576/rk3576_usb.c) |
+| USB Device ADB 与恢复 | 团队主线；板测确认 | DWC3、ADB文件传输、SMP IRQ临界区、reset/ENDTRANSFER资源回收与物理拔插修复 | B24 260次拉帧及8MiB往返 | [L6927](validation/EVIDENCE.md#l6927) · [L7147](validation/EVIDENCE.md#l7147) · [源码/说明](../chips/rk3576/rk3576_usb.c) |
 | USB Host 与存储类 | 团队主线；板测确认 | DWC3/xHCI、USB2/3、GL3510 Hub、MSC/exFAT与自动挂载 | 历史BOT峰值约36MiB/s，非UAS；不等同新USB文件共享已实盘验收 | [#68](https://github.com/open-vela/contest2026_062_PharosTech/pull/68) · [源码/说明](../chips/rk3576) |
 | SAI PL330 ES8388 录放 | 团队主线；板测确认 | 单双声道、双麦、16/24/32位、输出路由、同格式全双工与生命周期矩阵 | 66项采集中两项右路削顶保留；完整AEC/插话未验收 | [#58](https://github.com/open-vela/contest2026_062_PharosTech/pull/58) · [源码/说明](../app/audioctl) |
 | USB Audio OUT 与低音设备 | 团队主线；板测确认 | USB Speaker真实播放，产品低音USB音频送流、短包节拍修复 | USB Mic IN和UAC全双工仍缺真实板测；协议已枚举不等于麦克风可录 | [L7848](validation/EVIDENCE.md#l7848) · [源码/说明](../app/nyabula_core/ny_dsp_output.c) |
