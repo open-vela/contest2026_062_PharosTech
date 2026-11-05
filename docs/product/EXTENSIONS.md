@@ -42,7 +42,7 @@ import { request } from "@nyabula/hardware";
 const status = await request("audio.status");
 ```
 
-声明权限不等于授权，每次调用检查当前状态。摄像头采集权限名已经存在，但当前产品采集服务未提供时返回 `ENOTSUP`；不能从权限表推导该功能已经集成。
+声明权限不等于授权，每次调用检查当前状态。产品相机采集与编码已接入，但插件硬件接口的 `camera.capture` 目前仍返回 `ENOTSUP`；它与产品的 `camera.photo.capture` 不是同一入口。
 
 ## 双向 MCP
 
@@ -62,4 +62,4 @@ Windows独立工作台以Goja执行可信开发插件，可加载/重载、授�
 
 Go Cloud提供账号、设备认领、统计、中继与Console静态服务。K7主动连接Cloud，认领账号与设备访问密码分别检查；WSS验证证书链和主机名。已做原生K7本机服务联调，公网生产部署另行验收。
 
-**源码交付位置：** 当前团队仓包含设备Cloud客户端、Console界面、插件SDK与示例；Go Cloud服务和Windows工作台为独立工作区/开发包，未纳入本仓manifest。取得配套包后按其README启动，不能把 `repo sync` 视为已包含这两个Go工程。
+**源码交付位置：** 设备 Cloud 客户端、Console、插件 SDK 与示例均在本仓；Go Cloud 服务位于 [`tools/nyabula_cloud/`](../../tools/nyabula_cloud/README.md)，共享 NyaLink 实现在 `tools/nyalink-go/`，协议在 `docs/protocol/`。Windows 工作台仍是独立开发包，按包内 README 启动。
