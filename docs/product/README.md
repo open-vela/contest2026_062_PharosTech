@@ -41,7 +41,7 @@ Nyabula 把平台能力组织成可以使用和继续扩展的桌面 AI 设备�
 
 在 Nyabot 技能页导入 UTF-8 `SKILL.md`，预览、保存后默认停用；主人启用后，Agent 才能按需读取。正文上限8192字节，支持完整内容分页读取。Skill提供操作知识，不增加工具、权限或审批豁免。
 
-`transfer-planning` 已在真实设备导入、启用，并被模型读取用于生成传输计算器：
+`transfer-planning` 已在真实设备导入、启用，并被模型读取用于生成传输计算器。
 
 运行时Skill与[24份工程Skill](../../skills/README.md)分开统计；前者服务设备任务，后者帮助开发者复用移植和验证方法。参见[实际Skill文件](../../tools/nyabula_plugin/skills/transfer-planning/SKILL.md)。
 

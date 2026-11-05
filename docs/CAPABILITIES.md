@@ -128,7 +128,7 @@
 | 微信与飞书适配 | 团队主线；宿主或真实 sim 验证 | iLink扫码登录/消息收发协议、飞书适配、同一Agent入口 | 没有实际微信扫码收发/真实外部账号完整联调结论 | [L7583](validation/EVIDENCE.md#l7583) · [#106](https://github.com/open-vela/contest2026_062_PharosTech/pull/106) · [源码/说明](../app/nyabula_core/ny_agent_weixin.c) |
 | 原生 Cloud 客户端 | 团队主线；板测确认 | K7主动注册、设备认领/密码认证、表情/注视中继、重启状态恢复和断线重连 | 已是真机链路，不再仅Simulator；测试服务部署在本机 | [L7089](validation/EVIDENCE.md#l7089) · [L7096](validation/EVIDENCE.md#l7096) · [源码/说明](../app/nyabula_core/ny_cloud.c) |
 | Cloud WSS 认证 | 团队主线；板测确认 | 正确证书连接、错误主机名拒绝、恢复正确证书后自动重连 | 本机测试CA/SAN实测；公网生产部署、账号运营及长稳另验 | [L7082](validation/EVIDENCE.md#l7082) · [源码/说明](../app/nyabula_core/ny_cloud.c) |
-| Go Cloud 服务与 Console | 工作区独立工程；Console亦在主线；板测确认 | Go/SQLite账号/认领/统计、中继与静态Console；原生K7控制实跑 | Go Cloud源码未位于团队当前tree；Cloud终止TLS，不是端到端加密 | [L7089](validation/EVIDENCE.md#l7089) · [L7096](validation/EVIDENCE.md#l7096) |
+| Go Cloud 服务与 Console | 团队主线；板测确认 | Go/SQLite账号/认领/统计、中继与静态Console；原生K7控制实跑 | Go Cloud随 #110 纳入团队仓；Cloud终止TLS，不是端到端加密 | [L7089](validation/EVIDENCE.md#l7089) · [L7096](validation/EVIDENCE.md#l7096) |
 
 ### 设备 Web 与开发生态
 
